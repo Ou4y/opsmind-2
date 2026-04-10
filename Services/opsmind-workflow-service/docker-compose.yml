@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  workflow-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opsmind-workflow
+    ports:
+      - "3003:3003"
+    environment:
+      NODE_ENV: production
+      PORT: 3003
+      SERVICE_NAME: opsmind-workflow
+      DB_HOST: opsmind-mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: workflow_db
+      DB_CONNECTION_LIMIT: 10
+      DB_WAIT_FOR_CONNECTIONS: "true"
+      AUTH_SERVICE_URL: http://opsmind-auth-service:3002
+      TICKET_SERVICE_URL: http://opsmind-ticket-service:3000
+      LOG_LEVEL: info
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+# ──────────────────────────────────────────────
+# NOTE: MySQL container and the 'opsmind-net' network
+# are defined in the infrastructure docker-compose.yml.
+# This file only defines the workflow-service.
+# The network is declared as external below.
+# ──────────────────────────────────────────────
+
+networks:
+  opsmind-net:
+    external: true

@@ -1,0 +1,459 @@
+﻿{
+    "openapi":  "3.0.0",
+    "info":  {
+                 "title":  "OpsMind Ticket Service API",
+                 "version":  "1.0.0",
+                 "description":  "REST API for managing tickets."
+             },
+    "servers":  [
+                    {
+                        "url":  "/"
+                    }
+                ],
+    "tags":  [
+                 {
+                     "name":  "Tickets"
+                 },
+                 {
+                     "name":  "Health"
+                 },
+                 {
+                     "name":  "Docs"
+                 }
+             ],
+    "paths":  {
+                  "/tickets":  {
+                                   "post":  {
+                                                "tags":  [
+                                                             "Tickets"
+                                                         ],
+                                                "summary":  "Create a ticket",
+                                                "description":  "User-provided fields: title, description, type_of_request, requester_id, latitude, longitude. Priority, support level, and initial status (OPEN) are system-assigned. GPS coordinates are used by the Workflow Service for location-aware technician assignment weighted by proximity, workload, and priority.",
+                                                "requestBody":  {
+                                                                    "required":  true,
+                                                                    "content":  {
+                                                                                    "application/json":  {
+                                                                                                             "schema":  {
+                                                                                                                            "type":  "object",
+                                                                                                                            "required":  [
+                                                                                                                                             "title",
+                                                                                                                                             "description",
+                                                                                                                                             "type_of_request",
+                                                                                                                                             "requester_id",
+                                                                                                                                             "latitude",
+                                                                                                                                             "longitude"
+                                                                                                                                         ],
+                                                                                                                            "properties":  {
+                                                                                                                                               "title":  {
+                                                                                                                                                             "type":  "string"
+                                                                                                                                                         },
+                                                                                                                                               "description":  {
+                                                                                                                                                                   "type":  "string"
+                                                                                                                                                               },
+                                                                                                                                               "type_of_request":  {
+                                                                                                                                                                       "type":  "string",
+                                                                                                                                                                       "enum":  [
+                                                                                                                                                                                    "INCIDENT",
+                                                                                                                                                                                    "SERVICE_REQUEST",
+                                                                                                                                                                                    "MAINTENANCE"
+                                                                                                                                                                                ]
+                                                                                                                                                                   },
+                                                                                                                                               "requester_id":  {
+                                                                                                                                                                    "type":  "string",
+                                                                                                                                                                    "description":  "UUID of the user submitting the ticket"
+                                                                                                                                                                },
+                                                                                                                                               "latitude":  {
+                                                                                                                                                                "type":  "number",
+                                                                                                                                                                "minimum":  -90,
+                                                                                                                                                                "maximum":  90,
+                                                                                                                                                                "description":  "GPS latitude of the incident location — used for intelligent assignment"
+                                                                                                                                                            },
+                                                                                                                                               "longitude":  {
+                                                                                                                                                                 "type":  "number",
+                                                                                                                                                                 "minimum":  -180,
+                                                                                                                                                                 "maximum":  180,
+                                                                                                                                                                 "description":  "GPS longitude of the incident location — used for intelligent assignment"
+                                                                                                                                                             }
+                                                                                                                                           }
+                                                                                                                        }
+                                                                                                         }
+                                                                                }
+                                                                },
+                                                "responses":  {
+                                                                  "201":  {
+                                                                              "description":  "Created"
+                                                                          }
+                                                              }
+                                            },
+                                   "get":  {
+                                               "tags":  [
+                                                            "Tickets"
+                                                        ],
+                                               "summary":  "List tickets",
+                                               "description":  "Returns all tickets except soft-deleted (is_deleted = false).",
+                                               "parameters":  [
+                                                                  {
+                                                                      "in":  "query",
+                                                                      "name":  "status",
+                                                                      "schema":  {
+                                                                                     "type":  "string",
+                                                                                     "enum":  [
+                                                                                                  "OPEN",
+                                                                                                  "IN_PROGRESS",
+                                                                                                  "RESOLVED",
+                                                                                                  "CLOSED"
+                                                                                              ]
+                                                                                 }
+                                                                  },
+                                                                  {
+                                                                      "in":  "query",
+                                                                      "name":  "priority",
+                                                                      "schema":  {
+                                                                                     "type":  "string",
+                                                                                     "enum":  [
+                                                                                                  "LOW",
+                                                                                                  "MEDIUM",
+                                                                                                  "HIGH"
+                                                                                              ]
+                                                                                 }
+                                                                  },
+                                                                  {
+                                                                      "in":  "query",
+                                                                      "name":  "requester_id",
+                                                                      "schema":  {
+                                                                                     "type":  "string"
+                                                                                 }
+                                                                  },
+                                                                  {
+                                                                      "in":  "query",
+                                                                      "name":  "limit",
+                                                                      "schema":  {
+                                                                                     "type":  "integer",
+                                                                                     "default":  50
+                                                                                 }
+                                                                  },
+                                                                  {
+                                                                      "in":  "query",
+                                                                      "name":  "offset",
+                                                                      "schema":  {
+                                                                                     "type":  "integer",
+                                                                                     "default":  0
+                                                                                 }
+                                                                  }
+                                                              ],
+                                               "responses":  {
+                                                                 "200":  {
+                                                                             "description":  "OK"
+                                                                         }
+                                                             }
+                                           }
+                               },
+                  "/tickets/requester/{requester_id}":  {
+                                                            "get":  {
+                                                                        "tags":  [
+                                                                                     "Tickets"
+                                                                                 ],
+                                                                        "summary":  "Get tickets by requester_id",
+                                                                        "description":  "Returns all tickets for a specific requester (not soft-deleted).",
+                                                                        "parameters":  [
+                                                                                           {
+                                                                                               "in":  "path",
+                                                                                               "name":  "requester_id",
+                                                                                               "required":  true,
+                                                                                               "schema":  {
+                                                                                                              "type":  "string"
+                                                                                                          }
+                                                                                           },
+                                                                                           {
+                                                                                               "in":  "query",
+                                                                                               "name":  "status",
+                                                                                               "schema":  {
+                                                                                                              "type":  "string",
+                                                                                                              "enum":  [
+                                                                                                                           "OPEN",
+                                                                                                                           "IN_PROGRESS",
+                                                                                                                           "RESOLVED",
+                                                                                                                           "CLOSED"
+                                                                                                                       ]
+                                                                                                          }
+                                                                                           },
+                                                                                           {
+                                                                                               "in":  "query",
+                                                                                               "name":  "priority",
+                                                                                               "schema":  {
+                                                                                                              "type":  "string",
+                                                                                                              "enum":  [
+                                                                                                                           "LOW",
+                                                                                                                           "MEDIUM",
+                                                                                                                           "HIGH"
+                                                                                                                       ]
+                                                                                                          }
+                                                                                           },
+                                                                                           {
+                                                                                               "in":  "query",
+                                                                                               "name":  "limit",
+                                                                                               "schema":  {
+                                                                                                              "type":  "integer",
+                                                                                                              "default":  50
+                                                                                                          }
+                                                                                           },
+                                                                                           {
+                                                                                               "in":  "query",
+                                                                                               "name":  "offset",
+                                                                                               "schema":  {
+                                                                                                              "type":  "integer",
+                                                                                                              "default":  0
+                                                                                                          }
+                                                                                           }
+                                                                                       ],
+                                                                        "responses":  {
+                                                                                          "200":  {
+                                                                                                      "description":  "OK"
+                                                                                                  }
+                                                                                      }
+                                                                    }
+                                                        },
+                  "/tickets/{id}":  {
+                                        "get":  {
+                                                    "tags":  [
+                                                                 "Tickets"
+                                                             ],
+                                                    "summary":  "Get ticket by id",
+                                                    "description":  "Returns ticket if not soft-deleted.",
+                                                    "parameters":  [
+                                                                       {
+                                                                           "in":  "path",
+                                                                           "name":  "id",
+                                                                           "required":  true,
+                                                                           "schema":  {
+                                                                                          "type":  "string"
+                                                                                      }
+                                                                       }
+                                                                   ],
+                                                    "responses":  {
+                                                                      "200":  {
+                                                                                  "description":  "OK"
+                                                                              },
+                                                                      "404":  {
+                                                                                  "description":  "Ticket not found"
+                                                                              }
+                                                                  }
+                                                },
+                                        "patch":  {
+                                                      "tags":  [
+                                                                   "Tickets"
+                                                               ],
+                                                      "summary":  "Update a ticket",
+                                                      "description":  "Updates allowed ticket fields. Status transitions are validated against the state machine (OPEN → IN_PROGRESS → RESOLVED → CLOSED). The assigned_to field is typically set by the Workflow Service after location-based assignment; it can also be set manually here.",
+                                                      "parameters":  [
+                                                                         {
+                                                                             "in":  "path",
+                                                                             "name":  "id",
+                                                                             "required":  true,
+                                                                             "schema":  {
+                                                                                            "type":  "string"
+                                                                                        }
+                                                                         }
+                                                                     ],
+                                                      "requestBody":  {
+                                                                          "required":  true,
+                                                                          "content":  {
+                                                                                          "application/json":  {
+                                                                                                                   "schema":  {
+                                                                                                                                  "type":  "object",
+                                                                                                                                  "properties":  {
+                                                                                                                                                     "title":  {
+                                                                                                                                                                   "type":  "string"
+                                                                                                                                                               },
+                                                                                                                                                     "description":  {
+                                                                                                                                                                         "type":  "string"
+                                                                                                                                                                     },
+                                                                                                                                                     "type_of_request":  {
+                                                                                                                                                                             "type":  "string",
+                                                                                                                                                                             "enum":  [
+                                                                                                                                                                                          "INCIDENT",
+                                                                                                                                                                                          "SERVICE_REQUEST",
+                                                                                                                                                                                          "MAINTENANCE"
+                                                                                                                                                                                      ]
+                                                                                                                                                                         },
+                                                                                                                                                     "status":  {
+                                                                                                                                                                    "type":  "string",
+                                                                                                                                                                    "enum":  [
+                                                                                                                                                                                 "OPEN",
+                                                                                                                                                                                 "IN_PROGRESS",
+                                                                                                                                                                                 "RESOLVED",
+                                                                                                                                                                                 "CLOSED"
+                                                                                                                                                                             ]
+                                                                                                                                                                },
+                                                                                                                                                     "resolution_summary":  {
+                                                                                                                                                                                "type":  "string"
+                                                                                                                                                                            },
+                                                                                                                                                     "assigned_to":  {
+                                                                                                                                                                         "type":  "string",
+                                                                                                                                                                         "description":  "UUID of the technician — set automatically by location-based assignment or manually overridden here"
+                                                                                                                                                                     },
+                                                                                                                                                     "assigned_to_level":  {
+                                                                                                                                                                               "type":  "string",
+                                                                                                                                                                               "enum":  [
+                                                                                                                                                                                            "L1",
+                                                                                                                                                                                            "L2",
+                                                                                                                                                                                            "L3",
+                                                                                                                                                                                            "L4"
+                                                                                                                                                                                        ],
+                                                                                                                                                                               "description":  "Support level of the assigned technician"
+                                                                                                                                                                           }
+                                                                                                                                                 }
+                                                                                                                              }
+                                                                                                               }
+                                                                                      }
+                                                                      },
+                                                      "responses":  {
+                                                                        "200":  {
+                                                                                    "description":  "OK"
+                                                                                },
+                                                                        "400":  {
+                                                                                    "description":  "Invalid state transition"
+                                                                                },
+                                                                        "404":  {
+                                                                                    "description":  "Ticket not found"
+                                                                                }
+                                                                    }
+                                                  },
+                                        "delete":  {
+                                                       "tags":  [
+                                                                    "Tickets"
+                                                                ],
+                                                       "summary":  "Soft delete a ticket",
+                                                       "description":  "Sets is_deleted = true. Does not physically delete ticket. Escalations are cascade deleted if ticket is physically deleted.",
+                                                       "parameters":  [
+                                                                          {
+                                                                              "in":  "path",
+                                                                              "name":  "id",
+                                                                              "required":  true,
+                                                                              "schema":  {
+                                                                                             "type":  "string"
+                                                                                         }
+                                                                          }
+                                                                      ],
+                                                       "responses":  {
+                                                                         "204":  {
+                                                                                     "description":  "Deleted"
+                                                                                 },
+                                                                         "404":  {
+                                                                                     "description":  "Ticket not found"
+                                                                                 }
+                                                                     }
+                                                   }
+                                    },
+                  "/tickets/{id}/escalate":  {
+                                                 "post":  {
+                                                              "tags":  [
+                                                                           "Tickets"
+                                                                       ],
+                                                              "summary":  "Escalate a ticket",
+                                                              "description":  "Escalates ticket, increments escalation_count, updates assigned_to_level, and inserts escalation record.",
+                                                              "parameters":  [
+                                                                                 {
+                                                                                     "in":  "path",
+                                                                                     "name":  "id",
+                                                                                     "required":  true,
+                                                                                     "schema":  {
+                                                                                                    "type":  "string"
+                                                                                                }
+                                                                                 }
+                                                                             ],
+                                                              "requestBody":  {
+                                                                                  "required":  true,
+                                                                                  "content":  {
+                                                                                                  "application/json":  {
+                                                                                                                           "schema":  {
+                                                                                                                                          "type":  "object",
+                                                                                                                                          "required":  [
+                                                                                                                                                           "from_level",
+                                                                                                                                                           "to_level",
+                                                                                                                                                           "reason"
+                                                                                                                                                       ],
+                                                                                                                                          "properties":  {
+                                                                                                                                                             "from_level":  {
+                                                                                                                                                                                "type":  "string",
+                                                                                                                                                                                "enum":  [
+                                                                                                                                                                                             "L1",
+                                                                                                                                                                                             "L2",
+                                                                                                                                                                                             "L3",
+                                                                                                                                                                                             "L4"
+                                                                                                                                                                                         ]
+                                                                                                                                                                            },
+                                                                                                                                                             "to_level":  {
+                                                                                                                                                                              "type":  "string",
+                                                                                                                                                                              "enum":  [
+                                                                                                                                                                                           "L1",
+                                                                                                                                                                                           "L2",
+                                                                                                                                                                                           "L3",
+                                                                                                                                                                                           "L4"
+                                                                                                                                                                                       ]
+                                                                                                                                                                          },
+                                                                                                                                                             "reason":  {
+                                                                                                                                                                            "type":  "string"
+                                                                                                                                                                        }
+                                                                                                                                                         }
+                                                                                                                                      }
+                                                                                                                       }
+                                                                                              }
+                                                                              },
+                                                              "responses":  {
+                                                                                "200":  {
+                                                                                            "description":  "Ticket escalated"
+                                                                                        },
+                                                                                "404":  {
+                                                                                            "description":  "Ticket not found"
+                                                                                        }
+                                                                            }
+                                                          }
+                                             },
+                  "/openapi.json":  {
+                                        "get":  {
+                                                    "tags":  [
+                                                                 "Docs"
+                                                             ],
+                                                    "summary":  "Get OpenAPI specification (JSON)",
+                                                    "responses":  {
+                                                                      "200":  {
+                                                                                  "description":  "OpenAPI specification"
+                                                                              }
+                                                                  }
+                                                }
+                                    },
+                  "/health":  {
+                                  "get":  {
+                                              "tags":  [
+                                                           "Health"
+                                                       ],
+                                              "summary":  "Basic health check",
+                                              "responses":  {
+                                                                "200":  {
+                                                                            "description":  "Service is up"
+                                                                        }
+                                                            }
+                                          }
+                              },
+                  "/health/ready":  {
+                                        "get":  {
+                                                    "tags":  [
+                                                                 "Health"
+                                                             ],
+                                                    "summary":  "Dependency readiness check",
+                                                    "responses":  {
+                                                                      "200":  {
+                                                                                  "description":  "All dependencies are ready"
+                                                                              },
+                                                                      "503":  {
+                                                                                  "description":  "One or more dependencies are not ready"
+                                                                              }
+                                                                  }
+                                                }
+                                    }
+              },
+    "components":  {
+
+                   }
+}

@@ -1,0 +1,74 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum SupportLevel {
+  L1
+  L2
+  L3
+  L4
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum RequestType {
+  INCIDENT
+  SERVICE_REQUEST
+  MAINTENANCE
+}
+
+model Ticket {
+  id                 String           @id @default(uuid())
+  title              String
+  description        String           @db.Text
+  type_of_request    RequestType      @default(INCIDENT) // ENUM
+  requester_id       String           // UUID
+  latitude           Float
+  longitude          Float
+  assigned_to        String?          // UUID, nullable
+  assigned_to_level  SupportLevel     // ENUM
+  priority           TicketPriority   // ENUM
+  support_level      SupportLevel     // ENUM
+  status             TicketStatus     // ENUM
+  escalation_count   Int              @default(0)
+  resolution_summary String?          @db.Text
+  is_deleted         Boolean          @default(false)
+  created_at         DateTime         @default(now())
+  updated_at         DateTime         @updatedAt
+  closed_at          DateTime?        // nullable
+
+  escalations        TicketEscalation[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([assigned_to])
+  @@index([created_at])
+}
+
+model TicketEscalation {
+  id          String       @id @default(uuid())
+  ticket_id   String
+  from_level  SupportLevel // ENUM
+  to_level    SupportLevel // ENUM
+  reason      String
+  created_at  DateTime     @default(now())
+
+  ticket      Ticket       @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+}

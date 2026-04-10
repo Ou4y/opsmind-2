@@ -1,0 +1,617 @@
+{
+  "description": "OpsMind Workflow Service - Comprehensive Test Data",
+  "baseUrl": "http://localhost:3003",
+  "testScenarios": {
+    "1_setup_support_groups": {
+      "description": "Create support groups for different buildings and floors",
+      "endpoints": [
+        {
+          "name": "Create Building A Floor 1 Support Group",
+          "method": "POST",
+          "endpoint": "/admin/groups",
+          "payload": {
+            "name": "Building-A Floor-1 Support",
+            "building": "A",
+            "floor": 1,
+            "parentGroupId": null
+          },
+          "expectedStatus": 201,
+          "notes": "First level support group for Building A, Floor 1"
+        },
+        {
+          "name": "Create Building A Floor 2 Support Group",
+          "method": "POST",
+          "endpoint": "/admin/groups",
+          "payload": {
+            "name": "Building-A Floor-2 Support",
+            "building": "A",
+            "floor": 2,
+            "parentGroupId": null
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Create Building B Floor 1 Support Group",
+          "method": "POST",
+          "endpoint": "/admin/groups",
+          "payload": {
+            "name": "Building-B Floor-1 Support",
+            "building": "B",
+            "floor": 1,
+            "parentGroupId": null
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Create Building B Floor 3 Support Group",
+          "method": "POST",
+          "endpoint": "/admin/groups",
+          "payload": {
+            "name": "Building-B Floor-3 Support",
+            "building": "B",
+            "floor": 3,
+            "parentGroupId": null
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Create Supervisory Group",
+          "method": "POST",
+          "endpoint": "/admin/groups",
+          "payload": {
+            "name": "IT Supervisors - Building A",
+            "building": "A",
+            "floor": 0,
+            "parentGroupId": null
+          },
+          "expectedStatus": 201,
+          "notes": "Supervisory group for escalations"
+        }
+      ]
+    },
+    "2_add_group_members": {
+      "description": "Add technicians to support groups with different roles",
+      "endpoints": [
+        {
+          "name": "Add Junior Technician to Building A Floor 1",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 10,
+            "groupId": 1,
+            "role": "JUNIOR",
+            "canAssign": false,
+            "canEscalate": false
+          },
+          "expectedStatus": 201,
+          "notes": "Junior technician - can claim tickets but cannot reassign or escalate"
+        },
+        {
+          "name": "Add Another Junior Technician to Building A Floor 1",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 11,
+            "groupId": 1,
+            "role": "JUNIOR",
+            "canAssign": false,
+            "canEscalate": false
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Add Senior Technician to Building A Floor 1",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 20,
+            "groupId": 1,
+            "role": "SENIOR",
+            "canAssign": true,
+            "canEscalate": true
+          },
+          "expectedStatus": 201,
+          "notes": "Senior technician - can reassign tickets and escalate"
+        },
+        {
+          "name": "Add Junior Technician to Building A Floor 2",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 12,
+            "groupId": 2,
+            "role": "JUNIOR",
+            "canAssign": false,
+            "canEscalate": false
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Add Senior Technician to Building A Floor 2",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 21,
+            "groupId": 2,
+            "role": "SENIOR",
+            "canAssign": true,
+            "canEscalate": true
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Add Junior Technician to Building B Floor 1",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 13,
+            "groupId": 3,
+            "role": "JUNIOR",
+            "canAssign": false,
+            "canEscalate": false
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Add Senior Technician to Building B Floor 1",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 22,
+            "groupId": 3,
+            "role": "SENIOR",
+            "canAssign": true,
+            "canEscalate": true
+          },
+          "expectedStatus": 201
+        },
+        {
+          "name": "Add Supervisor to Supervisory Group",
+          "method": "POST",
+          "endpoint": "/admin/members",
+          "payload": {
+            "userId": 30,
+            "groupId": 5,
+            "role": "SENIOR",
+            "canAssign": true,
+            "canEscalate": true
+          },
+          "expectedStatus": 201,
+          "notes": "Supervisor with full permissions"
+        }
+      ]
+    },
+    "3_setup_escalation_rules": {
+      "description": "Configure escalation rules for different scenarios",
+      "endpoints": [
+        {
+          "name": "Create SLA Escalation Rule (Building A Floor 1 → Supervisors)",
+          "method": "POST",
+          "endpoint": "/admin/escalation-rules",
+          "payload": {
+            "sourceGroupId": 1,
+            "targetGroupId": 5,
+            "triggerType": "SLA",
+            "delayMinutes": 30,
+            "priority": 1
+          },
+          "expectedStatus": 201,
+          "notes": "Escalate to supervisors if ticket unresolved for 30 minutes"
+        },
+        {
+          "name": "Create Manual Escalation Rule (Building A Floor 1 → Floor 2)",
+          "method": "POST",
+          "endpoint": "/admin/escalation-rules",
+          "payload": {
+            "sourceGroupId": 1,
+            "targetGroupId": 2,
+            "triggerType": "MANUAL",
+            "delayMinutes": 0,
+            "priority": 2
+          },
+          "expectedStatus": 201,
+          "notes": "Allow manual escalation from Floor 1 to Floor 2"
+        },
+        {
+          "name": "Create Critical Priority Escalation (Building B → Supervisors)",
+          "method": "POST",
+          "endpoint": "/admin/escalation-rules",
+          "payload": {
+            "sourceGroupId": 3,
+            "targetGroupId": 5,
+            "triggerType": "CRITICAL",
+            "delayMinutes": 0,
+            "priority": 1
+          },
+          "expectedStatus": 201,
+          "notes": "Immediate escalation for critical tickets"
+        },
+        {
+          "name": "Create Reopen Count Escalation",
+          "method": "POST",
+          "endpoint": "/admin/escalation-rules",
+          "payload": {
+            "sourceGroupId": 1,
+            "targetGroupId": 5,
+            "triggerType": "REOPEN_COUNT",
+            "delayMinutes": 0,
+            "priority": 1
+          },
+          "expectedStatus": 201,
+          "notes": "Escalate tickets that are reopened multiple times"
+        }
+      ]
+    },
+    "4_ticket_routing": {
+      "description": "Route tickets to appropriate support groups",
+      "endpoints": [
+        {
+          "name": "Route Ticket to Building A Floor 1",
+          "method": "POST",
+          "endpoint": "/workflow/route",
+          "payload": {
+            "ticketId": 1001,
+            "building": "A",
+            "floor": 1,
+            "priority": "MEDIUM"
+          },
+          "expectedStatus": 200,
+          "notes": "Regular priority ticket routed to Building A Floor 1 support"
+        },
+        {
+          "name": "Route High Priority Ticket to Building A Floor 1",
+          "method": "POST",
+          "endpoint": "/workflow/route",
+          "payload": {
+            "ticketId": 1002,
+            "building": "A",
+            "floor": 1,
+            "priority": "HIGH"
+          },
+          "expectedStatus": 200,
+          "notes": "High priority ticket for immediate attention"
+        },
+        {
+          "name": "Route Ticket to Building A Floor 2",
+          "method": "POST",
+          "endpoint": "/workflow/route",
+          "payload": {
+            "ticketId": 1003,
+            "building": "A",
+            "floor": 2,
+            "priority": "LOW"
+          },
+          "expectedStatus": 200
+        },
+        {
+          "name": "Route Ticket to Building B Floor 1",
+          "method": "POST",
+          "endpoint": "/workflow/route",
+          "payload": {
+            "ticketId": 1004,
+            "building": "B",
+            "floor": 1,
+            "priority": "MEDIUM"
+          },
+          "expectedStatus": 200
+        },
+        {
+          "name": "Route Critical Ticket to Building B Floor 3",
+          "method": "POST",
+          "endpoint": "/workflow/route",
+          "payload": {
+            "ticketId": 1005,
+            "building": "B",
+            "floor": 3,
+            "priority": "CRITICAL"
+          },
+          "expectedStatus": 200,
+          "notes": "Critical ticket that may trigger immediate escalation"
+        },
+        {
+          "name": "Get Routing Status for Ticket 1001",
+          "method": "GET",
+          "endpoint": "/workflow/route/1001",
+          "expectedStatus": 200,
+          "notes": "Check current routing state of ticket"
+        }
+      ]
+    },
+    "5_claim_operations": {
+      "description": "Junior technicians claim tickets from their group's queue",
+      "endpoints": [
+        {
+          "name": "Junior Tech Claims Ticket 1001",
+          "method": "POST",
+          "endpoint": "/workflow/claim",
+          "payload": {
+            "ticketId": 1001,
+            "memberId": 1,
+            "userId": 10
+          },
+          "expectedStatus": 200,
+          "notes": "Junior technician (userId: 10, memberId: 1) claims ticket"
+        },
+        {
+          "name": "Another Junior Tech Claims Ticket 1002",
+          "method": "POST",
+          "endpoint": "/workflow/claim",
+          "payload": {
+            "ticketId": 1002,
+            "memberId": 2,
+            "userId": 11
+          },
+          "expectedStatus": 200,
+          "notes": "Second junior technician claims different ticket"
+        },
+        {
+          "name": "Check Claim Status of Ticket 1001",
+          "method": "GET",
+          "endpoint": "/workflow/claim/1001/status",
+          "expectedStatus": 200,
+          "notes": "Verify ticket is claimed"
+        },
+        {
+          "name": "List Unclaimed Tickets in Group 1",
+          "method": "GET",
+          "endpoint": "/workflow/group/1/unclaimed",
+          "expectedStatus": 200,
+          "notes": "Get list of tickets available for claiming"
+        },
+        {
+          "name": "Get Claimed Tickets for Member 1",
+          "method": "GET",
+          "endpoint": "/workflow/claim/member/1/tickets",
+          "expectedStatus": 200,
+          "notes": "List all tickets claimed by specific member"
+        }
+      ]
+    },
+    "6_reassignment_operations": {
+      "description": "Senior technicians reassign tickets within and across groups",
+      "endpoints": [
+        {
+          "name": "Senior Reassigns Ticket to Another Member in Same Group",
+          "method": "POST",
+          "endpoint": "/workflow/reassign",
+          "payload": {
+            "ticketId": 1001,
+            "fromMemberId": 1,
+            "toMemberId": 2,
+            "performedBy": 20,
+            "reason": "Workload balancing"
+          },
+          "expectedStatus": 200,
+          "notes": "Senior (userId: 20) reassigns ticket from member 1 to member 2"
+        },
+        {
+          "name": "Reassign Ticket to Different Group",
+          "method": "POST",
+          "endpoint": "/workflow/reassign",
+          "payload": {
+            "ticketId": 1003,
+            "fromMemberId": 4,
+            "toMemberId": 3,
+            "performedBy": 21,
+            "reason": "Requires Floor 1 expertise"
+          },
+          "expectedStatus": 200,
+          "notes": "Cross-group reassignment by senior technician"
+        },
+        {
+          "name": "Get Reassignment History for Ticket 1001",
+          "method": "GET",
+          "endpoint": "/workflow/reassign/1001/history",
+          "expectedStatus": 200,
+          "notes": "View complete reassignment history"
+        }
+      ]
+    },
+    "7_escalation_operations": {
+      "description": "Escalate tickets manually or automatically based on rules",
+      "endpoints": [
+        {
+          "name": "Manual Escalation by Senior Tech",
+          "method": "POST",
+          "endpoint": "/workflow/escalate/manual",
+          "payload": {
+            "ticketId": 1002,
+            "performedBy": 20,
+            "reason": "Requires supervisor review",
+            "targetGroupId": 5
+          },
+          "expectedStatus": 200,
+          "notes": "Senior manually escalates ticket to supervisors"
+        },
+        {
+          "name": "Critical Priority Escalation",
+          "method": "POST",
+          "endpoint": "/workflow/escalate/critical",
+          "payload": {
+            "ticketId": 1005,
+            "performedBy": 22,
+            "reason": "System-wide outage reported"
+          },
+          "expectedStatus": 200,
+          "notes": "Immediate escalation for critical issue"
+        },
+        {
+          "name": "SLA-Based Auto Escalation",
+          "method": "POST",
+          "endpoint": "/workflow/escalate/sla",
+          "payload": {
+            "ticketId": 1001,
+            "reason": "SLA threshold exceeded (30 minutes)"
+          },
+          "expectedStatus": 200,
+          "notes": "Automatic escalation triggered by SLA monitor"
+        },
+        {
+          "name": "Get Escalation History for Ticket 1002",
+          "method": "GET",
+          "endpoint": "/workflow/escalate/1002/history",
+          "expectedStatus": 200,
+          "notes": "View all escalations for this ticket"
+        },
+        {
+          "name": "List All Pending Escalations",
+          "method": "GET",
+          "endpoint": "/workflow/escalate/pending",
+          "expectedStatus": 200,
+          "notes": "Get tickets awaiting escalation action"
+        }
+      ]
+    },
+    "8_monitoring_dashboards": {
+      "description": "Access monitoring and analytics dashboards",
+      "endpoints": [
+        {
+          "name": "Get Group Workload Dashboard",
+          "method": "GET",
+          "endpoint": "/workflow/dashboard/group/1/workload",
+          "expectedStatus": 200,
+          "notes": "View workload distribution for Building A Floor 1 support"
+        },
+        {
+          "name": "Get Member Performance Dashboard",
+          "method": "GET",
+          "endpoint": "/workflow/dashboard/member/1/performance",
+          "expectedStatus": 200,
+          "notes": "View performance metrics for specific member"
+        },
+        {
+          "name": "Get Overall Workflow Metrics",
+          "method": "GET",
+          "endpoint": "/workflow/dashboard/metrics",
+          "expectedStatus": 200,
+          "notes": "System-wide workflow statistics"
+        },
+        {
+          "name": "Get SLA Compliance Report",
+          "method": "GET",
+          "endpoint": "/workflow/dashboard/sla-compliance",
+          "expectedStatus": 200,
+          "notes": "SLA adherence across all groups"
+        }
+      ]
+    },
+    "9_query_operations": {
+      "description": "Query support groups, members, and rules",
+      "endpoints": [
+        {
+          "name": "List All Groups in Building A",
+          "method": "GET",
+          "endpoint": "/admin/groups/building/A",
+          "expectedStatus": 200,
+          "notes": "Get all support groups for Building A"
+        },
+        {
+          "name": "Get Specific Group Details",
+          "method": "GET",
+          "endpoint": "/admin/groups/1",
+          "expectedStatus": 200,
+          "notes": "Detailed information about group 1"
+        },
+        {
+          "name": "List Members of Group 1",
+          "method": "GET",
+          "endpoint": "/admin/groups/1/members",
+          "expectedStatus": 200,
+          "notes": "All technicians in Building A Floor 1 support"
+        },
+        {
+          "name": "Get Specific Member Details",
+          "method": "GET",
+          "endpoint": "/admin/members/1",
+          "expectedStatus": 200,
+          "notes": "Information about specific member"
+        },
+        {
+          "name": "List All Escalation Rules",
+          "method": "GET",
+          "endpoint": "/admin/escalation-rules",
+          "expectedStatus": 200,
+          "notes": "View all configured escalation rules"
+        }
+      ]
+    },
+    "10_member_status_management": {
+      "description": "Update member availability status",
+      "endpoints": [
+        {
+          "name": "Set Member to On Leave",
+          "method": "PATCH",
+          "endpoint": "/admin/members/1/status",
+          "payload": {
+            "status": "ON_LEAVE"
+          },
+          "expectedStatus": 200,
+          "notes": "Mark technician as on leave (won't receive new assignments)"
+        },
+        {
+          "name": "Set Member to Inactive",
+          "method": "PATCH",
+          "endpoint": "/admin/members/2/status",
+          "payload": {
+            "status": "INACTIVE"
+          },
+          "expectedStatus": 200,
+          "notes": "Temporarily disable member"
+        },
+        {
+          "name": "Reactivate Member",
+          "method": "PATCH",
+          "endpoint": "/admin/members/1/status",
+          "payload": {
+            "status": "ACTIVE"
+          },
+          "expectedStatus": 200,
+          "notes": "Return member to active duty"
+        }
+      ]
+    },
+    "11_health_check": {
+      "description": "Service health and readiness endpoints",
+      "endpoints": [
+        {
+          "name": "Health Check",
+          "method": "GET",
+          "endpoint": "/health",
+          "expectedStatus": 200,
+          "notes": "Verify service is running and database is connected"
+        }
+      ]
+    }
+  },
+  "testUsers": {
+    "juniorTechnicians": [
+      { "userId": 10, "name": "Alice Johnson", "role": "JUNIOR", "groupId": 1 },
+      { "userId": 11, "name": "Bob Smith", "role": "JUNIOR", "groupId": 1 },
+      { "userId": 12, "name": "Carol Davis", "role": "JUNIOR", "groupId": 2 },
+      { "userId": 13, "name": "David Wilson", "role": "JUNIOR", "groupId": 3 }
+    ],
+    "seniorTechnicians": [
+      { "userId": 20, "name": "Emily Brown", "role": "SENIOR", "groupId": 1, "canAssign": true, "canEscalate": true },
+      { "userId": 21, "name": "Frank Miller", "role": "SENIOR", "groupId": 2, "canAssign": true, "canEscalate": true },
+      { "userId": 22, "name": "Grace Lee", "role": "SENIOR", "groupId": 3, "canAssign": true, "canEscalate": true }
+    ],
+    "supervisors": [
+      { "userId": 30, "name": "Henry Taylor", "role": "SENIOR", "groupId": 5, "canAssign": true, "canEscalate": true }
+    ]
+  },
+  "testTickets": [
+    { "ticketId": 1001, "building": "A", "floor": 1, "priority": "MEDIUM", "description": "Printer not working in room A101" },
+    { "ticketId": 1002, "building": "A", "floor": 1, "priority": "HIGH", "description": "Network outage in lecture hall" },
+    { "ticketId": 1003, "building": "A", "floor": 2, "priority": "LOW", "description": "Mouse needs replacement" },
+    { "ticketId": 1004, "building": "B", "floor": 1, "priority": "MEDIUM", "description": "Computer won't boot" },
+    { "ticketId": 1005, "building": "B", "floor": 3, "priority": "CRITICAL", "description": "Server room cooling failure" }
+  ],
+  "notes": [
+    "All test data is self-contained and can be run sequentially",
+    "Run scenarios 1-3 first to set up the system",
+    "Scenarios 4-10 demonstrate core workflow operations",
+    "Group IDs, member IDs, and ticket IDs may vary based on execution order",
+    "Update IDs in subsequent requests based on actual responses",
+    "Use Swagger UI at http://localhost:3003/api-docs for interactive testing"
+  ]
+}

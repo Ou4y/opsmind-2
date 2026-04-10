@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  ticket-service:
+    build: .
+    container_name: opsmind-ticket-service
+    ports:
+      - "3001:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+
+      # Prisma / MySQL (shared infrastructure)
+      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/Tickets
+
+      # RabbitMQ (shared infrastructure)
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+
+      # User Service (for technician name resolution)
+      USER_SERVICE_URL: http://opsmind-user:3002
+
+      # Frontend origins
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3001,http://localhost:8085
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+networks:
+  opsmind-net:
+    external: true
