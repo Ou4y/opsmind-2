@@ -1,23 +1,39 @@
 import { Request, Response } from 'express';
 import { RoutingService } from '../services/RoutingService';
+import { AssignmentService } from '../services/AssignmentService';
 
 /**
  * Routing Controller (TypeScript)
+ *
+ * Handles ticket assignment and routing state queries.
+ * Assignment is location-based (coordinates + workload), not building/floor-based.
  */
 export class RoutingController {
   private routingService = new RoutingService();
+  private assignmentService = new AssignmentService();
 
   /** POST /workflow/route-ticket */
   routeTicket = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { ticketId, building, floor, priority } = req.body;
+      const { ticketId, latitude, longitude, priority } = req.body;
 
-      if (!ticketId || !building || floor === undefined) {
-        res.status(400).json({ success: false, message: 'Missing required fields: ticketId, building, floor' });
+      if (!ticketId || latitude === undefined || longitude === undefined) {
+        res.status(400).json({ success: false, message: 'Missing required fields: ticketId, latitude, longitude' });
         return;
       }
 
-      const result = await this.routingService.routeTicket(ticketId, building, floor, priority);
+      const result = await this.assignmentService.assignForTicket({
+        ticket_id: ticketId,
+        latitude: Number(latitude),
+        longitude: Number(longitude),
+        priority,
+      });
+
+      if (result === null) {
+        res.status(200).json({ success: true, message: 'Ticket already assigned — skipped.' });
+        return;
+      }
+
       res.status(200).json({ success: true, data: result });
     } catch (error: any) {
       console.error('Routing error:', error);

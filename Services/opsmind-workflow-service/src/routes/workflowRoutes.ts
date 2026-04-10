@@ -4,11 +4,13 @@ import { ClaimController } from '../controllers/ClaimController';
 import { ReassignmentController } from '../controllers/ReassignmentController';
 import { EscalationController } from '../controllers/EscalationController';
 import { MonitoringController } from '../controllers/MonitoringController';
+import { TechnicianController } from '../controllers/TechnicianController';
 import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { optionalAuth } from '../middlewares/auth';
+import { validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
 
 const router = Router();
 
@@ -18,6 +20,7 @@ const claimCtrl = new ClaimController();
 const reassignCtrl = new ReassignmentController();
 const escalationCtrl = new EscalationController();
 const monitorCtrl = new MonitoringController();
+const technicianCtrl = new TechnicianController();
 
 // ── Service / Repo instances for new endpoints ──
 const loggingService = new LoggingService();
@@ -51,6 +54,83 @@ router.get('/health', async (_req: Request, res: Response): Promise<void> => {
       timestamp: new Date().toISOString(),
     });
   }
+});
+
+// ══════════════════════════════════════
+//  Debug — Connectivity Check
+//  Calls downstream services and reports reachability
+// ══════════════════════════════════════
+router.get('/debug/connectivity', async (_req: Request, res: Response): Promise<void> => {
+  const services: Record<string, any> = {};
+
+  // 1. Check ticket-service
+  try {
+    const { ticketServiceClient } = await import('../config/externalServices');
+    const start = Date.now();
+    const response = await ticketServiceClient.get('/health');
+    const latency = Date.now() - start;
+    services.ticketService = {
+      status: 'reachable',
+      url: 'http://opsmind-ticket-service:3000/health',
+      httpStatus: response.status,
+      latencyMs: latency,
+      data: response.data,
+    };
+  } catch (error: any) {
+    services.ticketService = {
+      status: 'unreachable',
+      url: 'http://opsmind-ticket-service:3000/health',
+      error: error.code || error.message,
+    };
+  }
+
+  // 2. Check auth-service
+  try {
+    const { authServiceClient } = await import('../config/externalServices');
+    const start = Date.now();
+    const response = await authServiceClient.get('/health');
+    const latency = Date.now() - start;
+    services.authService = {
+      status: 'reachable',
+      url: 'http://opsmind-auth-service:3002/health',
+      httpStatus: response.status,
+      latencyMs: latency,
+      data: response.data,
+    };
+  } catch (error: any) {
+    services.authService = {
+      status: 'reachable-unknown',
+      url: 'http://opsmind-auth-service:3002/health',
+      error: error.code || error.message,
+    };
+  }
+
+  // 3. Check own database
+  try {
+    const { pool } = await import('../config/database');
+    const start = Date.now();
+    await pool.execute('SELECT 1');
+    const latency = Date.now() - start;
+    services.database = {
+      status: 'connected',
+      latencyMs: latency,
+    };
+  } catch (error: any) {
+    services.database = {
+      status: 'disconnected',
+      error: error.code || error.message,
+    };
+  }
+
+  const allOk = Object.values(services).every((s: any) =>
+    s.status === 'reachable' || s.status === 'connected',
+  );
+
+  res.status(allOk ? 200 : 503).json({
+    success: allOk,
+    timestamp: new Date().toISOString(),
+    services,
+  });
 });
 
 // ══════════════════════════════════════
@@ -148,6 +228,16 @@ router.get('/technician/:technicianId/tickets', async (req: Request, res: Respon
 });
 
 // ══════════════════════════════════════
+// ------------------------------
+//  Technician Location Update (NEW)
+//  PUT /workflow/technicians/location
+// ------------------------------
+router.put(
+  '/technicians/location',
+  validateBody(updateTechnicianLocationSchema),
+  technicianCtrl.updateLocation,
+);
+
 //  SLA Status (NEW — frontend calls this)
 //  POST /workflow/sla/status  body: { ticket_ids: [...] }
 // ══════════════════════════════════════

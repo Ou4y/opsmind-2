@@ -24,8 +24,9 @@ export function validateBody(schema: Joi.ObjectSchema) {
 
 export const routeTicketSchema = Joi.object({
   ticketId: Joi.string().required(),
-  building: Joi.string().required(),
-  floor: Joi.number().integer().required(),
+  latitude: Joi.number().min(-90).max(90).required(),
+  longitude: Joi.number().min(-180).max(180).required(),
+  priority: Joi.string().valid('CRITICAL', 'HIGH', 'MEDIUM', 'LOW').optional(),
 }).unknown(true);
 
 export const claimTicketSchema = Joi.object({
@@ -50,3 +51,9 @@ export const escalateTicketSchema = Joi.object({
   performedBy: Joi.number().integer().optional(),
   userRole: Joi.string().optional(),
 }).unknown(true);
+
+export const updateTechnicianLocationSchema = Joi.object({
+  technician_id: Joi.number().integer().required(),
+  latitude: Joi.number().min(-90).max(90).required(),
+  longitude: Joi.number().min(-180).max(180).required(),
+}).unknown(false);

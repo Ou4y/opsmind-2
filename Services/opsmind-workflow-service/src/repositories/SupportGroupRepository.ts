@@ -11,15 +11,6 @@ interface SupportGroupRowData extends SupportGroupRow, RowDataPacket {}
 interface GroupMemberRowData extends GroupMemberRow, RowDataPacket {}
 
 export class SupportGroupRepository {
-  async getGroupByBuildingAndFloor(building: string, floor: number): Promise<SupportGroupRow | null> {
-    const sql = `
-      SELECT * FROM support_groups
-      WHERE building = ? AND floor = ? AND is_active = TRUE
-    `;
-    const rows = await query<SupportGroupRowData[]>(sql, [building, floor]);
-    return rows[0] ?? null;
-  }
-
   async getGroupsByBuilding(building: string): Promise<SupportGroupRow[]> {
     const sql = `
       SELECT * FROM support_groups

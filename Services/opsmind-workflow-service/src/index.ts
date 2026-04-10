@@ -4,6 +4,7 @@ dotenv.config();
 import { createApp } from './app';
 import { pool, waitForDatabase } from './config/database';
 import { startSlaMonitor } from './jobs/slaMonitor';
+import { startAssignmentConsumer, stopAssignmentConsumer } from './jobs/assignmentConsumer';
 
 const PORT: number = parseInt(process.env.PORT || '3003', 10);
 
@@ -24,10 +25,12 @@ async function main(): Promise<void> {
 
     // ── Start background jobs ──
     startSlaMonitor();
+    await startAssignmentConsumer();
 
     // ── Graceful shutdown ──
     const shutdown = async (signal: string) => {
       console.log(`\n${signal} received. Shutting down gracefully...`);
+      await stopAssignmentConsumer();
       await pool.end();
       console.log('MySQL pool closed.');
       process.exit(0);

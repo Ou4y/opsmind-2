@@ -40,8 +40,88 @@ TRUNCATE TABLE ticket_routing_state;
 TRUNCATE TABLE workflow_logs;
 TRUNCATE TABLE escalation_rules;
 TRUNCATE TABLE group_members;
+TRUNCATE TABLE technicians;
+TRUNCATE TABLE tickets;
 TRUNCATE TABLE support_groups;
 SET FOREIGN_KEY_CHECKS = 1;
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  0. TECHNICIANS
+--  IDs match user_ids in group_members for end-to-end assignment.
+--  Coordinates are spread across a university campus.
+-- ═══════════════════════════════════════════════════════════════
+
+-- Supervisor
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (100, 'Supervisor Admin', 'SUPERVISOR', 31.9954, 35.8464, 'ACTIVE');
+
+-- Senior technicians (one per building)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (1, 'Senior M',        'SENIOR', 31.9960, 35.8460, 'ACTIVE'),   -- M-SENIOR
+  (2, 'Senior N',        'SENIOR', 31.9950, 35.8470, 'ACTIVE'),   -- N-SENIOR
+  (3, 'Senior S',        'SENIOR', 31.9945, 35.8455, 'ACTIVE'),   -- S-SENIOR
+  (4, 'Senior R',        'SENIOR', 31.9955, 35.8450, 'ACTIVE'),   -- R-SENIOR
+  (5, 'Senior Pharmacy', 'SENIOR', 31.9940, 35.8465, 'ACTIVE');   -- PHARMACY-SENIOR
+
+-- Junior technicians — Building M (2 per floor, 4 floors → IDs 6–13)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  ( 6, 'M-F1 Tech 1', 'JUNIOR', 31.9961, 35.8458, 'ACTIVE'),
+  ( 7, 'M-F1 Tech 2', 'JUNIOR', 31.9962, 35.8459, 'ACTIVE'),
+  ( 8, 'M-F2 Tech 1', 'JUNIOR', 31.9963, 35.8460, 'ACTIVE'),
+  ( 9, 'M-F2 Tech 2', 'JUNIOR', 31.9964, 35.8461, 'ACTIVE'),
+  (10, 'M-F3 Tech 1', 'JUNIOR', 31.9965, 35.8462, 'ACTIVE'),
+  (11, 'M-F3 Tech 2', 'JUNIOR', 31.9966, 35.8463, 'ACTIVE'),
+  (12, 'M-F4 Tech 1', 'JUNIOR', 31.9967, 35.8464, 'ACTIVE'),
+  (13, 'M-F4 Tech 2', 'JUNIOR', 31.9968, 35.8465, 'ACTIVE');
+
+-- Junior technicians — Building N (IDs 14–21)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (14, 'N-F1 Tech 1', 'JUNIOR', 31.9951, 35.8471, 'ACTIVE'),
+  (15, 'N-F1 Tech 2', 'JUNIOR', 31.9952, 35.8472, 'ACTIVE'),
+  (16, 'N-F2 Tech 1', 'JUNIOR', 31.9953, 35.8473, 'ACTIVE'),
+  (17, 'N-F2 Tech 2', 'JUNIOR', 31.9954, 35.8474, 'ACTIVE'),
+  (18, 'N-F3 Tech 1', 'JUNIOR', 31.9955, 35.8475, 'ACTIVE'),
+  (19, 'N-F3 Tech 2', 'JUNIOR', 31.9956, 35.8476, 'ACTIVE'),
+  (20, 'N-F4 Tech 1', 'JUNIOR', 31.9957, 35.8477, 'ACTIVE'),
+  (21, 'N-F4 Tech 2', 'JUNIOR', 31.9958, 35.8478, 'ACTIVE');
+
+-- Junior technicians — Building S (IDs 22–29)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (22, 'S-F1 Tech 1', 'JUNIOR', 31.9946, 35.8453, 'ACTIVE'),
+  (23, 'S-F1 Tech 2', 'JUNIOR', 31.9947, 35.8454, 'ACTIVE'),
+  (24, 'S-F2 Tech 1', 'JUNIOR', 31.9948, 35.8455, 'ACTIVE'),
+  (25, 'S-F2 Tech 2', 'JUNIOR', 31.9949, 35.8456, 'ACTIVE'),
+  (26, 'S-F3 Tech 1', 'JUNIOR', 31.9950, 35.8457, 'ACTIVE'),
+  (27, 'S-F3 Tech 2', 'JUNIOR', 31.9951, 35.8458, 'ACTIVE'),
+  (28, 'S-F4 Tech 1', 'JUNIOR', 31.9952, 35.8459, 'ACTIVE'),
+  (29, 'S-F4 Tech 2', 'JUNIOR', 31.9953, 35.8460, 'ACTIVE');
+
+-- Junior technicians — Building R (5 floors, IDs 30–39)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (30, 'R-F1 Tech 1', 'JUNIOR', 31.9956, 35.8448, 'ACTIVE'),
+  (31, 'R-F1 Tech 2', 'JUNIOR', 31.9957, 35.8449, 'ACTIVE'),
+  (32, 'R-F2 Tech 1', 'JUNIOR', 31.9958, 35.8450, 'ACTIVE'),
+  (33, 'R-F2 Tech 2', 'JUNIOR', 31.9959, 35.8451, 'ACTIVE'),
+  (34, 'R-F3 Tech 1', 'JUNIOR', 31.9960, 35.8452, 'ACTIVE'),
+  (35, 'R-F3 Tech 2', 'JUNIOR', 31.9961, 35.8453, 'ACTIVE'),
+  (36, 'R-F4 Tech 1', 'JUNIOR', 31.9962, 35.8454, 'ACTIVE'),
+  (37, 'R-F4 Tech 2', 'JUNIOR', 31.9963, 35.8455, 'ACTIVE'),
+  (38, 'R-F5 Tech 1', 'JUNIOR', 31.9964, 35.8456, 'ACTIVE'),
+  (39, 'R-F5 Tech 2', 'JUNIOR', 31.9965, 35.8457, 'ACTIVE');
+
+-- Junior technicians — Building Pharmacy (5 floors, IDs 40–49)
+INSERT INTO technicians (id, name, level, latitude, longitude, status) VALUES
+  (40, 'PH-F1 Tech 1', 'JUNIOR', 31.9941, 35.8463, 'ACTIVE'),
+  (41, 'PH-F1 Tech 2', 'JUNIOR', 31.9942, 35.8464, 'ACTIVE'),
+  (42, 'PH-F2 Tech 1', 'JUNIOR', 31.9943, 35.8465, 'ACTIVE'),
+  (43, 'PH-F2 Tech 2', 'JUNIOR', 31.9944, 35.8466, 'ACTIVE'),
+  (44, 'PH-F3 Tech 1', 'JUNIOR', 31.9945, 35.8467, 'ACTIVE'),
+  (45, 'PH-F3 Tech 2', 'JUNIOR', 31.9946, 35.8468, 'ACTIVE'),
+  (46, 'PH-F4 Tech 1', 'JUNIOR', 31.9947, 35.8469, 'ACTIVE'),
+  (47, 'PH-F4 Tech 2', 'JUNIOR', 31.9948, 35.8470, 'ACTIVE'),
+  (48, 'PH-F5 Tech 1', 'JUNIOR', 31.9949, 35.8471, 'ACTIVE'),
+  (49, 'PH-F5 Tech 2', 'JUNIOR', 31.9950, 35.8472, 'ACTIVE');
 
 
 -- ═══════════════════════════════════════════════════════════════

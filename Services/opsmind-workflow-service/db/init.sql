@@ -42,6 +42,34 @@ CREATE TABLE IF NOT EXISTS group_members (
   INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Technicians Table
+-- Stores technician profile and latest known location
+CREATE TABLE IF NOT EXISTS technicians (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  level ENUM('JUNIOR', 'SENIOR', 'SUPERVISOR') NOT NULL DEFAULT 'JUNIOR',
+  latitude DECIMAL(10,7) NULL,
+  longitude DECIMAL(10,7) NULL,
+  status ENUM('ACTIVE', 'OFFLINE', 'INACTIVE', 'ON_LEAVE') DEFAULT 'ACTIVE',
+  last_location_update TIMESTAMP NULL DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Tickets Table (lightweight cache for assignments/workload)
+CREATE TABLE IF NOT EXISTS tickets (
+  id VARCHAR(36) PRIMARY KEY,
+  latitude DECIMAL(10,7),
+  longitude DECIMAL(10,7),
+  assigned_to INT NULL,
+  status ENUM('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED') DEFAULT 'OPEN',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_status (status),
+  INDEX idx_assigned_to (assigned_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Workflow Logs Table
 -- Immutable audit trail of all workflow actions
 CREATE TABLE IF NOT EXISTS workflow_logs (

@@ -27,6 +27,14 @@ export interface GroupMemberRow {
   updated_at: Date;
 }
 
+export interface TechnicianRow {
+  id: number;
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+  status: TechnicianStatus;
+}
+
 export interface WorkflowLogRow {
   id: number;
   ticket_id: string;
@@ -98,14 +106,9 @@ export type MemberRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR';
 export type MemberStatus = 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE';
 
 export type UserRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'HEAD_OF_IT';
+export type TechnicianStatus = 'ONLINE' | 'OFFLINE';
 
 // ---------- Request DTOs ----------
-
-export interface RouteTicketRequest {
-  ticketId: string;
-  building: string;
-  floor: number;
-}
 
 export interface ClaimTicketRequest {
   userId: number;
@@ -149,16 +152,6 @@ export interface CreateEscalationRuleRequest {
 
 // ---------- Response DTOs ----------
 
-export interface RouteTicketResponse {
-  success: boolean;
-  ticketId: string;
-  groupId: number;
-  groupName: string;
-  building: string;
-  floor: number;
-  routing_state: { id: number; ticket_id: string; current_group_id: number };
-}
-
 export interface ClaimTicketResponse {
   success: boolean;
   ticketId: string;
@@ -186,6 +179,25 @@ export interface EscalateTicketResponse {
   escalationCount: number;
   triggerType: string;
   message: string;
+}
+
+// ---------- Events ----------
+
+export type TicketPriority = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+
+export interface TicketCreatedEvent {
+  ticket_id: string;
+  latitude: number;
+  longitude: number;
+  priority?: TicketPriority;
+}
+
+export interface TicketAssignedEvent {
+  ticket_id: string;
+  technician_id: number;
+  distance_km: number;
+  workload: number;
+  score: number;
 }
 
 // ---------- Workflow Log Data ----------

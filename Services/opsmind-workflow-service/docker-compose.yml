@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   workflow-service:
     build:
@@ -21,6 +19,7 @@ services:
       DB_WAIT_FOR_CONNECTIONS: "true"
       AUTH_SERVICE_URL: http://opsmind-auth-service:3002
       TICKET_SERVICE_URL: http://opsmind-ticket-service:3000
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
       LOG_LEVEL: info
     networks:
       - opsmind-net

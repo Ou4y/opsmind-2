@@ -41,6 +41,7 @@ const swaggerDefinition: swaggerJsdoc.Options = {
       { name: 'Escalation', description: 'Escalation (SLA, manual, critical, reopen)' },
       { name: 'Workflow Logs', description: 'Workflow action audit logs' },
       { name: 'Tickets', description: 'Group and technician ticket queries' },
+      { name: 'Technicians', description: 'Technician profiles, locations, and telemetry' },
       { name: 'SLA', description: 'SLA tracking and status' },
       { name: 'Metrics', description: 'Workflow metrics and analytics' },
       { name: 'Reports', description: 'SLA and escalation reports' },
@@ -58,7 +59,7 @@ const swaggerDefinition: swaggerJsdoc.Options = {
         // ── Enums ──
         MemberRole: {
           type: 'string',
-          enum: ['JUNIOR', 'SENIOR'],
+          enum: ['JUNIOR', 'SENIOR', 'SUPERVISOR'],
         },
         UserRole: {
           type: 'string',
@@ -67,6 +68,10 @@ const swaggerDefinition: swaggerJsdoc.Options = {
         MemberStatus: {
           type: 'string',
           enum: ['ACTIVE', 'INACTIVE', 'ON_LEAVE'],
+        },
+        TechnicianStatus: {
+          type: 'string',
+          enum: ['ACTIVE', 'OFFLINE', 'INACTIVE', 'ON_LEAVE'],
         },
         RoutingStatus: {
           type: 'string',
@@ -103,6 +108,18 @@ const swaggerDefinition: swaggerJsdoc.Options = {
             status: { $ref: '#/components/schemas/MemberStatus' },
             joined_at: { type: 'string', format: 'date-time' },
             updated_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        Technician: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer', example: 25 },
+            name: { type: 'string', example: 'Alice Johnson' },
+            level: { $ref: '#/components/schemas/MemberRole' },
+            latitude: { type: 'number', example: 30.0444 },
+            longitude: { type: 'number', example: 31.2357 },
+            status: { $ref: '#/components/schemas/TechnicianStatus' },
+            last_location_update: { type: 'string', format: 'date-time' },
           },
         },
         TicketRoutingState: {
@@ -1347,6 +1364,60 @@ const swaggerDefinition: swaggerJsdoc.Options = {
       },
 
       // ══════════════════════════════════════
+      '/workflow/technicians/location': {
+        put: {
+          tags: ['Technicians'],
+          summary: 'Update technician location',
+          description: 'Updates latitude and longitude for a technician and timestamps the change.',
+          operationId: 'updateTechnicianLocation',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['technician_id', 'latitude', 'longitude'],
+                  properties: {
+                    technician_id: { type: 'integer', example: 25 },
+                    latitude: { type: 'number', example: 30.0444 },
+                    longitude: { type: 'number', example: 31.2357 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: 'Location updated',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean', example: true },
+                      data: {
+                        type: 'object',
+                        properties: {
+                          technician_id: { type: 'integer', example: 25 },
+                          latitude: { type: 'number', example: 30.0444 },
+                          longitude: { type: 'number', example: 31.2357 },
+                          last_location_update: { type: 'string', format: 'date-time' },
+                          status: { $ref: '#/components/schemas/MemberStatus' },
+                          level: { $ref: '#/components/schemas/MemberRole' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            400: { description: 'Validation failed', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+            404: { description: 'Technician not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+            500: { description: 'Internal server error', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          },
+        },
+      },
+
       //  SLA Status
       // ══════════════════════════════════════
       '/workflow/sla/status': {

@@ -70,11 +70,14 @@ export async function assignTicket(
   assignedToLevel: string = 'L1',
   status: string = 'IN_PROGRESS',
 ): Promise<any> {
-  const { data } = await ticketServiceClient.patch(`/tickets/${ticketId}`, {
+  const url = `${TICKET_SERVICE_URL}/tickets/${ticketId}`;
+  const payload = {
     assigned_to: String(userId),
     assigned_to_level: assignedToLevel,
     status,
-  });
+  };
+  console.log(`[externalServices] PATCH ${url} | payload: ${JSON.stringify(payload)}`);
+  const { data } = await ticketServiceClient.patch(`/tickets/${ticketId}`, payload);
   return data;
 }
 
