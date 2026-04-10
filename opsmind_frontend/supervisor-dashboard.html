@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpsMind Supervisor Dashboard - IT Service Management">
+    <title>Supervisor Dashboard - OpsMind</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="/assets/css/main.css" rel="stylesheet">
+
+    <!-- Runtime config (must be before any app/service scripts) -->
+    <script src="/assets/js/config.js"></script>
+</head>
+<body class="app-body">
+    <!-- Navigation (loaded dynamically) -->
+    <nav class="navbar-main" id="navbar-container"></nav>
+
+    <div class="app-wrapper">
+        <!-- Sidebar (loaded dynamically) -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Page Header -->
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">Supervisor Dashboard</h1>
+                    <p class="page-subtitle">Building-Level Management & Analytics</p>
+                </div>
+                <div class="page-header-actions">
+                    <select class="form-select form-select-sm me-2" id="dateRangeFilter" style="width: auto;">
+                        <option value="today">Today</option>
+                        <option value="week" selected>This Week</option>
+                        <option value="month">This Month</option>
+                        <option value="quarter">This Quarter</option>
+                    </select>
+                    <button class="btn btn-outline-secondary me-2" id="refreshDashboard">
+                        <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                    </button>
+                    <button class="btn btn-primary" id="manageSupportGroupsBtn">
+                        <i class="bi bi-gear me-1"></i> Manage Groups
+                    </button>
+                </div>
+            </div>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Overview Stats -->
+                <div class="row g-3 mb-4">
+                    <div class="col-lg-3 col-md-6">
+                        <div class="stat-card">
+                            <div class="stat-icon bg-gradient-primary">
+                                <i class="bi bi-ticket-detailed"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">Total Tickets</div>
+                                <div class="stat-value" id="totalTicketsCount">0</div>
+                                <div class="stat-trend text-success">
+                                    <i class="bi bi-arrow-up"></i> <span id="totalTicketsTrend">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="stat-card">
+                            <div class="stat-icon bg-gradient-success">
+                                <i class="bi bi-check-circle"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">Resolved</div>
+                                <div class="stat-value" id="resolvedCount">0</div>
+                                <div class="stat-trend text-success">
+                                    <i class="bi bi-arrow-up"></i> <span id="resolvedTrend">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="stat-card">
+                            <div class="stat-icon bg-gradient-danger">
+                                <i class="bi bi-exclamation-triangle"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">SLA Breached</div>
+                                <div class="stat-value text-danger" id="slaBreachedCount">0</div>
+                                <div class="stat-sublabel" id="slaComplianceRate">0% Compliance</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <div class="stat-card">
+                            <div class="stat-icon bg-gradient-warning">
+                                <i class="bi bi-arrow-up-circle"></i>
+                            </div>
+                            <div class="stat-info">
+                                <div class="stat-label">Escalations</div>
+                                <div class="stat-value" id="escalationsCount">0</div>
+                                <div class="stat-sublabel" id="escalationRate">0% of tickets</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="card">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs" id="dashboardTabs" role="tablist">
+                            <li class="nav-item">
+                                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#overview-pane" type="button" role="tab">
+                                    <i class="bi bi-speedometer2 me-1"></i> Overview
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="sla-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#sla-pane" type="button" role="tab">
+                                    <i class="bi bi-clock-history me-1"></i> SLA Monitoring
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="teams-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#teams-pane" type="button" role="tab">
+                                    <i class="bi bi-people me-1"></i> Team Performance
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="analytics-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#analytics-pane" type="button" role="tab">
+                                    <i class="bi bi-graph-up me-1"></i> Analytics
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="audit-tab" data-bs-toggle="tab" 
+                                        data-bs-target="#audit-pane" type="button" role="tab">
+                                    <i class="bi bi-file-text me-1"></i> Audit Logs
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        <div class="tab-content" id="dashboardTabsContent">
+                            <!-- Overview Tab -->
+                            <div class="tab-pane fade show active" id="overview-pane" role="tabpanel">
+                                <div class="row g-4">
+                                    <div class="col-lg-8">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Ticket Volume Trend</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="ticketTrendChart" style="height: 300px;"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-4">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">By Priority</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="priorityDistribution"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-8">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Floor-Level Breakdown</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="floorBreakdown"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-4">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Status Distribution</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="statusDistribution"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- SLA Monitoring Tab -->
+                            <div class="tab-pane fade" id="sla-pane" role="tabpanel">
+                                <div class="row g-4">
+                                    <div class="col-12">
+                                        <div class="alert alert-info">
+                                            <i class="bi bi-info-circle me-2"></i>
+                                            <strong>SLA Compliance Report</strong> - Real-time monitoring of ticket SLA status
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-3 col-md-6">
+                                        <div class="card border-success">
+                                            <div class="card-body text-center">
+                                                <h3 class="text-success" id="slaOnTrack">0</h3>
+                                                <p class="text-muted mb-0">On Track</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-3 col-md-6">
+                                        <div class="card border-warning">
+                                            <div class="card-body text-center">
+                                                <h3 class="text-warning" id="slaAtRisk">0</h3>
+                                                <p class="text-muted mb-0">At Risk</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-3 col-md-6">
+                                        <div class="card border-danger">
+                                            <div class="card-body text-center">
+                                                <h3 class="text-danger" id="slaBreached">0</h3>
+                                                <p class="text-muted mb-0">Breached</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-3 col-md-6">
+                                        <div class="card border-primary">
+                                            <div class="card-body text-center">
+                                                <h3 class="text-primary" id="avgResolutionTime">0h</h3>
+                                                <p class="text-muted mb-0">Avg Resolution</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Tickets Approaching SLA Deadline</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="slaTicketsList"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Team Performance Tab -->
+                            <div class="tab-pane fade" id="teams-pane" role="tabpanel">
+                                <div class="row g-4">
+                                    <div class="col-12">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Support Groups Performance</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="teamPerformanceList"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Top Performers</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="topPerformers"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Workload Balance</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="workloadBalance"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Analytics Tab -->
+                            <div class="tab-pane fade" id="analytics-pane" role="tabpanel">
+                                <div class="row g-4">
+                                    <div class="col-lg-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Escalation Statistics</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="escalationStats"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Resolution Times by Priority</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="resolutionTimeChart"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="card-title mb-0">Workflow Efficiency Metrics</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div id="efficiencyMetrics"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Audit Logs Tab -->
+                            <div class="tab-pane fade" id="audit-pane" role="tabpanel">
+                                <div class="card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5 class="card-title mb-0">Recent Workflow Actions</h5>
+                                        <div>
+                                            <select class="form-select form-select-sm" id="auditActionFilter">
+                                                <option value="">All Actions</option>
+                                                <option value="CLAIMED">Claimed</option>
+                                                <option value="REASSIGNED">Reassigned</option>
+                                                <option value="ESCALATED">Escalated</option>
+                                                <option value="RESOLVED">Resolved</option>
+                                                <option value="CLOSED">Closed</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="card-body">
+                                        <div id="auditLogsLoading" class="text-center py-5">
+                                            <div class="spinner-border text-primary" role="status"></div>
+                                        </div>
+                                        <div id="auditLogsList"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Manage Support Groups Modal -->
+    <div class="modal fade" id="supportGroupsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Manage Support Groups</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <button class="btn btn-primary btn-sm" id="addSupportGroupBtn">
+                            <i class="bi bi-plus-lg me-1"></i> Add New Group
+                        </button>
+                    </div>
+                    <div id="supportGroupsList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    
+    <!-- Bootstrap Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- App Scripts (ES6 Modules) -->
+    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module" src="/assets/js/pages/supervisor-dashboard.js"></script>
+</body>
+</html>

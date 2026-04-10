@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpsMind - Service Connection Test</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    
+    <!-- Runtime config -->
+    <script src="/assets/js/config.js"></script>
+    
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .test-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+        
+        .service-card {
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .service-card.testing {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        
+        .service-card.success {
+            border-color: #10b981;
+            background-color: #ecfdf5;
+        }
+        
+        .service-card.error {
+            border-color: #ef4444;
+            background-color: #fef2f2;
+        }
+        
+        .service-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 15px;
+        }
+        
+        .service-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #1f2937;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .service-url {
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            color: #6b7280;
+            margin-bottom: 10px;
+        }
+        
+        .service-status {
+            font-size: 0.875rem;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-weight: 500;
+        }
+        
+        .service-status.testing {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .service-status.success {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .service-status.error {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .service-details {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e5e7eb;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 0.875rem;
+        }
+        
+        .detail-label {
+            color: #6b7280;
+        }
+        
+        .detail-value {
+            color: #1f2937;
+            font-weight: 500;
+        }
+        
+        .spinner-border-sm {
+            width: 1rem;
+            height: 1rem;
+            border-width: 0.15em;
+        }
+        
+        .summary-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .summary-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        
+        .summary-subtitle {
+            font-size: 1.125rem;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <div class="summary-card">
+            <div class="summary-title">
+                <i class="bi bi-diagram-3"></i> OpsMind
+            </div>
+            <div class="summary-subtitle">Service Connection Test</div>
+        </div>
+        
+        <div class="mb-4">
+            <button id="testAllBtn" class="btn btn-primary w-100 btn-lg">
+                <i class="bi bi-arrow-repeat me-2"></i>Test All Services
+            </button>
+        </div>
+        
+        <!-- Auth Service -->
+        <div id="authCard" class="service-card">
+            <div class="service-header">
+                <div class="service-title">
+                    <i class="bi bi-shield-lock-fill"></i>
+                    Auth Service
+                </div>
+                <span id="authStatus" class="service-status">Not Tested</span>
+            </div>
+            <div class="service-url" id="authUrl">-</div>
+            <div id="authDetails" class="service-details" style="display: none;">
+                <div class="detail-row">
+                    <span class="detail-label">Response Time:</span>
+                    <span class="detail-value" id="authTime">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Status Code:</span>
+                    <span class="detail-value" id="authCode">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Message:</span>
+                    <span class="detail-value" id="authMessage">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Ticket Service -->
+        <div id="ticketCard" class="service-card">
+            <div class="service-header">
+                <div class="service-title">
+                    <i class="bi bi-ticket-detailed-fill"></i>
+                    Ticket Service
+                </div>
+                <span id="ticketStatus" class="service-status">Not Tested</span>
+            </div>
+            <div class="service-url" id="ticketUrl">-</div>
+            <div id="ticketDetails" class="service-details" style="display: none;">
+                <div class="detail-row">
+                    <span class="detail-label">Response Time:</span>
+                    <span class="detail-value" id="ticketTime">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Status Code:</span>
+                    <span class="detail-value" id="ticketCode">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Message:</span>
+                    <span class="detail-value" id="ticketMessage">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Workflow Service -->
+        <div id="workflowCard" class="service-card">
+            <div class="service-header">
+                <div class="service-title">
+                    <i class="bi bi-diagram-3-fill"></i>
+                    Workflow Service
+                </div>
+                <span id="workflowStatus" class="service-status">Not Tested</span>
+            </div>
+            <div class="service-url" id="workflowUrl">-</div>
+            <div id="workflowDetails" class="service-details" style="display: none;">
+                <div class="detail-row">
+                    <span class="detail-label">Response Time:</span>
+                    <span class="detail-value" id="workflowTime">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Status Code:</span>
+                    <span class="detail-value" id="workflowCode">-</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Message:</span>
+                    <span class="detail-value" id="workflowMessage">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="mt-4 text-center">
+            <a href="/index.html" class="btn btn-outline-primary">
+                <i class="bi bi-arrow-left me-2"></i>Back to Login
+            </a>
+        </div>
+    </div>
+    
+    <script>
+        // Display configured URLs
+        document.getElementById('authUrl').textContent = window.OPSMIND_API_URL;
+        document.getElementById('ticketUrl').textContent = window.OPSMIND_TICKET_URL || window.OPSMIND_API_URL;
+        document.getElementById('workflowUrl').textContent = window.OPSMIND_WORKFLOW_API_URL;
+        
+        async function testService(name, url, endpoint = '') {
+            const startTime = Date.now();
+            const card = document.getElementById(`${name}Card`);
+            const status = document.getElementById(`${name}Status`);
+            const details = document.getElementById(`${name}Details`);
+            const timeEl = document.getElementById(`${name}Time`);
+            const codeEl = document.getElementById(`${name}Code`);
+            const messageEl = document.getElementById(`${name}Message`);
+            
+            // Set testing state
+            card.className = 'service-card testing';
+            status.className = 'service-status testing';
+            status.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Testing...';
+            details.style.display = 'none';
+            
+            try {
+                const testUrl = `${url}${endpoint}`;
+                const response = await fetch(testUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const endTime = Date.now();
+                const responseTime = endTime - startTime;
+                
+                // Try to parse response
+                let message = 'Connected';
+                try {
+                    const data = await response.json();
+                    message = data.message || data.error || JSON.stringify(data).substring(0, 100);
+                } catch (e) {
+                    message = 'Service responded';
+                }
+                
+                // Update UI
+                timeEl.textContent = `${responseTime}ms`;
+                codeEl.textContent = response.status;
+                messageEl.textContent = message;
+                details.style.display = 'block';
+                
+                if (response.ok || response.status === 404) {
+                    // 404 is OK - means service is running, just endpoint doesn't exist
+                    card.className = 'service-card success';
+                    status.className = 'service-status success';
+                    status.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i>Connected';
+                } else {
+                    card.className = 'service-card error';
+                    status.className = 'service-status error';
+                    status.innerHTML = '<i class="bi bi-x-circle-fill me-2"></i>Error';
+                }
+                
+                return true;
+            } catch (error) {
+                const endTime = Date.now();
+                const responseTime = endTime - startTime;
+                
+                // Update UI with error
+                timeEl.textContent = `${responseTime}ms`;
+                codeEl.textContent = 'Network Error';
+                messageEl.textContent = error.message || 'Cannot connect to service';
+                details.style.display = 'block';
+                
+                card.className = 'service-card error';
+                status.className = 'service-status error';
+                status.innerHTML = '<i class="bi bi-x-circle-fill me-2"></i>Failed';
+                
+                return false;
+            }
+        }
+        
+        async function testAllServices() {
+            const btn = document.getElementById('testAllBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Testing...';
+            
+            // Test each service
+            await testService('auth', window.OPSMIND_API_URL, '/api/auth/health');
+            await testService('ticket', window.OPSMIND_TICKET_URL || window.OPSMIND_API_URL, '/api/tickets');
+            await testService('workflow', window.OPSMIND_WORKFLOW_API_URL, '/api/workflow/metrics');
+            
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-arrow-repeat me-2"></i>Test Again';
+        }
+        
+        // Test on load
+        document.addEventListener('DOMContentLoaded', () => {
+            testAllServices();
+        });
+        
+        // Test button click
+        document.getElementById('testAllBtn').addEventListener('click', testAllServices);
+    </script>
+</body>
+</html>

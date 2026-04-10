@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Role-Based Access Control Test - OpsMind</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 30px 0;
+        }
+        .test-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+        .role-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: 600;
+            margin: 5px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .role-badge:hover {
+            transform: scale(1.05);
+        }
+        .role-badge.active {
+            box-shadow: 0 0 0 3px rgba(0,0,0,0.1);
+        }
+        .role-student { background: #3498db; color: white; }
+        .role-doctor { background: #2ecc71; color: white; }
+        .role-technician { background: #f39c12; color: white; }
+        .role-senior { background: #e74c3c; color: white; }
+        .role-supervisor { background: #9b59b6; color: white; }
+        .role-admin { background: #34495e; color: white; }
+        
+        .permission-item {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .permission-allowed {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+        }
+        .permission-denied {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+        }
+        .icon-allowed { color: #28a745; }
+        .icon-denied { color: #dc3545; }
+        
+        .page-list {
+            list-style: none;
+            padding: 0;
+        }
+        .page-list li {
+            padding: 8px 12px;
+            margin: 4px 0;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+        .page-accessible {
+            background: #d4edda;
+            border-left: 3px solid #28a745;
+        }
+        .page-restricted {
+            background: #f8d7da;
+            border-left: 3px solid #dc3545;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="test-card">
+            <h1 class="text-center mb-4">
+                <i class="bi bi-shield-check text-primary"></i>
+                Role-Based Access Control Test
+            </h1>
+            <p class="text-center text-muted mb-4">
+                Click on a role to see what pages and features are accessible
+            </p>
+            
+            <div class="text-center mb-4">
+                <div class="role-badge role-student" onclick="selectRole('STUDENT')">
+                    <i class="bi bi-mortarboard"></i> STUDENT
+                </div>
+                <div class="role-badge role-doctor" onclick="selectRole('DOCTOR')">
+                    <i class="bi bi-heart-pulse"></i> DOCTOR
+                </div>
+                <div class="role-badge role-technician" onclick="selectRole('TECHNICIAN')">
+                    <i class="bi bi-tools"></i> TECHNICIAN
+                </div>
+                <div class="role-badge role-senior" onclick="selectRole('SENIOR')">
+                    <i class="bi bi-star"></i> SENIOR
+                </div>
+                <div class="role-badge role-supervisor" onclick="selectRole('SUPERVISOR')">
+                    <i class="bi bi-eye"></i> SUPERVISOR
+                </div>
+                <div class="role-badge role-admin" onclick="selectRole('ADMIN')">
+                    <i class="bi bi-key"></i> ADMIN
+                </div>
+            </div>
+        </div>
+
+        <div id="roleDetails" style="display: none;">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="test-card">
+                        <h4 class="mb-3">
+                            <i class="bi bi-file-earmark-text"></i>
+                            Page Access
+                        </h4>
+                        <ul class="page-list" id="pageAccess"></ul>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="test-card">
+                        <h4 class="mb-3">
+                            <i class="bi bi-list-check"></i>
+                            Feature Permissions
+                        </h4>
+                        <div id="featurePermissions"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="test-card">
+                <h4 class="mb-3">
+                    <i class="bi bi-menu-button-wide"></i>
+                    Sidebar Visibility
+                </h4>
+                <div id="sidebarVisibility"></div>
+            </div>
+
+            <div class="test-card">
+                <h4 class="mb-3">
+                    <i class="bi bi-toggle-on"></i>
+                    Action Buttons
+                </h4>
+                <div id="actionButtons"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const roleConfig = {
+            STUDENT: {
+                pages: ['dashboard.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: false },
+                    { name: 'Update Ticket Status', allowed: false },
+                    { name: 'Reassign Tickets', allowed: false },
+                    { name: 'Delete Tickets', allowed: false },
+                    { name: 'Trigger Workflows', allowed: false },
+                    { name: 'View AI Insights', allowed: false },
+                    { name: 'Manage Users', allowed: false }
+                ],
+                sidebar: [
+                    { section: 'Main', items: ['Dashboard', 'Tickets', 'AI Chatbot'], visible: true },
+                    { section: 'Workflow Management', items: ['Junior Dashboard', 'Senior Dashboard', 'Supervisor Dashboard'], visible: false },
+                    { section: 'Management', items: ['Assets', 'Knowledge Base', 'SLA Policies'], visible: false },
+                    { section: 'AI & Automation', items: ['AI Insights', 'Automations'], visible: false },
+                    { section: 'Reports', items: ['Analytics', 'Reports'], visible: false },
+                    { section: 'Administration', items: ['Users', 'Settings'], visible: false }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: false },
+                    { name: 'Update (✏️)', visible: false },
+                    { name: 'Delete (🗑️)', visible: false },
+                    { name: 'Claim', visible: false },
+                    { name: 'Escalate', visible: false }
+                ]
+            },
+            DOCTOR: {
+                pages: ['dashboard.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: false },
+                    { name: 'Update Ticket Status', allowed: false },
+                    { name: 'Reassign Tickets', allowed: false },
+                    { name: 'Delete Tickets', allowed: false },
+                    { name: 'Trigger Workflows', allowed: false },
+                    { name: 'View AI Insights', allowed: false },
+                    { name: 'Manage Users', allowed: false }
+                ],
+                sidebar: [
+                    { section: 'Main', items: ['Dashboard', 'Tickets', 'AI Chatbot'], visible: true },
+                    { section: 'Workflow Management', items: ['Junior Dashboard', 'Senior Dashboard', 'Supervisor Dashboard'], visible: false },
+                    { section: 'Management', items: ['Assets', 'Knowledge Base', 'SLA Policies'], visible: false },
+                    { section: 'AI & Automation', items: ['AI Insights', 'Automations'], visible: false },
+                    { section: 'Reports', items: ['Analytics', 'Reports'], visible: false },
+                    { section: 'Administration', items: ['Users', 'Settings'], visible: false }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: false },
+                    { name: 'Update (✏️)', visible: false },
+                    { name: 'Delete (🗑️)', visible: false },
+                    { name: 'Claim', visible: false },
+                    { name: 'Escalate', visible: false }
+                ]
+            },
+            TECHNICIAN: {
+                pages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'workflows.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: true },
+                    { name: 'Update Ticket Status', allowed: true, note: 'Own tickets only' },
+                    { name: 'Reassign Tickets', allowed: false },
+                    { name: 'Delete Tickets', allowed: false },
+                    { name: 'Trigger Workflows', allowed: true },
+                    { name: 'View AI Insights', allowed: false },
+                    { name: 'Manage Users', allowed: false }
+                ],
+                sidebar: [
+                    { section: 'Main', items: ['Dashboard', 'Tickets', 'Workflows', 'AI Chatbot'], visible: true },
+                    { section: 'Workflow Management', items: ['Junior Dashboard'], visible: true },
+                    { section: 'Management', items: ['Assets', 'Knowledge Base', 'SLA Policies'], visible: false },
+                    { section: 'AI & Automation', items: ['AI Insights', 'Automations'], visible: false },
+                    { section: 'Reports', items: ['Analytics', 'Reports'], visible: false },
+                    { section: 'Administration', items: ['Users', 'Settings'], visible: false }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: true },
+                    { name: 'Update (✏️)', visible: true, note: 'Own tickets only' },
+                    { name: 'Delete (🗑️)', visible: false },
+                    { name: 'Claim', visible: true, note: 'UNASSIGNED tickets only' },
+                    { name: 'Escalate', visible: true, note: 'Own tickets only' }
+                ]
+            },
+            SENIOR: {
+                pages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                       'workflows.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: true },
+                    { name: 'Update Ticket Status', allowed: true },
+                    { name: 'Reassign Tickets', allowed: true },
+                    { name: 'Delete Tickets', allowed: false },
+                    { name: 'Trigger Workflows', allowed: true },
+                    { name: 'View AI Insights', allowed: false },
+                    { name: 'Manage Users', allowed: false }
+                ],
+                sidebar: [
+                    { section: 'Main', items: ['Dashboard', 'Tickets', 'Workflows', 'AI Chatbot'], visible: true },
+                    { section: 'Workflow Management', items: ['Junior Dashboard', 'Senior Dashboard'], visible: true },
+                    { section: 'Management', items: ['Assets', 'Knowledge Base', 'SLA Policies'], visible: true },
+                    { section: 'AI & Automation', items: ['Automations'], visible: true },
+                    { section: 'Reports', items: ['Analytics', 'Reports'], visible: true },
+                    { section: 'Administration', items: ['Users', 'Settings'], visible: false }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: true },
+                    { name: 'Update (✏️)', visible: true },
+                    { name: 'Delete (🗑️)', visible: false },
+                    { name: 'Claim', visible: true },
+                    { name: 'Escalate', visible: true },
+                    { name: 'Reassign', visible: true }
+                ]
+            },
+            SUPERVISOR: {
+                pages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                       'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: true },
+                    { name: 'Update Ticket Status', allowed: true },
+                    { name: 'Reassign Tickets', allowed: true },
+                    { name: 'Delete Tickets', allowed: false },
+                    { name: 'Trigger Workflows', allowed: true },
+                    { name: 'View AI Insights', allowed: true },
+                    { name: 'Manage Users', allowed: false }
+                ],
+                sidebar: [
+                    { section: 'Main', items: ['Dashboard', 'Tickets', 'Workflows', 'AI Chatbot'], visible: true },
+                    { section: 'Workflow Management', items: ['Junior Dashboard', 'Senior Dashboard', 'Supervisor Dashboard'], visible: true },
+                    { section: 'Management', items: ['Assets', 'Knowledge Base', 'SLA Policies'], visible: true },
+                    { section: 'AI & Automation', items: ['AI Insights', 'Automations'], visible: true },
+                    { section: 'Reports', items: ['Analytics', 'Reports'], visible: true },
+                    { section: 'Administration', items: ['Users', 'Settings'], visible: false }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: true },
+                    { name: 'Update (✏️)', visible: true },
+                    { name: 'Delete (🗑️)', visible: false },
+                    { name: 'Claim', visible: true },
+                    { name: 'Escalate', visible: true },
+                    { name: 'Reassign', visible: true }
+                ]
+            },
+            ADMIN: {
+                pages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                       'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                allPages: ['dashboard.html', 'tickets.html', 'junior-dashboard.html', 'senior-dashboard.html', 
+                          'supervisor-dashboard.html', 'workflows.html', 'ai-insights.html', 'users.html'],
+                features: [
+                    { name: 'View Tickets', allowed: true },
+                    { name: 'Create Tickets', allowed: true },
+                    { name: 'Claim Tickets', allowed: true },
+                    { name: 'Update Ticket Status', allowed: true },
+                    { name: 'Reassign Tickets', allowed: true },
+                    { name: 'Delete Tickets', allowed: true },
+                    { name: 'Trigger Workflows', allowed: true },
+                    { name: 'View AI Insights', allowed: true },
+                    { name: 'Manage Users', allowed: true }
+                ],
+                sidebar: [
+                    { section: 'All Sections', items: ['Full Access'], visible: true }
+                ],
+                buttons: [
+                    { name: 'View (👁️)', visible: true },
+                    { name: 'Trigger Workflow (▶️)', visible: true },
+                    { name: 'Update (✏️)', visible: true },
+                    { name: 'Delete (🗑️)', visible: true },
+                    { name: 'Claim', visible: true },
+                    { name: 'Escalate', visible: true },
+                    { name: 'Reassign', visible: true }
+                ]
+            }
+        };
+
+        function selectRole(role) {
+            // Update active state
+            document.querySelectorAll('.role-badge').forEach(badge => {
+                badge.classList.remove('active');
+            });
+            event.currentTarget.classList.add('active');
+
+            // Show details
+            document.getElementById('roleDetails').style.display = 'block';
+
+            // Render page access
+            renderPageAccess(role);
+            renderFeaturePermissions(role);
+            renderSidebarVisibility(role);
+            renderActionButtons(role);
+
+            // Smooth scroll
+            setTimeout(() => {
+                document.getElementById('roleDetails').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }, 100);
+        }
+
+        function renderPageAccess(role) {
+            const config = roleConfig[role];
+            const container = document.getElementById('pageAccess');
+            
+            let html = '';
+            config.allPages.forEach(page => {
+                const accessible = config.pages.includes(page);
+                html += `<li class="${accessible ? 'page-accessible' : 'page-restricted'}">
+                    <i class="bi ${accessible ? 'bi-check-circle icon-allowed' : 'bi-x-circle icon-denied'}"></i>
+                    ${page}
+                </li>`;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        function renderFeaturePermissions(role) {
+            const config = roleConfig[role];
+            const container = document.getElementById('featurePermissions');
+            
+            let html = '';
+            config.features.forEach(feature => {
+                html += `<div class="permission-item ${feature.allowed ? 'permission-allowed' : 'permission-denied'}">
+                    <i class="bi ${feature.allowed ? 'bi-check-circle-fill icon-allowed' : 'bi-x-circle-fill icon-denied'}"></i>
+                    <span><strong>${feature.name}</strong>${feature.note ? ' <small class="text-muted">(' + feature.note + ')</small>' : ''}</span>
+                </div>`;
+            });
+            
+            container.innerHTML = html;
+        }
+
+        function renderSidebarVisibility(role) {
+            const config = roleConfig[role];
+            const container = document.getElementById('sidebarVisibility');
+            
+            let html = '<div class="row">';
+            config.sidebar.forEach(section => {
+                html += `<div class="col-md-6 mb-3">
+                    <div class="permission-item ${section.visible ? 'permission-allowed' : 'permission-denied'}">
+                        <div>
+                            <strong>${section.section}</strong>
+                            <div class="small">${section.items.join(', ')}</div>
+                        </div>
+                    </div>
+                </div>`;
+            });
+            html += '</div>';
+            
+            container.innerHTML = html;
+        }
+
+        function renderActionButtons(role) {
+            const config = roleConfig[role];
+            const container = document.getElementById('actionButtons');
+            
+            let html = '<div class="row">';
+            config.buttons.forEach(button => {
+                html += `<div class="col-md-4 mb-3">
+                    <div class="permission-item ${button.visible ? 'permission-allowed' : 'permission-denied'}">
+                        <i class="bi ${button.visible ? 'bi-check-circle-fill icon-allowed' : 'bi-x-circle-fill icon-denied'}"></i>
+                        <span><strong>${button.name}</strong>${button.note ? '<br><small class="text-muted">' + button.note + '</small>' : ''}</span>
+                    </div>
+                </div>`;
+            });
+            html += '</div>';
+            
+            container.innerHTML = html;
+        }
+
+        // Auto-select ADMIN on load to show example
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                document.querySelector('.role-student').click();
+            }, 500);
+        });
+    </script>
+</body>
+</html>
