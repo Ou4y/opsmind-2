@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asset Labels</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f8f9fa; padding: 20px; text-align: center; }
+        #labels-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+            justify-content: center;
+        }
+        .label-card {
+            background: white;
+            padding: 15px;
+            border: 2px solid #000;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            page-break-inside: avoid;
+        }
+        .label-header { font-weight: bold; font-size: 14px; margin-bottom: 5px; }
+        .label-id { font-family: monospace; font-size: 16px; margin-top: 5px; font-weight: bold; }
+        .no-print-btn {
+            background: #0d6efd; color: white; padding: 10px 20px; 
+            border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-bottom: 20px;
+        }
+        @media print {
+            body { background: white; padding: 0; }
+            .no-print-btn, h1 { display: none; }
+            #labels-container { gap: 10px; margin: 0; }
+            .label-card { box-shadow: none; border: 1px dashed #ccc; }
+        }
+    </style>
+</head>
+<body>
+    <h1>🖨️ Asset Label Printer</h1>
+    <button class="no-print-btn" onclick="window.print()">Print Labels Now</button>
+    <div id="labels-container">Loading assets...</div>
+
+    <script>
+        async function loadLabels() {
+            const container = document.getElementById('labels-container');
+            const urlParams = new URLSearchParams(window.location.search);
+            
+            // Get filters from URL
+            const targetId = urlParams.get('id'); 
+            const targetName = urlParams.get('name'); 
+
+            try {
+                // ✅ FIXED: Changed port 5000 to 3002 to work through Nginx
+                const response = await fetch('http://localhost:3002/api/assets');
+                let assets = await response.json();
+
+                // FILTER LOGIC
+                if (targetId) {
+                    assets = assets.filter(a => a.customId === targetId);
+                } else if (targetName) {
+                    assets = assets.filter(a => a.name === decodeURIComponent(targetName));
+                }
+
+                container.innerHTML = ''; 
+
+                if (assets.length === 0) {
+                    container.innerHTML = '<p>No assets found.</p>';
+                    return;
+                }
+
+                assets.forEach((asset, index) => {
+                    const card = document.createElement('div');
+                    card.className = 'label-card';
+
+                    const title = document.createElement('div');
+                    title.className = 'label-header';
+                    title.innerText = asset.name.substring(0, 25); 
+
+                    const qrDiv = document.createElement('div');
+                    qrDiv.id = `qr-${index}`;
+
+                    const idText = document.createElement('div');
+                    idText.className = 'label-id';
+                    idText.innerText = asset.customId;
+
+                    card.append(title, qrDiv, idText);
+                    container.appendChild(card);
+
+                    // ✅ UPDATE: QR code now points to the scannable Nginx URL
+                    new QRCode(document.getElementById(`qr-${index}`), {
+                        text: `http://localhost:3002/inventory.html?search=${asset.customId}`,
+                        width: 100,
+                        height: 100
+                    });
+                });
+
+                // Auto-print if filtering by ID or Name
+                if (targetId || targetName) {
+                    setTimeout(() => window.print(), 800); // Slightly longer delay for QR generation
+                }
+
+            } catch (error) {
+                console.error("Fetch error:", error);
+                container.innerHTML = '<p style="color:red">Error: Ensure Nginx (Port 3002) is running.</p>';
+            }
+        }
+        loadLabels();
+    </script>
+</body>
+</html>

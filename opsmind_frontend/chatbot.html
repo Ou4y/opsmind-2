@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpsMind AI Chatbot - Intelligent IT Support Assistant">
+    <title>AI Chatbot - OpsMind</title>
+    
+    <!-- Preload critical resources -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="/assets/css/main.css" rel="stylesheet">
+
+    <!-- Runtime config (must be before any app/service scripts) -->
+    <script src="/assets/js/config.js"></script>
+
+    <style>
+        /* Loading indicator */
+        .page-loader {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        
+        .page-loader.hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+        
+        .loader-content {
+            text-align: center;
+        }
+        
+        .loader-spinner {
+            width: 48px;
+            height: 48px;
+            border: 4px solid #e9ecef;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .chatbot-container {
+            height: calc(100vh - 80px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem;
+            border-radius: 12px 12px 0 0;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem;
+            background: #f8f9fa;
+        }
+
+        .chat-message {
+            display: flex;
+            margin-bottom: 1rem;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .chat-message.user {
+            justify-content: flex-end;
+        }
+
+        .chat-message.bot {
+            justify-content: flex-start;
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+
+        .message-avatar.bot {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin-right: 0.75rem;
+        }
+
+        .message-avatar.user {
+            background: #6c757d;
+            color: white;
+            margin-left: 0.75rem;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 1rem 1.25rem;
+            border-radius: 18px;
+            position: relative;
+        }
+
+        .chat-message.bot .message-content {
+            background: white;
+            border: 1px solid #e9ecef;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .chat-message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .message-time {
+            font-size: 0.75rem;
+            opacity: 0.6;
+            margin-top: 0.25rem;
+        }
+
+        .chat-input-container {
+            padding: 1.5rem;
+            background: white;
+            border-top: 1px solid #e9ecef;
+            border-radius: 0 0 12px 12px;
+        }
+
+        .chat-input {
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .chat-input input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 2px solid #e9ecef;
+            border-radius: 24px;
+            font-size: 0.95rem;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .chat-input button {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .chat-input button:hover {
+            transform: scale(1.05);
+        }
+
+        .chat-input button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 0.75rem;
+        }
+
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #6c757d;
+            animation: typing 1.4s infinite;
+        }
+
+        .typing-indicator span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-indicator span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.5;
+            }
+            30% {
+                transform: translateY(-10px);
+                opacity: 1;
+            }
+        }
+
+        .quick-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .quick-action-btn {
+            padding: 0.5rem 1rem;
+            border: 2px solid #667eea;
+            background: white;
+            color: #667eea;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .quick-action-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .chat-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 1.25rem;
+            border-radius: 12px;
+            border: 1px solid #e9ecef;
+        }
+
+        .stat-card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.75rem;
+            font-size: 1.25rem;
+        }
+
+        .stat-card-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #1e293b;
+        }
+
+        .stat-card-label {
+            font-size: 0.875rem;
+            color: #64748b;
+        }
+    </style>
+</head>
+<body class="app-body">
+    <!-- Page Loader -->
+    <div class="page-loader" id="pageLoader">
+        <div class="loader-content">
+            <div class="loader-spinner"></div>
+            <div style="color: #667eea; font-weight: 600;">Loading AI Chatbot...</div>
+        </div>
+    </div>
+    
+    <!-- Navigation (loaded dynamically) -->
+    <nav class="navbar-main" id="navbar-container"></nav>
+
+    <div class="app-wrapper">
+        <!-- Sidebar (loaded dynamically) -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Page Header -->
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">
+                        <i class="bi bi-robot me-2"></i>AI Chatbot Assistant
+                    </h1>
+                    <p class="page-subtitle">Get instant help with IT support, ticket management, and system queries</p>
+                </div>
+                <div class="page-actions">
+                    <button class="btn btn-outline-primary" id="clearChatBtn">
+                        <i class="bi bi-trash"></i>
+                        <span class="d-none d-sm-inline ms-2">Clear Chat</span>
+                    </button>
+                    <button class="btn btn-outline-secondary" id="exportChatBtn">
+                        <i class="bi bi-download"></i>
+                        <span class="d-none d-sm-inline ms-2">Export</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Page Content -->
+            <div class="page-content">
+
+            <!-- Chat Statistics -->
+            <div class="chat-stats">
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #dbeafe; color: #3b82f6;">
+                        <i class="bi bi-chat-dots"></i>
+                    </div>
+                    <div class="stat-card-value" id="totalMessagesCount">0</div>
+                    <div class="stat-card-label">Total Messages</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #dcfce7; color: #22c55e;">
+                        <i class="bi bi-check-circle"></i>
+                    </div>
+                    <div class="stat-card-value" id="resolvedQueriesCount">0</div>
+                    <div class="stat-card-label">Queries Resolved</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #fef3c7; color: #f59e0b;">
+                        <i class="bi bi-clock-history"></i>
+                    </div>
+                    <div class="stat-card-value" id="avgResponseTime">< 1s</div>
+                    <div class="stat-card-label">Avg Response Time</div>
+                </div>
+               
+            </div>
+
+            <!-- Chat Container -->
+            <div class="card shadow-sm">
+                <div class="chatbot-container">
+                    <!-- Chat Header -->
+                    <div class="chat-header">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="d-flex align-items-center gap-3">
+                                <div style="width: 48px; height: 48px; background: rgba(255,255,255,0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;">
+                                    <i class="bi bi-robot"></i>
+                                </div>
+                                <div>
+                                    <h5 class="mb-0">OpsMind Assistant</h5>
+                                    <small style="opacity: 0.9;">
+                                        <i class="bi bi-circle-fill" style="font-size: 0.5rem; color: #22c55e;"></i>
+                                        Online • Ready to help
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm" style="background: rgba(255,255,255,0.2); border: none; color: white;" id="chatSettingsBtn" title="Settings">
+                                    <i class="bi bi-gear"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Actions -->
+                    <div class="p-3 bg-light border-bottom">
+                        <div class="quick-actions" id="quickActionsContainer">
+                            <button class="quick-action-btn" data-message="How do I create a new ticket?">
+                                <i class="bi bi-ticket"></i> Create Ticket
+                            </button>
+                            <button class="quick-action-btn" data-message="Show me my open tickets">
+                                <i class="bi bi-list-check"></i> My Tickets
+                            </button>
+                            <button class="quick-action-btn" data-message="What's the status of ticket #1234?">
+                                <i class="bi bi-search"></i> Check Status
+                            </button>
+                            <button class="quick-action-btn" data-message="How do I escalate a ticket?">
+                                <i class="bi bi-arrow-up-circle"></i> Escalation
+                            </button>
+                            <button class="quick-action-btn" data-message="Tell me about SLA policies">
+                                <i class="bi bi-info-circle"></i> SLA Info
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Chat Messages -->
+                    <div class="chat-messages" id="chatMessages">
+                        <!-- Welcome Message -->
+                        <div class="chat-message bot">
+                            <div class="message-avatar bot">
+                                <i class="bi bi-robot"></i>
+                            </div>
+                            <div>
+                                <div class="message-content">
+                                    <div>
+                                        👋 Hello! I'm your OpsMind AI Assistant. I'm here to help you with:
+                                        <ul class="mt-2 mb-0">
+                                            <li>Creating and managing tickets</li>
+                                            <li>Checking ticket status and history</li>
+                                            <li>Understanding SLA policies</li>
+                                            <li>Workflow automation questions</li>
+                                            <li>General IT support queries</li>
+                                        </ul>
+                                    </div>
+                                    <div class="message-time">Just now</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div class="chat-input-container">
+                        <div class="chat-input">
+                            <input 
+                                type="text" 
+                                id="chatInput" 
+                                placeholder="Type your message here..." 
+                                autocomplete="off"
+                            />
+                            <button id="sendMessageBtn" aria-label="Send message">
+                                <i class="bi bi-send-fill"></i>
+                            </button>
+                        </div>
+                        <div class="mt-2 text-muted" style="font-size: 0.75rem; text-align: center;">
+                            <i class="bi bi-shield-check"></i> Your conversations are secure and encrypted
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- App Scripts -->
+    <!-- Main app initialization (handles sidebar, navbar, user info) -->
+    <script type="module" src="/assets/js/app.js"></script>
+    
+    <!-- Page-specific scripts -->
+    <script type="module">
+        import { initChatbotPage } from '/assets/js/pages/chatbot.js';
+        
+        // Hide loader when page is ready
+        function hideLoader() {
+            const loader = document.getElementById('pageLoader');
+            if (loader) {
+                loader.classList.add('hidden');
+                setTimeout(() => loader.remove(), 300);
+            }
+        }
+        
+        // Initialize immediately when app is ready (no delays)
+        document.addEventListener('app:ready', () => {
+            console.log('[Chatbot] App ready, initializing page...');
+            initChatbotPage();
+            hideLoader();
+        }, { once: true });
+        
+        // Fallback: initialize on DOMContentLoaded if app hasn't fired yet
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                // Give app.js a moment to initialize, then check
+                requestAnimationFrame(() => {
+                    if (!document.body.classList.contains('chatbot-page-initialized')) {
+                        console.log('[Chatbot] Initializing from DOMContentLoaded fallback...');
+                        initChatbotPage();
+                    }
+                    hideLoader();
+                });
+            }, { once: true });
+        } else {
+            // DOM already loaded, initialize immediately if not already done
+            requestAnimationFrame(() => {
+                if (!document.body.classList.contains('chatbot-page-initialized')) {
+                    console.log('[Chatbot] Initializing immediately...');
+                    initChatbotPage();
+                }
+                hideLoader();
+            });
+        }
+        
+        // Absolute fallback - hide loader after max 3 seconds
+        setTimeout(hideLoader, 3000);
+    </script>
+</body>
+</html>

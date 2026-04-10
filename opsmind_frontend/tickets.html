@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpsMind Tickets - IT Service Management">
+    <title>Tickets - OpsMind</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Leaflet CSS for Maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <!-- Custom CSS -->
+    <link href="/assets/css/main.css" rel="stylesheet">
+
+    <!-- Runtime config (must be before any app/service scripts) -->
+    <script src="/assets/js/config.js"></script>
+    
+    <style>
+        /* AI Help Modal Styles */
+        .ai-suggestions-content {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .ai-suggestions-content h6 {
+            color: #667eea;
+            font-weight: 600;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .ai-suggestions-content h6:first-child {
+            margin-top: 0;
+        }
+        
+        .ai-suggestions-content ol,
+        .ai-suggestions-content ul {
+            margin-bottom: 0.5rem;
+        }
+        
+        .ai-suggestions-content li {
+            margin-bottom: 0.5rem;
+            line-height: 1.6;
+        }
+        
+        .ai-suggestions-content strong {
+            color: #1e293b;
+        }
+        
+        .ai-suggestions-content code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        
+        #aiHelpBtn {
+            border-color: #667eea;
+            color: #667eea;
+        }
+        
+        #aiHelpBtn:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .flex-grow-1 {
+            flex-grow: 1;
+        }
+        
+        /* Location Picker Styles */
+        #mapContainer {
+            transition: border-color 0.3s ease;
+        }
+        
+        #mapContainer:hover {
+            border-color: #667eea !important;
+        }
+        
+        .location-card {
+            transition: box-shadow 0.3s ease;
+        }
+        
+        #locationStatus {
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        
+        #useLocationBtn {
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        #useLocationBtn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+        }
+        
+        /* Map Styles */
+        #mapContainer {
+            z-index: 1;
+        }
+        
+        .leaflet-container {
+            border-radius: 8px;
+        }
+        
+        /* Mobile optimizations */
+        @media (max-width: 768px) {
+            #mapContainer {
+                height: 250px !important;
+            }
+            
+            #useLocationBtn {
+                font-size: 0.95rem;
+                padding: 0.6rem 1rem;
+            }
+            
+            #locationStatus {
+                font-size: 0.85rem;
+            }
+            
+            .modal-dialog {
+                margin: 0.5rem;
+            }
+        }
+        
+        /* Touch-friendly buttons */
+        @media (hover: none) {
+            #useLocationBtn {
+                padding: 0.75rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body class="app-body">
+    <!-- Navigation (loaded dynamically) -->
+    <nav class="navbar-main" id="navbar-container"></nav>
+
+    <div class="app-wrapper">
+        <!-- Sidebar (loaded dynamically) -->
+        <div id="sidebar-container"></div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Page Header -->
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">Tickets</h1>
+                    <p class="page-subtitle">Manage and track all IT service requests</p>
+                </div>
+                <div class="page-header-actions">
+                    <button class="btn btn-primary" id="createTicketBtn">
+                        <i class="bi bi-plus-lg me-1"></i> New Ticket
+                    </button>
+                </div>
+            </div>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Filters Card -->
+                <div class="card filter-card mb-4">
+                    <div class="card-body">
+                        <form id="ticketFilters" class="row g-3">
+                            <!-- Search -->
+                            <div class="col-12 col-md-4 col-lg-3">
+                                <label for="searchInput" class="form-label">Search</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">
+                                        <i class="bi bi-search"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        class="form-control" 
+                                        id="searchInput" 
+                                        placeholder="Search tickets..."
+                                    >
+                                </div>
+                            </div>
+
+                            <!-- Status Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="statusFilter" class="form-label">Status</label>
+                                <select class="form-select" id="statusFilter">
+                                    <option value="">All Statuses</option>
+                                    <option value="OPEN">Open</option>
+                                    <option value="IN_PROGRESS">In Progress</option>
+                                    <option value="RESOLVED">Resolved</option>
+                                    <option value="CLOSED">Closed</option>
+                                </select>
+                            </div>
+
+                            <!-- Priority Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="priorityFilter" class="form-label">Priority</label>
+                                <select class="form-select" id="priorityFilter">
+                                    <option value="">All Priorities</option>
+                                    <option value="HIGH">High</option>
+                                    <option value="MEDIUM">Medium</option>
+                                    <option value="LOW">Low</option>
+                                </select>
+                            </div>
+
+                            <!-- Type Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="typeFilter" class="form-label">Type</label>
+                                <select class="form-select" id="typeFilter">
+                                    <option value="">All Types</option>
+                                    <option value="INCIDENT">Incident</option>
+                                    <option value="SERVICE_REQUEST">Service Request</option>
+                                    <option value="MAINTENANCE">Maintenance</option>
+                                </select>
+                            </div>
+
+                            <!-- Date Range -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="dateFilter" class="form-label">Date Range</label>
+                                <select class="form-select" id="dateFilter">
+                                    <option value="">All Time</option>
+                                    <option value="today">Today</option>
+                                    <option value="week">This Week</option>
+                                    <option value="month">This Month</option>
+                                    <option value="quarter">This Quarter</option>
+                                </select>
+                            </div>
+
+                            <!-- Filter Actions -->
+                            <div class="col-12 col-lg-1 d-flex align-items-end">
+                                <button type="button" class="btn btn-outline-secondary w-100" id="clearFilters">
+                                    <i class="bi bi-x-lg"></i>
+                                    <span class="d-none d-xl-inline ms-1">Clear</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Tickets Table Card -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center">
+                            <h5 class="card-title mb-0">
+                                <i class="bi bi-ticket-detailed me-2"></i>
+                                <span id="ticketCount">Tickets</span>
+                            </h5>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <div class="btn-group" role="group" aria-label="View toggle">
+                                <button type="button" class="btn btn-outline-secondary btn-sm active" id="tableViewBtn">
+                                    <i class="bi bi-list"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="cardViewBtn">
+                                    <i class="bi bi-grid-3x2"></i>
+                                </button>
+                            </div>
+                            <button class="btn btn-outline-secondary btn-sm" id="exportBtn">
+                                <i class="bi bi-download me-1"></i> Export
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <!-- Table View -->
+                        <div class="table-responsive" id="tableView">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th class="sortable" data-sort="id">
+                                            Ticket ID
+                                            <i class="bi bi-chevron-expand sort-icon"></i>
+                                        </th>
+                                        <th class="sortable" data-sort="subject">
+                                            Subject
+                                            <i class="bi bi-chevron-expand sort-icon"></i>
+                                        </th>
+                                        <th>Requester</th>
+                                        <th class="sortable" data-sort="priority">
+                                            Priority
+                                            <i class="bi bi-chevron-expand sort-icon"></i>
+                                        </th>
+                                        <th class="sortable" data-sort="status">
+                                            Status
+                                            <i class="bi bi-chevron-expand sort-icon"></i>
+                                        </th>
+                                        <th>Assigned To</th>
+                                        <th class="sortable" data-sort="created">
+                                            Created
+                                            <i class="bi bi-chevron-expand sort-icon"></i>
+                                        </th>
+                                        <th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ticketsTableBody">
+                                    <!-- Loading skeleton rows -->
+                                    <tr class="loading-row">
+                                        <td colspan="8">
+                                            <div class="d-flex justify-content-center py-4">
+                                                <div class="spinner-border text-primary" role="status">
+                                                    <span class="visually-hidden">Loading tickets...</span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Card View (hidden by default) -->
+                        <div class="d-none p-3" id="cardView">
+                            <div class="row g-3" id="ticketsCardGrid">
+                                <!-- Cards will be rendered here -->
+                            </div>
+                        </div>
+
+                        <!-- Empty State -->
+                        <div class="empty-state d-none" id="ticketsEmpty">
+                            <i class="bi bi-inbox"></i>
+                            <h4>No Tickets Found</h4>
+                            <p>There are no tickets matching your filters.</p>
+                            <button class="btn btn-primary" id="createFirstTicket">
+                                <i class="bi bi-plus-lg me-1"></i> Create Ticket
+                            </button>
+                        </div>
+
+                        <!-- Error State -->
+                        <div class="error-state d-none" id="ticketsError">
+                            <i class="bi bi-exclamation-circle"></i>
+                            <h4>Unable to Load Tickets</h4>
+                            <p id="ticketsErrorMessage">An error occurred while loading tickets.</p>
+                            <button class="btn btn-primary" id="retryLoadTickets">
+                                <i class="bi bi-arrow-clockwise me-1"></i> Try Again
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-footer" id="ticketsPagination">
+                        <!-- Pagination -->
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="pagination-info">
+                                Showing <span id="showingFrom">1</span> to <span id="showingTo">10</span> of <span id="totalTickets">0</span> tickets
+                            </div>
+                            <nav aria-label="Tickets pagination">
+                                <ul class="pagination pagination-sm mb-0" id="paginationList">
+                                    <!-- Pagination will be rendered here -->
+                                </ul>
+                            </nav>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Ticket Detail Modal -->
+    <div class="modal fade" id="ticketDetailModal" tabindex="-1" aria-labelledby="ticketDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title" id="ticketDetailModalLabel">Ticket Details</h5>
+                        <span class="text-muted" id="ticketModalId"></span>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Ticket Detail Content -->
+                    <div id="ticketDetailContent">
+                        <!-- Loading state -->
+                        <div class="text-center py-4" id="ticketDetailLoading">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+
+                        <!-- Ticket Info (hidden until loaded) -->
+                        <div class="d-none" id="ticketDetailInfo">
+                            <!-- Header Row -->
+                            <div class="row mb-4">
+                                <div class="col-12">
+                                    <h4 id="ticketSubject"></h4>
+                                    <div class="d-flex gap-2 flex-wrap">
+                                        <span class="badge" id="ticketStatusBadge"></span>
+                                        <span class="badge" id="ticketPriorityBadge"></span>
+                                        <span class="badge bg-secondary" id="ticketCategoryBadge"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Details Grid -->
+                            <div class="row g-3 mb-4">
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Requester</label>
+                                    <p class="mb-0 fw-medium" id="ticketRequester"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Assigned To</label>
+                                    <p class="mb-0 fw-medium" id="ticketAssignedTo"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Assigned Level</label>
+                                    <p class="mb-0 fw-medium" id="ticketAssignedLevel"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Support Level</label>
+                                    <p class="mb-0 fw-medium" id="ticketSupportLevel"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Escalation Count</label>
+                                    <p class="mb-0 fw-medium" id="ticketEscalationCount"></p>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="text-muted small">Location</label>
+                                    <p class="mb-0" id="ticketLocation"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Created</label>
+                                    <p class="mb-0" id="ticketCreatedAt"></p>
+                                </div>
+                                <div class="col-6 col-md-3">
+                                    <label class="text-muted small">Last Updated</label>
+                                    <p class="mb-0" id="ticketUpdatedAt"></p>
+                                </div>
+                            </div>
+
+                            <!-- Description -->
+                            <div class="mb-4">
+                                <label class="text-muted small">Description</label>
+                                <div class="description-box" id="ticketDescription"></div>
+                            </div>
+
+                            <!-- AI Recommendations -->
+                            <div class="ai-recommendations-section mb-4" id="aiRecommendationsSection">
+                                <div class="card bg-light border-0">
+                                    <div class="card-header bg-transparent">
+                                        <h6 class="mb-0">
+                                            <i class="bi bi-robot me-2 text-primary"></i>AI Recommendations
+                                        </h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <ul class="list-unstyled mb-0" id="aiRecommendationsList">
+                                            <!-- Recommendations will be loaded here -->
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Status Change -->
+                            <div class="status-change-section">
+                                <h6 class="mb-3">Update Status</h6>
+                                <div class="row g-2">
+                                    <div class="col-12 col-md-8">
+                                        <select class="form-select" id="newStatusSelect">
+                                            <option value="">Select new status...</option>
+                                            <option value="OPEN">Open</option>
+                                            <option value="IN_PROGRESS">In Progress</option>
+                                            <option value="RESOLVED">Resolved</option>
+                                            <option value="CLOSED">Closed</option>
+                                        </select>
+                                        <small class="text-muted">Valid transitions: OPEN → IN_PROGRESS → RESOLVED → CLOSED</small>
+                                    </div>
+                                    <div class="col-12 col-md-4">
+                                        <button class="btn btn-primary w-100" id="updateStatusBtn">
+                                            <i class="bi bi-check-lg me-1"></i> Update Status
+                                        </button>
+                                    </div>
+                                    <div class="col-12" id="resolutionSummaryContainer" style="display: none;">
+                                        <label for="resolutionSummary" class="form-label">Resolution Summary</label>
+                                        <textarea class="form-control" id="resolutionSummary" rows="3" placeholder="Enter resolution details..."></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" id="triggerWorkflowBtn">
+                        <i class="bi bi-play-fill me-1"></i> Trigger Workflow
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Ticket Modal -->
+    <div class="modal fade" id="createTicketModal" tabindex="-1" aria-labelledby="createTicketModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="createTicketModalLabel">Create New Ticket</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="createTicketForm" novalidate>
+                    <div class="modal-body">
+                        <div class="row g-3">
+                            <!-- Title -->
+                            <div class="col-12">
+                                <label for="newTicketSubject" class="form-label">Title <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" id="newTicketSubject" required maxlength="200">
+                                <div class="invalid-feedback">Please enter a title.</div>
+                            </div>
+                            <!-- Type -->
+                            <div class="col-12 col-md-6">
+                                <label for="newTicketType" class="form-label">Type <span class="text-danger">*</span></label>
+                                <select class="form-select" id="newTicketType" required>
+                                    <option value="INCIDENT">Incident</option>
+                                    <option value="SERVICE_REQUEST">Service Request</option>
+                                    <option value="MAINTENANCE">Maintenance</option>
+                                </select>
+                                <div class="invalid-feedback">Please select a type.</div>
+                            </div>
+                            <!-- Priority (Display only - system assigned) -->
+                            <div class="col-12 col-md-6">
+                                <label for="newTicketPriority" class="form-label">Priority</label>
+                                <input type="text" class="form-control" id="newTicketPriority" value="System Assigned" disabled>
+                                <small class="text-muted">Priority will be automatically assigned</small>
+                            </div>
+                            <!-- Location Section -->
+                            <div class="col-12">
+                                <label class="form-label">Location <span class="text-danger">*</span></label>
+                                <div class="card border-secondary">
+                                    <div class="card-body">
+                                        <!-- Use My Location Button -->
+                                        <div class="d-grid gap-2 mb-3">
+                                            <button type="button" class="btn btn-outline-primary" id="useLocationBtn">
+                                                <i class="bi bi-geo-alt-fill me-2"></i>Use My Current Location
+                                            </button>
+                                        </div>
+                                        
+                                        <!-- Location Status -->
+                                        <div id="locationStatus" class="alert alert-info mb-3 d-none">
+                                            <i class="bi bi-info-circle me-2"></i>
+                                            <span id="locationStatusText"></span>
+                                        </div>
+                                        
+                                        <!-- Hidden Location Inputs -->
+                                        <input type="hidden" id="newTicketLatitude" required>
+                                        <input type="hidden" id="newTicketLongitude" required>
+                                        
+                                        <!-- Manual Coordinates -->
+                                        <div class="row g-2 mb-3">
+                                            <div class="col-6">
+                                                <label for="manualLatitude" class="form-label small">Latitude</label>
+                                                <input type="number" class="form-control form-control-sm" id="manualLatitude" step="0.000001" placeholder="e.g., 30.0444">
+                                            </div>
+                                            <div class="col-6">
+                                                <label for="manualLongitude" class="form-label small">Longitude</label>
+                                                <input type="number" class="form-control form-control-sm" id="manualLongitude" step="0.000001" placeholder="e.g., 31.2357">
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Interactive Map -->
+                                        <div id="mapPicker">
+                                            <label class="form-label small mb-2">Location on Map</label>
+                                            <div id="mapContainer" style="height: 300px; border-radius: 8px; border: 2px solid #dee2e6; overflow: hidden;"></div>
+                                            <small class="text-muted mt-2 d-block"><i class="bi bi-info-circle me-1"></i>Click on the map to set location, or use the button/coordinates above</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="invalid-feedback" id="locationError">Please provide a location by using your current location or entering coordinates manually.</div>
+                            </div>
+                            <!-- Description -->
+                            <div class="col-12">
+                                <label for="newTicketDescription" class="form-label">Description <span class="text-danger">*</span></label>
+                                <textarea class="form-control" id="newTicketDescription" rows="5" required placeholder="Please describe the issue in detail..."></textarea>
+                                <div class="invalid-feedback">Please provide a description.</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-info" id="aiHelpBtn">
+                            <i class="bi bi-magic me-1"></i>
+                            <span class="btn-text">AI Help</span>
+                            <span class="btn-loader d-none">
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                Getting suggestions...
+                            </span>
+                        </button>
+                        <div class="flex-grow-1"></div>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="submitTicketBtn">
+                            <span class="btn-text">Create Ticket</span>
+                            <span class="btn-loader d-none">
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                Creating...
+                            </span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Help Modal -->
+    <div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-gradient" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                    <h5 class="modal-title" id="aiHelpModalLabel">
+                        <i class="bi bi-magic me-2"></i>AI Troubleshooting Suggestions
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Loading State -->
+                    <div id="aiHelpLoading" class="text-center py-5">
+                        <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="text-muted">AI is analyzing your ticket and generating troubleshooting steps...</p>
+                    </div>
+
+                    <!-- AI Suggestions Content -->
+                    <div id="aiHelpContent" class="d-none">
+                        <div class="alert alert-info d-flex align-items-start mb-3">
+                            <i class="bi bi-info-circle-fill me-2 mt-1"></i>
+                            <div>
+                                <strong>AI-Generated Suggestions</strong>
+                                <p class="mb-0 small">Based on your ticket details, here are some troubleshooting steps you can try before submitting.</p>
+                            </div>
+                        </div>
+                        
+                        <div id="aiSuggestionsText" class="ai-suggestions-content">
+                            <!-- AI suggestions will be inserted here -->
+                        </div>
+                    </div>
+
+                    <!-- Error State -->
+                    <div id="aiHelpError" class="d-none">
+                        <div class="alert alert-danger d-flex align-items-start">
+                            <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+                            <div>
+                                <strong>Unable to get AI suggestions</strong>
+                                <p class="mb-0" id="aiHelpErrorMessage">An error occurred while generating suggestions.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="proceedWithTicketBtn">
+                        <i class="bi bi-check-circle me-1"></i>
+                        Proceed with Ticket Creation
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Ticket Confirmation Modal -->
+    <div class="modal fade" id="deleteTicketModal" tabindex="-1" aria-labelledby="deleteTicketModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="deleteTicketModalLabel">Delete Ticket</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to delete this ticket? This action cannot be undone.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmDeleteTicketBtn">
+                        <span class="btn-text">Delete</span>
+                        <span class="btn-loader d-none">
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            Deleting...
+                        </span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update Ticket Confirmation Modal -->
+    <div class="modal fade" id="confirmUpdateTicketModal" tabindex="-1" aria-labelledby="confirmUpdateTicketModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmUpdateTicketModalLabel">Confirm Update</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to update this ticket? Changes will be saved to the backend.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmUpdateTicketBtn">
+                        <span class="btn-text">Update</span>
+                        <span class="btn-loader d-none">
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            Updating...
+                        </span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trigger Workflow Modal -->
+    <div class="modal fade" id="triggerWorkflowModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Trigger Workflow</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted mb-3">Select a workflow to execute for this ticket:</p>
+                    <div id="workflowsList">
+                        <!-- Loading -->
+                        <div class="text-center py-3" id="workflowsLoading">
+                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                            <span class="ms-2">Loading workflows...</span>
+                        </div>
+                        <!-- Workflow options will be rendered here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update Ticket Modal -->
+    <div class="modal fade" id="updateTicketModal" tabindex="-1" aria-labelledby="updateTicketModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <form id="updateTicketForm" class="modal-content" novalidate>
+                <div class="modal-header">
+                    <h5 class="modal-title" id="updateTicketModalLabel">Update Ticket</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <!-- Title -->
+                        <div class="col-12">
+                            <label for="updateTicketTitle" class="form-label">Title <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="updateTicketTitle" name="title" required maxlength="200">
+                            <div class="invalid-feedback">Please enter a title.</div>
+                        </div>
+                        
+                        <!-- Description -->
+                        <div class="col-12">
+                            <label for="updateTicketDescription" class="form-label">Description <span class="text-danger">*</span></label>
+                            <textarea class="form-control" id="updateTicketDescription" name="description" rows="4" required></textarea>
+                            <div class="invalid-feedback">Please provide a description.</div>
+                        </div>
+                        
+                        <!-- Type of Request -->
+                        <div class="col-12 col-md-6">
+                            <label for="updateTicketType" class="form-label">Type <span class="text-danger">*</span></label>
+                            <select class="form-select" id="updateTicketType" name="type_of_request" required>
+                                <option value="INCIDENT">Incident</option>
+                                <option value="SERVICE_REQUEST">Service Request</option>
+                                <option value="MAINTENANCE">Maintenance</option>
+                            </select>
+                            <div class="invalid-feedback">Please select a type.</div>
+                        </div>
+                        
+                        <!-- Status -->
+                        <div class="col-12 col-md-6">
+                            <label for="updateTicketStatus" class="form-label">Status</label>
+                            <select class="form-select" id="updateTicketStatus" name="status">
+                                <option value="OPEN">Open</option>
+                                <option value="IN_PROGRESS">In Progress</option>
+                                <option value="RESOLVED">Resolved</option>
+                                <option value="CLOSED">Closed</option>
+                            </select>
+                            <small class="text-muted">Valid transitions: OPEN → IN_PROGRESS → RESOLVED → CLOSED</small>
+                        </div>
+                        
+                        <!-- Location fields hidden - tickets now use geographic coordinates set at creation -->
+                        <!-- Building and Room are no longer editable after creation -->
+                        
+                        <!-- Resolution Summary (conditional) -->
+                        <div class="col-12" id="updateResolutionSummaryContainer" style="display: none;">
+                            <label for="updateResolutionSummary" class="form-label">Resolution Summary</label>
+                            <textarea class="form-control" id="updateResolutionSummary" name="resolution_summary" rows="3" placeholder="Enter resolution details..."></textarea>
+                            <small class="text-muted">Required when status is RESOLVED or CLOSED</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" id="submitUpdateTicketBtn">
+                        <span class="btn-text">Update Ticket</span>
+                        <span class="btn-loader d-none">
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            Updating...
+                        </span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Confirm Update Modal -->
+    <div class="modal fade" id="confirmUpdateTicketModal" tabindex="-1" aria-labelledby="confirmUpdateTicketModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmUpdateTicketModalLabel">Confirm Update</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    Are you sure you want to update this ticket?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmUpdateTicketBtn">Yes, Update</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Container -->
+    <div id="modal-container"></div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Leaflet JS for Maps -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Sidebar Toggle (inline for immediate functionality) -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var toggle = document.getElementById('sidebarToggle');
+            var sidebar = document.getElementById('sidebar-container');
+            var backdrop = document.getElementById('sidebarBackdrop');
+            
+            if (toggle && sidebar) {
+                toggle.addEventListener('click', function() {
+                    sidebar.classList.toggle('show');
+                    if (backdrop) backdrop.classList.toggle('show');
+                });
+            }
+            if (backdrop) {
+                backdrop.addEventListener('click', function() {
+                    sidebar.classList.remove('show');
+                    backdrop.classList.remove('show');
+                });
+            }
+        });
+    </script>
+    <!-- Mock API (for demo mode - load before other scripts) -->
+    <!-- App Module -->
+    <script type="module" src="/assets/js/app.js"></script>
+    <!-- Tickets Page Script -->
+    <script type="module">
+        import { initTicketsPage } from '/assets/js/pages/tickets.js';
+        document.addEventListener('DOMContentLoaded', initTicketsPage);
+    </script>
+</body>
+</html>
