@@ -1,2 +1,0 @@
-2026-02-06 18:12:52 [error]: Error: getaddrinfo ENOTFOUND mysql
-    at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26)
