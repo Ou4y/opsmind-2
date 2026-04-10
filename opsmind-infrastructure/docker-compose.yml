@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: opsmind-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: opsmind
+      MYSQL_PASSWORD: opsmind
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    ports:
+      - "127.0.0.1:3306:3306"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: opsmind-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: opsmind
+      RABBITMQ_DEFAULT_PASS: opsmind
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: opsmind-phpmyadmin
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: opsmind
+      PMA_PASSWORD: opsmind
+    depends_on:
+      - mysql
+    ports:
+      - "8080:80"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+networks:
+  opsmind-net:
+    name: opsmind-net
+
+volumes:
+  mysql_data:
