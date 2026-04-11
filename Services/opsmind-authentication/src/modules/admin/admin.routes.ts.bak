@@ -524,10 +524,4 @@ router.post(
   adminController.createBuilding.bind(adminController)
 );
 
-
-// Domain routes
-router.get("/domains", domainController.getDomains);
-router.post("/domains", domainController.addDomain);
-router.delete("/domains/:id", domainController.removeDomain);
-
 export default router;

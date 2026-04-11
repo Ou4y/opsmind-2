@@ -36,7 +36,7 @@ function getRoleBasedDashboard() {
             return 'supervisor-dashboard.html';
         
         case 'ADMIN':
-            return 'senior-dashboard.html';  // Admin sees advanced dashboard
+            return 'admin/domains.html';  // Admin sees advanced dashboard
         
         default:
             return 'dashboard.html';  // Fallback to basic dashboard

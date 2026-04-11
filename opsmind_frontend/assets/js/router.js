@@ -14,7 +14,7 @@ import AuthService from '../../services/authService.js';
  */
 const Router = {
     // Pages that don't require authentication
-    publicPages: ['index.html', '/', ''],
+    publicPages: ['index.html','/', ''],
     
     // Pages that require admin role
     adminPages: [
@@ -22,7 +22,8 @@ const Router = {
         'settings.html',
         'admin-dashboard.html',
         'system-logs.html',
-        'admin-reports.html'
+        'admin-reports.html',
+        'domains.html'
     ],
     
     // Pages restricted to STUDENT or DOCTOR only
@@ -40,6 +41,7 @@ const Router = {
     seniorPages: [
         'senior-dashboard.html',
         'workflows.html'  // Can manage workflows
+        
     ],
     
     // Pages for SUPERVISOR role (global view)
@@ -242,7 +244,7 @@ const Router = {
                 return 'supervisor-dashboard.html';
             
             case 'ADMIN':
-                return 'senior-dashboard.html';  // Admin sees advanced dashboard
+                return 'admin/domains.html';  // Admin sees advanced dashboard
             
             default:
                 return 'dashboard.html';  // Fallback to basic dashboard

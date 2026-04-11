@@ -79,6 +79,13 @@ const migrations: string[] = [
   )`,
 
   // Create technician_buildings junction table
+  `CREATE TABLE IF NOT EXISTS allowed_domains (
+    id VARCHAR(36) PRIMARY KEY,
+    domain VARCHAR(255) NOT NULL UNIQUE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+
   `CREATE TABLE IF NOT EXISTS technician_buildings (
     id VARCHAR(36) PRIMARY KEY,
     technician_id VARCHAR(36) NOT NULL,

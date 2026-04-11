@@ -1,3 +1,4 @@
+import { domainRepository } from '@modules/admin/domain.repository';
 import bcrypt from 'bcrypt';
 import { userRepository } from '@modules/users/user.repository';
 import { otpService } from '@modules/otp/otp.service';
@@ -18,11 +19,24 @@ export class AuthService {
       };
     }
 
-    // Validate organization email for doctors and students
-    if (!validateOrganizationEmail(email)) {
-      return {
-        message: `Email must be from the organization domain: @${config.allowedDomain}`,
-      };
+    const allowedDomains = await domainRepository.getActiveDomains();
+    
+    // Validate organization email against DB domains
+    const domainPart = email.split('@')[1];
+    
+    if (allowedDomains.length > 0) {
+      if (!allowedDomains.includes(domainPart)) {
+        return {
+          message: `Email must be from an allowed organization domain: ${allowedDomains.map(d => '@' + d).join(', ')}`,
+        };
+      }
+    } else {
+      // Fallback to static validation if no domains in DB
+      if (!validateOrganizationEmail(email)) {
+        return {
+          message: `Email must be from the organization domain: @${config.allowedDomain}`,
+        };
+      }
     }
 
     // Validate password strength
