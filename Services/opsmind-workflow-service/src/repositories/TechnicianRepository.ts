@@ -15,7 +15,7 @@ export class TechnicianRepository {
       `
         SELECT id, name, latitude, longitude, status
         FROM technicians
-        WHERE status = 'ONLINE'
+        WHERE status = 'ACTIVE'
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
       `,
