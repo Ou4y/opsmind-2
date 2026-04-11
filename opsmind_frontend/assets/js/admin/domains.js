@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
         hideError();
         
         try {
-            const token = localStorage.getItem('token');
+            const token = localStorage.getItem('opsmind_token');
             const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.addError.classList.add('d-none');
         
         try {
-            const token = localStorage.getItem('token');
+            const token = localStorage.getItem('opsmind_token');
             const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains`, {
                 method: 'POST',
                 headers: {
@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.confirmDeleteBtn.disabled = true;
         
         try {
-            const token = localStorage.getItem('token');
+            const token = localStorage.getItem('opsmind_token');
             const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains/${encodeURIComponent(domainToDelete)}`, {
                 method: 'DELETE',
                 headers: {
