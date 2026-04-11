@@ -1,19 +1,15 @@
-const Notification = require("../models/notification.model");
+const Notification = require("../models/Notification");
 
-exports.sendInAppNotification = async (userId, message, type) => {
-  try {
-    const notification = await Notification.create({
-      userId,
-      message,
-      type
-    });
+async function sendInAppNotification(userId, message) {
+  //store in MongoDB
+  await Notification.create({
+    userId,
+    message
 
-    console.log(" In-App Notification Saved:", notification._id);
+  });
 
-    return notification;
+  
+  console.log(`In-App → User ${userId}: ${message}`);
+}
 
-  } catch (error) {
-    console.error(" Failed to save In-App Notification:", error.message);
-    throw error; 
-  }
-};
+module.exports = { sendInAppNotification };
