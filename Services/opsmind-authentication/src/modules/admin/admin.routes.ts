@@ -524,10 +524,125 @@ router.post(
   adminController.createBuilding.bind(adminController)
 );
 
+/**
+ * @swagger
+ * /admin/domains:
+ *   get:
+ *     summary: Get all allowed email domains
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of allowed domains
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                         example: 1
+ *                       domain:
+ *                         type: string
+ *                         example: miuegypt.edu.eg
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin role required
+ *   post:
+ *     summary: Add a new allowed email domain
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - domain
+ *             properties:
+ *               domain:
+ *                 type: string
+ *                 example: miuegypt.edu.eg
+ *                 description: Domain name without @ symbol
+ *     responses:
+ *       201:
+ *         description: Domain added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Domain added successfully
+ *                 domain:
+ *                   type: string
+ *                   example: miuegypt.edu.eg
+ *       400:
+ *         description: Invalid input or duplicate domain
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin role required
+ */
+router.get('/domains', domainController.getDomains);
+router.post('/domains', domainController.addDomain);
 
-// Domain routes
-router.get("/domains", domainController.getDomains);
-router.post("/domains", domainController.addDomain);
-router.delete("/domains/:id", domainController.removeDomain);
+/**
+ * @swagger
+ * /admin/domains/{id}:
+ *   delete:
+ *     summary: Remove an allowed email domain
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           example: 1
+ *         description: Domain ID to remove
+ *     responses:
+ *       200:
+ *         description: Domain removed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Domain removed successfully
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin role required
+ *       500:
+ *         description: Internal server error
+ */
+router.delete('/domains/:id', domainController.removeDomain);
 
 export default router;
