@@ -174,6 +174,12 @@ router.get('/dashboard/group/:groupId/metrics', monitorCtrl.getGroupMetrics);
 router.get('/dashboard/activity/recent', monitorCtrl.getRecentActivity);
 
 // ══════════════════════════════════════
+//  Hierarchy-Based Dashboards (NEW)
+// ══════════════════════════════════════
+router.get('/dashboard/senior/:userId', monitorCtrl.getSeniorDashboard);
+router.get('/dashboard/supervisor/:userId', monitorCtrl.getSupervisorDashboard);
+
+// ══════════════════════════════════════
 //  Workflow Logs (NEW — frontend calls this)
 //  GET /workflow/logs/:ticketId
 // ══════════════════════════════════════

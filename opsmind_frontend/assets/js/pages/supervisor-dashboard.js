@@ -1,36 +1,26 @@
 /**
- * OpsMind - Supervisor Dashboard Module
+ * OpsMind - Supervisor Dashboard Module (Hierarchy-Based)
  * 
- * Handles supervisor functionality:
- * - System-wide overview and analytics
- * - SLA monitoring and compliance reporting
- * - Team performance metrics
- * - Support group management
- * - Workflow audit logs
- * - Advanced analytics and insights
+ * Modern dashboard using hierarchy-based API:
+ * - Team overview with metrics
+ * - Senior technicians management
+ * - Junior technicians under seniors
+ * - All team tickets
+ * - Workload distribution visualization
  */
 
 import UI from '/assets/js/ui.js';
-import WorkflowService from '/services/workflowService.js';
-import TicketService from '/services/ticketService.js';
+import { getSupervisorDashboard } from '/services/workflowService.js';
 import AuthService from '/services/authService.js';
 
 /**
  * Page state
  */
 const state = {
-    metrics: null,
-    slaReport: null,
-    escalationStats: null,
-    teamMetrics: null,
-    supportGroups: [],
-    auditLogs: [],
+    dashboardData: null,
     currentUser: null,
-    dateRange: 'week',
     isLoading: false,
-    refreshInterval: null,
-    modals: {},
-    charts: {} // Store chart instances for proper cleanup
+    refreshInterval: null
 };
 
 /**
@@ -46,18 +36,25 @@ export async function initSupervisorDashboard() {
         window.location.href = '/index.html';
         return;
     }
-    
-    // Initialize modals
-    state.modals.supportGroups = new bootstrap.Modal(document.getElementById('supportGroupsModal'));
-    
-    // Set up event listeners
-    setupEventListeners();
+
+    // Display user name
+    const userNameEl = document.getElementById('userName');
+    if (userNameEl && state.currentUser.name) {
+        userNameEl.textContent = state.currentUser.name;
+    }
     
     // Load initial data
     await loadDashboardData();
     
     // Set up auto-refresh every 60 seconds
-    state.refreshInterval = setInterval(() => loadDashboardData(false), 60000);
+    state.refreshInterval = setInterval(loadDashboardData, 60000);
+    
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (state.refreshInterval) {
+            clearInterval(state.refreshInterval);
+        }
+    });
 }
 
 /**
@@ -74,464 +71,396 @@ function waitForApp() {
 }
 
 /**
- * Set up event listeners
+ * Load dashboard data from hierarchy API
  */
-function setupEventListeners() {
-    // Refresh button
-    document.getElementById('refreshDashboard')?.addEventListener('click', async () => {
-        UI.showToast('Refreshing dashboard...', 'info');
-        await loadDashboardData();
-    });
-
-    // Date range filter
-    document.getElementById('dateRangeFilter')?.addEventListener('change', async (e) => {
-        state.dateRange = e.target.value;
-        await loadDashboardData();
-    });
-
-    // Manage support groups button
-    document.getElementById('manageSupportGroupsBtn')?.addEventListener('click', () => {
-        loadSupportGroups();
-        state.modals.supportGroups.show();
-    });
-
-    // Audit action filter
-    document.getElementById('auditActionFilter')?.addEventListener('change', () => {
-        renderAuditLogs();
-    });
-
-    // Cleanup on page unload
-    window.addEventListener('beforeunload', () => {
-        if (state.refreshInterval) {
-            clearInterval(state.refreshInterval);
-        }
-    });
-}
-
-/**
- * Load all dashboard data
- */
-async function loadDashboardData(showLoading = true) {
+async function loadDashboardData() {
     if (state.isLoading) return;
     
     state.isLoading = true;
+    showLoading();
     
     try {
-        const dateFilter = getDateRangeFilter();
+        console.log('Loading supervisor dashboard for user:', state.currentUser.id);
         
-        // Fetch all data in parallel
-        const [metricsResp, slaResp, escalationResp] = await Promise.all([
-            WorkflowService.getOverviewMetrics(dateFilter).catch(err => {
-                console.error('Error loading metrics:', err);
-                return null;
-            }),
-            WorkflowService.getSLAReport(dateFilter).catch(err => {
-                console.error('Error loading SLA report:', err);
-                return null;
-            }),
-            WorkflowService.getEscalationReport(dateFilter).catch(err => {
-                console.error('Error loading escalation stats:', err);
-                return null;
-            })
-        ]);
+        const response = await getSupervisorDashboard(state.currentUser.id);
         
-        state.metrics = metricsResp?.data || null;
-        state.slaReport = slaResp?.data || null;
-        state.escalationStats = escalationResp?.data || null;
+        if (!response.success || !response.data) {
+            throw new Error(response.message || 'Failed to load dashboard data');
+        }
         
-        // Update all visualizations
-        updateOverviewStats();
-        renderOverviewCharts();
-        renderSLAMonitoring();
-        renderTeamPerformance();
-        renderAnalytics();
+        state.dashboardData = response.data;
+        console.log('Dashboard data loaded:', state.dashboardData);
+        
+        // Hide loading, show content
+        hideLoading();
+        
+        // Update all sections
+        updateMetricCards();
+        renderSeniorsTable();
+        renderJuniorsTable();
+        renderTicketsTable();
+        renderWorkloadCharts();
         
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        if (showLoading) {
-            UI.showToast('Failed to load dashboard data', 'error');
-        }
+        showError(error.message || 'Failed to load dashboard data');
     } finally {
         state.isLoading = false;
     }
 }
 
 /**
- * Get date range filter parameters
+ * Show loading state
  */
-function getDateRangeFilter() {
-    const now = new Date();
-    let startDate;
+function showLoading() {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
+    const errorEl = document.getElementById('dashboardError');
     
-    switch (state.dateRange) {
-        case 'today':
-            startDate = new Date(now);
-            startDate.setHours(0, 0, 0, 0);
-            break;
-        case 'week':
-            startDate = new Date(now);
-            startDate.setDate(now.getDate() - 7);
-            break;
-        case 'month':
-            startDate = new Date(now);
-            startDate.setMonth(now.getMonth() - 1);
-            break;
-        case 'quarter':
-            startDate = new Date(now);
-            startDate.setMonth(now.getMonth() - 3);
-            break;
-        default:
-            startDate = new Date(now);
-            startDate.setDate(now.getDate() - 7);
-    }
-    
-    return {
-        start_date: startDate.toISOString(),
-        end_date: now.toISOString()
-    };
+    if (loadingEl) loadingEl.classList.remove('d-none');
+    if (contentEl) contentEl.classList.add('d-none');
+    if (errorEl) errorEl.classList.add('d-none');
 }
 
 /**
- * Update overview statistics cards
+ * Hide loading, show content
  */
-function updateOverviewStats() {
-    if (!state.metrics) return;
+function hideLoading() {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
     
-    const metrics = state.metrics;
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.remove('d-none');
+}
+
+/**
+ * Show error state
+ */
+function showError(message) {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
+    const errorEl = document.getElementById('dashboardError');
+    const errorMsgEl = document.getElementById('errorMessage');
+    
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.add('d-none');
+    if (errorEl) errorEl.classList.remove('d-none');
+    if (errorMsgEl) errorMsgEl.textContent = message;
+}
+
+/**
+ * Retry loading data
+ */
+window.retryLoadDashboard = async function() {
+    await loadDashboardData();
+};
+
+/**
+ * Update metric cards
+ */
+function updateMetricCards() {
+    if (!state.dashboardData) return;
+    
+    const { teamStructure, tickets } = state.dashboardData;
+    
+    // Seniors count
+    const seniorsCount = teamStructure?.seniors?.length || 0;
+    document.getElementById('seniorsCount').textContent = seniorsCount;
+    document.getElementById('seniorCount').textContent = seniorsCount;
+    
+    // Juniors count
+    const juniorsCount = teamStructure?.juniors?.length || 0;
+    document.getElementById('juniorsCount').textContent = juniorsCount;
+    document.getElementById('juniorCount').textContent = juniorsCount;
     
     // Total tickets
-    document.getElementById('totalTicketsCount').textContent = metrics.total_tickets || 0;
-    document.getElementById('totalTicketsTrend').textContent = `${metrics.total_tickets_trend || 0}%`;
+    const totalTickets = tickets?.length || 0;
+    document.getElementById('totalTicketsCount').textContent = totalTickets;
+    document.getElementById('ticketCount').textContent = totalTickets;
     
-    // Resolved tickets
-    document.getElementById('resolvedCount').textContent = metrics.resolved_tickets || 0;
-    document.getElementById('resolvedTrend').textContent = `${metrics.resolved_trend || 0}%`;
-    
-    // SLA metrics
-    if (state.slaReport) {
-        document.getElementById('slaBreachedCount').textContent = state.slaReport.breached || 0;
-        const complianceRate = state.slaReport.compliance_rate || 0;
-        document.getElementById('slaComplianceRate').textContent = `${complianceRate}% Compliance`;
-    }
-    
-    // Escalation metrics
-    if (state.escalationStats) {
-        document.getElementById('escalationsCount').textContent = state.escalationStats.total || 0;
-        const escalationRate = state.escalationStats.rate || 0;
-        document.getElementById('escalationRate').textContent = `${escalationRate}% of tickets`;
-    }
+    // Average tickets per junior
+    const avgTickets = juniorsCount > 0 ? (totalTickets / juniorsCount).toFixed(1) : '0';
+    document.getElementById('avgTicketsPerJunior').textContent = avgTickets;
 }
 
 /**
- * Render overview charts
+ * Render seniors table
  */
-function renderOverviewCharts() {
-    renderTicketTrendChart();
-    renderPriorityDistribution();
-    renderStatusBreakdown();
-    renderStatusDistribution();
-}
-
-/**
- * Render ticket trend chart using Chart.js
- */
-function renderTicketTrendChart() {
-    const container = document.getElementById('ticketTrendChart');
+function renderSeniorsTable() {
+    if (!state.dashboardData) return;
     
-    if (!state.metrics || !state.metrics.ticket_trend) {
-        container.innerHTML = '<p class="text-muted text-center py-5">No trend data available</p>';
+    const { teamStructure } = state.dashboardData;
+    const seniors = teamStructure?.seniors || [];
+    
+    const tableBodyEl = document.getElementById('seniorsTableBody');
+    const emptyEl = document.getElementById('seniorsEmpty');
+    
+    if (seniors.length === 0) {
+        if (tableBodyEl) tableBodyEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('d-none');
         return;
     }
     
-    // Destroy existing chart if any
-    if (state.charts.ticketTrend) {
-        state.charts.ticketTrend.destroy();
-    }
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (!tableBodyEl) return;
     
-    // Clear container and create canvas
-    container.innerHTML = '<canvas id="ticketTrendCanvas"></canvas>';
-    const canvas = document.getElementById('ticketTrendCanvas');
-    const ctx = canvas.getContext('2d');
+    tableBodyEl.innerHTML = '';
     
-    const trend = state.metrics.ticket_trend;
-    
-    state.charts.ticketTrend = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: trend.map(d => formatChartDate(d.date)),
-            datasets: [{
-                label: 'Tickets',
-                data: trend.map(d => d.count),
-                borderColor: '#4361ee',
-                backgroundColor: 'rgba(67, 97, 238, 0.1)',
-                tension: 0.4,
-                fill: true,
-                pointRadius: 4,
-                pointHoverRadius: 6
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: false
-                },
-                tooltip: {
-                    mode: 'index',
-                    intersect: false
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        precision: 0
-                    }
-                }
-            }
-        }
+    seniors.forEach(senior => {
+        const row = document.createElement('tr');
+        
+        const juniorCount = senior.juniorCount || 0;
+        const ticketCount = senior.assignedTicketsCount || 0;
+        const statusClass = ticketCount > 10 ? 'danger' : ticketCount > 5 ? 'warning' : 'success';
+        const statusIcon = ticketCount > 10 ? 'exclamation-triangle' : ticketCount > 5 ? 'hourglass-split' : 'check-circle';
+        const statusText = ticketCount > 10 ? 'Heavy Load' : ticketCount > 5 ? 'Moderate Load' : 'Light Load';
+        
+        row.innerHTML = `
+            <td>
+                <div class="d-flex align-items-center">
+                    <div class="avatar-circle bg-primary text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
+                        ${UI.escapeHTML((senior.name || 'U')[0].toUpperCase())}
+                    </div>
+                    <span class="fw-semibold">${UI.escapeHTML(senior.name || 'Unknown')}</span>
+                </div>
+            </td>
+            <td><small class="text-muted">${UI.escapeHTML(senior.email || 'No email')}</small></td>
+            <td>
+                <span class="badge bg-${statusClass} px-2 py-1">
+                    <i class="bi bi-${statusIcon} me-1"></i>
+                    ${statusText}
+                </span>
+            </td>
+            <td>
+                <span class="badge bg-info-subtle text-info px-2 py-1">
+                    <i class="bi bi-people me-1"></i>
+                    ${juniorCount} junior${juniorCount !== 1 ? 's' : ''}
+                </span>
+            </td>
+            <td>
+                <span class="badge bg-primary-subtle text-primary px-2 py-1">
+                    <i class="bi bi-ticket-perforated me-1"></i>
+                    ${ticketCount} ticket${ticketCount !== 1 ? 's' : ''}
+                </span>
+            </td>
+        `;
+        
+        tableBodyEl.appendChild(row);
     });
 }
 
 /**
- * Render priority distribution using Chart.js
+ * Render juniors table
  */
-function renderPriorityDistribution() {
-    const container = document.getElementById('priorityDistribution');
+function renderJuniorsTable() {
+    if (!state.dashboardData) return;
     
-    if (!state.metrics || !state.metrics.by_priority) {
-        container.innerHTML = '<p class="text-muted text-center">No data available</p>';
+    const { teamStructure } = state.dashboardData;
+    const juniors = teamStructure?.juniors || [];
+    
+    const tableBodyEl = document.getElementById('juniorsTableBody');
+    const emptyEl = document.getElementById('juniorsEmpty');
+    
+    if (juniors.length === 0) {
+        if (tableBodyEl) tableBodyEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('d-none');
         return;
     }
     
-    // Destroy existing chart if any
-    if (state.charts.priority) {
-        state.charts.priority.destroy();
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (!tableBodyEl) return;
+    
+    tableBodyEl.innerHTML = '';
+    
+    juniors.forEach(junior => {
+        const row = document.createElement('tr');
+        
+        const ticketCount = junior.assignedTicketsCount || 0;
+        const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
+        const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
+        const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
+        const seniorName = junior.seniorName || 'Unassigned';
+        
+        row.innerHTML = `
+            <td>
+                <div class="d-flex align-items-center">
+                    <div class="avatar-circle bg-success text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
+                        ${UI.escapeHTML((junior.name || 'U')[0].toUpperCase())}
+                    </div>
+                    <span class="fw-semibold">${UI.escapeHTML(junior.name || 'Unknown')}</span>
+                </div>
+            </td>
+            <td>
+                <span class="text-muted small">
+                    <i class="bi bi-arrow-up-right me-1"></i>
+                    ${UI.escapeHTML(seniorName)}
+                </span>
+            </td>
+            <td>
+                <span class="badge bg-${statusClass} px-2 py-1">
+                    <i class="bi bi-${statusIcon} me-1"></i>
+                    ${statusText}
+                </span>
+            </td>
+            <td>
+                <span class="badge bg-primary-subtle text-primary px-2 py-1">
+                    <i class="bi bi-ticket-perforated me-1"></i>
+                    ${ticketCount} ticket${ticketCount !== 1 ? 's' : ''}
+                </span>
+            </td>
+        `;
+        
+        tableBodyEl.appendChild(row);
+    });
+}
+
+/**
+ * Render tickets table
+ */
+function renderTicketsTable() {
+    if (!state.dashboardData) return;
+    
+    const { tickets } = state.dashboardData;
+    
+    const tableBodyEl = document.getElementById('ticketsTableBody');
+    const emptyEl = document.getElementById('ticketsEmpty');
+    
+    if (!tickets || tickets.length === 0) {
+        if (tableBodyEl) tableBodyEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('d-none');
+        return;
     }
     
-    // Clear container and create canvas
-    container.innerHTML = '<canvas id="priorityCanvas"></canvas>';
-    const canvas = document.getElementById('priorityCanvas');
-    const ctx = canvas.getContext('2d');
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (!tableBodyEl) return;
     
-    const priorities = state.metrics.by_priority;
-    const priorityOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+    tableBodyEl.innerHTML = '';
+    
+    tickets.forEach(ticket => {
+        const row = document.createElement('tr');
+        
+        const ticketId = ticket.ticketId || ticket.id || 'N/A';
+        const title = ticket.title || 'No title';
+        const assignedJunior = ticket.assignedTo || ticket.assigned_to_name || 'Unassigned';
+        const seniorOwner = ticket.seniorName || 'N/A';
+        const status = ticket.status || 'UNKNOWN';
+        const priority = ticket.priority || 'UNKNOWN';
+        const createdAt = ticket.createdAt || ticket.created_at;
+        
+        const location = ticket.location?.latitude && ticket.location?.longitude
+            ? `${ticket.location.latitude.toFixed(4)}, ${ticket.location.longitude.toFixed(4)}`
+            : 'N/A';
+        const hasLocation = ticket.location?.latitude && ticket.location?.longitude;
+        
+        // Status icons
+        const statusIcons = {
+            'OPEN': 'circle',
+            'IN_PROGRESS': 'hourglass-split',
+            'RESOLVED': 'check-circle-fill',
+            'CLOSED': 'x-circle',
+            'ESCALATED': 'exclamation-circle-fill'
+        };
+        
+        // Priority icons
+        const priorityIcons = {
+            'CRITICAL': 'exclamation-triangle-fill',
+            'HIGH': 'exclamation-circle',
+            'MEDIUM': 'dash-circle',
+            'LOW': 'check-circle'
+        };
+        
+        row.innerHTML = `
+            <td>
+                <a href="#" onclick="window.viewTicket('${UI.escapeHTML(ticketId)}'); return false;" class="text-decoration-none fw-semibold">
+                    <i class="bi bi-ticket-detailed me-1"></i>
+                    ${UI.escapeHTML(ticketId.toString().substring(0, 8))}...
+                </a>
+            </td>
+            <td>
+                <div class="text-truncate" style="max-width: 200px;" title="${UI.escapeHTML(title)}">
+                    ${UI.escapeHTML(title)}
+                </div>
+            </td>
+            <td>
+                <div class="d-flex align-items-center">
+                    <div class="avatar-circle bg-secondary text-white me-2" style="width: 24px; height: 24px; font-size: 0.7rem;">
+                        ${UI.escapeHTML((assignedJunior || 'U')[0].toUpperCase())}
+                    </div>
+                    <small>${UI.escapeHTML(assignedJunior)}</small>
+                </div>
+            </td>
+            <td><small  class="text-muted">${UI.escapeHTML(seniorOwner)}</small></td>
+            <td>
+                <span class="badge ${getStatusBadgeClass(status)} px-2 py-1">
+                    <i class="bi bi-${statusIcons[status.toUpperCase()] || 'circle'} me-1"></i>
+                    ${UI.escapeHTML(status)}
+                </span>
+            </td>
+            <td>
+                <span class="badge ${getPriorityBadgeClass(priority)} px-2 py-1">
+                    <i class="bi bi-${priorityIcons[priority.toUpperCase()] || 'circle'} me-1"></i>
+                    ${UI.escapeHTML(priority)}
+                </span>
+            </td>
+            <td><small class="text-muted">${UI.formatDate(createdAt)}</small></td>
+            <td>
+                ${hasLocation ? `
+                    <a href="https://www.google.com/maps?q=${ticket.location.latitude},${ticket.location.longitude}" 
+                       target="_blank" class="btn btn-sm btn-outline-primary">
+                        <i class="bi bi-geo-alt"></i>
+                    </a>
+                ` : '<span class="text-muted small">N/A</span>'}
+            </td>
+        `;
+        
+        tableBodyEl.appendChild(row);
+    });
+}
+
+/**
+ * Render workload charts
+ */
+function renderWorkloadCharts() {
+    if (!state.dashboardData || !state.dashboardData.workload) return;
+    
+    const { workload } = state.dashboardData;
+    
+    // Render by Status
+    renderWorkloadByStatus(workload.byStatus || {});
+    
+    // Render by Priority
+    renderWorkloadByPriority(workload.byPriority || {});
+}
+
+/**
+ * Render workload by status
+ */
+function renderWorkloadByStatus(byStatus) {
+    const container = document.getElementById('statusWorkload');
+    if (!container) return;
+    
+    const statuses = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
     const colors = {
-        'CRITICAL': '#dc2626',
-        'HIGH': '#f59e0b',
-        'MEDIUM': '#3b82f6',
-        'LOW': '#10b981'
-    };
-    
-    const data = priorityOrder.map(p => priorities[p] || 0);
-    
-    state.charts.priority = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-            labels: priorityOrder,
-            datasets: [{
-                data: data,
-                backgroundColor: priorityOrder.map(p => colors[p]),
-                borderWidth: 2,
-                borderColor: '#fff'
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: {
-                        padding: 15,
-                        font: {
-                            size: 12
-                        }
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            const label = context.label || '';
-                            const value = context.parsed || 0;
-                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                            return `${label}: ${value} (${percentage}%)`;
-                        }
-                    }
-                }
-            }
-        }
-    });
-}
-
-/**
- * Render status breakdown
- */
-function renderStatusBreakdown() {
-    const container = document.getElementById('statusBreakdown');
-    
-    if (!state.metrics || !state.metrics.by_status) {
-        container.innerHTML = '<p class="text-muted text-center">No data available</p>';
-        return;
-    }
-    
-    const statuses = state.metrics.by_status;
-    const total = Object.values(statuses).reduce((a, b) => a + b, 0) || 1;
-    
-    let html = '<div class="table-responsive"><table class="table table-sm">';
-    html += '<thead><tr><th>Status</th><th>Count</th><th>Percentage</th><th>Distribution</th></tr></thead><tbody>';
-    
-    const statusOrder = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'ESCALATED'];
-    const statusColors = {
-        'OPEN': 'info',
-        'IN_PROGRESS': 'primary',
-        'RESOLVED': 'success',
-        'CLOSED': 'secondary',
-        'ESCALATED': 'danger'
-    };
-    
-    statusOrder.forEach(status => {
-        const count = statuses[status] || 0;
-        if (count > 0) {
-            const percentage = ((count / total) * 100).toFixed(1);
-            
-            html += `
-                <tr>
-                    <td><strong>${status.replace('_', ' ')}</strong></td>
-                    <td><span class="badge bg-${statusColors[status] || 'secondary'}">${count}</span></td>
-                    <td>${percentage}%</td>
-                    <td>
-                        <div class="progress" style="height: 20px;">
-                            <div class="progress-bar bg-${statusColors[status] || 'secondary'}" role="progressbar" 
-                                 style="width: ${percentage}%"></div>
-                        </div>
-                    </td>
-                </tr>
-            `;
-        }
-    });
-    
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
-}
-
-/**
- * Render status distribution using Chart.js
- */
-function renderStatusDistribution() {
-    const container = document.getElementById('statusDistribution');
-    
-    if (!state.metrics || !state.metrics.by_status) {
-        container.innerHTML = '<p class="text-muted text-center">No data available</p>';
-        return;
-    }
-    
-    // Destroy existing chart if any
-    if (state.charts.status) {
-        state.charts.status.destroy();
-    }
-    
-    // Clear container and create canvas
-    container.innerHTML = '<canvas id="statusCanvas"></canvas>';
-    const canvas = document.getElementById('statusCanvas');
-    const ctx = canvas.getContext('2d');
-    
-    const statuses = state.metrics.by_status;
-    const statusOrder = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
-    const colors = {
-        'OPEN': '#6c757d',
-        'IN_PROGRESS': '#0dcaf0',
+        'OPEN': '#0dcaf0',
+        'IN_PROGRESS': '#6f42c1',
         'RESOLVED': '#198754',
-        'CLOSED': '#212529'
+        'CLOSED': '#6c757d'
     };
     
-    const data = statusOrder.map(s => statuses[s] || 0);
+    let html = '<div class="workload-bars">';
     
-    state.charts.status = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-            labels: statusOrder,
-            datasets: [{
-                data: data,
-                backgroundColor: statusOrder.map(s => colors[s]),
-                borderWidth: 2,
-                borderColor: '#fff'
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: {
-                        padding: 15,
-                        font: {
-                            size: 12
-                        }
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            const label = context.label || '';
-                            const value = context.parsed || 0;
-                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                            const percentage = total > 0 ? ((value / total) * 100).toFixed(1) : 0;
-                            return `${label}: ${value} (${percentage}%)`;
-                        }
-                    }
-                }
-            }
-        }
-    });
-}
-
-/**
- * Render SLA monitoring
- */
-function renderSLAMonitoring() {
-    if (!state.slaReport) return;
-    
-    const sla = state.slaReport;
-    
-    // Update SLA summary cards
-    document.getElementById('slaOnTrack').textContent = sla.on_track || 0;
-    document.getElementById('slaAtRisk').textContent = sla.at_risk || 0;
-    document.getElementById('slaBreached').textContent = sla.breached || 0;
-    document.getElementById('avgResolutionTime').textContent = formatTime(sla.avg_resolution_time || 0);
-    
-    // Render SLA tickets list
-    const container = document.getElementById('slaTicketsList');
-    
-    if (!sla.critical_tickets || sla.critical_tickets.length === 0) {
-        container.innerHTML = '<p class="text-muted text-center py-3">No tickets approaching SLA deadline</p>';
-        return;
-    }
-    
-    let html = '<div class="list-group">';
-    
-    sla.critical_tickets.slice(0, 10).forEach(ticket => {
-        const urgencyClass = ticket.sla_breached ? 'border-danger' : 
-                            ticket.at_risk ? 'border-warning' : 'border-success';
+    statuses.forEach(status => {
+        const count = byStatus[status] || 0;
+        const percentage = count > 0 ? Math.min((count / 20) * 100, 100) : 0;
         
         html += `
-            <div class="list-group-item ${urgencyClass}">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <h6 class="mb-1">Ticket #${UI.escapeHTML(ticket.id)}</h6>
-                        <p class="mb-1 small">${UI.escapeHTML(ticket.title)}</p>
-                        <small class="text-muted">
-                            Location: ${ticket.latitude && ticket.longitude ? `${ticket.latitude}, ${ticket.longitude}` : 'Not available'} | 
-                            Time Remaining: ${ticket.time_remaining || 'N/A'}
-                        </small>
-                        ${ticket.latitude && ticket.longitude ? `<br><small><a href="https://www.google.com/maps?q=${ticket.latitude},${ticket.longitude}" target="_blank" class="text-decoration-none"><i class="bi bi-map me-1"></i>Open in Maps</a></small>` : ''}
-                    </div>
-                    <span class="badge ${ticket.sla_breached ? 'bg-danger' : ticket.at_risk ? 'bg-warning text-dark' : 'bg-success'}">
-                        ${ticket.sla_breached ? 'BREACHED' : ticket.at_risk ? 'AT RISK' : 'OK'}
-                    </span>
+            <div class="workload-bar-item mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="small">${status.replace('_', ' ')}</span>
+                    <span class="small fw-bold">${count}</span>
+                </div>
+                <div class="progress" style="height: 10px;">
+                    <div class="progress-bar" style="width: ${percentage}%; background-color: ${colors[status]}"></div>
                 </div>
             </div>
         `;
@@ -542,354 +471,34 @@ function renderSLAMonitoring() {
 }
 
 /**
- * Render team performance
+ * Render workload by priority
  */
-function renderTeamPerformance() {
-    renderTeamPerformanceList();
-    renderTopPerformers();
-    renderWorkloadBalance();
-}
-
-/**
- * Render team performance list
- */
-function renderTeamPerformanceList() {
-    const container = document.getElementById('teamPerformanceList');
+function renderWorkloadByPriority(byPriority) {
+    const container = document.getElementById('priorityWorkload');
+    if (!container) return;
     
-    if (!state.metrics || !state.metrics.team_performance) {
-        container.innerHTML = '<p class="text-muted text-center py-3">No team performance data available</p>';
-        return;
-    }
-    
-    const teams = state.metrics.team_performance;
-    
-    let html = '<div class="table-responsive"><table class="table">';
-    html += '<thead><tr><th>Support Group</th><th>Active</th><th>Resolved</th><th>Avg Time</th><th>SLA %</th></tr></thead><tbody>';
-    
-    teams.forEach(team => {
-        html += `
-            <tr>
-                <td><strong>${UI.escapeHTML(team.name)}</strong></td>
-                <td><span class="badge bg-primary">${team.active_tickets}</span></td>
-                <td><span class="badge bg-success">${team.resolved_tickets}</span></td>
-                <td>${formatTime(team.avg_resolution_time)}</td>
-                <td>
-                    <div class="d-flex align-items-center gap-2">
-                        <span class="${team.sla_compliance >= 90 ? 'text-success' : team.sla_compliance >= 75 ? 'text-warning' : 'text-danger'}"}>
-                            ${team.sla_compliance}%
-                        </span>
-                    </div>
-                </td>
-            </tr>
-        `;
-    });
-    
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
-}
-
-/**
- * Render top performers
- */
-function renderTopPerformers() {
-    const container = document.getElementById('topPerformers');
-    
-    if (!state.metrics || !state.metrics.top_performers) {
-        container.innerHTML = '<p class="text-muted text-center">No data available</p>';
-        return;
-    }
-    
-    const performers = state.metrics.top_performers.slice(0, 5);
-    
-    let html = '<div class="list-group list-group-flush">';
-    
-    performers.forEach((performer, index) => {
-        const medalClass = index === 0 ? 'text-warning' : index === 1 ? 'text-secondary' : index === 2 ? 'text-danger' : '';
-        const medal = index < 3 ? `<i class="bi bi-trophy${index === 0 ? '-fill' : ''} ${medalClass} me-2"></i>` : '';
-        
-        html += `
-            <div class="list-group-item">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        ${medal}
-                        <strong>${UI.escapeHTML(performer.name)}</strong>
-                        <span class="badge bg-light text-dark ms-2">${performer.role}</span>
-                    </div>
-                    <div class="text-end">
-                        <div><strong>${performer.resolved_count}</strong> resolved</div>
-                        <small class="text-muted">${formatTime(performer.avg_time)} avg</small>
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    
-    html += '</div>';
-    container.innerHTML = html;
-}
-
-/**
- * Render workload balance
- */
-function renderWorkloadBalance() {
-    const container = document.getElementById('workloadBalance');
-    
-    if (!state.metrics || !state.metrics.workload_balance) {
-        container.innerHTML = '<p class="text-muted text-center">No data available</p>';
-        return;
-    }
-    
-    const balance = state.metrics.workload_balance;
-    const avgLoad = balance.average_load || 0;
-    
-    let html = `
-        <div class="mb-3">
-            <strong>Average Load:</strong> ${avgLoad.toFixed(1)} tickets per technician
-        </div>
-        <div class="progress mb-2" style="height: 25px;">
-            <div class="progress-bar bg-danger" style="width: ${balance.overloaded_percent || 0}%" 
-                 title="Overloaded: ${balance.overloaded || 0}">
-                ${balance.overloaded || 0}
-            </div>
-            <div class="progress-bar bg-success" style="width: ${balance.balanced_percent || 0}%" 
-                 title="Balanced: ${balance.balanced || 0}">
-                ${balance.balanced || 0}
-            </div>
-            <div class="progress-bar bg-warning" style="width: ${balance.underutilized_percent || 0}%" 
-                 title="Underutilized: ${balance.underutilized || 0}">
-                ${balance.underutilized || 0}
-            </div>
-        </div>
-        <div class="d-flex justify-content-between small text-muted">
-            <span>🔴 Overloaded: ${balance.overloaded || 0}</span>
-            <span>🟢 Balanced: ${balance.balanced || 0}</span>
-            <span>🟡 Underutilized: ${balance.underutilized || 0}</span>
-        </div>
-    `;
-    
-    container.innerHTML = html;
-}
-
-/**
- * Render analytics
- */
-function renderAnalytics() {
-    renderEscalationStats();
-    renderResolutionTimeChart();
-    renderEfficiencyMetrics();
-}
-
-/**
- * Render escalation statistics
- */
-function renderEscalationStats() {
-    const container = document.getElementById('escalationStats');
-    
-    if (!state.escalationStats) {
-        container.innerHTML = '<p class="text-muted text-center">No escalation data available</p>';
-        return;
-    }
-    
-    const stats = state.escalationStats;
-    
-    const html = `
-        <div class="row g-3 mb-3">
-            <div class="col-md-6">
-                <div class="card bg-light">
-                    <div class="card-body text-center">
-                        <h3 class="text-danger">${stats.total || 0}</h3>
-                        <p class="mb-0">Total Escalations</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card bg-light">
-                    <div class="card-body text-center">
-                        <h3 class="text-warning">${stats.rate || 0}%</h3>
-                        <p class="mb-0">Escalation Rate</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="list-group list-group-flush">
-            ${stats.by_reason ? Object.entries(stats.by_reason).map(([reason, count]) => `
-                <div class="list-group-item">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <span>${UI.escapeHTML(reason)}</span>
-                        <span class="badge bg-primary">${count}</span>
-                    </div>
-                </div>
-            `).join('') : '<p class="text-muted text-center">No detailed data</p>'}
-        </div>
-    `;
-    
-    container.innerHTML = html;
-}
-
-/**
- * Render resolution time chart using Chart.js
- */
-function renderResolutionTimeChart() {
-    const container = document.getElementById('resolutionTimeChart');
-    
-    if (!state.metrics || !state.metrics.resolution_times) {
-        container.innerHTML = '<p class="text-muted text-center">No resolution time data available</p>';
-        return;
-    }
-    
-    // Destroy existing chart if any
-    if (state.charts.resolutionTime) {
-        state.charts.resolutionTime.destroy();
-    }
-    
-    // Clear container and create canvas
-    container.innerHTML = '<canvas id="resolutionTimeCanvas"></canvas>';
-    const canvas = document.getElementById('resolutionTimeCanvas');
-    const ctx = canvas.getContext('2d');
-    
-    const times = state.metrics.resolution_times;
-    const priorityOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+    const priorities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
     const colors = {
-        'CRITICAL': '#dc2626',
-        'HIGH': '#f59e0b',
-        'MEDIUM': '#3b82f6',
-        'LOW': '#10b981'
+        'CRITICAL': '#dc3545',
+        'HIGH': '#fd7e14',
+        'MEDIUM': '#ffc107',
+        'LOW': '#198754'
     };
     
-    const data = priorityOrder.map(p => times[p] || 0);
+    let html = '<div class="workload-bars">';
     
-    state.charts.resolutionTime = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: priorityOrder,
-            datasets: [{
-                label: 'Avg Resolution Time (hours)',
-                data: data,
-                backgroundColor: priorityOrder.map(p => colors[p]),
-                borderWidth: 0,
-                borderRadius: 6
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: false
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return `${formatTime(context.parsed.y)}`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) {
-                            return value + 'h';
-                        }
-                    }
-                }
-            }
-        }
-    });
-}
-
-/**
- * Render efficiency metrics
- */
-function renderEfficiencyMetrics() {
-    const container = document.getElementById('efficiencyMetrics');
-    
-    if (!state.metrics || !state.metrics.efficiency) {
-        container.innerHTML = '<p class="text-muted text-center">No efficiency data available</p>';
-        return;
-    }
-    
-    const efficiency = state.metrics.efficiency;
-    
-    const html = `
-        <div class="row g-3">
-            <div class="col-md-3">
-                <div class="text-center p-3 border rounded">
-                    <h4 class="text-primary">${efficiency.first_response_time || 0}h</h4>
-                    <small class="text-muted">Avg First Response</small>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="text-center p-3 border rounded">
-                    <h4 class="text-success">${efficiency.resolution_rate || 0}%</h4>
-                    <small class="text-muted">Resolution Rate</small>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="text-center p-3 border rounded">
-                    <h4 class="text-warning">${efficiency.reopen_rate || 0}%</h4>
-                    <small class="text-muted">Reopen Rate</small>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="text-center p-3 border rounded">
-                    <h4 class="text-info">${efficiency.customer_satisfaction || 0}%</h4>
-                    <small class="text-muted">Satisfaction</small>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    container.innerHTML = html;
-}
-
-/**
- * Load support groups
- */
-async function loadSupportGroups() {
-    try {
-        const groupsResponse = await WorkflowService.getAllSupportGroups();
-        state.supportGroups = groupsResponse.data || [];
-        renderSupportGroups();
-    } catch (error) {
-        console.error('Error loading support groups:', error);
-        UI.showToast('Failed to load support groups', 'error');
-    }
-}
-
-/**
- * Render support groups
- */
-function renderSupportGroups() {
-    const container = document.getElementById('supportGroupsList');
-    
-    if (state.supportGroups.length === 0) {
-        container.innerHTML = '<p class="text-muted text-center py-3">No support groups found</p>';
-        return;
-    }
-    
-    let html = '<div class="list-group">';
-    
-    state.supportGroups.forEach(group => {
+    priorities.forEach(priority => {
+        const count = byPriority[priority] || 0;
+        const percentage = count > 0 ? Math.min((count / 20) * 100, 100) : 0;
+        
         html += `
-            <div class="list-group-item">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div>
-                        <h6 class="mb-1">${UI.escapeHTML(group.name)}</h6>
-                        <small class="text-muted">
-                            ${group.member_count || 0} members | 
-                            Status: ${group.is_active ? '<span class="badge bg-success">Active</span>' : '<span class="badge bg-secondary">Inactive</span>'}
-                        </small>
-                    </div>
-                    <div class="btn-group btn-group-sm">
-                        <button class="btn btn-outline-primary" onclick="window.editSupportGroup(${group.id})">
-                            <i class="bi bi-pencil"></i>
-                        </button>
-                        <button class="btn btn-outline-danger" onclick="window.deleteSupportGroup(${group.id})">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </div>
+            <div class="workload-bar-item mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="small">${priority}</span>
+                    <span class="small fw-bold">${count}</span>
+                </div>
+                <div class="progress" style="height: 10px;">
+                    <div class="progress-bar" style="width: ${percentage}%; background-color: ${colors[priority]}"></div>
                 </div>
             </div>
         `;
@@ -900,31 +509,9 @@ function renderSupportGroups() {
 }
 
 /**
- * Helper functions
+ * Get status badge class
  */
-function formatTime(hours) {
-    if (!hours || hours === 0) return '0h';
-    if (hours < 1) return `${Math.round(hours * 60)}m`;
-    if (hours < 24) return `${hours.toFixed(1)}h`;
-    return `${Math.round(hours / 24)}d`;
-}
-
-function formatChartDate(dateString) {
-    const date = new Date(dateString);
-    return `${date.getMonth() + 1}/${date.getDate()}`;
-}
-
-function getPriorityColorClass(priority) {
-    switch (priority?.toUpperCase()) {
-        case 'CRITICAL': return 'bg-danger';
-        case 'HIGH': return 'bg-orange';
-        case 'MEDIUM': return 'bg-warning text-dark';
-        case 'LOW': return 'bg-success';
-        default: return 'bg-secondary';
-    }
-}
-
-function getStatusColorClass(status) {
+function getStatusBadgeClass(status) {
     switch (status?.toUpperCase()) {
         case 'OPEN': return 'bg-info';
         case 'IN_PROGRESS': return 'bg-purple';
@@ -935,24 +522,25 @@ function getStatusColorClass(status) {
     }
 }
 
-// Placeholder functions for support group management
-window.editSupportGroup = function(groupId) {
-    UI.showToast('Edit support group - to be implemented', 'info');
-};
+/**
+ * Get priority badge class
+ */
+function getPriorityBadgeClass(priority) {
+    switch (priority?.toUpperCase()) {
+        case 'CRITICAL': return 'bg-danger';
+        case 'HIGH': return 'bg-warning text-dark';
+        case 'MEDIUM': return 'bg-info';
+        case 'LOW': return 'bg-success';
+        default: return 'bg-secondary';
+    }
+}
 
-window.deleteSupportGroup = async function(groupId) {
-    if (!confirm('Are you sure you want to delete this support group?')) {
-        return;
-    }
-    
-    try {
-        await WorkflowService.deleteSupportGroup(groupId);
-        UI.showToast('Support group deleted successfully', 'success');
-        await loadSupportGroups();
-    } catch (error) {
-        console.error('Error deleting support group:', error);
-        UI.showToast(error.message || 'Failed to delete support group', 'error');
-    }
+/**
+ * View ticket details (placeholder)
+ */
+window.viewTicket = function(ticketId) {
+    console.log('View ticket:', ticketId);
+    UI.showToast('Ticket detail view not yet implemented', 'info');
 };
 
 // Initialize when DOM is ready
@@ -961,9 +549,3 @@ if (document.readyState === 'loading') {
 } else {
     initSupervisorDashboard();
 }
-
-// Export for use in other modules
-export default {
-    initSupervisorDashboard,
-    loadDashboardData
-};

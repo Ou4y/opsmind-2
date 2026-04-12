@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hierarchy API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .result {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-top: 10px;
+            border-radius: 4px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        h1 {
+            color: #333;
+        }
+        h2 {
+            color: #555;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Hierarchy API Test Suite</h1>
+    <p>Test the new hierarchy and dashboard API methods</p>
+
+    <!-- Dashboard APIs -->
+    <div class="test-section">
+        <h2>1. Dashboard APIs</h2>
+        
+        <button onclick="testSeniorDashboard()">Test Senior Dashboard (user_id: 1)</button>
+        <button onclick="testSupervisorDashboard()">Test Supervisor Dashboard (user_id: 100)</button>
+        
+        <div id="dashboard-result" class="result" style="display:none;">
+            <pre id="dashboard-output"></pre>
+        </div>
+    </div>
+
+    <!-- Hierarchy Query APIs -->
+    <div class="test-section">
+        <h2>2. Hierarchy Query APIs</h2>
+        
+        <button onclick="testGetAllTechnicians()">Get All Technicians</button>
+        <button onclick="testGetSeniors()">Get Seniors Only</button>
+        <button onclick="testGetJuniors()">Get Juniors Only</button>
+        <button onclick="testHierarchyTree()">Get Hierarchy Tree</button>
+        
+        <div id="query-result" class="result" style="display:none;">
+            <pre id="query-output"></pre>
+        </div>
+    </div>
+
+    <!-- Hierarchy Relationship APIs -->
+    <div class="test-section">
+        <h2>3. Hierarchy Relationship APIs</h2>
+        
+        <button onclick="testGetDirectReports()">Get Direct Reports (user_id: 1)</button>
+        <button onclick="testGetManager()">Get Manager (user_id: 6)</button>
+        
+        <div id="relationship-result" class="result" style="display:none;">
+            <pre id="relationship-output"></pre>
+        </div>
+    </div>
+
+    <!-- Admin Actions -->
+    <div class="test-section">
+        <h2>4. Admin Actions (Requires Auth)</h2>
+        
+        <p><strong>Note:</strong> These operations require a valid authentication token with ADMIN privileges.</p>
+        
+        <button onclick="testCreateRelationship()">Create Relationship</button>
+        <button onclick="testUpdateRelationship()">Update Relationship</button>
+        <button onclick="testDeleteRelationship()">Delete Relationship</button>
+        
+        <div id="admin-result" class="result" style="display:none;">
+            <pre id="admin-output"></pre>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import the API methods
+        import {
+            getSeniorDashboard,
+            getSupervisorDashboard,
+            getTechniciansByLevel,
+            getHierarchyTree,
+            getDirectReports,
+            getManager,
+            createHierarchyRelationship,
+            updateHierarchyRelationship,
+            deleteHierarchyRelationship
+        } from './services/workflowService.js';
+
+        // Make functions available globally for button onclick
+        window.testSeniorDashboard = async function() {
+            showLoading('dashboard-result', 'dashboard-output');
+            try {
+                const response = await getSeniorDashboard(1);
+                showResult('dashboard-result', 'dashboard-output', response, 'Senior Dashboard');
+            } catch (error) {
+                showError('dashboard-result', 'dashboard-output', error);
+            }
+        };
+
+        window.testSupervisorDashboard = async function() {
+            showLoading('dashboard-result', 'dashboard-output');
+            try {
+                const response = await getSupervisorDashboard(100);
+                showResult('dashboard-result', 'dashboard-output', response, 'Supervisor Dashboard');
+            } catch (error) {
+                showError('dashboard-result', 'dashboard-output', error);
+            }
+        };
+
+        window.testGetAllTechnicians = async function() {
+            showLoading('query-result', 'query-output');
+            try {
+                const response = await getTechniciansByLevel();
+                showResult('query-result', 'query-output', response, 'All Technicians');
+            } catch (error) {
+                showError('query-result', 'query-output', error);
+            }
+        };
+
+        window.testGetSeniors = async function() {
+            showLoading('query-result', 'query-output');
+            try {
+                const response = await getTechniciansByLevel('SENIOR');
+                showResult('query-result', 'query-output', response, 'Senior Technicians');
+            } catch (error) {
+                showError('query-result', 'query-output', error);
+            }
+        };
+
+        window.testGetJuniors = async function() {
+            showLoading('query-result', 'query-output');
+            try {
+                const response = await getTechniciansByLevel('JUNIOR');
+                showResult('query-result', 'query-output', response, 'Junior Technicians');
+            } catch (error) {
+                showError('query-result', 'query-output', error);
+            }
+        };
+
+        window.testHierarchyTree = async function() {
+            showLoading('query-result', 'query-output');
+            try {
+                const response = await getHierarchyTree();
+                showResult('query-result', 'query-output', response, 'Hierarchy Tree');
+            } catch (error) {
+                showError('query-result', 'query-output', error);
+            }
+        };
+
+        window.testGetDirectReports = async function() {
+            showLoading('relationship-result', 'relationship-output');
+            try {
+                const response = await getDirectReports(1);
+                showResult('relationship-result', 'relationship-output', response, 'Direct Reports for User 1');
+            } catch (error) {
+                showError('relationship-result', 'relationship-output', error);
+            }
+        };
+
+        window.testGetManager = async function() {
+            showLoading('relationship-result', 'relationship-output');
+            try {
+                const response = await getManager(6);
+                showResult('relationship-result', 'relationship-output', response, 'Manager for User 6');
+            } catch (error) {
+                showError('relationship-result', 'relationship-output', error);
+            }
+        };
+
+        window.testCreateRelationship = async function() {
+            showLoading('admin-result', 'admin-output');
+            try {
+                // This will likely fail without proper auth token
+                const response = await createHierarchyRelationship({
+                    childUserId: 999,
+                    parentUserId: 1,
+                    relationshipType: 'JUNIOR_TO_SENIOR'
+                });
+                showResult('admin-result', 'admin-output', response, 'Create Relationship');
+            } catch (error) {
+                showError('admin-result', 'admin-output', error);
+            }
+        };
+
+        window.testUpdateRelationship = async function() {
+            showLoading('admin-result', 'admin-output');
+            try {
+                const response = await updateHierarchyRelationship(7, {
+                    childUserId: 6,
+                    parentUserId: 2
+                });
+                showResult('admin-result', 'admin-output', response, 'Update Relationship');
+            } catch (error) {
+                showError('admin-result', 'admin-output', error);
+            }
+        };
+
+        window.testDeleteRelationship = async function() {
+            showLoading('admin-result', 'admin-output');
+            try {
+                const response = await deleteHierarchyRelationship(999);
+                showResult('admin-result', 'admin-output', response, 'Delete Relationship');
+            } catch (error) {
+                showError('admin-result', 'admin-output', error);
+            }
+        };
+
+        // Helper functions
+        function showLoading(resultId, outputId) {
+            const resultDiv = document.getElementById(resultId);
+            const outputDiv = document.getElementById(outputId);
+            resultDiv.style.display = 'block';
+            outputDiv.innerHTML = '<em>Loading...</em>';
+        }
+
+        function showResult(resultId, outputId, data, title) {
+            const resultDiv = document.getElementById(resultId);
+            const outputDiv = document.getElementById(outputId);
+            resultDiv.style.display = 'block';
+            
+            let summary = `<strong>${title}</strong>\n\n`;
+            
+            if (data.success) {
+                summary += `✅ Success: ${data.message || 'Request completed successfully'}\n\n`;
+                
+                // Add data summary
+                if (Array.isArray(data.data)) {
+                    summary += `📊 Count: ${data.data.length} items\n\n`;
+                } else if (data.data) {
+                    summary += `📊 Data structure: ${Object.keys(data.data).join(', ')}\n\n`;
+                }
+            } else {
+                summary += `❌ Error: ${data.message}\n\n`;
+            }
+            
+            summary += '📦 Full Response:\n';
+            summary += JSON.stringify(data, null, 2);
+            
+            outputDiv.innerHTML = summary;
+        }
+
+        function showError(resultId, outputId, error) {
+            const resultDiv = document.getElementById(resultId);
+            const outputDiv = document.getElementById(outputId);
+            resultDiv.style.display = 'block';
+            outputDiv.innerHTML = `<span style="color: red;">❌ Error: ${error.message}</span>\n\n${error.stack || ''}`;
+        }
+
+        console.log('✅ Hierarchy API Test Suite Loaded');
+        console.log('Click buttons to test each API endpoint');
+    </script>
+</body>
+</html>

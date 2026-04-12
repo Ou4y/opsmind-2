@@ -2,7 +2,13 @@ import { Router, Request, Response } from 'express';
 import { SupportGroupRepository } from '../repositories/SupportGroupRepository';
 import { GroupMemberRepository } from '../repositories/GroupMemberRepository';
 import { EscalationRuleRepository } from '../repositories/EscalationRuleRepository';
+import { HierarchyController } from '../controllers/HierarchyController';
 import { MemberRole, EscalationTrigger } from '../interfaces/types';
+import {
+  validateBody,
+  createRelationshipSchema,
+  deleteRelationshipSchema,
+} from '../middlewares/validation';
 
 /**
  * Admin Routes
@@ -16,12 +22,22 @@ import { MemberRole, EscalationTrigger } from '../interfaces/types';
  *   GET    /workflow/admin/support-groups/:groupId/members
  *   POST   /workflow/admin/support-groups/:groupId/members
  *   DELETE /workflow/admin/support-groups/:groupId/members/:memberId
+ *   
+ *   Hierarchy Management:
+ *   GET    /workflow/admin/hierarchy/technicians
+ *   POST   /workflow/admin/hierarchy/relationships
+ *   PUT    /workflow/admin/hierarchy/relationships
+ *   DELETE /workflow/admin/hierarchy/relationships
+ *   GET    /workflow/admin/hierarchy/tree
+ *   GET    /workflow/admin/hierarchy/user/:userId/reports
+ *   GET    /workflow/admin/hierarchy/user/:userId/manager
  */
 
 const router = Router();
 const groupRepo = new SupportGroupRepository();
 const memberRepo = new GroupMemberRepository();
 const ruleRepo = new EscalationRuleRepository();
+const hierarchyController = new HierarchyController();
 
 // ══════════════════════════════════════
 //  Support Groups CRUD
@@ -199,6 +215,82 @@ router.get('/groups/:groupId', async (req: Request, res: Response): Promise<void
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
+});
+
+// ══════════════════════════════════════
+//  Hierarchy Management
+// ══════════════════════════════════════
+
+/**
+ * GET /workflow/admin/hierarchy/technicians
+ * List all technicians, optionally filtered by level
+ * Query: ?level=JUNIOR|SENIOR|SUPERVISOR|ADMIN
+ */
+router.get('/hierarchy/technicians', (req: Request, res: Response) => {
+  hierarchyController.listTechnicians(req, res);
+});
+
+/**
+ * POST /workflow/admin/hierarchy/relationships
+ * Create a new reporting relationship
+ * Body: { childUserId, parentUserId, relationshipType }
+ */
+router.post(
+  '/hierarchy/relationships',
+  validateBody(createRelationshipSchema),
+  (req: Request, res: Response) => {
+    hierarchyController.createRelationship(req, res);
+  }
+);
+
+/**
+ * PUT /workflow/admin/hierarchy/relationships
+ * Update an existing reporting relationship
+ * Body: { childUserId, parentUserId, relationshipType }
+ */
+router.put(
+  '/hierarchy/relationships',
+  validateBody(createRelationshipSchema),
+  (req: Request, res: Response) => {
+    hierarchyController.updateRelationship(req, res);
+  }
+);
+
+/**
+ * DELETE /workflow/admin/hierarchy/relationships
+ * Remove a reporting relationship
+ * Body: { childUserId, parentUserId }
+ */
+router.delete(
+  '/hierarchy/relationships',
+  validateBody(deleteRelationshipSchema),
+  (req: Request, res: Response) => {
+    hierarchyController.deleteRelationship(req, res);
+  }
+);
+
+/**
+ * GET /workflow/admin/hierarchy/tree
+ * Get the full hierarchy tree structure
+ */
+router.get('/hierarchy/tree', (req: Request, res: Response) => {
+  hierarchyController.getHierarchyTree(req, res);
+});
+
+/**
+ * GET /workflow/admin/hierarchy/user/:userId/reports
+ * Get direct reports for a specific user
+ */
+router.get('/hierarchy/user/:userId/reports', (req: Request, res: Response) => {
+  hierarchyController.getDirectReports(req, res);
+});
+
+/**
+ * GET /workflow/admin/hierarchy/user/:userId/manager
+ * Get the direct manager for a specific user
+ */
+router.get('/hierarchy/user/:userId/manager', (req: Request, res: Response) => {
+  hierarchyController.getManager(req, res);
 });
 
 export default router;

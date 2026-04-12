@@ -670,6 +670,160 @@ export async function deleteEscalationRule(ruleId) {
 }
 
 // ===================================
+// 19. HIERARCHY-BASED DASHBOARDS
+// ===================================
+
+/**
+ * Get SENIOR dashboard showing assigned juniors and their tickets
+ * @param {number} userId - Senior user ID from auth service
+ * @returns {Promise<Object>} Senior dashboard data
+ * @example
+ * const dashboard = await getSeniorDashboard(1);
+ * // Returns: { seniorUserId, seniorName, juniors: [], tickets: [], workload: {} }
+ */
+export async function getSeniorDashboard(userId) {
+    return workflowRequest(`/workflow/dashboard/senior/${userId}`, {
+        method: 'GET'
+    });
+}
+
+/**
+ * Get SUPERVISOR dashboard showing team structure and metrics
+ * @param {number} userId - Supervisor user ID from auth service
+ * @returns {Promise<Object>} Supervisor dashboard data
+ * @example
+ * const dashboard = await getSupervisorDashboard(100);
+ * // Returns: { supervisorUserId, supervisorName, teamStructure: { seniors: [], juniors: [] }, tickets: [], workload: {}, metrics: {} }
+ */
+export async function getSupervisorDashboard(userId) {
+    return workflowRequest(`/workflow/dashboard/supervisor/${userId}`, {
+        method: 'GET'
+    });
+}
+
+// ===================================
+// 20. ADMIN - HIERARCHY MANAGEMENT
+// ===================================
+
+/**
+ * Get all technicians, optionally filtered by level
+ * @param {string} [level] - Filter by level: "JUNIOR"|"SENIOR"|"SUPERVISOR"|"ADMIN"
+ * @returns {Promise<Object>} Response with data array of technicians
+ * @example
+ * const allTechs = await getTechniciansByLevel();
+ * const seniors = await getTechniciansByLevel('SENIOR');
+ */
+export async function getTechniciansByLevel(level = null) {
+    const params = level ? `?level=${level}` : '';
+    return workflowRequest(`/workflow/admin/hierarchy/technicians${params}`, {
+        method: 'GET'
+    });
+}
+
+/**
+ * Get full hierarchy tree view
+ * @returns {Promise<Object>} Response with hierarchy tree data and relationships
+ * @example
+ * const tree = await getHierarchyTree();
+ * // Returns: { success: true, data: [...technicians], relationships: [...] }
+ */
+export async function getHierarchyTree() {
+    return workflowRequest('/workflow/admin/hierarchy/tree', {
+        method: 'GET'
+    });
+}
+
+/**
+ * Get direct reports for a user (juniors under a senior, or seniors under a supervisor)
+ * @param {number} userId - Parent user ID
+ * @returns {Promise<Object>} Response with userId, userName, level, and directReports array
+ * @example
+ * const reports = await getDirectReports(1);
+ * // Returns: { userId: 1, userName: "Senior M", level: "SENIOR", directReports: [...] }
+ */
+export async function getDirectReports(userId) {
+    return workflowRequest(`/workflow/admin/hierarchy/user/${userId}/reports`, {
+        method: 'GET'
+    });
+}
+
+/**
+ * Get the manager of a user (senior's supervisor, or junior's senior)
+ * @param {number} userId - Child user ID
+ * @returns {Promise<Object>} Response with manager details or null if no manager
+ * @example
+ * const manager = await getManager(6);
+ * // Returns: { userId: 1, userName: "Senior M", level: "SENIOR", relationshipType: "JUNIOR_TO_SENIOR" }
+ */
+export async function getManager(userId) {
+    return workflowRequest(`/workflow/admin/hierarchy/user/${userId}/manager`, {
+        method: 'GET'
+    });
+}
+
+/**
+ * Create a new hierarchy relationship (assign junior to senior, or senior to supervisor)
+ * @param {Object} data
+ * @param {number} data.childUserId - Child user ID (REQUIRED)
+ * @param {number} data.parentUserId - Parent user ID (REQUIRED)
+ * @param {string} data.relationshipType - "JUNIOR_TO_SENIOR"|"SENIOR_TO_SUPERVISOR"|"SUPERVISOR_TO_ADMIN" (REQUIRED)
+ * @returns {Promise<Object>} Created relationship
+ * @example
+ * const relationship = await createHierarchyRelationship({
+ *   childUserId: 6,
+ *   parentUserId: 1,
+ *   relationshipType: 'JUNIOR_TO_SENIOR'
+ * });
+ */
+export async function createHierarchyRelationship(data) {
+    return workflowRequest('/workflow/admin/hierarchy/relationships', {
+        method: 'POST',
+        body: JSON.stringify({
+            childUserId: data.childUserId,
+            parentUserId: data.parentUserId,
+            relationshipType: data.relationshipType
+        })
+    });
+}
+
+/**
+ * Update an existing hierarchy relationship (reassign to different parent)
+ * @param {number} relationshipId - Relationship ID
+ * @param {Object} data
+ * @param {number} data.childUserId - New child user ID (REQUIRED)
+ * @param {number} data.parentUserId - New parent user ID (REQUIRED)
+ * @returns {Promise<Object>} Updated relationship
+ * @example
+ * const updated = await updateHierarchyRelationship(7, {
+ *   childUserId: 6,
+ *   parentUserId: 2  // Reassign from Senior M (1) to Senior N (2)
+ * });
+ */
+export async function updateHierarchyRelationship(relationshipId, data) {
+    return workflowRequest(`/workflow/admin/hierarchy/relationships/${relationshipId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+            childUserId: data.childUserId,
+            parentUserId: data.parentUserId
+        })
+    });
+}
+
+/**
+ * Delete a hierarchy relationship (remove assignment)
+ * @param {number} relationshipId - Relationship ID
+ * @returns {Promise<Object>} Deletion result
+ * @example
+ * const result = await deleteHierarchyRelationship(7);
+ * // Returns: { success: true, message: "Relationship deleted successfully" }
+ */
+export async function deleteHierarchyRelationship(relationshipId) {
+    return workflowRequest(`/workflow/admin/hierarchy/relationships/${relationshipId}`, {
+        method: 'DELETE'
+    });
+}
+
+// ===================================
 // LEGACY COMPATIBILITY (if needed)
 // ===================================
 
@@ -714,6 +868,8 @@ const WorkflowService = {
     getMemberDashboard,
     getGroupMetrics,
     getRecentActivity,
+    getSeniorDashboard,
+    getSupervisorDashboard,
     
     // Group Management
     getGroupInfo,
@@ -734,7 +890,16 @@ const WorkflowService = {
     getAllEscalationRules,
     createEscalationRule,
     updateEscalationRule,
-    deleteEscalationRule
+    deleteEscalationRule,
+    
+    // Admin - Hierarchy Management
+    getTechniciansByLevel,
+    getHierarchyTree,
+    getDirectReports,
+    getManager,
+    createHierarchyRelationship,
+    updateHierarchyRelationship,
+    deleteHierarchyRelationship
 };
 
 Object.freeze(WorkflowService);

@@ -158,3 +158,32 @@ export async function startSlaTracking(
   const { data } = await slaServiceClient.post('/sla/start', payload);
   return data;
 }
+
+/**
+ * Get tickets assigned to specific users
+ * Query: GET /tickets?assigned_to=userId1,userId2,...
+ */
+export async function getTicketsByAssignedUsers(userIds: number[]): Promise<any[]> {
+  try {
+    if (userIds.length === 0) return [];
+    
+    // Query tickets for each user (ticket service may support filtering)
+    const ticketPromises = userIds.map(async (userId) => {
+      try {
+        const { data } = await ticketServiceClient.get('/tickets', {
+          params: { assigned_to: String(userId) },
+        });
+        return Array.isArray(data) ? data : data.tickets || [];
+      } catch (err) {
+        console.error(`[externalServices] Failed to fetch tickets for user ${userId}:`, err);
+        return [];
+      }
+    });
+
+    const ticketsArrays = await Promise.all(ticketPromises);
+    return ticketsArrays.flat();
+  } catch (error) {
+    console.error('[externalServices] Error fetching tickets by assigned users:', error);
+    return [];
+  }
+}

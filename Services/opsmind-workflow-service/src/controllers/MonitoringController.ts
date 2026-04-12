@@ -66,4 +66,34 @@ export class MonitoringController {
       res.status(500).json({ success: false, message: error.message });
     }
   };
+
+  /** 
+   * GET /workflow/dashboard/senior/:userId
+   * Get dashboard for a SENIOR user showing their juniors and tickets
+   */
+  getSeniorDashboard = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      const dashboard = await this.dashboardService.getSeniorDashboard(userId);
+      res.status(200).json({ success: true, data: dashboard });
+    } catch (error: any) {
+      console.error('[MonitoringController] Error getting senior dashboard:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  };
+
+  /** 
+   * GET /workflow/dashboard/supervisor/:userId
+   * Get dashboard for a SUPERVISOR user showing their team structure and tickets
+   */
+  getSupervisorDashboard = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      const dashboard = await this.dashboardService.getSupervisorDashboard(userId);
+      res.status(200).json({ success: true, data: dashboard });
+    } catch (error: any) {
+      console.error('[MonitoringController] Error getting supervisor dashboard:', error);
+      res.status(500).json({ success: false, message: error.message });
+    }
+  };
 }
