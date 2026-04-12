@@ -30,6 +30,21 @@ services:
       - opsmind-net
     restart: unless-stopped
 
+  mongodb:
+    image: mongo:7
+    container_name: opsmind-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: opsmind
+      MONGO_INITDB_ROOT_PASSWORD: opsmind
+      MONGO_INITDB_DATABASE: notifications
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
     container_name: opsmind-phpmyadmin
@@ -52,3 +67,4 @@ networks:
 
 volumes:
   mysql_data:
+  mongodb_data:

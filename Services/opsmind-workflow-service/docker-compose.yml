@@ -3,11 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-runner}  # Use 'builder' for dev, 'runner' for prod
     container_name: opsmind-workflow
     ports:
       - "3003:3003"
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3003
       SERVICE_NAME: opsmind-workflow
       DB_HOST: opsmind-mysql
@@ -21,6 +22,16 @@ services:
       TICKET_SERVICE_URL: http://opsmind-ticket-service:3000
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
       LOG_LEVEL: info
+    volumes:
+      # Mount source code for development (comment out for production)
+      - ./src:/app/src:ro
+      - ./db:/app/db:ro
+      - ./package.json:/app/package.json:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      # Prevent overwriting node_modules and dist
+      - /app/node_modules
+      - /app/dist
+    command: ${SERVICE_COMMAND:-node dist/index.js}  # Override with 'npm run dev' for hot-reload
     networks:
       - opsmind-net
     restart: unless-stopped
