@@ -1,6 +1,12 @@
 document.addEventListener('DOMContentLoaded', () => {
     // Requires admin privilege
     requireRole(['ADMIN']);
+
+    const AUTH_API_BASE = (
+        window.APP_CONFIG?.services?.auth ||
+        window.OPSMIND_API_URL ||
+        'http://localhost:3002'
+    ).replace(/\/$/, '');
     
     // UI Elements
     const elements = {
@@ -26,30 +32,42 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load Domains
     async function loadDomains() {
         showLoading(true);
-        hideError();
+        showError(false);
         
         try {
             const token = localStorage.getItem('opsmind_token');
-            const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains`, {
+            const response = await fetch(`${AUTH_API_BASE}/admin/domains`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
             });
 
             if (!response.ok) {
-                throw new Error('Failed to fetch domains');
+                let message = 'Failed to fetch domains';
+                try {
+                    const errorData = await response.json();
+                    message = errorData?.message || message;
+                } catch {
+                    // Ignore JSON parse errors and keep the default message.
+                }
+                throw new Error(message);
             }
 
             const data = await response.json();
-            
-            if (data.status === 'success' && data.data) {
-                renderDomains(data.data.domains);
+            const domains = Array.isArray(data?.data)
+                ? data.data
+                : Array.isArray(data?.data?.domains)
+                    ? data.data.domains
+                    : [];
+
+            if (data?.success && domains.length >= 0) {
+                renderDomains(domains);
             } else {
                 renderDomains([]);
             }
         } catch (error) {
             console.error('Error loading domains:', error);
-            showError(true);
+            showError(true, error?.message || 'Failed to load domains. Please try again later.');
             showTable(false);
             showEmpty(false);
         } finally {
@@ -75,7 +93,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 </td>
                 <td>${new Date(domain.created_at).toLocaleDateString()}</td>
                 <td class="text-end">
-                    <button class="btn btn-sm btn-outline-danger delete-btn" data-domain="${domain.domain}">
+                    <button
+                        class="btn btn-sm btn-outline-danger delete-btn"
+                        data-domain-id="${domain.id}"
+                        data-domain-name="${domain.domain}"
+                    >
                         <i class="bi bi-trash"></i>
                     </button>
                 </td>
@@ -86,8 +108,11 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.delete-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const button = e.target.closest('.delete-btn');
-                domainToDelete = button.getAttribute('data-domain');
-                elements.deleteName.textContent = domainToDelete;
+                domainToDelete = {
+                    id: button.getAttribute('data-domain-id'),
+                    name: button.getAttribute('data-domain-name')
+                };
+                elements.deleteName.textContent = domainToDelete.name;
                 deleteModal.show();
             });
         });
@@ -108,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const token = localStorage.getItem('opsmind_token');
-            const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains`, {
+            const response = await fetch(`${AUTH_API_BASE}/admin/domains`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -143,13 +168,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Delete Domain
     elements.confirmDeleteBtn.addEventListener('click', async () => {
-        if (!domainToDelete) return;
+        if (!domainToDelete?.id) return;
         
         elements.confirmDeleteBtn.disabled = true;
         
         try {
             const token = localStorage.getItem('opsmind_token');
-            const response = await fetch(`${window.APP_CONFIG.services.auth}/api/auth/admin/domains/${encodeURIComponent(domainToDelete)}`, {
+            const response = await fetch(`${AUTH_API_BASE}/admin/domains/${encodeURIComponent(domainToDelete.id)}`, {
                 method: 'DELETE',
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -193,9 +218,13 @@ document.addEventListener('DOMContentLoaded', () => {
         else elements.tableContainer.classList.add('d-none');
     }
 
-    function showError(show) {
-        if (show) elements.error.classList.remove('d-none');
-        else elements.error.classList.add('d-none');
+    function showError(show, message = 'Failed to load domains. Please try again later.') {
+        if (show) {
+            elements.error.textContent = message;
+            elements.error.classList.remove('d-none');
+        } else {
+            elements.error.classList.add('d-none');
+        }
     }
 
     // Role verification function (stub for context)
