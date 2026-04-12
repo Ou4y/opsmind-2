@@ -44,4 +44,20 @@ export class TechnicianRepository {
       throw new Error(`Technician ${id} not found`);
     }
   }
+
+  /**
+   * Get a supervisor (any ACTIVE technician with level 'SUPERVISOR')
+   * Returns the first supervisor found, typically used for notifications
+   */
+  async getSupervisor(): Promise<TechnicianRow | null> {
+    const rows = await query<TechnicianRowData[]>(
+      `
+        SELECT id, name, latitude, longitude, status
+        FROM technicians
+        WHERE level = 'SUPERVISOR' AND status = 'ACTIVE'
+        LIMIT 1
+      `,
+    );
+    return rows[0] ?? null;
+  }
 }

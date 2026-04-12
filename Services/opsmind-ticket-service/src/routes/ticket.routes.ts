@@ -9,11 +9,13 @@ import {
   EscalateTicketInput,
 } from "../validation/ticket.schema";
 import { AppError } from "../errors/AppError";
-import { publishTicketCreated, publishTicketUpdated } from "../events/publishers/ticket.publisher";
+import { publishTicketCreated, publishTicketUpdated, publishTicketResolvedNotification } from "../events/publishers/ticket.publisher";
 import { sendTicketOpenedNotification } from "../utils/notificationClient";
 import { validate } from "../middleware/validate.middleware";
 import { logger } from "../config/logger";
 import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from "../utils/ticketEnrichment";
+import { fetchUserDetails } from "../utils/userServiceClient";
+import { fetchSupervisor } from "../utils/workflowServiceClient";
 
 const router = Router();
 
@@ -363,6 +365,12 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
       data: updateData,
     });
     await publishTicketUpdated(ticket);
+
+    // Publish notification event if ticket was resolved
+    if (updateData.status === "RESOLVED") {
+      await publishResolvedNotification(ticket);
+    }
+
     const enrichedTicket = await enrichTicketWithTechnicianName(ticket);
     return res.json(enrichedTicket);
   } catch (err) {
@@ -468,5 +476,192 @@ router.delete("/:id", async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * Validate user data for notification publishing
+ * 
+ * Ensures all required fields (id, name, email) are present.
+ * 
+ * @param userData - User data object to validate
+ * @param userType - Type of user for logging ('technician', 'supervisor', 'endUser')
+ * @param ticketId - Ticket ID for logging context
+ * @returns true if valid, false otherwise
+ */
+function validateUserData(
+  userData: any,
+  userType: string,
+  ticketId: string
+): userData is { id: string; name: string; email: string } {
+  if (!userData) {
+    logger.warn(`Cannot publish resolved notification: ${userType} data is null`, {
+      ticketId,
+      userType,
+    });
+    return false;
+  }
+
+  const missingFields: string[] = [];
+  if (!userData.id) missingFields.push("id");
+  if (!userData.name) missingFields.push("name");
+  if (!userData.email) missingFields.push("email");
+
+  if (missingFields.length > 0) {
+    logger.warn(
+      `Cannot publish resolved notification: ${userType} missing required fields`,
+      {
+        ticketId,
+        userType,
+        missingFields: missingFields.join(", "),
+        userId: userData.id || "unknown",
+      }
+    );
+    return false;
+  }
+
+  logger.debug(`${userType} data validated successfully`, {
+    ticketId,
+    userType,
+    userId: userData.id,
+    userName: userData.name,
+    userEmail: userData.email,
+  });
+
+  return true;
+}
+
+/**
+ * Helper function to publish ticket resolved notification
+ * 
+ * Data Flow:
+ * 1. Fetches technician from Auth Service (id, name, email)
+ * 2. Fetches supervisor from Workflow Service (id, name, email)
+ * 3. Fetches end user from Auth Service (id, name, email)
+ * 4. Validates all required fields are present
+ * 5. Publishes event to RabbitMQ
+ * 
+ * Validation:
+ * - Technician: validates id, name, email (name optional in payload)
+ * - Supervisor: validates id, name, email (all required)
+ * - End User: validates id, name, email (all required)
+ * 
+ * Error Handling:
+ * - Missing data → logged with specific fields, event not published
+ * - API failures → logged, event not published
+ * - Never throws → ticket resolution continues
+ * 
+ * Non-blocking: failures are logged but do not break the update flow.
+ */
+async function publishResolvedNotification(ticket: any): Promise<void> {
+  try {
+    logger.info("Publishing ticket resolved notification", { ticketId: ticket.id });
+
+    // Step 1: Validate required ticket fields
+    if (!ticket.assigned_to) {
+      logger.warn("Cannot publish resolved notification: ticket has no assigned technician", {
+        ticketId: ticket.id,
+      });
+      return;
+    }
+
+    if (!ticket.requester_id) {
+      logger.warn("Cannot publish resolved notification: ticket has no requester", {
+        ticketId: ticket.id,
+      });
+      return;
+    }
+
+    // Step 2: Fetch technician details from Auth Service
+    const technician = await fetchUserDetails(ticket.assigned_to);
+    if (!technician) {
+      logger.warn("Cannot publish resolved notification: failed to fetch technician details", {
+        ticketId: ticket.id,
+        technicianId: ticket.assigned_to,
+      });
+      return;
+    }
+
+    // Step 3: Validate technician data (id is required, name can be derived from email)
+    const technicianData = {
+      id: technician.id,
+      name: technician.name || technician.email?.split("@")[0] || String(ticket.assigned_to),
+      email: technician.email,
+    };
+
+    if (!technicianData.email) {
+      logger.warn("Cannot publish resolved notification: technician missing email", {
+        ticketId: ticket.id,
+        technicianId: ticket.assigned_to,
+      });
+      return;
+    }
+
+    // Step 4: Fetch supervisor details from Workflow Service
+    const supervisor = await fetchSupervisor();
+    if (!supervisor) {
+      logger.warn("Cannot publish resolved notification: failed to fetch supervisor details", {
+        ticketId: ticket.id,
+      });
+      return;
+    }
+
+    // Step 5: Validate supervisor data (all fields required)
+    if (!validateUserData(supervisor, "supervisor", ticket.id)) {
+      return;
+    }
+
+    // Step 6: Fetch end user details from Auth Service
+    const endUser = await fetchUserDetails(ticket.requester_id);
+    if (!endUser) {
+      logger.warn("Cannot publish resolved notification: failed to fetch end user details", {
+        ticketId: ticket.id,
+        requesterId: ticket.requester_id,
+      });
+      return;
+    }
+
+    // Step 7: Validate end user data (all fields required)
+    if (!validateUserData(endUser, "endUser", ticket.id)) {
+      return;
+    }
+
+    // Step 8: Build validated payload
+    const payload = {
+      ticket: {
+        id: ticket.id,
+        title: ticket.title || "Untitled Ticket",
+      },
+      technician: {
+        id: technicianData.id,
+        name: technicianData.name,
+      },
+      supervisor: {
+        id: supervisor.id,
+        name: supervisor.name,
+        email: supervisor.email,
+      },
+      endUser: {
+        id: endUser.id,
+        name: endUser.name,
+        email: endUser.email,
+      },
+    };
+
+    // Step 9: Publish notification event
+    await publishTicketResolvedNotification(payload);
+
+    logger.info("Ticket resolved notification published successfully", {
+      ticketId: ticket.id,
+      technicianEmail: technicianData.email,
+      supervisorEmail: supervisor.email,
+      endUserEmail: endUser.email,
+    });
+  } catch (error) {
+    logger.error("Failed to publish ticket resolved notification", {
+      ticketId: ticket.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Don't throw - notification failure should not break the update flow
+  }
+}
 
 export default router;

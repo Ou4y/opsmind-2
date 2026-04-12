@@ -84,3 +84,70 @@ export async function publishTicketUpdated(ticket: Ticket): Promise<void> {
     longitude: ticket.longitude,
   });
 }
+
+/**
+ * Notification Event Payload for Ticket Resolution
+ */
+interface TicketResolvedNotificationPayload {
+  ticket: {
+    id: string;
+    title: string;
+  };
+  technician: {
+    id: string;
+    name: string;
+  };
+  supervisor: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  endUser: {
+    id: string;
+    name: string;
+    email: string;
+  };
+}
+
+/**
+ * Publish ticket resolved notification event
+ * 
+ * This event is consumed by the Notification Service to send
+ * resolution notifications to relevant parties.
+ * 
+ * @param payload - Notification payload with ticket, technician, supervisor, and end user info
+ */
+export async function publishTicketResolvedNotification(
+  payload: TicketResolvedNotificationPayload
+): Promise<void> {
+  try {
+    const channel = getChannel();
+    const routingKey = "ticket.notification.resolved";
+
+    const message = {
+      eventType: "ticket.notification.resolved",
+      occurredAt: new Date().toISOString(),
+      data: payload,
+    };
+
+    channel.publish(
+      EXCHANGE_NAME,
+      routingKey,
+      Buffer.from(JSON.stringify(message)),
+      { persistent: true }
+    );
+
+    logger.info("Event published: ticket.notification.resolved", {
+      ticketId: payload.ticket.id,
+      technicianId: payload.technician.id,
+      supervisorId: payload.supervisor.id,
+      endUserId: payload.endUser.id,
+    });
+  } catch (error) {
+    logger.error("Failed to publish ticket.notification.resolved event", {
+      error: error instanceof Error ? error.message : String(error),
+      ticketId: payload.ticket.id,
+    });
+    // Don't throw - notification failure should not break the update flow
+  }
+}

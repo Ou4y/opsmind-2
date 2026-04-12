@@ -9,8 +9,10 @@ import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
+import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { optionalAuth } from '../middlewares/auth';
 import { validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
+import { getUserDetails } from '../config/externalServices';
 
 const router = Router();
 
@@ -27,6 +29,7 @@ const loggingService = new LoggingService();
 const routingRepo = new TicketRoutingStateRepository();
 const slaRepo = new SlaTrackingRepository();
 const metricsService = new MetricsService();
+const technicianRepo = new TechnicianRepository();
 
 // Apply optional auth to all routes (extracts user if token present)
 router.use(optionalAuth);
@@ -357,5 +360,55 @@ router.get('/reports/escalations', async (req: Request, res: Response): Promise<
     res.status(500).json({ success: false, message: error.message });
   }
 });
+// ══════════════════════════════════════
+//  Supervisor Info (NEW — used by Ticket Service for notifications)
+//  GET /workflow/supervisor
+// ══════════════════════════════════════
+router.get('/supervisor', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    // Fetch supervisor from local database
+    const supervisor = await technicianRepo.getSupervisor();
+    
+    if (!supervisor) {
+      res.status(404).json({
+        success: false,
+        message: 'No active supervisor found',
+      });
+      return;
+    }
+
+    // Fetch supervisor email from auth service
+    try {
+      const userDetails = await getUserDetails(supervisor.id);
+      
+      res.status(200).json({
+        success: true,
+        data: {
+          id: supervisor.id,
+          name: supervisor.name,
+          email: userDetails.email,
+        },
+      });
+    } catch (authError) {
+      // If auth service is unavailable, return without email
+      console.warn('[Supervisor Endpoint] Failed to fetch email from auth service:', authError);
+      res.status(200).json({
+        success: true,
+        data: {
+          id: supervisor.id,
+          name: supervisor.name,
+          email: `supervisor${supervisor.id}@university.edu`, // Fallback email
+        },
+      });
+    }
+  } catch (error: any) {
+    console.error('Error fetching supervisor:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
 
 export default router;

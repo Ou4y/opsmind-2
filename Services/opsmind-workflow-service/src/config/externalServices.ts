@@ -38,6 +38,14 @@ export async function getUserRole(userId: number): Promise<{ role: string }> {
   return data;
 }
 
+/**
+ * Get user details (id, email, role) from auth service
+ */
+export async function getUserDetails(userId: number): Promise<ExternalUser> {
+  const { data } = await authServiceClient.get<ExternalUser>(`/users/${userId}`);
+  return data;
+}
+
 // ---------- Ticket Service Helpers ----------
 
 /**
@@ -57,6 +65,14 @@ export function toSupportLevel(role: string): string {
 
 export async function getTicket(ticketId: string): Promise<ExternalTicket> {
   const { data } = await ticketServiceClient.get<ExternalTicket>(`/tickets/${ticketId}`);
+  return data;
+}
+
+/**
+ * Get ticket details including title from ticket service
+ */
+export async function getTicketDetails(ticketId: string): Promise<any> {
+  const { data } = await ticketServiceClient.get<any>(`/tickets/${ticketId}`);
   return data;
 }
 
