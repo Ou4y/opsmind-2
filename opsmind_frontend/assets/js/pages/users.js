@@ -486,7 +486,7 @@ async function handleSaveUser(e) {
     });
 
     // Validate
-    const validation = UserService.validateUserData(userData, isUpdate);
+    const validation = await UserService.validateUserData(userData, isUpdate);
     console.log('[handleSaveUser] Validation result:', validation);
     
     if (!validation.valid) {

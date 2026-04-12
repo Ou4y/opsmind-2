@@ -48,7 +48,7 @@ router.use(roleMiddleware(['ADMIN']));
  *               email:
  *                 type: string
  *                 format: email
- *                 example: user@miuegypt.edu.eg
+ *                 example: user@example.com
  *                 description: User's email address
  *               password:
  *                 type: string
@@ -197,7 +197,7 @@ router.get(
  *               email:
  *                 type: string
  *                 format: email
- *                 example: tech@miuegypt.edu.eg
+ *                 example: tech@example.com
  *               password:
  *                 type: string
  *                 format: password
@@ -553,7 +553,7 @@ router.post(
  *                         example: 1
  *                       domain:
  *                         type: string
- *                         example: miuegypt.edu.eg
+ *                         example: example.com
  *                       created_at:
  *                         type: string
  *                         format: date-time
@@ -577,7 +577,7 @@ router.post(
  *             properties:
  *               domain:
  *                 type: string
- *                 example: miuegypt.edu.eg
+ *                 example: example.com
  *                 description: Domain name without @ symbol
  *     responses:
  *       201:
@@ -595,7 +595,7 @@ router.post(
  *                   example: Domain added successfully
  *                 domain:
  *                   type: string
- *                   example: miuegypt.edu.eg
+ *                   example: example.com
  *       400:
  *         description: Invalid input or duplicate domain
  *       401:

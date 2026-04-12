@@ -29,5 +29,4 @@ export const config = {
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || 'noreply@opsmind.com',
   },
-  allowedDomain: process.env.ALLOWED_DOMAIN || 'miuegypt.edu.eg',
 };

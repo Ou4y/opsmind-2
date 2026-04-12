@@ -3,12 +3,16 @@ import bcrypt from 'bcrypt';
 import { userRepository } from '@modules/users/user.repository';
 import { otpService } from '@modules/otp/otp.service';
 import { generateToken } from '@utils/jwt.util';
-import { validateOrganizationEmail, validatePassword, sanitizeUser } from '@utils/validation.util';
+import { validateAllowedEmailDomain, validatePassword, sanitizeUser } from '@utils/validation.util';
 import { SignupDTO, LoginDTO, VerifyOTPDTO, AuthResponse, RoleName } from '@/types';
 import { logger } from '@config/logger';
-import { config } from '@config/index';
 
 export class AuthService {
+  async getAllowedDomains(): Promise<string[]> {
+    const allowedDomains = await domainRepository.getActiveDomains();
+    return allowedDomains.map((domain) => domain.toLowerCase());
+  }
+
   async signup(data: SignupDTO): Promise<AuthResponse> {
     const { email, password, firstName, lastName, role } = data;
 
@@ -19,24 +23,18 @@ export class AuthService {
       };
     }
 
-    const allowedDomains = await domainRepository.getActiveDomains();
-    
-    // Validate organization email against DB domains
-    const domainPart = email.split('@')[1];
-    
-    if (allowedDomains.length > 0) {
-      if (!allowedDomains.includes(domainPart)) {
-        return {
-          message: `Email must be from an allowed organization domain: ${allowedDomains.map(d => '@' + d).join(', ')}`,
-        };
-      }
-    } else {
-      // Fallback to static validation if no domains in DB
-      if (!validateOrganizationEmail(email)) {
-        return {
-          message: `Email must be from the organization domain: @${config.allowedDomain}`,
-        };
-      }
+    const allowedDomains = await this.getAllowedDomains();
+
+    if (allowedDomains.length === 0) {
+      return {
+        message: 'Registration is currently unavailable. No allowed email domains are configured.',
+      };
+    }
+
+    if (!validateAllowedEmailDomain(email, allowedDomains)) {
+      return {
+        message: `Email domain is not allowed. Allowed domains: ${allowedDomains.map((domain) => `@${domain}`).join(', ')}`,
+      };
     }
 
     // Validate password strength

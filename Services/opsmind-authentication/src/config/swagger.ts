@@ -65,7 +65,7 @@ const swaggerDefinition: SwaggerDefinition = {
           email: {
             type: 'string',
             format: 'email',
-            example: 'user@miuegypt.edu.eg',
+            example: 'user@example.com',
           },
           first_name: {
             type: 'string',

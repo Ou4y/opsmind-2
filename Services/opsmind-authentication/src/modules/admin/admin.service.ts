@@ -1,8 +1,9 @@
 import bcrypt from 'bcrypt';
 import { userRepository } from '@modules/users/user.repository';
 import { technicianRepository, buildingRepository } from './admin.repository';
+import { domainRepository } from './domain.repository';
 import { otpService } from '@modules/otp/otp.service';
-import { validatePassword, sanitizeUser } from '@utils/validation.util';
+import { validateAllowedEmailDomain, validatePassword, sanitizeUser } from '@utils/validation.util';
 import { CreateTechnicianDTO, UserResponse, RoleName } from '@/types';
 import { logger } from '@config/logger';
 
@@ -17,6 +18,26 @@ export interface CreateUserDTO {
 }
 
 export class AdminService {
+  private async ensureAllowedEmailDomain(email: string): Promise<{ valid: boolean; message?: string }> {
+    const allowedDomains = (await domainRepository.getActiveDomains()).map((domain) => domain.toLowerCase());
+
+    if (allowedDomains.length === 0) {
+      return {
+        valid: false,
+        message: 'No allowed email domains are configured. Add at least one allowed domain first.',
+      };
+    }
+
+    if (!validateAllowedEmailDomain(email, allowedDomains)) {
+      return {
+        valid: false,
+        message: `Email domain is not allowed. Allowed domains: ${allowedDomains.map((domain) => `@${domain}`).join(', ')}`,
+      };
+    }
+
+    return { valid: true };
+  }
+
   async createUser(data: CreateUserDTO): Promise<{
     success: boolean;
     message: string;
@@ -31,6 +52,14 @@ export class AdminService {
       isVerified = true, // Default to verified since admin creates them
       isActive = true,   // Default to active
     } = data;
+
+    const emailValidation = await this.ensureAllowedEmailDomain(email);
+    if (!emailValidation.valid) {
+      return {
+        success: false,
+        message: emailValidation.message || 'Email domain is not allowed',
+      };
+    }
 
     // Validate password strength
     const passwordValidation = validatePassword(password);
@@ -94,6 +123,14 @@ export class AdminService {
       specialization,
       buildingIds,
     } = data;
+
+    const emailValidation = await this.ensureAllowedEmailDomain(email);
+    if (!emailValidation.valid) {
+      return {
+        success: false,
+        message: emailValidation.message || 'Email domain is not allowed',
+      };
+    }
 
     // Validate password strength
     const passwordValidation = validatePassword(password);
