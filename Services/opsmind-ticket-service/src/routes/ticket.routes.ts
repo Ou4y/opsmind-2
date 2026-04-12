@@ -16,6 +16,7 @@ import { logger } from "../config/logger";
 import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from "../utils/ticketEnrichment";
 import { fetchUserDetails } from "../utils/userServiceClient";
 import { fetchSupervisor } from "../utils/workflowServiceClient";
+import { updateSlaStatus, SlaStatusPayload } from "../utils/slaServiceClient";
 
 const router = Router();
 
@@ -366,6 +367,11 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
     });
     await publishTicketUpdated(ticket);
 
+    // Update SLA status if status changed
+    if (updateData.status) {
+      await updateSlaOnStatusChange(ticket, existing.status);
+    }
+
     // Publish notification event if ticket was resolved
     if (updateData.status === "RESOLVED") {
       await publishResolvedNotification(ticket);
@@ -661,6 +667,133 @@ async function publishResolvedNotification(ticket: any): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
     // Don't throw - notification failure should not break the update flow
+  }
+}
+
+/**
+ * Update SLA status after ticket status change
+ * 
+ * Data Flow:
+ * 1. Fetches technician from Auth Service (id, name, email)
+ * 2. Fetches supervisor from Workflow Service (id, name, email)
+ * 3. Validates all required fields are present
+ * 4. Builds SLA payload with appropriate timestamp fields:
+ *    - IN_PROGRESS: firstResponseAt
+ *    - RESOLVED: resolvedAt
+ *    - CLOSED: closedAt
+ * 5. Calls PATCH /sla/tickets/{ticketId}/status
+ * 
+ * Validation:
+ * - Requires assigned_to to be set
+ * - Validates technician data (id, name, email)
+ * - Validates supervisor data (id, name, email)
+ * 
+ * Error Handling:
+ * - Missing assigned_to → logged, SLA not updated
+ * - Missing data → logged, SLA not updated
+ * - API failures → logged, SLA not updated
+ * - Never throws → ticket update continues
+ * 
+ * Non-blocking: failures are logged but do not break the update flow.
+ */
+async function updateSlaOnStatusChange(ticket: any, oldStatus: string): Promise<void> {
+  try {
+    logger.info("Updating SLA status after ticket status change", {
+      ticketId: ticket.id,
+      oldStatus,
+      newStatus: ticket.status,
+    });
+
+    // Step 1: Validate required ticket fields
+    if (!ticket.assigned_to) {
+      logger.warn("Cannot update SLA status: ticket has no assigned technician", {
+        ticketId: ticket.id,
+        status: ticket.status,
+      });
+      return;
+    }
+
+    // Step 2: Fetch technician details from Auth Service
+    const technician = await fetchUserDetails(ticket.assigned_to);
+    if (!technician) {
+      logger.warn("Cannot update SLA status: failed to fetch technician details", {
+        ticketId: ticket.id,
+        technicianId: ticket.assigned_to,
+      });
+      return;
+    }
+
+    // Step 3: Validate technician data
+    const technicianData = {
+      id: technician.id,
+      name: technician.name || technician.email?.split("@")[0] || String(ticket.assigned_to),
+      email: technician.email,
+    };
+
+    if (!technicianData.email) {
+      logger.warn("Cannot update SLA status: technician missing email", {
+        ticketId: ticket.id,
+        technicianId: ticket.assigned_to,
+      });
+      return;
+    }
+
+    // Step 4: Fetch supervisor details from Workflow Service
+    const supervisor = await fetchSupervisor();
+    if (!supervisor) {
+      logger.warn("Cannot update SLA status: failed to fetch supervisor details", {
+        ticketId: ticket.id,
+      });
+      return;
+    }
+
+    // Step 5: Validate supervisor data (all fields required)
+    if (!validateUserData(supervisor, "supervisor", ticket.id)) {
+      return;
+    }
+
+    // Step 6: Build SLA payload with appropriate timestamp fields
+    const payload: SlaStatusPayload = {
+      ticketStatus: ticket.status,
+      assignedTo: ticket.assigned_to,
+      title: ticket.title || "Untitled Ticket",
+      technician: {
+        id: technicianData.id,
+        name: technicianData.name,
+        email: technicianData.email,
+      },
+      supervisor: {
+        id: supervisor.id,
+        name: supervisor.name,
+        email: supervisor.email,
+      },
+    };
+
+    // Add appropriate timestamp based on status
+    if (ticket.status === "IN_PROGRESS" && oldStatus === "OPEN") {
+      // First response - technician started working
+      payload.firstResponseAt = new Date().toISOString();
+    } else if (ticket.status === "RESOLVED") {
+      payload.resolvedAt = ticket.resolved_at?.toISOString() || new Date().toISOString();
+    } else if (ticket.status === "CLOSED") {
+      payload.closedAt = ticket.closed_at?.toISOString() || new Date().toISOString();
+    }
+
+    // Step 7: Call SLA service to update status
+    await updateSlaStatus(ticket.id, payload);
+
+    logger.info("SLA status update completed", {
+      ticketId: ticket.id,
+      status: ticket.status,
+      technicianEmail: technicianData.email,
+      supervisorEmail: supervisor.email,
+    });
+  } catch (error) {
+    logger.error("Failed to update SLA status", {
+      ticketId: ticket.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Don't throw - SLA failure should not break the update flow
   }
 }
 

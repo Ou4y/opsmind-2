@@ -16,6 +16,10 @@ export const config = {
     url: process.env.USER_SERVICE_URL ?? "http://opsmind-user:3002",
   },
 
+  slaService: {
+    url: process.env.SLA_SERVICE_URL ?? "http://opsmind-ticket-service:3000",
+  },
+
   cors: {
     origins: (process.env.CORS_ORIGINS ?? "http://localhost:5173")
       .split(",")

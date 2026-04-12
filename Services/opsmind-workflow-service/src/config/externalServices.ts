@@ -11,6 +11,7 @@ import { ExternalTicket, ExternalUser } from '../interfaces/types';
 
 const AUTH_SERVICE_URL: string = process.env.AUTH_SERVICE_URL || 'http://opsmind-auth-service:3002';
 const TICKET_SERVICE_URL: string = process.env.TICKET_SERVICE_URL || 'http://opsmind-ticket-service:3000';
+const SLA_SERVICE_URL: string = process.env.SLA_SERVICE_URL || 'http://opsmind-ticket-service:3000';
 
 // ---------- Axios Instances ----------
 
@@ -22,6 +23,12 @@ export const authServiceClient: AxiosInstance = axios.create({
 
 export const ticketServiceClient: AxiosInstance = axios.create({
   baseURL: TICKET_SERVICE_URL,
+  timeout: 5000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+export const slaServiceClient: AxiosInstance = axios.create({
+  baseURL: SLA_SERVICE_URL,
   timeout: 5000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -120,5 +127,34 @@ export async function escalateTicketInService(
     to_level: toLevel,
     reason,
   });
+  return data;
+}
+
+/**
+ * Start SLA tracking via POST /sla/start
+ * Body: { ticketId, title, priority, ticketStatus, createdAt, assignedTo, technician, supervisor }
+ */
+export async function startSlaTracking(
+  ticketId: string,
+  title: string,
+  priority: string,
+  ticketStatus: string,
+  createdAt: string,
+  assignedTo: string,
+  technician: { id: string; name: string; email: string },
+  supervisor: { id: string; name: string; email: string },
+): Promise<any> {
+  const payload = {
+    ticketId,
+    title,
+    priority,
+    ticketStatus,
+    createdAt,
+    assignedTo,
+    technician,
+    supervisor,
+  };
+  console.log(`[externalServices] POST ${SLA_SERVICE_URL}/sla/start | payload: ${JSON.stringify(payload)}`);
+  const { data } = await slaServiceClient.post('/sla/start', payload);
   return data;
 }

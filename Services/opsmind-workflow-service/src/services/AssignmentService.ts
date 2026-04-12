@@ -2,7 +2,7 @@ import { TicketCreatedEvent, TicketAssignedEvent, TechnicianRow, TicketPriority 
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { TicketRepository } from '../repositories/TicketRepository';
 import { haversineDistanceKm } from '../utils/geo';
-import { assignTicket, getTicketDetails, getUserDetails } from '../config/externalServices';
+import { assignTicket, getTicketDetails, getUserDetails, startSlaTracking } from '../config/externalServices';
 import { NotificationPublisher } from './NotificationPublisher';
 
 /**
@@ -177,7 +177,10 @@ export class AssignmentService {
         JSON.stringify(result),
       );
 
-      // 9. Publish notification event after successful assignment
+      // 9. Start SLA tracking after successful assignment
+      await this.startSlaTracking(event, best.id);
+
+      // 10. Publish notification event after successful assignment
       await this.publishAssignmentNotification(event.ticket_id, best.id);
     } catch (extErr: any) {
       const status = extErr?.response?.status ?? 'NO_RESPONSE';
@@ -335,6 +338,97 @@ export class AssignmentService {
         error instanceof Error ? error.message : error
       );
       // Do not throw - notification failure should not break assignment
+    }
+  }
+
+  /**
+   * Start SLA tracking after successful ticket assignment
+   * 
+   * Implementation:
+   * - Fetches ticket details from ticket-service (title, priority, status, createdAt)
+   * - Enriches technician data (local DB + Auth Service)
+   * - Enriches supervisor data (local DB + Auth Service)
+   * - Validates all required fields
+   * - Calls POST /sla/start with complete payload
+   * 
+   * Data Flow:
+   * 1. Ticket Service API → title, priority, status, createdAt
+   * 2. Local DB query (technicians table) → technician name, supervisor
+   * 3. Auth Service API → technician email, supervisor email
+   * 4. Validation → ensures all fields present
+   * 5. POST /sla/start
+   * 
+   * Error Handling:
+   * - Missing data → logged, SLA not started
+   * - API failures → logged, SLA not started
+   * - Never throws → assignment flow continues even if SLA fails
+   */
+  private async startSlaTracking(event: TicketCreatedEvent, technicianId: number): Promise<void> {
+    try {
+      console.log(`[AssignmentService] Starting SLA tracking for ticket ${event.ticket_id}...`);
+
+      // Step 1: Fetch ticket details from ticket-service
+      const ticketDetails = await getTicketDetails(event.ticket_id);
+      if (!ticketDetails) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `could not fetch ticket details for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 2: Enrich and validate technician data
+      const technicianData = await this.enrichUserData(technicianId, 'technician');
+      if (!technicianData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `technician data validation failed for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 3: Fetch supervisor from local database
+      const supervisor = await this.technicianRepo.getSupervisor();
+      if (!supervisor) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `no supervisor found for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 4: Enrich and validate supervisor data
+      const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
+      if (!supervisorData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `supervisor data validation failed for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 5: Call POST /sla/start with complete payload
+      await startSlaTracking(
+        event.ticket_id,
+        ticketDetails.title || 'Untitled Ticket',
+        ticketDetails.priority || event.priority || 'MEDIUM',
+        ticketDetails.status || 'IN_PROGRESS',
+        ticketDetails.created_at || new Date().toISOString(),
+        String(technicianId),
+        technicianData,
+        supervisorData,
+      );
+
+      console.log(
+        `[AssignmentService] ✔ SLA tracking started successfully | ` +
+        `ticket=${event.ticket_id} | technician=${technicianData.email} | supervisor=${supervisorData.email}`
+      );
+    } catch (error) {
+      console.error(
+        `[AssignmentService] ✘ Failed to start SLA tracking for ticket ${event.ticket_id}:`,
+        error instanceof Error ? error.message : error
+      );
+      // Do not throw - SLA failure should not break assignment
     }
   }
 }
