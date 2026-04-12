@@ -361,13 +361,15 @@ const UserService = {
      * @returns {string} Formatted role
      */
     formatRole(role) {
+        if (!role || role === 'N/A') return 'N/A';
         const roleMap = {
             'ADMIN': 'Administrator',
             'DOCTOR': 'Professor',
             'JUNIOR': 'Junior Technician',
             'SENIOR': 'Senior Technician',
             'SUPERVISOR': 'Supervisor',
-            'STUDENT': 'Student'
+            'STUDENT': 'Student',
+            'TECHNICIAN': 'Technician'
         };
         return roleMap[role?.toUpperCase()] || role;
     },
@@ -378,13 +380,15 @@ const UserService = {
      * @returns {string} Bootstrap badge class
      */
     getRoleBadgeClass(role) {
+        if (!role || role === 'N/A') return 'bg-secondary';
         const badgeMap = {
             'ADMIN': 'bg-danger',
             'DOCTOR': 'bg-warning text-dark',
             'JUNIOR': 'bg-success',
             'SENIOR': 'bg-primary',
             'SUPERVISOR': 'bg-dark',
-            'STUDENT': 'bg-info'
+            'STUDENT': 'bg-info',
+            'TECHNICIAN': 'bg-success'
         };
         return badgeMap[role?.toUpperCase()] || 'bg-secondary';
     }

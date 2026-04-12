@@ -12,6 +12,8 @@ export interface User {
 }
 
 export interface UserWithRoles extends User {
+  name?: string; // Concatenated full name from SQL
+  role?: string; // Single role name from SQL JOIN
   roles: Role[];
 }
 
@@ -28,8 +30,10 @@ export interface UserResponse {
   email: string;
   firstName: string;
   lastName: string;
+  name?: string; // Concatenated full name
   isVerified: boolean;
   isActive: boolean;
+  role?: string; // Single role name for display
   roles: string[];
   createdAt: Date;
 }

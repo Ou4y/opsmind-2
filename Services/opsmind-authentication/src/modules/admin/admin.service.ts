@@ -234,7 +234,8 @@ export class AdminService {
     const users = await userRepository.findAll();
     return users.map(user => sanitizeUser({
       ...user,
-      roles: user.roles.map(r => r.name),
+      role: user.role, // Single role name for display
+      roles: user.roles.map(r => r.name), // Array of role names for compatibility
     }));
   }
 

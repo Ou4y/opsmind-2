@@ -40,8 +40,10 @@ export const sanitizeUser = (user: any) => ({
   email: user.email,
   firstName: user.first_name,
   lastName: user.last_name,
+  name: user.name, // Concatenated full name from SQL
   isVerified: user.is_verified,
   isActive: user.is_active,
+  role: user.role, // Single role name from SQL JOIN
   roles: user.roles || [],
   createdAt: user.created_at,
 });

@@ -116,24 +116,35 @@ export class UserRepository {
   }
 
   async findAll(options?: { isActive?: boolean }): Promise<UserWithRoles[]> {
-    let sql = 'SELECT * FROM users';
+    let sql = `
+      SELECT 
+        u.id,
+        CONCAT(u.first_name, ' ', u.last_name) AS name,
+        u.email,
+        u.is_verified,
+        u.is_active,
+        u.created_at,
+        u.updated_at,
+        r.name AS role
+      FROM users u
+      LEFT JOIN user_roles ur ON u.id = ur.user_id
+      LEFT JOIN roles r ON ur.role_id = r.id
+    `;
     const params: any[] = [];
 
     if (options?.isActive !== undefined) {
-      sql += ' WHERE is_active = ?';
+      sql += ' WHERE u.is_active = ?';
       params.push(options.isActive);
     }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY u.created_at DESC';
 
-    const users = await query<User[]>(sql, params);
+    const users = await query<any[]>(sql, params);
     
-    return Promise.all(
-      users.map(async (user) => {
-        const roles = await this.getUserRoles(user.id);
-        return { ...user, roles };
-      })
-    );
+    return users.map((user) => ({
+      ...user,
+      roles: user.role ? [{ name: user.role }] : [],
+    }));
   }
 
   async delete(userId: string): Promise<void> {
