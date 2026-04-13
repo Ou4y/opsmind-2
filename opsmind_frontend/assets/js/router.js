@@ -39,7 +39,8 @@ const Router = {
     // Pages for SENIOR role (building managers)
     seniorPages: [
         'senior-dashboard.html',
-        'workflows.html'  // Can manage workflows
+        'workflows.html',  // Can manage workflows
+        'inventory.html'   // Asset inventory
     ],
     
     // Pages for SUPERVISOR role (global view)

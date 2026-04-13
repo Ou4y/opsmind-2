@@ -46,9 +46,25 @@ services:
       - opsmind-net
     restart: unless-stopped
 
+  mongodb:
+    image: mongo:8.0
+    container_name: opsmind-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: opsmind_assets
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
 networks:
   opsmind-net:
     name: opsmind-net
 
 volumes:
   mysql_data:
+  mongodb_data:
