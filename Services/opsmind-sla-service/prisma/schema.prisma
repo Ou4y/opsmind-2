@@ -1,0 +1,118 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TicketSLAStatus {
+  ACTIVE
+  PAUSED
+  BREACHED
+  RESOLVED
+  CLOSED
+}
+
+enum SlaActionType {
+  SLA_STARTED
+  STATUS_UPDATED
+  RESPONSE_WARNING_1
+  RESPONSE_WARNING_2
+  RESPONSE_BREACHED
+  RESOLUTION_WARNING_1
+  RESOLUTION_WARNING_2
+  RESOLUTION_BREACHED
+  WORKFLOW_INTERVENTION_REQUESTED
+  PAUSED
+  RESUMED
+  RESOLVED
+  CLOSED
+  POLICY_UPDATED
+}
+
+model SLAPolicy {
+  id                String         @id @default(uuid())
+  name              String
+  priority          TicketPriority @unique
+  responseMinutes   Int
+  resolutionMinutes Int
+  warning1Percent   Int            @default(70)
+  warning2Percent   Int            @default(85)
+  breachPercent     Int            @default(100)
+  breachAction      String         @default("NOTIFY_AND_REQUEST_WORKFLOW")
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  ticketSLAs        TicketSLA[]
+}
+
+model TicketSLA {
+  id                        String          @id @default(uuid())
+  ticketId                  String          @unique
+  priority                  TicketPriority
+  assignedTo                String?
+  status                    TicketSLAStatus @default(ACTIVE)
+  ticketStatus              String          @default("OPEN")
+  building                  String?
+  floor                     Int?
+  room                      String?
+  supportGroupId            String?
+  requesterId               String?
+  createdAt                 DateTime
+  responseDueAt             DateTime
+  resolutionDueAt           DateTime
+  firstResponseAt           DateTime?
+  resolvedAt                DateTime?
+  closedAt                  DateTime?
+  pausedAt                  DateTime?
+  totalPausedMinutes        Int             @default(0)
+  responseWarning1Sent      Boolean         @default(false)
+  responseWarning2Sent      Boolean         @default(false)
+  responseBreachSent        Boolean         @default(false)
+  resolutionWarning1Sent    Boolean         @default(false)
+  resolutionWarning2Sent    Boolean         @default(false)
+  resolutionBreachSent      Boolean         @default(false)
+  workflowInterventionSent  Boolean         @default(false)
+  escalationStage           Int             @default(0)
+  lastUpdatedAt             DateTime        @default(now())
+  lastCheckedAt             DateTime?
+  policyId                  String
+  createdRowAt              DateTime        @default(now())
+  updatedRowAt              DateTime        @updatedAt
+
+  policy                    SLAPolicy       @relation(fields: [policyId], references: [id])
+  events                    SLAEventLog[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([responseDueAt])
+  @@index([resolutionDueAt])
+  @@index([building])
+  @@index([supportGroupId])
+}
+
+model SLAEventLog {
+  id          String        @id @default(uuid())
+  ticketSlaId String
+  ticketId    String
+  eventType   SlaActionType
+  message     String
+  payloadJson String?       @db.LongText
+  createdAt   DateTime      @default(now())
+
+  ticketSla   TicketSLA     @relation(fields: [ticketSlaId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+  @@index([eventType])
+  @@index([createdAt])
+}

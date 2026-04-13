@@ -1,0 +1,31 @@
+services:
+  sla-service:
+    container_name: opsmind-sla-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      PORT: ${PORT:-3004}
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL}
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      RABBITMQ_SLA_EXCHANGE: ${RABBITMQ_SLA_EXCHANGE:-opsmind.sla.exchange}
+      RABBITMQ_NOTIFICATION_WARNING_KEY: ${RABBITMQ_NOTIFICATION_WARNING_KEY:-ticket.notification.slaWarning}
+      RABBITMQ_NOTIFICATION_BREACH_KEY: ${RABBITMQ_NOTIFICATION_BREACH_KEY:-ticket.notification.slaBreached}
+      RABBITMQ_WORKFLOW_INTERVENTION_KEY: ${RABBITMQ_WORKFLOW_INTERVENTION_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8085,http://localhost:3000}
+      SLA_CHECK_INTERVAL_MS: ${SLA_CHECK_INTERVAL_MS:-60000}
+      SLA_AUTO_REQUEST_WORKFLOW_ON_RESPONSE_BREACH: ${SLA_AUTO_REQUEST_WORKFLOW_ON_RESPONSE_BREACH:-false}
+      SLA_AUTO_REQUEST_WORKFLOW_ON_RESOLUTION_BREACH: ${SLA_AUTO_REQUEST_WORKFLOW_ON_RESOLUTION_BREACH:-false}
+    ports:
+      - "${PORT:-3004}:3004"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+networks:
+  opsmind-net:
+    name: opsmind-net
+    external: true

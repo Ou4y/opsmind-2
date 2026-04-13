@@ -1,0 +1,9 @@
+CREATE DATABASE IF NOT EXISTS sla_db;
+
+CREATE USER IF NOT EXISTS 'opsmind'@'%' IDENTIFIED BY 'opsmind';
+CREATE USER IF NOT EXISTS 'opsmind'@'localhost' IDENTIFIED BY 'opsmind';
+
+GRANT ALL PRIVILEGES ON sla_db.* TO 'opsmind'@'localhost' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON sla_db.* TO 'opsmind'@'%' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
