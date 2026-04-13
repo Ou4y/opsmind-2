@@ -10,7 +10,7 @@ COPY src ./src
 RUN npx tsc
 
 # ── Stage 2: Runtime ──
-FROM node:18-alpine
+FROM node:18-alpine AS runner
 
 WORKDIR /app
 

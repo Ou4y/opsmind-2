@@ -57,3 +57,22 @@ export const updateTechnicianLocationSchema = Joi.object({
   latitude: Joi.number().min(-90).max(90).required(),
   longitude: Joi.number().min(-180).max(180).required(),
 }).unknown(false);
+
+// ── Hierarchy Management Schemas ──
+
+export const createRelationshipSchema = Joi.object({
+  childUserId: Joi.number().integer().required(),
+  parentUserId: Joi.number().integer().required(),
+  relationshipType: Joi.string()
+    .valid('JUNIOR_TO_SENIOR', 'SENIOR_TO_SUPERVISOR', 'SUPERVISOR_TO_ADMIN')
+    .required(),
+}).unknown(false);
+
+export const deleteRelationshipSchema = Joi.object({
+  childUserId: Joi.number().integer().required(),
+  parentUserId: Joi.number().integer().required(),
+}).unknown(false);
+
+export const listTechniciansSchema = Joi.object({
+  level: Joi.string().valid('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN').optional(),
+}).unknown(true);

@@ -11,6 +11,7 @@ import { ExternalTicket, ExternalUser } from '../interfaces/types';
 
 const AUTH_SERVICE_URL: string = process.env.AUTH_SERVICE_URL || 'http://opsmind-auth-service:3002';
 const TICKET_SERVICE_URL: string = process.env.TICKET_SERVICE_URL || 'http://opsmind-ticket-service:3000';
+const SLA_SERVICE_URL: string = process.env.SLA_SERVICE_URL || 'http://opsmind-ticket-service:3000';
 
 // ---------- Axios Instances ----------
 
@@ -26,6 +27,12 @@ export const ticketServiceClient: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+export const slaServiceClient: AxiosInstance = axios.create({
+  baseURL: SLA_SERVICE_URL,
+  timeout: 5000,
+  headers: { 'Content-Type': 'application/json' },
+});
+
 // ---------- Auth Service Helpers ----------
 
 export async function validateUser(userId: number): Promise<ExternalUser> {
@@ -35,6 +42,14 @@ export async function validateUser(userId: number): Promise<ExternalUser> {
 
 export async function getUserRole(userId: number): Promise<{ role: string }> {
   const { data } = await authServiceClient.get<{ role: string }>(`/users/${userId}/role`);
+  return data;
+}
+
+/**
+ * Get user details (id, email, role) from auth service
+ */
+export async function getUserDetails(userId: number): Promise<ExternalUser> {
+  const { data } = await authServiceClient.get<ExternalUser>(`/users/${userId}`);
   return data;
 }
 
@@ -57,6 +72,14 @@ export function toSupportLevel(role: string): string {
 
 export async function getTicket(ticketId: string): Promise<ExternalTicket> {
   const { data } = await ticketServiceClient.get<ExternalTicket>(`/tickets/${ticketId}`);
+  return data;
+}
+
+/**
+ * Get ticket details including title from ticket service
+ */
+export async function getTicketDetails(ticketId: string): Promise<any> {
+  const { data } = await ticketServiceClient.get<any>(`/tickets/${ticketId}`);
   return data;
 }
 
@@ -105,4 +128,62 @@ export async function escalateTicketInService(
     reason,
   });
   return data;
+}
+
+/**
+ * Start SLA tracking via POST /sla/start
+ * Body: { ticketId, title, priority, ticketStatus, createdAt, assignedTo, technician, supervisor }
+ */
+export async function startSlaTracking(
+  ticketId: string,
+  title: string,
+  priority: string,
+  ticketStatus: string,
+  createdAt: string,
+  assignedTo: string,
+  technician: { id: string; name: string; email: string },
+  supervisor: { id: string; name: string; email: string },
+): Promise<any> {
+  const payload = {
+    ticketId,
+    title,
+    priority,
+    ticketStatus,
+    createdAt,
+    assignedTo,
+    technician,
+    supervisor,
+  };
+  console.log(`[externalServices] POST ${SLA_SERVICE_URL}/sla/start | payload: ${JSON.stringify(payload)}`);
+  const { data } = await slaServiceClient.post('/sla/start', payload);
+  return data;
+}
+
+/**
+ * Get tickets assigned to specific users
+ * Query: GET /tickets?assigned_to=userId1,userId2,...
+ */
+export async function getTicketsByAssignedUsers(userIds: number[]): Promise<any[]> {
+  try {
+    if (userIds.length === 0) return [];
+    
+    // Query tickets for each user (ticket service may support filtering)
+    const ticketPromises = userIds.map(async (userId) => {
+      try {
+        const { data } = await ticketServiceClient.get('/tickets', {
+          params: { assigned_to: String(userId) },
+        });
+        return Array.isArray(data) ? data : data.tickets || [];
+      } catch (err) {
+        console.error(`[externalServices] Failed to fetch tickets for user ${userId}:`, err);
+        return [];
+      }
+    });
+
+    const ticketsArrays = await Promise.all(ticketPromises);
+    return ticketsArrays.flat();
+  } catch (error) {
+    console.error('[externalServices] Error fetching tickets by assigned users:', error);
+    return [];
+  }
 }

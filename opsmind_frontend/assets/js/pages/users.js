@@ -226,6 +226,12 @@ async function loadUsers() {
         state.totalUsers = total;
         state.totalPages = Math.ceil(total / state.pageSize);
 
+        // Debug: Log user data to verify role field
+        console.log('[Users Page] Loaded users:', users);
+        if (users.length > 0) {
+            console.log('[Users Page] Sample user data:', users[0]);
+        }
+
         // Update UI
         if (users.length === 0) {
             UI.toggle(emptyState, true);
@@ -295,9 +301,10 @@ function renderUsers() {
     if (!tbody) return;
 
     tbody.innerHTML = state.users.map(user => {
-        const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
-        const roleBadgeClass = UserService.getRoleBadgeClass(user.role);
-        const roleDisplay = UserService.formatRole(user.role);
+        const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+        const userRole = user.role || user.role_name || 'N/A';
+        const roleBadgeClass = UserService.getRoleBadgeClass(userRole);
+        const roleDisplay = UserService.formatRole(userRole);
         const statusBadge = user.isVerified 
             ? '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Verified</span>'
             : '<span class="badge bg-warning text-dark"><i class="bi bi-clock me-1"></i>Pending</span>';
@@ -479,7 +486,7 @@ async function handleSaveUser(e) {
     });
 
     // Validate
-    const validation = UserService.validateUserData(userData, isUpdate);
+    const validation = await UserService.validateUserData(userData, isUpdate);
     console.log('[handleSaveUser] Validation result:', validation);
     
     if (!validation.valid) {

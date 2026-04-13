@@ -1,13 +1,26 @@
-import { config } from '@config/index';
-
 export const validateEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 };
 
-export const validateOrganizationEmail = (email: string): boolean => {
-  const domain = email.split('@')[1];
-  return domain === config.allowedDomain;
+export const extractEmailDomain = (email: string): string => {
+  const [, domain = ''] = email.split('@');
+  return domain.trim().toLowerCase();
+};
+
+export const validateAllowedEmailDomain = (email: string, allowedDomains: string[]): boolean => {
+  if (!Array.isArray(allowedDomains) || allowedDomains.length === 0) {
+    return false;
+  }
+
+  const emailDomain = extractEmailDomain(email);
+  if (!emailDomain) {
+    return false;
+  }
+
+  return allowedDomains
+    .map((domain) => domain.toLowerCase())
+    .includes(emailDomain);
 };
 
 export const validatePassword = (password: string): { valid: boolean; errors: string[] } => {
@@ -40,8 +53,10 @@ export const sanitizeUser = (user: any) => ({
   email: user.email,
   firstName: user.first_name,
   lastName: user.last_name,
+  name: user.name, // Concatenated full name from SQL
   isVerified: user.is_verified,
   isActive: user.is_active,
+  role: user.role, // Single role name from SQL JOIN
   roles: user.roles || [],
   createdAt: user.created_at,
 });

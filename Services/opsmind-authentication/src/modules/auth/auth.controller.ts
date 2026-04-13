@@ -4,6 +4,23 @@ import { authService } from './auth.service';
 import { logger } from '@config/logger';
 
 export class AuthController {
+  async getAllowedDomains(req: Request, res: Response): Promise<void> {
+    try {
+      const domains = await authService.getAllowedDomains();
+
+      res.status(200).json({
+        success: true,
+        data: domains,
+      });
+    } catch (error) {
+      logger.error('Get allowed domains error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+      });
+    }
+  }
+
   async signup(req: Request, res: Response): Promise<void> {
     try {
       const errors = validationResult(req);

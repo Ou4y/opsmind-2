@@ -36,7 +36,7 @@ function getRoleBasedDashboard() {
             return 'supervisor-dashboard.html';
         
         case 'ADMIN':
-            return 'senior-dashboard.html';  // Admin sees advanced dashboard
+            return 'admin/domains.html';  // Admin sees advanced dashboard
         
         default:
             return 'dashboard.html';  // Fallback to basic dashboard
@@ -327,12 +327,6 @@ function initLoginPage() {
             return;
         }
 
-        if (!AuthService.validateMIUEmail(email)) {
-            showError('Email must end with @miuegypt.edu.eg');
-            emailInput.focus();
-            return;
-        }
-
         if (!password) {
             showError('Please enter your password.');
             passwordInput.focus();
@@ -396,8 +390,17 @@ function initLoginPage() {
             return;
         }
 
-        if (!AuthService.validateMIUEmail(email)) {
-            showSignupError('Email must end with @miuegypt.edu.eg');
+        let domainValidation;
+        try {
+            domainValidation = await AuthService.validateAllowedEmail(email);
+        } catch (error) {
+            showSignupError(error.message || 'Unable to validate allowed email domains right now.');
+            signupEmailInput.focus();
+            return;
+        }
+
+        if (!domainValidation.valid) {
+            showSignupError(domainValidation.message || 'Email domain is not allowed.');
             signupEmailInput.focus();
             return;
         }

@@ -9,6 +9,16 @@ interface UserServiceResponse {
 }
 
 /**
+ * User details with full information including email
+ */
+export interface UserDetails {
+  id: string;
+  name: string;
+  email: string;
+  role?: string;
+}
+
+/**
  * Temporary mock mapping for technician names.
  * TODO: Remove when User Service is fully integrated.
  */
@@ -115,4 +125,72 @@ export async function fetchTechnicianNames(
   }
 
   return nameMap;
+}
+
+/**
+ * Fetch complete user details including email from the User Service.
+ * 
+ * @param userId - The user/technician ID to fetch
+ * @returns User details with name and email, or null if not found
+ */
+export async function fetchUserDetails(userId: string): Promise<UserDetails | null> {
+  try {
+    const url = `${config.userService.url}/users/${userId}`;
+    
+    logger.debug("Fetching user details from User Service", {
+      userId,
+      url,
+    });
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(3000), // 3 second timeout
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        logger.warn("User not found in User Service", { userId });
+        return null;
+      }
+      
+      logger.warn("User Service returned non-OK status", {
+        status: response.status,
+        userId,
+      });
+      return null;
+    }
+
+    const data = (await response.json()) as UserServiceResponse;
+    
+    if (!data.name || !data.email) {
+      logger.warn("User details incomplete (missing name or email)", {
+        userId,
+        hasName: !!data.name,
+        hasEmail: !!data.email,
+      });
+      return null;
+    }
+
+    logger.debug("User details fetched successfully", {
+      userId,
+      name: data.name,
+      email: data.email,
+    });
+
+    return {
+      id: userId,
+      name: data.name,
+      email: data.email,
+      role: data.role,
+    };
+  } catch (err) {
+    logger.warn("Failed to fetch user details from User Service", {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }

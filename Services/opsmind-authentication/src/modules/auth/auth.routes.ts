@@ -19,6 +19,32 @@ const router = Router();
 
 /**
  * @swagger
+ * /auth/allowed-domains:
+ *   get:
+ *     summary: Get currently allowed email domains for registration
+ *     tags: [Authentication]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Allowed domains fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                     example: example.com
+ */
+router.get('/allowed-domains', authController.getAllowedDomains.bind(authController));
+
+/**
+ * @swagger
  * /auth/signup:
  *   post:
  *     summary: Register a new user
@@ -40,7 +66,7 @@ const router = Router();
  *               email:
  *                 type: string
  *                 format: email
- *                 example: john.doe@miuegypt.edu.eg
+ *                 example: john.doe@example.com
  *               password:
  *                 type: string
  *                 format: password
@@ -113,7 +139,7 @@ router.post(
  *               email:
  *                 type: string
  *                 format: email
- *                 example: john.doe@miuegypt.edu.eg
+ *                 example: john.doe@example.com
  *               password:
  *                 type: string
  *                 format: password
@@ -172,7 +198,7 @@ router.post(
  *               email:
  *                 type: string
  *                 format: email
- *                 example: john.doe@miuegypt.edu.eg
+ *                 example: john.doe@example.com
  *               otp:
  *                 type: string
  *                 minLength: 6
@@ -237,7 +263,7 @@ router.post(
  *               email:
  *                 type: string
  *                 format: email
- *                 example: john.doe@miuegypt.edu.eg
+ *                 example: john.doe@example.com
  *               purpose:
  *                 type: string
  *                 enum: [VERIFICATION, LOGIN]

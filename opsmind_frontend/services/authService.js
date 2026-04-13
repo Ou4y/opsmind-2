@@ -21,21 +21,23 @@ const TOKEN_KEY = 'opsmind_token';
 const USER_KEY = 'opsmind_user';
 const REMEMBER_KEY = 'opsmind_remember';
 const PENDING_VERIFICATION_KEY = 'opsmind_pending_verification';
+const ALLOWED_DOMAINS_CACHE_KEY = 'opsmind_allowed_domains_cache';
+const ALLOWED_DOMAINS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
  * AuthService - Singleton service for authentication operations
  */
 const AuthService = {
-    /**
-     * Register a new user
-     * @param {Object} userData - User registration data
-     * @param {string} userData.firstName - User's first name
-     * @param {string} userData.lastName - User's last name
-     * @param {string} userData.email - User's email (must end with @miuegypt.edu.eg)
-     * @param {string} userData.password - User's password (min 8 chars, uppercase, lowercase, number, special char)
-     * @param {string} userData.role - User's role ("STUDENT" or "DOCTOR")
-     * @returns {Promise<Object>} Response with requiresOTP: true
-     */
+     /**
+      * Register a new user
+      * @param {Object} userData - User registration data
+      * @param {string} userData.firstName - User's first name
+      * @param {string} userData.lastName - User's last name
+      * @param {string} userData.email - User's email (must match an allowed domain)
+      * @param {string} userData.password - User's password (min 8 chars, uppercase, lowercase, number, special char)
+      * @param {string} userData.role - User's role ("STUDENT" or "DOCTOR")
+      * @returns {Promise<Object>} Response with requiresOTP: true
+      */
     async signup(userData) {
         try {
             const response = await fetch(`${API_BASE_URL}/auth/signup`, {
@@ -249,12 +251,144 @@ const AuthService = {
     },
 
     /**
-     * Validate email for MIU domain
-     * @param {string} email - Email to validate
-     * @returns {boolean} True if email ends with @miuegypt.edu.eg
+     * Extract domain from an email address
+     * @param {string} email - Email address
+     * @returns {string} Domain part (lowercase) or empty string
      */
-    validateMIUEmail(email) {
-        return email.toLowerCase().endsWith('@miuegypt.edu.eg');
+    extractEmailDomain(email) {
+        const parts = String(email || '').split('@');
+        if (parts.length !== 2) return '';
+        return parts[1].trim().toLowerCase();
+    },
+
+    /**
+     * Check whether an email belongs to one of the allowed domains
+     * @param {string} email - Email to validate
+     * @param {Array<string>} allowedDomains - Allowed domains list
+     * @returns {boolean} True if email domain is allowed
+     */
+    isAllowedEmailDomain(email, allowedDomains) {
+        const domain = this.extractEmailDomain(email);
+        if (!domain || !Array.isArray(allowedDomains) || allowedDomains.length === 0) {
+            return false;
+        }
+
+        return allowedDomains
+            .map((entry) => String(entry).toLowerCase())
+            .includes(domain);
+    },
+
+    /**
+     * Read cached allowed domains when still fresh
+     * @returns {Array<string>|null} Cached domains or null
+     */
+    getCachedAllowedDomains() {
+        try {
+            const raw = localStorage.getItem(ALLOWED_DOMAINS_CACHE_KEY);
+            if (!raw) return null;
+
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed?.domains) || typeof parsed?.fetchedAt !== 'number') {
+                return null;
+            }
+
+            if (Date.now() - parsed.fetchedAt > ALLOWED_DOMAINS_CACHE_TTL_MS) {
+                return null;
+            }
+
+            return parsed.domains.map((domain) => String(domain).toLowerCase());
+        } catch {
+            return null;
+        }
+    },
+
+    /**
+     * Cache allowed domains locally for short-lived client-side validation
+     * @param {Array<string>} domains - Allowed domains
+     */
+    cacheAllowedDomains(domains) {
+        try {
+            localStorage.setItem(ALLOWED_DOMAINS_CACHE_KEY, JSON.stringify({
+                domains: (domains || []).map((domain) => String(domain).toLowerCase()),
+                fetchedAt: Date.now()
+            }));
+        } catch {
+            // Ignore storage/cache errors and continue without cache.
+        }
+    },
+
+    /**
+     * Fetch allowed domains from backend
+     * @param {boolean} forceRefresh - Skip cache when true
+     * @returns {Promise<Array<string>>} Allowed domains list
+     */
+    async getAllowedDomains(forceRefresh = false) {
+        if (!forceRefresh) {
+            const cached = this.getCachedAllowedDomains();
+            if (cached) return cached;
+        }
+
+        const response = await fetch(`${API_BASE_URL}/auth/allowed-domains`, {
+            method: 'GET'
+        });
+
+        let data = {};
+        try {
+            data = await response.json();
+        } catch {
+            data = {};
+        }
+
+        if (!response.ok) {
+            throw new Error(data?.message || 'Failed to fetch allowed domains');
+        }
+
+        const domains = Array.isArray(data?.data)
+            ? data.data.map((domain) => String(domain).toLowerCase())
+            : [];
+
+        this.cacheAllowedDomains(domains);
+        return domains;
+    },
+
+    /**
+     * Validate email against backend-configured allowed domains
+     * @param {string} email - Email to validate
+     * @param {Object} options - Validation options
+     * @param {boolean} options.forceRefresh - Refresh domains cache before validation
+     * @returns {Promise<{valid: boolean, message?: string, allowedDomains?: Array<string>}>}
+     */
+    async validateAllowedEmail(email, options = {}) {
+        const normalizedEmail = String(email || '').trim().toLowerCase();
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (!emailRegex.test(normalizedEmail)) {
+            return {
+                valid: false,
+                message: 'Please enter a valid email address.'
+            };
+        }
+
+        const allowedDomains = await this.getAllowedDomains(!!options.forceRefresh);
+
+        if (allowedDomains.length === 0) {
+            return {
+                valid: false,
+                message: 'No allowed email domains are configured. Please contact an administrator.'
+            };
+        }
+
+        if (!this.isAllowedEmailDomain(normalizedEmail, allowedDomains)) {
+            return {
+                valid: false,
+                message: `Email domain is not allowed. Allowed domains: ${allowedDomains.map((domain) => `@${domain}`).join(', ')}`
+            };
+        }
+
+        return {
+            valid: true,
+            allowedDomains
+        };
     },
 
     /**
@@ -472,6 +606,7 @@ const AuthService = {
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
         localStorage.removeItem(REMEMBER_KEY);
+        localStorage.removeItem(ALLOWED_DOMAINS_CACHE_KEY);
         this.clearPendingVerification();
     },
 

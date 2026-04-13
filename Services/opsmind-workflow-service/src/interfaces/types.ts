@@ -19,7 +19,7 @@ export interface GroupMemberRow {
   id: number;
   user_id: number;
   group_id: number;
-  role: 'JUNIOR' | 'SENIOR' | 'SUPERVISOR';
+  role: 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
   can_assign: boolean;
   can_escalate: boolean;
   status: 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE';
@@ -29,10 +29,27 @@ export interface GroupMemberRow {
 
 export interface TechnicianRow {
   id: number;
+  user_id: number;
   name: string;
+  email: string | null;
+  level: 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
   latitude: number | null;
   longitude: number | null;
   status: TechnicianStatus;
+  is_active: boolean;
+  last_location_update: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ReportingRelationshipRow {
+  id: number;
+  child_user_id: number;
+  parent_user_id: number;
+  relationship_type: 'JUNIOR_TO_SENIOR' | 'SENIOR_TO_SUPERVISOR' | 'SUPERVISOR_TO_ADMIN';
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface WorkflowLogRow {
@@ -101,7 +118,7 @@ export type EscalationTrigger = 'SLA' | 'MANUAL' | 'CRITICAL' | 'REOPEN_COUNT';
 
 export type RoutingStatus = 'UNASSIGNED' | 'ASSIGNED' | 'ESCALATED';
 
-export type MemberRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR';
+export type MemberRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
 
 export type MemberStatus = 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE';
 
@@ -268,6 +285,89 @@ export interface GroupMetrics {
     averageResolutionTime: number;
     escalationRate: number;
   };
+}
+
+// ---------- Hierarchy Dashboard Types ----------
+
+export interface SeniorDashboard {
+  seniorUserId: number;
+  seniorName: string;
+  juniors: JuniorSummary[];
+  tickets: TicketSummary[];
+  workload: WorkloadSummary;
+}
+
+export interface JuniorSummary {
+  userId: number;
+  name: string;
+  email: string | null;
+  status: TechnicianStatus;
+  location: {
+    latitude: number | null;
+    longitude: number | null;
+  };
+  assignedTickets: number;
+}
+
+export interface TicketSummary {
+  ticketId: string;
+  assignedTo: number | null;
+  assignedToName: string | null;
+  status: string;
+  priority: string | null;
+  location?: {
+    latitude: number | null;
+    longitude: number | null;
+  };
+  createdAt: Date;
+}
+
+export interface WorkloadSummary {
+  totalTickets: number;
+  byStatus: Record<string, number>;
+  byPriority: Record<string, number>;
+  byJunior: Record<number, number>;
+}
+
+export interface SupervisorDashboard {
+  supervisorUserId: number;
+  supervisorName: string;
+  teamStructure: TeamStructure;
+  tickets: TicketSummary[];
+  workload: WorkloadSummary;
+  metrics: TeamMetrics;
+}
+
+export interface TeamStructure {
+  seniors: SeniorTeamMember[];
+  juniors: JuniorTeamMember[];
+}
+
+export interface SeniorTeamMember {
+  userId: number;
+  name: string;
+  email: string | null;
+  status: TechnicianStatus;
+  juniorCount: number;
+  assignedTickets: number;
+}
+
+export interface JuniorTeamMember {
+  userId: number;
+  name: string;
+  email: string | null;
+  status: TechnicianStatus;
+  seniorUserId: number;
+  seniorName: string;
+  assignedTickets: number;
+}
+
+export interface TeamMetrics {
+  totalTechnicians: number;
+  totalSeniors: number;
+  totalJuniors: number;
+  averageTicketsPerJunior: number;
+  averageJuniorsPerSenior: number;
 }
 
 // ---------- API Response Wrapper ----------

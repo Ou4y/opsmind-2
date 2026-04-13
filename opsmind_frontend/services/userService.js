@@ -288,9 +288,9 @@ const UserService = {
      * Validate user data
      * @param {Object} userData - User data to validate
      * @param {boolean} isUpdate - Whether this is an update operation
-     * @returns {Object} { valid: boolean, errors: string[] }
+        * @returns {Promise<Object>} { valid: boolean, errors: string[] }
      */
-    validateUserData(userData, isUpdate = false) {
+    async validateUserData(userData, isUpdate = false) {
         const errors = [];
         
         console.log('[validateUserData] Starting validation:', { userData, isUpdate });
@@ -313,11 +313,17 @@ const UserService = {
 
         // Email
         if (!isUpdate || userData.email !== undefined) {
-            const emailValid = AuthService.validateMIUEmail(userData.email);
-            console.log('[validateUserData] Email validation:', { email: userData.email, valid: emailValid });
-            if (!userData.email || !emailValid) {
-                errors.push('Valid MIU email is required (@miuegypt.edu.eg)');
-                console.log('[validateUserData] Email validation failed');
+            try {
+                const emailValidation = await AuthService.validateAllowedEmail(userData.email);
+                console.log('[validateUserData] Email validation:', { email: userData.email, validation: emailValidation });
+
+                if (!userData.email || !emailValidation.valid) {
+                    errors.push(emailValidation.message || 'A valid email from an allowed domain is required');
+                    console.log('[validateUserData] Email validation failed');
+                }
+            } catch (error) {
+                console.error('[validateUserData] Allowed domains validation request failed:', error);
+                errors.push(error.message || 'Unable to validate allowed email domains. Please try again.');
             }
         }
 
@@ -361,13 +367,15 @@ const UserService = {
      * @returns {string} Formatted role
      */
     formatRole(role) {
+        if (!role || role === 'N/A') return 'N/A';
         const roleMap = {
             'ADMIN': 'Administrator',
             'DOCTOR': 'Professor',
             'JUNIOR': 'Junior Technician',
             'SENIOR': 'Senior Technician',
             'SUPERVISOR': 'Supervisor',
-            'STUDENT': 'Student'
+            'STUDENT': 'Student',
+            'TECHNICIAN': 'Technician'
         };
         return roleMap[role?.toUpperCase()] || role;
     },
@@ -378,13 +386,15 @@ const UserService = {
      * @returns {string} Bootstrap badge class
      */
     getRoleBadgeClass(role) {
+        if (!role || role === 'N/A') return 'bg-secondary';
         const badgeMap = {
             'ADMIN': 'bg-danger',
             'DOCTOR': 'bg-warning text-dark',
             'JUNIOR': 'bg-success',
             'SENIOR': 'bg-primary',
             'SUPERVISOR': 'bg-dark',
-            'STUDENT': 'bg-info'
+            'STUDENT': 'bg-info',
+            'TECHNICIAN': 'bg-success'
         };
         return badgeMap[role?.toUpperCase()] || 'bg-secondary';
     }

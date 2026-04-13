@@ -44,18 +44,45 @@ CREATE TABLE IF NOT EXISTS group_members (
 
 -- Technicians Table
 -- Stores technician profile and latest known location
+-- Updated: Added user_id, email, ADMIN level, is_active for hierarchy support
 CREATE TABLE IF NOT EXISTS technicians (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL UNIQUE COMMENT 'Links to auth service user ID',
   name VARCHAR(255) NOT NULL,
-  level ENUM('JUNIOR', 'SENIOR', 'SUPERVISOR') NOT NULL DEFAULT 'JUNIOR',
+  email VARCHAR(255) NULL COMMENT 'Technician email from auth service',
+  level ENUM('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN') NOT NULL DEFAULT 'JUNIOR',
   latitude DECIMAL(10,7) NULL,
   longitude DECIMAL(10,7) NULL,
   status ENUM('ACTIVE', 'OFFLINE', 'INACTIVE', 'ON_LEAVE') DEFAULT 'ACTIVE',
+  is_active BOOLEAN DEFAULT TRUE COMMENT 'Soft delete / active status flag',
   last_location_update TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_status (status)
+  INDEX idx_user_id (user_id),
+  INDEX idx_level (level),
+  INDEX idx_status (status),
+  INDEX idx_is_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Reporting Relationships Table
+-- Defines flexible, admin-managed technician hierarchy
+-- No hardcoded limits on juniors per senior or hierarchy structure
+CREATE TABLE IF NOT EXISTS reporting_relationships (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  child_user_id INT NOT NULL COMMENT 'Technician who reports to parent',
+  parent_user_id INT NOT NULL COMMENT 'Manager/supervisor of child',
+  relationship_type ENUM('JUNIOR_TO_SENIOR', 'SENIOR_TO_SUPERVISOR', 'SUPERVISOR_TO_ADMIN') NOT NULL,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY unique_child_parent (child_user_id, parent_user_id),
+  INDEX idx_child_user (child_user_id),
+  INDEX idx_parent_user (parent_user_id),
+  INDEX idx_relationship_type (relationship_type),
+  INDEX idx_is_active (is_active),
+  CHECK (child_user_id != parent_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Flexible technician hierarchy - fully admin-managed, no hardcoded limits';
 
 -- Tickets Table (lightweight cache for assignments/workload)
 CREATE TABLE IF NOT EXISTS tickets (

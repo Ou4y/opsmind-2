@@ -1,34 +1,25 @@
 /**
- * OpsMind - Senior Technician Dashboard Module
+ * OpsMind - Senior Technician Dashboard Module (Hierarchy-Based)
  * 
- * Handles senior technician functionality:
- * - View all team tickets
- * - Manage escalated tickets
- * - Reassign tickets to team members
- * - Approve/reject resolutions
- * - Monitor team workload
+ * Modern dashboard using hierarchy-based API:
+ * - Team summary statistics
+ * - Junior technicians overview
+ * - Team tickets management
+ * - Workload distribution visualization
  */
 
 import UI from '/assets/js/ui.js';
-import WorkflowService from '/services/workflowService.js';
-import TicketService from '/services/ticketService.js';
+import { getSeniorDashboard } from '/services/workflowService.js';
 import AuthService from '/services/authService.js';
 
 /**
  * Page state
  */
 const state = {
-    teamTickets: [],
-    myTickets: [],
-    escalatedTickets: [],
-    pendingReview: [],
-    teamMembers: [],
-    selectedTicket: null,
+    dashboardData: null,
     currentUser: null,
-    teamFilter: 'all',
     isLoading: false,
-    refreshInterval: null,
-    reassignModal: null
+    refreshInterval: null
 };
 
 /**
@@ -44,18 +35,25 @@ export async function initSeniorDashboard() {
         window.location.href = '/index.html';
         return;
     }
-    
-    // Initialize modal
-    state.reassignModal = new bootstrap.Modal(document.getElementById('reassignModal'));
-    
-    // Set up event listeners
-    setupEventListeners();
+
+    // Display user name
+    const userNameEl = document.getElementById('userName');
+    if (userNameEl && state.currentUser.name) {
+        userNameEl.textContent = state.currentUser.name;
+    }
     
     // Load initial data
     await loadDashboardData();
     
-    // Set up auto-refresh every 30 seconds
-    state.refreshInterval = setInterval(loadDashboardData, 30000);
+    // Set up auto-refresh every 60 seconds
+    state.refreshInterval = setInterval(loadDashboardData, 60000);
+    
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (state.refreshInterval) {
+            clearInterval(state.refreshInterval);
+        }
+    });
 }
 
 /**
@@ -72,261 +70,319 @@ function waitForApp() {
 }
 
 /**
- * Set up event listeners
- */
-function setupEventListeners() {
-    // Refresh button
-    document.getElementById('refreshDashboard')?.addEventListener('click', async () => {
-        UI.showToast('Refreshing dashboard...', 'info');
-        await loadDashboardData();
-    });
-
-    // Team filter radio buttons
-    document.querySelectorAll('input[name="teamFilter"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            state.teamFilter = e.target.value;
-            renderTeamTickets();
-        });
-    });
-
-    // Reassign modal confirm button
-    document.getElementById('confirmReassign')?.addEventListener('click', handleReassignConfirm);
-
-    // Cleanup on page unload
-    window.addEventListener('beforeunload', () => {
-        if (state.refreshInterval) {
-            clearInterval(state.refreshInterval);
-        }
-    });
-}
-
-/**
- * Load all dashboard data
+ * Load dashboard data from hierarchy API
  */
 async function loadDashboardData() {
     if (state.isLoading) return;
     
     state.isLoading = true;
+    showLoading();
     
     try {
-        const groupId = state.currentUser.group_id || 1;
+        console.log('Loading senior dashboard for user:', state.currentUser.id);
         
-        // Load all team tickets
-        const ticketsResponse = await WorkflowService.getGroupTickets(groupId);
-        state.teamTickets = ticketsResponse.data || [];
+        const response = await getSeniorDashboard(state.currentUser.id);
         
-        // Filter my tickets
-        state.myTickets = state.teamTickets.filter(t => t.assigned_to === state.currentUser.id);
-        
-        // Filter escalated tickets
-        state.escalatedTickets = state.teamTickets.filter(t => t.status === 'ESCALATED');
-        
-        // Filter pending review tickets
-        state.pendingReview = state.teamTickets.filter(t => t.status === 'RESOLVED');
-        
-        // Load team members
-        try {
-            const membersResponse = await WorkflowService.getGroupMembers(groupId);
-            state.teamMembers = membersResponse.data || [];
-        } catch (error) {
-            console.error('Error loading team members:', error);
-            state.teamMembers = [];
+        if (!response.success || !response.data) {
+            throw new Error(response.message || 'Failed to load dashboard data');
         }
         
-        // Update UI
-        updateStatistics();
-        renderTeamTickets();
-        renderEscalatedTickets();
-        renderPendingReview();
-        renderMyTickets();
-        renderWorkloadDistribution();
+        state.dashboardData = response.data;
+        console.log('Dashboard data loaded:', state.dashboardData);
+        
+        // Hide loading, show content
+        hideLoading();
+        
+        // Update all sections
+        updateSummaryCards();
+        renderJuniorsList();
+        renderTicketsTable();
+        renderWorkloadCharts();
         
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        UI.showToast('Failed to load dashboard data', 'error');
+        showError(error.message || 'Failed to load dashboard data');
     } finally {
         state.isLoading = false;
     }
 }
 
 /**
- * Update statistics cards
+ * Show loading state
  */
-function updateStatistics() {
-    document.getElementById('totalTeamTicketsCount').textContent = state.teamTickets.length;
-    document.getElementById('myTicketsCount').textContent = state.myTickets.length;
-    document.getElementById('escalatedCount').textContent = state.escalatedTickets.length;
-    document.getElementById('pendingReviewCount').textContent = state.pendingReview.length;
-    document.getElementById('unassignedCount').textContent = 
-        state.teamTickets.filter(t => !t.assigned_to).length;
+function showLoading() {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
+    const errorEl = document.getElementById('dashboardError');
     
-    // Update badges
-    document.getElementById('myTicketsBadge').textContent = state.myTickets.length;
-    document.getElementById('escalatedBadge').textContent = state.escalatedTickets.length;
-    document.getElementById('pendingReviewBadge').textContent = state.pendingReview.length;
+    if (loadingEl) loadingEl.classList.remove('d-none');
+    if (contentEl) contentEl.classList.add('d-none');
+    if (errorEl) errorEl.classList.add('d-none');
 }
 
 /**
- * Render team tickets
+ * Hide loading, show content
  */
-function renderTeamTickets() {
-    const loadingEl = document.getElementById('teamTicketsLoading');
-    const emptyEl = document.getElementById('teamTicketsEmpty');
-    const listEl = document.getElementById('teamTicketsList');
+function hideLoading() {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
     
-    // Apply filter
-    let filteredTickets = state.teamTickets;
-    if (state.teamFilter === 'unassigned') {
-        filteredTickets = state.teamTickets.filter(t => !t.assigned_to);
-    } else if (state.teamFilter === 'active') {
-        filteredTickets = state.teamTickets.filter(t => 
-            t.status === 'OPEN' || t.status === 'IN_PROGRESS'
-        );
-    }
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.remove('d-none');
+}
+
+/**
+ * Show error state
+ */
+function showError(message) {
+    const loadingEl = document.getElementById('dashboardLoading');
+    const contentEl = document.getElementById('dashboardContent');
+    const errorEl = document.getElementById('dashboardError');
+    const errorMsgEl = document.getElementById('errorMessage');
     
-    loadingEl.style.display = 'none';
+    if (loadingEl) loadingEl.classList.add('d-none');
+    if (contentEl) contentEl.classList.add('d-none');
+    if (errorEl) errorEl.classList.remove('d-none');
+    if (errorMsgEl) errorMsgEl.textContent = message;
+}
+
+/**
+ * Retry loading data
+ */
+window.retryLoadDashboard = async function() {
+    await loadDashboardData();
+};
+
+/**
+ * Update summary cards
+ */
+function updateSummaryCards() {
+    if (!state.dashboardData) return;
     
-    if (filteredTickets.length === 0) {
-        emptyEl.style.display = 'block';
-        listEl.innerHTML = '';
+    const { juniors, tickets, workload } = state.dashboardData;
+    
+    // Juniors count
+    document.getElementById('juniorsCount').textContent = juniors?.length || 0;
+    
+    // Total tickets
+    document.getElementById('totalTicketsCount').textContent = tickets?.length || 0;
+    
+    // In Progress tickets
+    const inProgressCount = workload?.byStatus?.IN_PROGRESS || 0;
+    document.getElementById('inProgressCount').textContent = inProgressCount;
+    
+    // Resolved tickets
+    const resolvedCount = workload?.byStatus?.RESOLVED || 0;
+    document.getElementById('resolvedCount').textContent = resolvedCount;
+}
+
+/**
+ * Render juniors list
+ */
+function renderJuniorsList() {
+    if (!state.dashboardData) return;
+    
+    const { juniors } = state.dashboardData;
+    const listEl = document.getElementById('juniorsList');
+    const emptyEl = document.getElementById('juniorsEmpty');
+    const countEl = document.getElementById('juniorCount');
+    
+    if (!juniors || juniors.length === 0) {
+        if (listEl) listEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('d-none');
+        if (countEl) countEl.textContent = '0';
         return;
     }
     
-    emptyEl.style.display = 'none';
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (countEl) countEl.textContent = juniors.length;
+    
+    if (!listEl) return;
+    
     listEl.innerHTML = '';
     
-    filteredTickets.forEach(ticket => {
-        const card = createTicketCard(ticket, 'team');
-        listEl.appendChild(card);
+    juniors.forEach(junior => {
+        const col = document.createElement('div');
+        col.className = 'col-md-6 col-lg-4';
+        
+        const ticketCount = junior.assignedTicketsCount || 0;
+        const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
+        const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
+        const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
+        
+        col.innerHTML = `
+            <div class="card h-100 border-0 shadow-sm hover-lift">
+                <div class="card-body p-3">
+                    <div class="d-flex align-items-center mb-3">
+                        <div class="avatar-circle bg-primary text-white me-3" style="width: 48px; height: 48px; font-size: 1.25rem;">
+                            ${UI.escapeHTML((junior.name || 'U')[0].toUpperCase())}
+                        </div>
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1 fw-bold">${UI.escapeHTML(junior.name || 'Unknown')}</h6>
+                            <small class="text-muted">
+                                <i class="bi bi-envelope me-1"></i>
+                                ${UI.escapeHTML(junior.email || 'No email')}
+                            </small>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <span class="badge bg-${statusClass} px-2 py-1">
+                            <i class="bi bi-${statusIcon} me-1"></i>
+                            ${statusText}
+                        </span>
+                        <span class="badge bg-primary-subtle text-primary px-2 py-1">
+                            <i class="bi bi-ticket-perforated me-1"></i>
+                            ${ticketCount} ticket${ticketCount !== 1 ? 's' : ''}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        listEl.appendChild(col);
     });
 }
 
 /**
- * Render escalated tickets
+ * Render tickets table
  */
-function renderEscalatedTickets() {
-    const loadingEl = document.getElementById('escalatedLoading');
-    const emptyEl = document.getElementById('escalatedEmpty');
-    const listEl = document.getElementById('escalatedList');
+function renderTicketsTable() {
+    if (!state.dashboardData) return;
     
-    loadingEl.style.display = 'none';
+    const { tickets } = state.dashboardData;
+    const tableBodyEl = document.getElementById('ticketsTableBody');
+    const emptyEl = document.getElementById('ticketsEmpty');
+    const countEl = document.getElementById('ticketCount');
     
-    if (state.escalatedTickets.length === 0) {
-        emptyEl.style.display = 'block';
-        listEl.innerHTML = '';
+    if (!tickets || tickets.length === 0) {
+        if (tableBodyEl) tableBodyEl.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('d-none');
+        if (countEl) countEl.textContent = '0';
         return;
     }
     
-    emptyEl.style.display = 'none';
-    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (countEl) countEl.textContent = tickets.length;
     
-    state.escalatedTickets.forEach(ticket => {
-        const card = createTicketCard(ticket, 'escalated');
-        listEl.appendChild(card);
-    });
-}
-
-/**
- * Render pending review tickets
- */
-function renderPendingReview() {
-    const loadingEl = document.getElementById('pendingReviewLoading');
-    const emptyEl = document.getElementById('pendingReviewEmpty');
-    const listEl = document.getElementById('pendingReviewList');
+    if (!tableBodyEl) return;
     
-    loadingEl.style.display = 'none';
+    tableBodyEl.innerHTML = '';
     
-    if (state.pendingReview.length === 0) {
-        emptyEl.style.display = 'block';
-        listEl.innerHTML = '';
-        return;
-    }
-    
-    emptyEl.style.display = 'none';
-    listEl.innerHTML = '';
-    
-    state.pendingReview.forEach(ticket => {
-        const card = createReviewCard(ticket);
-        listEl.appendChild(card);
-    });
-}
-
-/**
- * Render my tickets
- */
-function renderMyTickets() {
-    const loadingEl = document.getElementById('myTicketsLoading');
-    const emptyEl = document.getElementById('myTicketsEmpty');
-    const listEl = document.getElementById('myTicketsList');
-    
-    loadingEl.style.display = 'none';
-    
-    if (state.myTickets.length === 0) {
-        emptyEl.style.display = 'block';
-        listEl.innerHTML = '';
-        return;
-    }
-    
-    emptyEl.style.display = 'none';
-    listEl.innerHTML = '';
-    
-    state.myTickets.forEach(ticket => {
-        const card = createTicketCard(ticket, 'my');
-        listEl.appendChild(card);
-    });
-}
-
-/**
- * Render workload distribution
- */
-function renderWorkloadDistribution() {
-    const container = document.getElementById('workloadDistribution');
-    
-    if (state.teamMembers.length === 0) {
-        container.innerHTML = '<p class="text-muted text-center py-3">Team member data not available</p>';
-        return;
-    }
-    
-    // Count tickets per technician
-    const workload = {};
-    state.teamMembers.forEach(member => {
-        workload[member.user_id] = {
-            name: member.username || `User #${member.user_id}`,
-            role: member.role,
-            count: 0
+    tickets.forEach(ticket => {
+        const row = document.createElement('tr');
+        
+        const assignedTo = ticket.assignedTo || ticket.assigned_to_name || 'Unassigned';
+        const location = ticket.location?.latitude && ticket.location?.longitude
+            ? `${ticket.location.latitude.toFixed(4)}, ${ticket.location.longitude.toFixed(4)}`
+            : 'N/A';
+        const hasLocation = ticket.location?.latitude && ticket.location?.longitude;
+        const status = ticket.status || 'UNKNOWN';
+        const priority = ticket.priority || 'UNKNOWN';
+        
+        // Status icons
+        const statusIcons = {
+            'OPEN': 'circle',
+            'IN_PROGRESS': 'hourglass-split',
+            'RESOLVED': 'check-circle-fill',
+            'CLOSED': 'x-circle',
+            'ESCALATED': 'exclamation-circle-fill'
         };
+        
+        // Priority icons
+        const priorityIcons = {
+            'CRITICAL': 'exclamation-triangle-fill',
+            'HIGH': 'exclamation-circle',
+            'MEDIUM': 'dash-circle',
+            'LOW': 'check-circle'
+        };
+        
+        row.innerHTML = `
+            <td>
+                <a href="#" onclick="window.viewTicket('${UI.escapeHTML(ticket.ticketId)}'); return false;" class="text-decoration-none fw-semibold">
+                    <i class="bi bi-ticket-detailed me-1"></i>
+                    ${UI.escapeHTML(ticket.ticketId).substring(0, 8)}...
+                </a>
+            </td>
+            <td>
+                <div class="d-flex align-items-center">
+                    <div class="avatar-circle bg-secondary text-white me-2" style="width: 28px; height: 28px; font-size: 0.75rem;">
+                        ${UI.escapeHTML((assignedTo || 'U')[0].toUpperCase())}
+                    </div>
+                    <span>${UI.escapeHTML(assignedTo)}</span>
+                </div>
+            </td>
+            <td>
+                <span class="badge ${getStatusBadgeClass(status)} px-2 py-1">
+                    <i class="bi bi-${statusIcons[status.toUpperCase()] || 'circle'} me-1"></i>
+                    ${UI.escapeHTML(status)}
+                </span>
+            </td>
+            <td>
+                <span class="badge ${getPriorityBadgeClass(priority)} px-2 py-1">
+                    <i class="bi bi-${priorityIcons[priority.toUpperCase()] || 'circle'} me-1"></i>
+                    ${UI.escapeHTML(priority)}
+                </span>
+            </td>
+            <td><small class="text-muted">${UI.formatDate(ticket.createdAt)}</small></td>
+            <td>
+                ${location}
+                ${hasLocation ? `<br><a href="https://www.google.com/maps?q=${ticket.location.latitude},${ticket.location.longitude}" target="_blank" class="text-decoration-none small">
+                    <i class="bi bi-geo-alt"></i> View Map
+                </a>` : ''}
+            </td>
+        `;
+        
+        tableBodyEl.appendChild(row);
     });
+}
+
+/**
+ * Render workload charts
+ */
+function renderWorkloadCharts() {
+    if (!state.dashboardData || !state.dashboardData.workload) return;
     
-    state.teamTickets.forEach(ticket => {
-        if (ticket.assigned_to && workload[ticket.assigned_to]) {
-            workload[ticket.assigned_to].count++;
-        }
-    });
+    const { workload } = state.dashboardData;
     
-    const maxCount = Math.max(...Object.values(workload).map(w => w.count), 1);
+    // Render by Status
+    renderWorkloadByStatus(workload.byStatus || {});
     
-    let html = '<div class="list-group list-group-flush">';
+    // Render by Priority
+    renderWorkloadByPriority(workload.byPriority || {});
     
-    Object.entries(workload).forEach(([userId, data]) => {
-        const percentage = (data.count / maxCount) * 100;
-        const roleClass = data.role === 'SENIOR' ? 'text-primary' : 'text-secondary';
+    // Render by Junior
+    renderWorkloadByJunior(workload.byJunior || []);
+}
+
+/**
+ * Render workload by status
+ */
+function renderWorkloadByStatus(byStatus) {
+    const container = document.getElementById('statusWorkload');
+    if (!container) return;
+    
+    const statuses = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
+    const colors = {
+        'OPEN': '#0dcaf0',
+        'IN_PROGRESS': '#6f42c1',
+        'RESOLVED': '#198754',
+        'CLOSED': '#6c757d'
+    };
+    
+    let html = '<div class="workload-bars">';
+    
+    statuses.forEach(status => {
+        const count = byStatus[status] || 0;
+        const percentage = count > 0 ? Math.min((count / 10) * 100, 100) : 0;
         
         html += `
-            <div class="list-group-item">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <div>
-                        <strong>${UI.escapeHTML(data.name)}</strong>
-                        <span class="badge bg-light ${roleClass} ms-2">${data.role}</span>
-                    </div>
-                    <span class="badge bg-primary">${data.count} tickets</span>
+            <div class="workload-bar-item mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="small">${status.replace('_', ' ')}</span>
+                    <span class="small fw-bold">${count}</span>
                 </div>
-                <div class="progress" style="height: 10px;">
-                    <div class="progress-bar" role="progressbar" 
-                         style="width: ${percentage}%" 
-                         aria-valuenow="${data.count}" 
-                         aria-valuemin="0" 
-                         aria-valuemax="${maxCount}">
-                    </div>
+                <div class="progress" style="height: 8px;">
+                    <div class="progress-bar" style="width: ${percentage}%; background-color: ${colors[status]}"></div>
                 </div>
             </div>
         `;
@@ -337,113 +393,82 @@ function renderWorkloadDistribution() {
 }
 
 /**
- * Create a ticket card element
+ * Render workload by priority
  */
-function createTicketCard(ticket, type) {
-    const isEscalated = ticket.status === 'ESCALATED';
+function renderWorkloadByPriority(byPriority) {
+    const container = document.getElementById('priorityWorkload');
+    if (!container) return;
     
-    const card = document.createElement('div');
-    card.className = `card mb-3 ${isEscalated ? 'border-danger' : ''}`;
+    const priorities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+    const colors = {
+        'CRITICAL': '#dc3545',
+        'HIGH': '#fd7e14',
+        'MEDIUM': '#ffc107',
+        'LOW': '#198754'
+    };
     
-    card.innerHTML = `
-        <div class="card-body">
-            <div class="row align-items-start">
-                <div class="col-lg-8">
-                    <div class="d-flex align-items-center mb-2 flex-wrap gap-2">
-                        <h5 class="card-title mb-0">#${UI.escapeHTML(ticket.id)}</h5>
-                        <span class="badge ${getPriorityBadgeClass(ticket.priority)}">${UI.escapeHTML(ticket.priority)}</span>
-                        <span class="badge ${getStatusBadgeClass(ticket.status)}">${UI.escapeHTML(ticket.status)}</span>
-                        ${isEscalated ? '<span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i> ESCALATED</span>' : ''}
-                    </div>
-                    <h6 class="card-subtitle mb-2">${UI.escapeHTML(ticket.title)}</h6>
-                    <div class="text-muted small">
-                        <div><i class="bi bi-geo-alt me-1"></i> Location: ${ticket.latitude && ticket.longitude ? `${ticket.latitude}, ${ticket.longitude}` : 'Not available'}</div>
-                        ${ticket.latitude && ticket.longitude ? `<div><a href="https://www.google.com/maps?q=${ticket.latitude},${ticket.longitude}" target="_blank" class="text-decoration-none"><i class="bi bi-map me-1"></i> Open in Maps</a></div>` : ''}
-                        <div><i class="bi bi-person me-1"></i> Requester: ${UI.escapeHTML(ticket.requester_name || 'N/A')}</div>
-                        ${ticket.assigned_to ? `<div><i class="bi bi-person-badge me-1"></i> Assigned to: ${UI.escapeHTML(ticket.assigned_to_name || ticket.assignedToName || `User #${ticket.assigned_to}`)}</div>` : '<div><i class="bi bi-inbox me-1"></i> Unassigned</div>'}
-                        <div><i class="bi bi-calendar me-1"></i> Created: ${UI.formatDate(ticket.created_at)}</div>
-                    </div>
+    let html = '<div class="workload-bars">';
+    
+    priorities.forEach(priority => {
+        const count = byPriority[priority] || 0;
+        const percentage = count > 0 ? Math.min((count / 10) * 100, 100) : 0;
+        
+        html += `
+            <div class="workload-bar-item mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="small">${priority}</span>
+                    <span class="small fw-bold">${count}</span>
                 </div>
-                <div class="col-lg-4 text-lg-end mt-3 mt-lg-0">
-                    <div class="d-flex flex-column gap-2">
-                        <button class="btn btn-sm btn-primary" onclick="window.viewTicketDetails('${ticket.id}')">
-                            <i class="bi bi-eye me-1"></i> View
-                        </button>
-                        ${(type === 'team' || type === 'escalated') && (AuthService.isSenior() || AuthService.isSupervisor() || AuthService.isAdmin()) ? `
-                            <button class="btn btn-sm btn-warning" onclick="window.showReassignModal('${ticket.id}')">
-                                <i class="bi bi-arrow-left-right me-1"></i> Reassign
-                            </button>
-                        ` : ''}
-                        ${type === 'escalated' && (AuthService.isSenior() || AuthService.isSupervisor() || AuthService.isAdmin()) ? `
-                            <button class="btn btn-sm btn-success" onclick="window.claimTicket('${ticket.id}')">
-                                <i class="bi bi-hand-index me-1"></i> Claim & Handle
-                            </button>
-                        ` : ''}
-                    </div>
+                <div class="progress" style="height: 8px;">
+                    <div class="progress-bar" style="width: ${percentage}%; background-color: ${colors[priority]}"></div>
                 </div>
             </div>
-        </div>
-    `;
+        `;
+    });
     
-    return card;
+    html += '</div>';
+    container.innerHTML = html;
 }
 
 /**
- * Create a review card element
+ * Render workload by junior
  */
-function createReviewCard(ticket) {
-    const card = document.createElement('div');
-    card.className = 'card mb-3 border-warning';
+function renderWorkloadByJunior(byJunior) {
+    const container = document.getElementById('juniorWorkload');
+    if (!container) return;
     
-    card.innerHTML = `
-        <div class="card-body">
-            <div class="row align-items-start">
-                <div class="col-lg-8">
-                    <div class="d-flex align-items-center mb-2 flex-wrap gap-2">
-                        <h5 class="card-title mb-0">#${UI.escapeHTML(ticket.id)}</h5>
-                        <span class="badge ${getPriorityBadgeClass(ticket.priority)}">${UI.escapeHTML(ticket.priority)}</span>
-                        <span class="badge bg-success">RESOLVED</span>
-                        <span class="badge bg-warning text-dark"><i class="bi bi-clock-history me-1"></i> Pending Review</span>
-                    </div>
-                    <h6 class="card-subtitle mb-2">${UI.escapeHTML(ticket.title)}</h6>
-                    <div class="text-muted small">
-                        <div><i class="bi bi-geo-alt me-1"></i> Location: ${ticket.latitude && ticket.longitude ? `${ticket.latitude}, ${ticket.longitude}` : 'Not available'}</div>
-                        ${ticket.latitude && ticket.longitude ? `<div><a href="https://www.google.com/maps?q=${ticket.latitude},${ticket.longitude}" target="_blank" class="text-decoration-none"><i class="bi bi-map me-1"></i> Open in Maps</a></div>` : ''}
-                        <div><i class="bi bi-person-badge me-1"></i> Resolved by: ${UI.escapeHTML(ticket.assigned_to_name || ticket.assignedToName || `User #${ticket.assigned_to}`)}</div>
-                        <div><i class="bi bi-calendar me-1"></i> Resolved: ${UI.formatDate(ticket.updated_at)}</div>
-                    </div>
-                </div>
-                <div class="col-lg-4 text-lg-end mt-3 mt-lg-0">
-                    <div class="d-flex flex-column gap-2">
-                        <button class="btn btn-sm btn-primary" onclick="window.viewTicketDetails('${ticket.id}')">
-                            <i class="bi bi-eye me-1"></i> View Details
-                        </button>
-                        <button class="btn btn-sm btn-success" onclick="window.approveResolution('${ticket.id}')">
-                            <i class="bi bi-check-circle me-1"></i> Approve & Close
-                        </button>
-                        <button class="btn btn-sm btn-danger" onclick="window.rejectResolution('${ticket.id}')">
-                            <i class="bi bi-x-circle me-1"></i> Reject
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    return card;
-}
-
-/**
- * Get priority badge class
- */
-function getPriorityBadgeClass(priority) {
-    switch (priority?.toUpperCase()) {
-        case 'CRITICAL': return 'bg-danger';
-        case 'HIGH': return 'bg-orange';
-        case 'MEDIUM': return 'bg-warning text-dark';
-        case 'LOW': return 'bg-success';
-        default: return 'bg-secondary';
+    if (!byJunior || byJunior.length === 0) {
+        container.innerHTML = '<p class="text-muted small text-center py-3">No junior assignments yet</p>';
+        return;
     }
+    
+    const maxCount = Math.max(...byJunior.map(j => j.count), 1);
+    
+    let html = '<div class="workload-bars">';
+    
+    byJunior.slice(0, 5).forEach(junior => {
+        const percentage = (junior.count / maxCount) * 100;
+        const juniorName = junior.name || `Junior #${junior.juniorId}`;
+        
+        html += `
+            <div class="workload-bar-item mb-2">
+                <div class="d-flex justify-content-between mb-1">
+                    <span class="small">${UI.escapeHTML(juniorName)}</span>
+                    <span class="small fw-bold">${junior.count}</span>
+                </div>
+                <div class="progress" style="height: 8px;">
+                    <div class="progress-bar bg-primary" style="width: ${percentage}%"></div>
+                </div>
+            </div>
+        `;
+    });
+    
+    if (byJunior.length > 5) {
+        html += `<p class="text-muted small text-center mt-2">+${byJunior.length - 5} more</p>`;
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
 }
 
 /**
@@ -461,140 +486,24 @@ function getStatusBadgeClass(status) {
 }
 
 /**
- * Show reassign modal
+ * Get priority badge class
  */
-window.showReassignModal = function(ticketId) {
-    document.getElementById('reassignTicketId').value = ticketId;
-    document.getElementById('reassignReason').value = '';
-    
-    // Populate technician dropdown
-    const select = document.getElementById('reassignTechnician');
-    select.innerHTML = '<option value="">Choose technician...</option>';
-    
-    state.teamMembers.forEach(member => {
-        const option = document.createElement('option');
-        option.value = member.user_id;
-        option.textContent = `${member.username || `User #${member.user_id}`} - ${member.role}`;
-        select.appendChild(option);
-    });
-    
-    state.reassignModal.show();
-};
-
-/**
- * Handle reassign confirmation
- */
-async function handleReassignConfirm() {
-    const ticketId = document.getElementById('reassignTicketId').value;
-    const technicianId = document.getElementById('reassignTechnician').value;
-    const reason = document.getElementById('reassignReason').value;
-    
-    if (!technicianId) {
-        UI.showToast('Please select a technician', 'warning');
-        return;
-    }
-    
-    if (!reason || reason.trim() === '') {
-        UI.showToast('Please provide a reason for reassignment', 'warning');
-        return;
-    }
-    
-    UI.showToast('Reassigning ticket...', 'info');
-    
-    try {
-        await WorkflowService.reassignTicket(ticketId, {
-            to_technician_id: parseInt(technicianId),
-            reason: reason,
-            reassigned_by: state.currentUser.id
-        });
-        
-        UI.showToast('Ticket reassigned successfully!', 'success');
-        state.reassignModal.hide();
-        await loadDashboardData();
-    } catch (error) {
-        console.error('Error reassigning ticket:', error);
-        UI.showToast(error.message || 'Failed to reassign ticket', 'error');
+function getPriorityBadgeClass(priority) {
+    switch (priority?.toUpperCase()) {
+        case 'CRITICAL': return 'bg-danger';
+        case 'HIGH': return 'bg-warning text-dark';
+        case 'MEDIUM': return 'bg-info';
+        case 'LOW': return 'bg-success';
+        default: return 'bg-secondary';
     }
 }
 
 /**
- * Claim ticket (for escalated tickets)
+ * View ticket details (placeholder)
  */
-window.claimTicket = async function(ticketId) {
-    if (!confirm('Are you sure you want to claim and handle this escalated ticket?')) {
-        return;
-    }
-    
-    UI.showToast('Claiming ticket...', 'info');
-    
-    try {
-        await WorkflowService.claimTicket(ticketId, state.currentUser.id);
-        UI.showToast('Ticket claimed successfully!', 'success');
-        await loadDashboardData();
-    } catch (error) {
-        console.error('Error claiming ticket:', error);
-        UI.showToast(error.message || 'Failed to claim ticket', 'error');
-    }
-};
-
-/**
- * Approve resolution
- */
-window.approveResolution = async function(ticketId) {
-    if (!confirm('Are you sure you want to approve this resolution and close the ticket?')) {
-        return;
-    }
-    
-    UI.showToast('Approving resolution...', 'info');
-    
-    try {
-        await TicketService.updateTicket(ticketId, {
-            status: 'CLOSED',
-            closed_by: state.currentUser.id,
-            closed_at: new Date().toISOString()
-        });
-        
-        UI.showToast('Resolution approved, ticket closed!', 'success');
-        await loadDashboardData();
-    } catch (error) {
-        console.error('Error approving resolution:', error);
-        UI.showToast(error.message || 'Failed to approve resolution', 'error');
-    }
-};
-
-/**
- * Reject resolution
- */
-window.rejectResolution = async function(ticketId) {
-    const reason = prompt('Enter reason for rejecting this resolution:');
-    if (!reason || reason.trim() === '') {
-        UI.showToast('Please provide a reason for rejection', 'warning');
-        return;
-    }
-    
-    UI.showToast('Rejecting resolution...', 'info');
-    
-    try {
-        await TicketService.updateTicket(ticketId, {
-            status: 'IN_PROGRESS',
-            rejection_reason: reason
-        });
-        
-        UI.showToast('Resolution rejected, ticket reopened!', 'success');
-        await loadDashboardData();
-    } catch (error) {
-        console.error('Error rejecting resolution:', error);
-        UI.showToast(error.message || 'Failed to reject resolution', 'error');
-    }
-};
-
-/**
- * View ticket details
- */
-window.viewTicketDetails = async function(ticketId) {
-    // For now, just show an alert. You can implement a modal or redirect to tickets page
-    UI.showToast('Ticket details view - to be implemented', 'info');
-    // window.location.href = `/tickets.html?id=${ticketId}`;
+window.viewTicket = function(ticketId) {
+    console.log('View ticket:', ticketId);
+    UI.showToast('Ticket detail view not yet implemented', 'info');
 };
 
 // Initialize when DOM is ready
@@ -603,9 +512,3 @@ if (document.readyState === 'loading') {
 } else {
     initSeniorDashboard();
 }
-
-// Export for use in other modules
-export default {
-    initSeniorDashboard,
-    loadDashboardData
-};

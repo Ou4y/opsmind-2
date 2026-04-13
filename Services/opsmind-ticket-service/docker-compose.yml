@@ -2,12 +2,15 @@ version: "3.9"
 
 services:
   ticket-service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-runner}  # Use 'builder' for dev, 'runner' for prod
     container_name: opsmind-ticket-service
     ports:
       - "3001:3000"
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
 
       # Prisma / MySQL (shared infrastructure)
@@ -19,8 +22,21 @@ services:
       # User Service (for technician name resolution)
       USER_SERVICE_URL: http://opsmind-user:3002
 
+      # Workflow Service (for supervisor details in notifications)
+      WORKFLOW_SERVICE_URL: http://opsmind-workflow:3003
+
       # Frontend origins
       CORS_ORIGINS: http://localhost:5173,http://localhost:3001,http://localhost:8085
+    volumes:
+      # Mount source code for development (comment out for production)
+      - ./src:/app/src:ro
+      - ./prisma:/app/prisma:ro
+      - ./package.json:/app/package.json:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      # Prevent overwriting node_modules and dist
+      - /app/node_modules
+      - /app/dist
+    command: ${SERVICE_COMMAND:-node dist/server.js}  # Override with 'npm run dev' for hot-reload
     networks:
       - opsmind-net
     restart: unless-stopped

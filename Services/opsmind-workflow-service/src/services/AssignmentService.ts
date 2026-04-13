@@ -2,7 +2,8 @@ import { TicketCreatedEvent, TicketAssignedEvent, TechnicianRow, TicketPriority 
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { TicketRepository } from '../repositories/TicketRepository';
 import { haversineDistanceKm } from '../utils/geo';
-import { assignTicket } from '../config/externalServices';
+import { assignTicket, getTicketDetails, getUserDetails, startSlaTracking } from '../config/externalServices';
+import { NotificationPublisher } from './NotificationPublisher';
 
 /**
  * Maximum active ticket count a technician may carry before being excluded.
@@ -47,6 +48,7 @@ interface ScoredTechnician extends TechnicianRow {
 export class AssignmentService {
   private technicianRepo = new TechnicianRepository();
   private ticketRepo = new TicketRepository();
+  private notificationPublisher = new NotificationPublisher();
 
   async assignForTicket(event: TicketCreatedEvent): Promise<TicketAssignedEvent | null> {
     // Ensure ticket exists locally for workload tracking
@@ -174,6 +176,12 @@ export class AssignmentService {
         `[AssignmentService] ✔ ticket-service PATCH succeeded for ticket ${event.ticket_id} | response:`,
         JSON.stringify(result),
       );
+
+      // 9. Start SLA tracking after successful assignment
+      await this.startSlaTracking(event, best.id);
+
+      // 10. Publish notification event after successful assignment
+      await this.publishAssignmentNotification(event.ticket_id, best.id);
     } catch (extErr: any) {
       const status = extErr?.response?.status ?? 'NO_RESPONSE';
       const body = extErr?.response?.data ?? extErr?.message;
@@ -190,5 +198,237 @@ export class AssignmentService {
       workload: best.workload,
       score: best.score,
     };
+  }
+
+  /**
+   * Enrich and validate user data for notification publishing
+   * 
+   * Data sources (priority order):
+   * 1. Local database (technicians table) - provides id, name
+   * 2. Auth Service API - provides email
+   * 
+   * Validation: ensures id, name, and email are present
+   * 
+   * @param userId - The user ID to fetch data for
+   * @param userType - User type for logging ('technician' or 'supervisor')
+   * @returns Enriched user data or null if validation fails
+   */
+  private async enrichUserData(
+    userId: number,
+    userType: 'technician' | 'supervisor',
+  ): Promise<{ id: string; name: string; email: string } | null> {
+    try {
+      // Step 1: Fetch from local database (preferred source for name)
+      const technicianData = await this.technicianRepo.getById(userId);
+      
+      // Step 2: Fetch email from Auth Service
+      const authUser = await getUserDetails(userId);
+
+      // Step 3: Build enriched data object
+      const enrichedData = {
+        id: String(userId),
+        name: technicianData?.name || authUser?.email?.split('@')[0] || '',
+        email: authUser?.email || '',
+      };
+
+      // Step 4: Validate required fields
+      if (!enrichedData.name || !enrichedData.email) {
+        const missing: string[] = [];
+        if (!enrichedData.name) missing.push('name');
+        if (!enrichedData.email) missing.push('email');
+        
+        console.error(
+          `[AssignmentService] ✘ Validation failed for ${userType} ${userId}: ` +
+          `missing ${missing.join(', ')}. Event will not be published.`
+        );
+        return null;
+      }
+
+      console.log(
+        `[AssignmentService] ✔ Enriched ${userType} data: ` +
+        `id=${enrichedData.id}, name=${enrichedData.name}, email=${enrichedData.email}`
+      );
+
+      return enrichedData;
+    } catch (error) {
+      console.error(
+        `[AssignmentService] ✘ Failed to enrich ${userType} data for user ${userId}:`,
+        error instanceof Error ? error.message : error
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Publish assignment notification event to RabbitMQ
+   * 
+   * Implementation:
+   * - Fetches ticket details from ticket-service
+   * - Enriches technician data (local DB + Auth Service)
+   * - Enriches supervisor data (local DB + Auth Service)
+   * - Validates all required fields (id, name, email)
+   * - Publishes event only if validation passes
+   * 
+   * Data Flow:
+   * 1. Local DB query (technicians table) → id, name
+   * 2. Auth Service API → email
+   * 3. Validation → ensures all fields present
+   * 4. Publish to RabbitMQ
+   * 
+   * Error Handling:
+   * - Missing data → logged, event not published
+   * - API failures → logged, event not published
+   * - Never throws → assignment flow continues
+   */
+  private async publishAssignmentNotification(ticketId: string, technicianId: number): Promise<void> {
+    try {
+      console.log(`[AssignmentService] Publishing notification for ticket ${ticketId}...`);
+
+      // Step 1: Fetch ticket details from ticket-service
+      const ticketDetails = await getTicketDetails(ticketId);
+      const ticketTitle = ticketDetails?.title || 'Untitled Ticket';
+
+      // Step 2: Enrich and validate technician data
+      const technicianData = await this.enrichUserData(technicianId, 'technician');
+      if (!technicianData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping notification publish: ` +
+          `technician data validation failed for ticket ${ticketId}`
+        );
+        return;
+      }
+
+      // Step 3: Fetch supervisor from local database
+      const supervisor = await this.technicianRepo.getSupervisor();
+      if (!supervisor) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping notification publish: ` +
+          `no supervisor found for ticket ${ticketId}`
+        );
+        return;
+      }
+
+      // Step 4: Enrich and validate supervisor data
+      const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
+      if (!supervisorData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping notification publish: ` +
+          `supervisor data validation failed for ticket ${ticketId}`
+        );
+        return;
+      }
+
+      // Step 5: Build and publish notification payload
+      await this.notificationPublisher.publishTicketAssigned({
+        ticket: {
+          id: ticketId,
+          title: ticketTitle,
+        },
+        technician: technicianData,
+        supervisor: supervisorData,
+      });
+
+      console.log(
+        `[AssignmentService] ✔ Notification published successfully | ` +
+        `ticket=${ticketId} | technician=${technicianData.email} | supervisor=${supervisorData.email}`
+      );
+    } catch (error) {
+      console.error(
+        `[AssignmentService] ✘ Failed to publish assignment notification for ticket ${ticketId}:`,
+        error instanceof Error ? error.message : error
+      );
+      // Do not throw - notification failure should not break assignment
+    }
+  }
+
+  /**
+   * Start SLA tracking after successful ticket assignment
+   * 
+   * Implementation:
+   * - Fetches ticket details from ticket-service (title, priority, status, createdAt)
+   * - Enriches technician data (local DB + Auth Service)
+   * - Enriches supervisor data (local DB + Auth Service)
+   * - Validates all required fields
+   * - Calls POST /sla/start with complete payload
+   * 
+   * Data Flow:
+   * 1. Ticket Service API → title, priority, status, createdAt
+   * 2. Local DB query (technicians table) → technician name, supervisor
+   * 3. Auth Service API → technician email, supervisor email
+   * 4. Validation → ensures all fields present
+   * 5. POST /sla/start
+   * 
+   * Error Handling:
+   * - Missing data → logged, SLA not started
+   * - API failures → logged, SLA not started
+   * - Never throws → assignment flow continues even if SLA fails
+   */
+  private async startSlaTracking(event: TicketCreatedEvent, technicianId: number): Promise<void> {
+    try {
+      console.log(`[AssignmentService] Starting SLA tracking for ticket ${event.ticket_id}...`);
+
+      // Step 1: Fetch ticket details from ticket-service
+      const ticketDetails = await getTicketDetails(event.ticket_id);
+      if (!ticketDetails) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `could not fetch ticket details for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 2: Enrich and validate technician data
+      const technicianData = await this.enrichUserData(technicianId, 'technician');
+      if (!technicianData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `technician data validation failed for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 3: Fetch supervisor from local database
+      const supervisor = await this.technicianRepo.getSupervisor();
+      if (!supervisor) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `no supervisor found for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 4: Enrich and validate supervisor data
+      const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
+      if (!supervisorData) {
+        console.warn(
+          `[AssignmentService] ✘ Skipping SLA start: ` +
+          `supervisor data validation failed for ticket ${event.ticket_id}`
+        );
+        return;
+      }
+
+      // Step 5: Call POST /sla/start with complete payload
+      await startSlaTracking(
+        event.ticket_id,
+        ticketDetails.title || 'Untitled Ticket',
+        ticketDetails.priority || event.priority || 'MEDIUM',
+        ticketDetails.status || 'IN_PROGRESS',
+        ticketDetails.created_at || new Date().toISOString(),
+        String(technicianId),
+        technicianData,
+        supervisorData,
+      );
+
+      console.log(
+        `[AssignmentService] ✔ SLA tracking started successfully | ` +
+        `ticket=${event.ticket_id} | technician=${technicianData.email} | supervisor=${supervisorData.email}`
+      );
+    } catch (error) {
+      console.error(
+        `[AssignmentService] ✘ Failed to start SLA tracking for ticket ${event.ticket_id}:`,
+        error instanceof Error ? error.message : error
+      );
+      // Do not throw - SLA failure should not break assignment
+    }
   }
 }
