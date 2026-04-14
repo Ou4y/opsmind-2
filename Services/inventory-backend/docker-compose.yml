@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:8.0
+    container_name: opsmind-mongodb-inv
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: opsmind_assets
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  inventory-backend:
+    build: .
+    container_name: opsmind-inventory-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://admin:password123@mongodb:27017/opsmind_assets?authSource=admin
+      - RABBITMQ_URI=amqp://opsmind:opsmind@opsmind-rabbitmq-inv:5672
+    depends_on:
+      - mongodb
+      - opsmind-rabbitmq
+    networks:
+      - opsmind-net
+
+  opsmind-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: opsmind-rabbitmq-inv
+    restart: always
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=opsmind
+      - RABBITMQ_DEFAULT_PASS=opsmind
+    networks:
+      - opsmind-net
+
+networks:
+  opsmind-net:
+    external: true
+    name: opsmind-net
+
+volumes:
+  mongodb_data:
+    name: opsmind-net
