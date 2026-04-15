@@ -2,12 +2,16 @@ const mongoose = require("mongoose");
 
 const connectMongoDB = async () => {
   try {
-    console.log(" MONGO_URI =", process.env.MONGO_URI);
-    console.log(" Connecting to MongoDB...");
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log("MongoDB Atlas connected");
+    const mongoUri = process.env.MONGO_URI;
+    if (!mongoUri) {
+      throw new Error("MONGO_URI is not set");
+    }
+
+    console.log("Connecting to MongoDB...");
+    await mongoose.connect(mongoUri);
+    console.log("MongoDB connected");
   } catch (err) {
-    console.error(" MongoDB connection failed:", err);
+    console.error("MongoDB connection failed:", err);
     process.exit(1);
   }
 };

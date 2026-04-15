@@ -1,6 +1,7 @@
 const amqp = require("amqplib");
 
-const EXCHANGE_NAME = "opsmind.events";
+// Keep consistent with other services (ticket/workflow)
+const EXCHANGE_NAME = "ticket.events";
 const EXCHANGE_TYPE = "topic";
 
 async function connectRabbitMQ(retries = 10, delay = 5000) {
@@ -9,9 +10,13 @@ async function connectRabbitMQ(retries = 10, delay = 5000) {
       console.log(`Trying to connect to RabbitMQ (${i + 1}/${retries})...`);
 
 
-      const RABBITMQ_URL = "amqp://opsmind:opsmind@opsmind-rabbitmq:5672";
-         console.log("RABBITMQ_URL =", RABBITMQ_URL);
-      const connection = await amqp.connect(RABBITMQ_URL, {
+      const rabbitmqUrl =
+        process.env.RABBITMQ_URL || "amqp://opsmind:opsmind@rabbitmq:5672";
+
+      const sanitizedUrl = rabbitmqUrl.replace(/\/\/.*@/, "//***@");
+      console.log("RABBITMQ_URL =", sanitizedUrl);
+
+      const connection = await amqp.connect(rabbitmqUrl, {
         heartbeat: 30,
       });
 

@@ -40,6 +40,9 @@ COPY --from=builder /app/dist ./dist
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
+# Ensure the runtime user can run Prisma (it may write engine files on first run)
+RUN chown -R appuser:appuser /app/node_modules /app/prisma /app/dist
+
 USER appuser
 
 ENV PORT=3004

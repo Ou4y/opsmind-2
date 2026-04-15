@@ -44,6 +44,9 @@ COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 # Copy compiled JavaScript
 COPY --from=builder /app/dist ./dist
 
+# Ensure the runtime user can run Prisma (it may write engine files on first run)
+RUN chown -R appuser:appuser /app/node_modules /app/prisma /app/dist
+
 # Switch to non-root user
 USER appuser
 

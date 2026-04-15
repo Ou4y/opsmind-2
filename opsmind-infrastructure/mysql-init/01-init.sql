@@ -1,6 +1,8 @@
 -- Create databases
 CREATE DATABASE IF NOT EXISTS Tickets;
 CREATE DATABASE IF NOT EXISTS opsmind_ai;
+CREATE DATABASE IF NOT EXISTS authentication;
+CREATE DATABASE IF NOT EXISTS sla_db;
 
 -- Ensure the application users exist (MySQL 8)
 CREATE USER IF NOT EXISTS 'opsmind'@'%' IDENTIFIED BY 'opsmind';

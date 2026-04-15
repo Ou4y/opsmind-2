@@ -1,0 +1,338 @@
+services:
+  # ─────────────────────────────────────────────
+  # Shared Infrastructure
+  # ─────────────────────────────────────────────
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: opsmind
+      MYSQL_PASSWORD: opsmind
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./opsmind-infrastructure/mysql-init:/docker-entrypoint-initdb.d:ro
+      - ./Services/opsmind-workflow-service/db/init.sql:/docker-entrypoint-initdb.d/10-workflow-init.sql:ro
+      - ./Services/opsmind-workflow-service/db/seed.sql:/docker-entrypoint-initdb.d/11-workflow-seed.sql:ro
+    ports:
+      - "127.0.0.1:3306:3306"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: opsmind
+      RABBITMQ_DEFAULT_PASS: opsmind
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  mongodb:
+    image: mongo:7
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # Inventory assets DB (separate from notifications)
+  mongodb-inventory:
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: opsmind_assets
+    volumes:
+      - mongodb_inventory_data:/data/db
+    ports:
+      - "127.0.0.1:27018:27017"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # SMTP capture (web UI on :8025)
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: opsmind
+      PMA_PASSWORD: opsmind
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────
+  # Core Services
+  # ─────────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./Services/opsmind-authentication
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PORT: "3002"
+      NODE_ENV: "development"
+
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: opsmind
+      DB_PASSWORD: opsmind
+      DB_NAME: authentication
+
+      JWT_SECRET: "opsmind-local-jwt"
+      JWT_EXPIRES_IN: "24h"
+
+      OTP_EXPIRY_MINUTES: "5"
+      OTP_LENGTH: "6"
+
+      # Development mode prints OTPs to logs (no real SMTP needed)
+      SMTP_HOST: smtp.example.com
+      SMTP_PORT: "587"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      SMTP_FROM: "noreply@opsmind.local"
+
+      CORS_ORIGIN: "*"
+    ports:
+      - "3002:3002"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  workflow-service:
+    build:
+      context: ./Services/opsmind-workflow-service
+      dockerfile: Dockerfile
+      target: runner
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    environment:
+      NODE_ENV: "production"
+      PORT: "3003"
+      SERVICE_NAME: opsmind-workflow
+
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: workflow_db
+
+      AUTH_SERVICE_URL: http://auth-service:3002
+      TICKET_SERVICE_URL: http://ticket-service:3000
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+
+      JWT_SECRET: "opsmind-local-jwt"
+      LOG_LEVEL: info
+    ports:
+      - "3003:3003"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  ticket-service:
+    build:
+      context: ./Services/opsmind-ticket-service
+      dockerfile: Dockerfile
+      target: runner
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: "production"
+      PORT: "3000"
+
+      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/Tickets
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+      WORKFLOW_SERVICE_URL: http://workflow-service:3003
+
+      CORS_ORIGINS: http://localhost:8085,http://localhost:8080
+
+      # For the HTTP notification client (if enabled)
+      NOTIFICATION_URL: http://notification-service:3000/api/notifications
+      NOTIFICATION_INTERNAL_SECRET: "supersecret"
+    command: ["sh", "-c", "npm run db:migrate:prod && node dist/server.js"]
+    ports:
+      - "3001:3000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ./Services/notification-service
+      dockerfile: Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    environment:
+      PORT: "3000"
+      NODE_ENV: "development"
+
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+      MONGO_URI: mongodb://mongodb:27017/notificationDB
+
+      EMAIL_HOST: mailhog
+      EMAIL_PORT: "1025"
+      EMAIL_USER: noreply@opsmind.local
+      EMAIL_PASS: ""
+    ports:
+      - "3005:3000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  sla-service:
+    build:
+      context: ./Services/opsmind-sla-service
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: "3004"
+      NODE_ENV: "development"
+
+      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/sla_db
+      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+
+      # Publish SLA events to the same exchange other services use
+      RABBITMQ_SLA_EXCHANGE: ticket.events
+      RABBITMQ_NOTIFICATION_WARNING_KEY: ticket.notification.slaWarning
+      RABBITMQ_NOTIFICATION_BREACH_KEY: ticket.notification.slaBreached
+
+      CORS_ORIGINS: http://localhost:8085,http://localhost:3001
+      SLA_CHECK_INTERVAL_MS: "60000"
+      SLA_AUTO_REQUEST_WORKFLOW_ON_RESPONSE_BREACH: "false"
+      SLA_AUTO_REQUEST_WORKFLOW_ON_RESOLUTION_BREACH: "false"
+    ports:
+      - "3004:3004"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  inventory-backend:
+    build:
+      context: ./Services/inventory-backend
+      dockerfile: Dockerfile
+    depends_on:
+      mongodb-inventory:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PORT: "5000"
+      NODE_ENV: "production"
+
+      MONGO_URI: mongodb://admin:password123@mongodb-inventory:27017/opsmind_assets?authSource=admin
+      RABBITMQ_URI: amqp://opsmind:opsmind@rabbitmq:5672
+
+      # (Optional) if the inventory backend posts notifications via HTTP
+      NOTIFICATION_API_URL: http://notification-service:3000/api/notifications
+      INTERNAL_SECRET: "supersecret"
+    ports:
+      - "5000:5000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./Services/ai-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────
+  # Frontend
+  # ─────────────────────────────────────────────
+  opsmind-frontend:
+    build:
+      context: ./opsmind_frontend
+      dockerfile: Dockerfile
+    depends_on:
+      auth-service:
+        condition: service_started
+      ticket-service:
+        condition: service_started
+      workflow-service:
+        condition: service_started
+    environment:
+      OPSMIND_API_URL: http://localhost:3001
+      NODE_ENV: production
+      PORT: 80
+    ports:
+      - "8085:85"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+networks:
+  opsmind-net: {}
+
+volumes:
+  mysql_data: {}
+  mongodb_data: {}
+  mongodb_inventory_data: {}
