@@ -132,7 +132,7 @@ export async function escalateTicketInService(
 
 /**
  * Start SLA tracking via POST /sla/start
- * Body: { ticketId, title, priority, ticketStatus, createdAt, assignedTo, technician, supervisor }
+ * Body: { ticketId, title, priority, ticketStatus, createdAt, assignedTo, requesterId, technician, supervisor }
  */
 export async function startSlaTracking(
   ticketId: string,
@@ -141,6 +141,7 @@ export async function startSlaTracking(
   ticketStatus: string,
   createdAt: string,
   assignedTo: string,
+  requesterId: string,
   technician: { id: string; name: string; email: string },
   supervisor: { id: string; name: string; email: string },
 ): Promise<any> {
@@ -151,6 +152,7 @@ export async function startSlaTracking(
     ticketStatus,
     createdAt,
     assignedTo,
+    requesterId,
     technician,
     supervisor,
   };

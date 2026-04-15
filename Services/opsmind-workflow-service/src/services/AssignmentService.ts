@@ -342,24 +342,72 @@ export class AssignmentService {
   }
 
   /**
+   * Validate SLA payload before sending POST /sla/start
+   * 
+   * Checks all required fields and returns detailed error if validation fails
+   * 
+   * @param payload - The SLA payload to validate
+   * @returns Object with { valid: boolean, missingFields: string[] }
+   */
+  private validateSlaPayload(payload: {
+    ticketId: string;
+    title: string;
+    priority: string;
+    ticketStatus: string;
+    requesterId: string | number | undefined;
+    assignedTo: string;
+    technician: { id: string; name: string; email: string };
+    supervisor: { id: string; name: string; email: string };
+  }): { valid: boolean; missingFields: string[] } {
+    const missingFields: string[] = [];
+
+    // Validate ticket fields
+    if (!payload.ticketId) missingFields.push('ticket.id');
+    if (!payload.title) missingFields.push('ticket.title');
+    if (!payload.priority) missingFields.push('ticket.priority');
+    if (!payload.ticketStatus) missingFields.push('ticket.status');
+    if (!payload.requesterId) missingFields.push('ticket.requester_id');
+
+    // Validate technician fields
+    if (!payload.technician.id) missingFields.push('technician.user_id');
+    if (!payload.technician.name) missingFields.push('technician.name');
+    if (!payload.technician.email) missingFields.push('technician.email');
+
+    // Validate supervisor fields
+    if (!payload.supervisor.id) missingFields.push('supervisor.user_id');
+    if (!payload.supervisor.name) missingFields.push('supervisor.name');
+    if (!payload.supervisor.email) missingFields.push('supervisor.email');
+
+    return {
+      valid: missingFields.length === 0,
+      missingFields,
+    };
+  }
+
+  /**
    * Start SLA tracking after successful ticket assignment
    * 
    * Implementation:
-   * - Fetches ticket details from ticket-service (title, priority, status, createdAt)
+   * - Fetches ticket details from ticket-service (title, priority, status, createdAt, requester_id)
    * - Enriches technician data (local DB + Auth Service)
    * - Enriches supervisor data (local DB + Auth Service)
-   * - Validates all required fields
-   * - Calls POST /sla/start with complete payload
+   * - Validates all required fields comprehensively
+   * - Calls POST /sla/start only if validation passes
    * 
    * Data Flow:
-   * 1. Ticket Service API → title, priority, status, createdAt
+   * 1. Ticket Service API → title, priority, status, createdAt, requester_id
    * 2. Local DB query (technicians table) → technician name, supervisor
    * 3. Auth Service API → technician email, supervisor email
-   * 4. Validation → ensures all fields present
-   * 5. POST /sla/start
+   * 4. Validation → ensures ALL required fields present
+   * 5. POST /sla/start (only if valid)
+   * 
+   * Validation Requirements:
+   * - ticket.id, title, priority, status, requester_id
+   * - technician.user_id, name, email
+   * - supervisor.user_id, name, email
    * 
    * Error Handling:
-   * - Missing data → logged, SLA not started
+   * - Missing data → logged with specific field names, SLA not started
    * - API failures → logged, SLA not started
    * - Never throws → assignment flow continues even if SLA fails
    */
@@ -370,9 +418,9 @@ export class AssignmentService {
       // Step 1: Fetch ticket details from ticket-service
       const ticketDetails = await getTicketDetails(event.ticket_id);
       if (!ticketDetails) {
-        console.warn(
-          `[AssignmentService] ✘ Skipping SLA start: ` +
-          `could not fetch ticket details for ticket ${event.ticket_id}`
+        console.error(
+          `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
+          `reason: could not fetch ticket details from ticket-service`
         );
         return;
       }
@@ -380,9 +428,9 @@ export class AssignmentService {
       // Step 2: Enrich and validate technician data
       const technicianData = await this.enrichUserData(technicianId, 'technician');
       if (!technicianData) {
-        console.warn(
-          `[AssignmentService] ✘ Skipping SLA start: ` +
-          `technician data validation failed for ticket ${event.ticket_id}`
+        console.error(
+          `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
+          `reason: technician data enrichment failed for technician ${technicianId}`
         );
         return;
       }
@@ -390,9 +438,9 @@ export class AssignmentService {
       // Step 3: Fetch supervisor from local database
       const supervisor = await this.technicianRepo.getSupervisor();
       if (!supervisor) {
-        console.warn(
-          `[AssignmentService] ✘ Skipping SLA start: ` +
-          `no supervisor found for ticket ${event.ticket_id}`
+        console.error(
+          `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
+          `reason: no supervisor found in database`
         );
         return;
       }
@@ -400,23 +448,54 @@ export class AssignmentService {
       // Step 4: Enrich and validate supervisor data
       const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
       if (!supervisorData) {
-        console.warn(
-          `[AssignmentService] ✘ Skipping SLA start: ` +
-          `supervisor data validation failed for ticket ${event.ticket_id}`
+        console.error(
+          `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
+          `reason: supervisor data enrichment failed for supervisor ${supervisor.id}`
         );
         return;
       }
 
-      // Step 5: Call POST /sla/start with complete payload
+      // Step 5: Build SLA payload
+      const slaPayload = {
+        ticketId: event.ticket_id,
+        title: ticketDetails.title,
+        priority: ticketDetails.priority || event.priority,
+        ticketStatus: ticketDetails.status,
+        requesterId: ticketDetails.requester_id || ticketDetails.created_by,
+        assignedTo: String(technicianId),
+        technician: technicianData,
+        supervisor: supervisorData,
+      };
+
+      // Step 6: Comprehensive validation before sending
+      const validation = this.validateSlaPayload(slaPayload);
+      
+      if (!validation.valid) {
+        console.error(
+          `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
+          `missing required fields: ${validation.missingFields.join(', ')} | ` +
+          `payload: ${JSON.stringify(slaPayload, null, 2)}`
+        );
+        return;
+      }
+
+      console.log(
+        `[AssignmentService] ✔ SLA payload validated successfully | ` +
+        `ticket=${event.ticket_id} | all required fields present`
+      );
+
+      // Step 7: Call POST /sla/start with validated payload
+      // Use assignment time (now) as createdAt since SLA starts at assignment, not ticket creation
       await startSlaTracking(
-        event.ticket_id,
-        ticketDetails.title || 'Untitled Ticket',
-        ticketDetails.priority || event.priority || 'MEDIUM',
-        ticketDetails.status || 'IN_PROGRESS',
-        ticketDetails.created_at || new Date().toISOString(),
-        String(technicianId),
-        technicianData,
-        supervisorData,
+        slaPayload.ticketId,
+        slaPayload.title,
+        slaPayload.priority,
+        slaPayload.ticketStatus,
+        new Date().toISOString(), // Assignment time, not ticket creation time
+        slaPayload.assignedTo,
+        slaPayload.requesterId,
+        slaPayload.technician,
+        slaPayload.supervisor,
       );
 
       console.log(
