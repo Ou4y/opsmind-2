@@ -25,8 +25,8 @@ ENV NODE_ENV=production
 
 RUN apk add --no-cache openssl libc6-compat bash
 
-RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 appuser
+RUN addgroup -S -g 1001 nodejs \
+    && adduser -S -u 1001 -G nodejs appuser
 
 COPY package*.json ./
 RUN npm install --omit=dev
@@ -41,7 +41,7 @@ COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
 # Ensure the runtime user can run Prisma (it may write engine files on first run)
-RUN chown -R appuser:appuser /app/node_modules /app/prisma /app/dist
+RUN chown -R appuser:nodejs /app/node_modules /app/prisma /app/dist
 
 USER appuser
 

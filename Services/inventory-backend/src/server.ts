@@ -4,7 +4,7 @@ dotenv.config();
 import express, { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
-import Asset from './models/Asset';
+import Asset from './models/Assets';
 import { EventBus } from './services/EventBus';
 import { TOPICS } from './events/assetEvents';
 import ticketRoutes from './routes/ticketRoutes'; 
@@ -150,7 +150,7 @@ app.post('/api/assets', async (req: Request, res: Response) => {
     const createdAssets = await Asset.insertMany(assetsToCreate);
 
     // Log created IDs so we can correlate with DB and later deletes
-    console.log('✅ Created assets (customIds):', createdAssets.map(a => a.customId));
+    console.log('✅ Created assets (customIds):', createdAssets.map((a: { customId: string }) => a.customId));
 
     await EventBus.publish(TOPICS.ASSET_CREATED, {
       summary: `Batch created: ${qty} x ${name}`,

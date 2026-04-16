@@ -27,8 +27,8 @@ WORKDIR /app
 RUN apk add --no-cache openssl libc6-compat
 
 # Create non-root user
-RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 appuser
+RUN addgroup -S -g 1001 nodejs \
+    && adduser -S -u 1001 -G nodejs appuser
 
 # Copy only production dependencies
 COPY package*.json ./
@@ -45,7 +45,7 @@ COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/dist ./dist
 
 # Ensure the runtime user can run Prisma (it may write engine files on first run)
-RUN chown -R appuser:appuser /app/node_modules /app/prisma /app/dist
+RUN chown -R appuser:nodejs /app/node_modules /app/prisma /app/dist
 
 # Switch to non-root user
 USER appuser

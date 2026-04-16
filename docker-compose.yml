@@ -10,7 +10,7 @@ services:
       MYSQL_PASSWORD: opsmind
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./opsmind-infrastructure/mysql-init:/docker-entrypoint-initdb.d:ro
+      - ./opsmind-infrastructure/mysql-init/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./Services/opsmind-workflow-service/db/init.sql:/docker-entrypoint-initdb.d/10-workflow-init.sql:ro
       - ./Services/opsmind-workflow-service/db/seed.sql:/docker-entrypoint-initdb.d/11-workflow-seed.sql:ro
     ports:
@@ -110,6 +110,7 @@ services:
   # Core Services
   # ─────────────────────────────────────────────
   auth-service:
+    image: opsmind-auth-service:local
     build:
       context: ./Services/opsmind-authentication
       dockerfile: Dockerfile
@@ -147,6 +148,7 @@ services:
     restart: unless-stopped
 
   workflow-service:
+    image: opsmind-workflow-service:local
     build:
       context: ./Services/opsmind-workflow-service
       dockerfile: Dockerfile
@@ -182,6 +184,7 @@ services:
     restart: unless-stopped
 
   ticket-service:
+    image: opsmind-ticket-service:local
     build:
       context: ./Services/opsmind-ticket-service
       dockerfile: Dockerfile
@@ -212,6 +215,7 @@ services:
     restart: unless-stopped
 
   notification-service:
+    image: opsmind-notification-service:local
     build:
       context: ./Services/notification-service
       dockerfile: Dockerfile
@@ -240,6 +244,7 @@ services:
     restart: unless-stopped
 
   sla-service:
+    image: opsmind-sla-service:local
     build:
       context: ./Services/opsmind-sla-service
       dockerfile: Dockerfile
@@ -271,6 +276,7 @@ services:
     restart: unless-stopped
 
   inventory-backend:
+    image: opsmind-inventory-backend:local
     build:
       context: ./Services/inventory-backend
       dockerfile: Dockerfile
@@ -296,6 +302,7 @@ services:
     restart: unless-stopped
 
   ai-service:
+    image: opsmind-ai-service:local
     build:
       context: ./Services/ai-service
       dockerfile: Dockerfile
@@ -309,6 +316,7 @@ services:
   # Frontend
   # ─────────────────────────────────────────────
   opsmind-frontend:
+    image: opsmind-frontend:local
     build:
       context: ./opsmind_frontend
       dockerfile: Dockerfile

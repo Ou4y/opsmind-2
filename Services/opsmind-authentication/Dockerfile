@@ -6,6 +6,9 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
+# Build deps for native Node modules (e.g., bcrypt via node-gyp)
+RUN apk add --no-cache python3 make g++
+
 # Install all dependencies (including dev dependencies for build)
 RUN npm ci
 
@@ -27,9 +30,13 @@ RUN addgroup -g 1001 -S nodejs && \
 # Copy package files
 COPY package*.json ./
 
+# Build deps for native Node modules (e.g., bcrypt via node-gyp)
+RUN apk add --no-cache --virtual .gyp python3 make g++
+
 # Install only production dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
+RUN npm ci --omit=dev && \
+    npm cache clean --force && \
+    apk del .gyp
 
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
