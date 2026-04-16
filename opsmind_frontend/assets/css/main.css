@@ -1020,7 +1020,202 @@ body {
     height: 12px;
     border-radius: 2px;
 }
+/* =========================================================
+   🚀✨ OPSMIND ULTIMATE TECH UI & ANIMATIONS
+   ========================================================= */
 
+/* 1. Ambient Blueprint & Glowing Orb Background */
+body.app-body { 
+    position: relative;
+    background-color: #f4f7fa;
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 24px 24px;
+    z-index: 1;
+    overflow-x: hidden;
+}
+body.app-body::before, body.app-body::after {
+    content: '';
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    z-index: -1;
+    opacity: 0.4;
+    animation: ambient-float 10s infinite alternate ease-in-out;
+    pointer-events: none;
+}
+body.app-body::before {
+    width: 400px; height: 400px; background: #4361ee;
+    top: -100px; left: -100px;
+}
+body.app-body::after {
+    width: 500px; height: 500px; background: #8a2be2;
+    bottom: -150px; right: -100px;
+    animation-delay: -5s;
+}
+@keyframes ambient-float {
+    0% { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(30px, 50px) scale(1.1); }
+}
+
+/* 2. Animated Typography & Entrances */
+.tech-gradient-text {
+    background: linear-gradient(270deg, #4361ee, #8a2be2, #06b6d4, #4361ee);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: gradient-flow 6s ease infinite;
+    font-weight: 800 !important;
+    letter-spacing: -0.5px;
+}
+@keyframes gradient-flow {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+.fade-in-bounce {
+    opacity: 0;
+    animation: fadeInBounce 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+.delay-1 { animation-delay: 0.1s; }
+.delay-2 { animation-delay: 0.2s; }
+.delay-3 { animation-delay: 0.3s; }
+@keyframes fadeInBounce {
+    0% { opacity: 0; transform: translateY(30px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+/* 3. Glassmorphism Glowing Cards */
+.card, .tech-card {
+    background: rgba(255, 255, 255, 0.7) !important;
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border: 1px solid rgba(255, 255, 255, 0.8) !important;
+    border-radius: 20px !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05) !important;
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+}
+.card:hover, .tech-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 20px 40px rgba(67, 97, 238, 0.15) !important;
+    border-color: rgba(67, 97, 238, 0.3) !important;
+}
+
+/* 4. Table Row Cascading & Hover Animation */
+#inventoryTableBody tr, #detailsTableBody tr {
+    animation: fadeInUpRow 0.5s ease-out forwards;
+    opacity: 0;
+    transform: translateY(15px);
+}
+@keyframes fadeInUpRow {
+    to { opacity: 1; transform: translateY(0); }
+}
+.table-hover tbody tr { transition: all 0.3s ease; border-radius: 8px; }
+.table-hover tbody tr:hover {
+    background-color: #ffffff;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+    transform: scale(1.005) translateY(-2px);
+    z-index: 10;
+    position: relative;
+}
+
+/* 5. Pulsing Alert Badges */
+.badge.bg-warning {
+    animation: pulse-warning 2s infinite;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+}
+.badge.bg-danger {
+    animation: pulse-danger 2s infinite;
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+}
+@keyframes pulse-warning {
+    70% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+@keyframes pulse-danger {
+    70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+/* 6. Modern Pill Buttons & Barcode Scanner Effect */
+.btn-modern {
+    border-radius: 50px !important;
+    padding: 8px 20px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.3px;
+    transition: all 0.3s ease !important;
+}
+.btn-modern-primary {
+    background: linear-gradient(135deg, #4361ee 0%, #3f37c9 100%) !important;
+    border: none !important;
+    box-shadow: 0 4px 15px rgba(67, 97, 238, 0.3) !important;
+    color: white !important;
+}
+.btn-modern-primary:hover {
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: 0 8px 25px rgba(67, 97, 238, 0.5) !important;
+}
+.btn-modern-danger { box-shadow: 0 4px 15px rgba(220, 53, 69, 0.2) !important; }
+.btn-modern-danger:hover { background-color: #dc3545 !important; color: white !important; box-shadow: 0 8px 25px rgba(220, 53, 69, 0.4) !important; transform: translateY(-2px); }
+.btn-modern-success { box-shadow: 0 4px 15px rgba(25, 135, 84, 0.2) !important; }
+.btn-modern-success:hover { background-color: #198754 !important; color: white !important; box-shadow: 0 8px 25px rgba(25, 135, 84, 0.4) !important; transform: translateY(-2px); }
+
+.btn-outline-info { overflow: hidden; position: relative; border-radius: 8px; }
+.btn-outline-info:hover::before {
+    content: '';
+    position: absolute; top: -50%; left: 0; width: 100%; height: 200%;
+    background: linear-gradient(to bottom, transparent, rgba(13, 202, 240, 0.6), transparent);
+    animation: scan-laser 1s linear infinite;
+    z-index: 1;
+}
+@keyframes scan-laser {
+    0% { transform: translateY(-100%); }
+    100% { transform: translateY(100%); }
+}
+
+/* 7. Floating AI Robot & Enhancements */
+.ai-robot-icon, .ai-icon-wrapper span {
+    display: inline-block;
+    animation: float-robot 3s ease-in-out infinite;
+}
+@keyframes float-robot {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-10px) scale(1.05); }
+    100% { transform: translateY(0px); }
+}
+.ai-modal-content { background: linear-gradient(145deg, #ffffff, #f8f9fa); border-top: 5px solid #8a2be2 !important; border-radius: 20px; }
+.ai-icon-wrapper { background: #f3e8ff; box-shadow: 0 0 20px rgba(138, 43, 226, 0.2); }
+.ai-modal-title { color: #8a2be2; letter-spacing: 1px; }
+.ai-modal-msg { font-size: 1.1rem; line-height: 1.6; }
+.ai-btn-ignore { font-weight: 600; transition: 0.3s; }
+.ai-btn-ignore:hover { background: #f1f5f9; transform: translateY(-2px); }
+.ai-btn-accept { background: linear-gradient(45deg, #8a2be2, #6a5acd); font-weight: 600; border: none; transition: 0.3s; color: white; }
+.ai-btn-accept:hover { box-shadow: 0 6px 20px rgba(138, 43, 226, 0.4); transform: translateY(-2px); }
+.ai-badge-idle { background: linear-gradient(45deg, #8a2be2, #d8b4fe); box-shadow: 0 0 10px rgba(138, 43, 226, 0.4); animation: pulse-idle 2s infinite; color: white; border: none;}
+@keyframes pulse-idle { 70% { box-shadow: 0 0 0 6px rgba(138,43,226,0); } 100% { box-shadow: 0 0 0 0 rgba(138,43,226,0); } }
+.ai-summary-banner { background: #f3e8ff; border: 1px solid #d8b4fe; border-left: 4px solid #8a2be2; border-radius: 8px; }
+.ai-robot-icon { color: #8a2be2; text-shadow: 0 0 8px rgba(138,43,226,0.3); }
+
+/* 8. Layout Utilities & Scrollbars */
+.table-scrollable-60vh::-webkit-scrollbar, .history-scrollable::-webkit-scrollbar { width: 8px; }
+.table-scrollable-60vh::-webkit-scrollbar-track, .history-scrollable::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 10px; }
+.table-scrollable-60vh::-webkit-scrollbar-thumb, .history-scrollable::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+.table-scrollable-60vh::-webkit-scrollbar-thumb:hover { background: #8a2be2; }
+
+.timeline-item { border-left: 2px solid #e9ecef; padding-left: 20px; position: relative; padding-bottom: 20px; }
+.timeline-item::before { content: ""; position: absolute; width: 12px; height: 12px; background: #0d6efd; border-radius: 50%; left: -7px; top: 5px; }
+.qty-badge { font-size: 0.9rem; min-width: 40px; border-radius: 10px; }
+.cursor-pointer { cursor: pointer; }
+.bulk-header { background: rgba(248, 249, 250, 0.5); border-bottom: 1px solid rgba(222, 226, 230, 0.5); padding: 12px 20px; border-radius: 20px 20px 0 0; }
+.spec-label { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #6c757d; }
+.spec-value { font-weight: 600; color: #212529; }
+.search-input-group { width: 250px; border-radius: 20px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+.inner-search-group { max-width: 300px; border-radius: 10px; overflow: hidden; }
+.btn-create-asset { height: 38px; background: linear-gradient(45deg, #4361ee, #3651d4); border: none; border-radius: 50px; color: white; font-weight: 600; }
+.btn-create-asset:hover { background: linear-gradient(45deg, #3651d4, #4361ee); box-shadow: 0 4px 15px rgba(67, 97, 238, 0.4); transform: translateY(-2px); }
+.table-scrollable-60vh { max-height: 60vh; overflow-y: auto; padding-right: 5px; }
+.history-scrollable { max-height: 400px; overflow-y: auto; }
+.eol-alert-banner { border-left: 5px solid #dc3545; background: #fff5f5; }
+.pred-lifespan-text { font-size: 0.75rem; font-weight: 600; }
 /* ====================================
    Activity List
    ==================================== */
