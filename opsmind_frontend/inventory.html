@@ -7,18 +7,9 @@
     
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/assets/css/main.css" rel="stylesheet">
+    <link href="/assets/css/main.css?v=4" rel="stylesheet">
     
     <script src="/assets/js/config.js?v=2"></script>
-    <style>
-        .timeline-item { border-left: 2px solid #e9ecef; padding-left: 20px; position: relative; padding-bottom: 20px; }
-        .timeline-item::before { content: ""; position: absolute; width: 12px; height: 12px; background: #0d6efd; border-radius: 50%; left: -7px; top: 5px; }
-        .qty-badge { font-size: 0.9rem; min-width: 40px; }
-        .cursor-pointer { cursor: pointer; }
-        .bulk-header { background: #f8f9fa; border-bottom: 2px solid #dee2e6; padding: 12px 20px; }
-        .spec-label { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #6c757d; }
-        .spec-value { font-weight: 600; color: #212529; }
-    </style>
 </head>
 <body class="app-body">
     <nav class="navbar-main" id="navbar-container"></nav>
@@ -30,74 +21,75 @@
             
             <div id="eolAlertBanner" style="display: none;"></div>
 
-            <div class="d-flex justify-content-between align-items-center mb-4">
+            <div class="d-flex justify-content-between align-items-center mb-4 fade-in-bounce delay-1">
                 <div>
-                    <h2 class="h3 fw-bold mb-1">University Inventory</h2>
-                    <p class="text-muted small mb-0">Grouped View</p>
+                    <h2 class="h2 mb-1 tech-gradient-text">University Inventory</h2>
+                    <p class="text-muted small mb-0 fw-bold"><i class="bi bi-cpu text-primary me-1"></i> Grouped View</p>
                 </div>
                 
                 <div class="d-flex gap-2 align-items-start">
-                    <div class="input-group input-group-sm" style="width: 250px;">
-                        <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
-                        <input type="text" id="searchInput" class="form-control border-start-0" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
+                    <div class="input-group input-group-sm search-input-group bg-white">
+                        <span class="input-group-text bg-transparent border-0"><i class="bi bi-search text-primary"></i></span>
+                        <input type="text" id="searchInput" class="form-control border-0 bg-transparent shadow-none" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
                     </div>
 
-                    <button class="btn btn-outline-dark mb-3" onclick="printSelectedLabels()">
+                    <button class="btn btn-dark btn-modern shadow-sm mb-3" id="printLabelsBtn" onclick="window.printQRLabels('ALL')">
                         <i class="bi bi-qr-code"></i> Print Labels
                     </button>
 
-                    <button class="btn btn-outline-success mb-3" onclick="exportAssetsToDetailedPDF()">
-                        <i class="bi bi-file-pdf"></i> Export PDF with QR & Specs
+                    <button class="btn btn-outline-success btn-modern btn-modern-success mb-3" onclick="exportAssetsToDetailedPDF()">
+                        <i class="bi bi-file-pdf"></i> Export PDF
                     </button>
 
-                    <button class="btn btn-outline-danger mb-3" onclick="generateEOLReport()">
-                        <i class="bi bi-graph-up-arrow"></i> Predictive EOL Budget
+                    <button class="btn btn-outline-danger btn-modern btn-modern-danger mb-3" onclick="generateEOLReport()">
+                        <i class="bi bi-graph-up-arrow"></i> EOL Budget
                     </button>
 
-                    <button class="btn btn-primary btn-sm d-flex align-items-center gap-2" data-bs-toggle="modal" data-bs-target="#receiveOrderModal" style="height: 38px;">
-                        <i class="bi bi-plus-lg"></i> Create Asset
+                    <button class="btn btn-modern btn-create-asset mb-3 d-flex align-items-center gap-2 shadow" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
+                        <i class="bi bi-plus-lg border border-2 border-white rounded-circle p-1" style="font-size: 0.7rem;"></i> Create Asset
                     </button>
                 </div>
             </div>
 
-            <div class="card border-0 bg-light mb-4">
+            <div class="card tech-card mb-4 fade-in-bounce delay-2">
                 <div class="card-body py-3">
                     <div class="row g-3 align-items-center">
                         <div class="col-auto">
-                            <span class="fw-bold text-muted small"><i class="bi bi-funnel-fill me-1"></i> FILTERS:</span>
+                            <span class="fw-bold text-primary small"><i class="bi bi-funnel-fill me-1"></i> FILTERS:</span>
                         </div>
                         <div class="col-md-3">
-                            <select id="filterBuilding" class="form-select form-select-sm" onchange="syncFilters()">
+                            <select id="filterBuilding" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
                                 <option value="all">All Buildings</option>
                             </select>
                         </div>
                         <div class="col-md-3">
-                            <select id="filterDept" class="form-select form-select-sm" onchange="syncFilters()">
+                            <select id="filterDept" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
                                 <option value="all">All Departments</option>
                             </select>
                         </div>
                         <div class="col-md-3">
-                            <select id="filterType" class="form-select form-select-sm" onchange="syncFilters()">
+                            <select id="filterType" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
                                 <option value="all">All Asset Types</option>
                             </select>
                         </div>
                         <div class="col-md-2">
-                            <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()">Reset</button>
+                            <button class="btn btn-light btn-sm w-100 rounded-pill shadow-sm fw-bold text-secondary" onclick="resetFilters()">Reset</button>
                         </div>
                     </div>
                 </div>
             </div>
-            <div class="card border shadow-sm">
+
+            <div class="card tech-card fade-in-bounce delay-3">
                 <div class="card-body p-0">
-                    <div class="table-responsive">
+                    <div class="table-responsive" style="border-radius: 20px; overflow: hidden;">
                         <table class="table table-hover align-middle mb-0" id="groupTable">
-                            <thead class="bg-light">
+                            <thead style="background: rgba(248,249,250,0.6);">
                                 <tr class="text-uppercase small text-muted">
-                                    <th class="ps-4 py-3">Asset Name</th>
-                                    <th>Type</th>
-                                    <th>Total Quantity</th>
-                                    <th>Locations Found</th>
-                                    <th class="text-end pe-4">Actions</th>
+                                    <th class="ps-4 py-3 border-0">Asset Name</th>
+                                    <th class="border-0">Type</th>
+                                    <th class="border-0 text-center">Total Qty</th>
+                                    <th class="border-0">Locations Found</th>
+                                    <th class="text-end pe-4 border-0">Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="inventoryTableBody"></tbody>
@@ -110,17 +102,17 @@
 
     <div class="modal fade" id="receiveOrderModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Create New Asset</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-content tech-card">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold tech-gradient-text">Create New Asset</h5>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="addAssetForm">
-                        <input type="text" id="assetName" placeholder="Asset Name (e.g. Dell Latitude 5420)" class="form-control mb-2" required />
-                        <input type="number" id="assetQuantity" placeholder="Quantity" class="form-control mb-2" min="1" required />
+                        <input type="text" id="assetName" placeholder="Asset Name (e.g. Dell Latitude 5420)" class="form-control rounded-pill mb-3 shadow-sm border-0 px-3" required />
+                        <input type="number" id="assetQuantity" placeholder="Quantity" class="form-control rounded-pill mb-3 shadow-sm border-0 px-3" min="1" required />
                         
-                        <select id="assetType" class="form-select mb-2" required>
+                        <select id="assetType" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
                             <option value="">Select Asset Type</option>
                             <optgroup label="IT & Computing">
                                 <option value="laptop">Laptop</option>
@@ -168,7 +160,7 @@
                             </optgroup>
                         </select>
 
-                        <select id="assetLocation" class="form-select mb-2" required>
+                        <select id="assetLocation" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
                             <option value="">Select Location</option>
                             <option value="Central Warehouse">Central Warehouse</option>
                             <option value="Main Building">Main Building</option>
@@ -179,7 +171,7 @@
                             <option value="Pharmacy Building">Pharmacy Building</option>
                         </select>
 
-                        <select id="assetDepartment" class="form-select mb-2" required>
+                        <select id="assetDepartment" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
                             <option value="">Select Department</option>
                             <option value="Computer Science">Computer Science</option>
                             <option value="Engineering">Engineering</option>
@@ -192,13 +184,13 @@
                             <option value="Unassigned">Unassigned</option>
                         </select>
 
-                        <div class="mb-2">
-                            <label class="form-label small fw-bold">Technical Specs (Optional)</label>
-                            <textarea id="assetSpecs" class="form-control" rows="3" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen&#10;Storage: 512GB SSD"></textarea>
-                            <div class="form-text small">Enter one spec per line (Key: Value)</div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-primary ms-2">Technical Specs (Optional)</label>
+                            <textarea id="assetSpecs" class="form-control shadow-sm border-0" style="border-radius: 15px; resize: none;" rows="3" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen&#10;Storage: 512GB SSD"></textarea>
+                            <div class="form-text small ms-2">Enter one spec per line (Key: Value)</div>
                         </div>
                         
-                        <button type="submit" class="btn btn-primary w-100">Create Assets</button>
+                        <button type="submit" class="btn btn-modern btn-modern-primary w-100">Create Assets</button>
                     </form>
                 </div>
             </div>
@@ -207,27 +199,27 @@
 
     <div class="modal fade" id="editSpecsModal" tabindex="-1" aria-hidden="true" style="z-index: 1080;">
         <div class="modal-dialog">
-            <div class="modal-content border-0 shadow-lg">
-                <div class="modal-header bg-warning text-dark">
-                    <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Technical Specs</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-content tech-card">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold text-warning"><i class="bi bi-pencil-square me-2"></i>Edit Technical Specs</h5>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div class="alert alert-secondary py-2 mb-3 small">
-                        Editing: <strong id="editSpecAssetId">---</strong>
+                    <div class="alert bg-white shadow-sm border-0 py-2 mb-3 small rounded-pill">
+                        Editing: <strong id="editSpecAssetId" class="text-primary">---</strong>
                     </div>
                     <form id="editSpecsForm">
                         <input type="hidden" id="editSpecTargetId">
                         <div class="mb-3">
-                            <label class="form-label fw-bold small">Specifications (Key: Value)</label>
-                            <textarea id="editSpecTextArea" class="form-control font-monospace" rows="6" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen"></textarea>
-                            <div class="form-text small">Update details one per line. Format: <strong>Key: Value</strong></div>
+                            <label class="form-label fw-bold small ms-2">Specifications (Key: Value)</label>
+                            <textarea id="editSpecTextArea" class="form-control font-monospace shadow-sm border-0" style="border-radius: 15px; resize: none;" rows="6" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen"></textarea>
+                            <div class="form-text small ms-2">Update details one per line. Format: <strong>Key: Value</strong></div>
                         </div>
                     </form>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="saveSpecsBtn" onclick="saveUpdatedSpecs()">Save Changes</button>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-light rounded-pill fw-bold text-secondary shadow-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-modern btn-modern-primary" id="saveSpecsBtn" onclick="saveUpdatedSpecs()">Save Changes</button>
                 </div>
             </div>
         </div>
@@ -235,14 +227,14 @@
 
     <div class="modal fade" id="specModal" tabindex="-1" aria-hidden="true" style="z-index: 1200;">
         <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg">
-                <div class="modal-header bg-dark text-white">
-                    <h5 class="modal-title fw-bold"><i class="bi bi-cpu me-2"></i>Asset Specifications</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            <div class="modal-content tech-card">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold tech-gradient-text"><i class="bi bi-qr-code-scan me-2"></i>Asset Identity</h5>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body">
-                    <div id="specTargetHeader" class="mb-3 p-3 bg-light rounded border"></div>
-                    <div id="specContent" class="list-group list-group-flush"></div>
+                <div class="modal-body text-center">
+                    <div id="specTargetHeader" class="mb-2 p-2"></div>
+                    <div id="specContent" class="list-group list-group-flush bg-transparent"></div>
                 </div>
             </div>
         </div>
@@ -250,38 +242,38 @@
 
     <div class="modal fade" id="detailsModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header bg-light">
+            <div class="modal-content tech-card p-2">
+                <div class="modal-header border-0 pb-0">
                     <div>
-                        <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Details</h5>
-                        <small class="text-muted">Manage individual items</small>
+                        <h5 class="modal-title fw-bold tech-gradient-text" id="detailModalTitle">Asset Details</h5>
+                        <small class="text-muted fw-semibold">Manage individual items</small>
                     </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
                 
-                <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3">
-                    <div class="input-group input-group-sm" style="max-width: 300px;">
-                        <span class="input-group-text bg-white"><i class="bi bi-filter"></i></span>
-                        <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter IDs in this group..." onkeyup="filterDetailsTable()">
+                <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3 bg-transparent border-0 px-3">
+                    <div class="input-group input-group-sm inner-search-group rounded-pill shadow-sm overflow-hidden bg-white">
+                        <span class="input-group-text bg-transparent border-0"><i class="bi bi-filter text-primary"></i></span>
+                        <input type="text" id="innerSearchInput" class="form-control border-0 bg-transparent shadow-none" placeholder="Filter IDs in this group..." onkeyup="filterDetailsTable()">
                     </div>
                     
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-warning" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i> Bulk Transfer</button>
-                        <button class="btn btn-sm btn-danger" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i> Bulk Delete Group</button>
+                        <button class="btn btn-modern btn-warning text-dark shadow-sm" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i> Bulk Transfer</button>
+                        <button class="btn btn-modern btn-modern-danger" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i> Bulk Delete Group</button>
                     </div>
                 </div>
 
-                <div class="modal-body p-0">
-                    <div class="table-responsive" style="max-height: 60vh; overflow-y: auto;">
-                        <table class="table table-striped table-hover mb-0">
-                            <thead class="table-light sticky-top">
+                <div class="modal-body px-3 pb-3 pt-1">
+                    <div class="table-responsive table-scrollable-60vh bg-white shadow-sm" style="border-radius: 15px;">
+                        <table class="table table-hover mb-0">
+                            <thead class="sticky-top" style="background: rgba(248,249,250,0.95); backdrop-filter: blur(5px);">
                                 <tr>
-                                    <th class="ps-4">Unique ID</th>
-                                    <th>Status</th>
-                                    <th>Location</th>
-                                    <th>Department</th>
-                                    <th>EOL Status</th> 
-                                    <th class="text-end pe-4">Individual Actions</th>
+                                    <th class="ps-4 border-0">Unique ID</th>
+                                    <th class="border-0">Status</th>
+                                    <th class="border-0">Location</th>
+                                    <th class="border-0">Department</th>
+                                    <th class="border-0">EOL Status</th> 
+                                    <th class="text-end pe-4 border-0">Individual Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="detailsTableBody"></tbody>
@@ -294,49 +286,50 @@
 
     <div class="modal fade" id="transferModal" tabindex="-1" aria-hidden="true" style="z-index: 1070;">
         <div class="modal-dialog">
-            <div class="modal-content border-0 shadow">
-                <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Transfer Asset(s)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-content tech-card">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold text-primary"><i class="bi bi-truck me-2"></i>Transfer Asset(s)</h5>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div class="alert alert-info py-2 mb-3 small">
-                        Targeting: <strong id="transferAssetId">---</strong>
+                    <div class="alert bg-white shadow-sm border-0 py-2 mb-4 small rounded-pill text-center">
+                        Targeting: <strong id="transferAssetId" class="text-primary font-monospace">---</strong>
                     </div>
                     <form id="transferForm">
-                        <div class="mb-3">
-                            <label class="form-label fw-bold">Select Destination(s):</label>
-                            <div class="form-check">
-                                <input type="checkbox" class="form-check-input" id="checkBuilding" onchange="toggleBuildingSelect()">
-                                <label class="form-check-label" for="checkBuilding">
-                                    Transfer to Different Building
-                                </label>
+                        <div class="mb-4">
+                            <label class="form-label fw-bold small ms-2 text-muted">Select Destination(s):</label>
+                            
+                            <div class="card border-0 shadow-sm mb-3 bg-white" style="border-radius: 15px;">
+                                <div class="card-body py-3">
+                                    <div class="form-check form-switch">
+                                        <input type="checkbox" class="form-check-input" id="checkBuilding" onchange="toggleBuildingSelect()">
+                                        <label class="form-check-label fw-bold text-dark" for="checkBuilding">Different Building</label>
+                                    </div>
+                                    <select class="form-select rounded-pill mt-3 border-0 bg-light shadow-sm" id="buildingSelect" style="display:none;"></select>
+                                </div>
                             </div>
-                            <select class="form-select mt-2" id="buildingSelect" style="display:none;">
-                                <option value="">Select Building</option>
-                            </select>
 
-                            <div class="form-check mt-3">
-                                <input type="checkbox" class="form-check-input" id="checkDept" onchange="toggleDeptSelect()">
-                                <label class="form-check-label" for="checkDept">
-                                    Transfer to Different Department
-                                </label>
+                            <div class="card border-0 shadow-sm bg-white" style="border-radius: 15px;">
+                                <div class="card-body py-3">
+                                    <div class="form-check form-switch">
+                                        <input type="checkbox" class="form-check-input" id="checkDept" onchange="toggleDeptSelect()">
+                                        <label class="form-check-label fw-bold text-dark" for="checkDept">Different Department</label>
+                                    </div>
+                                    <select class="form-select rounded-pill mt-3 border-0 bg-light shadow-sm" id="deptSelect" style="display:none;"></select>
+                                </div>
                             </div>
-                            <select class="form-select mt-2" id="deptSelect" style="display:none;">
-                                <option value="">Select Department</option>
-                            </select>
                         </div>
 
-                        <div class="mb-3" id="qtyTransferWrapper">
-                            <label class="form-label fw-bold">Quantity to Move:</label>
-                            <input type="number" id="transferQty" class="form-control" value="1" min="1">
-                            <div class="form-text text-muted small">Max available: <span id="maxTransferQty">0</span></div>
+                        <div class="mb-2 px-2" id="qtyTransferWrapper">
+                            <label class="form-label fw-bold small text-muted">Quantity to Move:</label>
+                            <input type="number" id="transferQty" class="form-control rounded-pill shadow-sm border-0 px-3" value="1" min="1">
+                            <div class="form-text text-muted small ms-2 mt-2">Max available: <span id="maxTransferQty" class="fw-bold text-primary">0</span></div>
                         </div>
                     </form>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="confirmTransferBtn" onclick="submitTransfer()">Confirm Transfer</button>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-light rounded-pill fw-bold text-secondary shadow-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-modern btn-modern-success" id="confirmTransferBtn" onclick="submitTransfer()">Execute Transfer</button>
                 </div>
             </div>
         </div>
@@ -344,20 +337,20 @@
 
     <div class="modal fade" id="aiTechExchangeModal" tabindex="-1" aria-hidden="true" style="z-index: 1090;">
         <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="background: linear-gradient(145deg, #ffffff, #f8f9fa); border-top: 5px solid #8a2be2 !important; border-radius: 12px;">
+            <div class="modal-content ai-modal-content shadow-lg">
                 <div class="modal-body p-5 text-center">
-                    <div class="mb-3 shadow-sm rounded-circle d-inline-block p-3" style="background: #f3e8ff;">
-                        <span class="display-3">🤖</span>
+                    <div class="mb-3 shadow-sm rounded-circle d-inline-block p-3 ai-icon-wrapper">
+                        <span class="display-3 ai-robot-icon">🤖</span>
                     </div>
-                    <h4 class="fw-bold mb-3" style="color: #8a2be2; letter-spacing: 1px;">OPSMIND AI INSIGHT</h4>
+                    <h4 class="fw-bold mb-3 ai-modal-title">OPSMIND AI INSIGHT</h4>
                     
-                    <p class="lead text-secondary mb-4" id="aiModalMessage" style="font-size: 1.1rem; line-height: 1.6;"></p>
+                    <p class="lead text-secondary mb-4 ai-modal-msg" id="aiModalMessage"></p>
                     
                     <div class="d-flex justify-content-center gap-3 mt-4">
-                        <button type="button" class="btn btn-light border px-4 py-2" id="aiBtnIgnore" style="font-weight: 600;">
+                        <button type="button" class="btn btn-light btn-modern border px-4 py-2 ai-btn-ignore shadow-sm" id="aiBtnIgnore">
                             Ignore & Buy New
                         </button>
-                        <button type="button" class="btn text-white px-4 py-2 shadow" id="aiBtnAccept" style="background: linear-gradient(45deg, #8a2be2, #6a5acd); font-weight: 600; border: none;">
+                        <button type="button" class="btn text-white btn-modern px-4 py-2 shadow ai-btn-accept" id="aiBtnAccept">
                             <i class="bi bi-magic me-2"></i>Use Existing Stock
                         </button>
                     </div>
@@ -368,21 +361,21 @@
 
     <div class="modal fade" id="historyModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header bg-light">
-                    <h5 class="modal-title fw-bold">Audit Trail</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <div class="modal-content tech-card">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold tech-gradient-text">Audit Trail</h5>
+                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body" id="historyContent" style="max-height: 400px; overflow-y: auto;"></div>
+                <div class="modal-body history-scrollable px-4 pb-4" id="historyContent"></div>
             </div>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     
     <script type="module" src="/assets/js/app.js"></script>
     <script type="module">
@@ -393,6 +386,6 @@
         }
     </script>
     
-    <script type="module" src="/assets/js/pages/inventory.js?v=3"></script>
+    <script type="module" src="/assets/js/pages/inventory.js?v=4"></script>
 </body>
 </html>
