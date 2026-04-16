@@ -1,6 +1,6 @@
 import { logger } from "../config/logger";
 
-const SLA_SERVICE_URL = process.env.SLA_SERVICE_URL || "http://opsmind-ticket-service:3000";
+const SLA_SERVICE_URL = process.env.SLA_SERVICE_URL || "http://opsmind-sla-service:3004";
 
 /**
  * SLA status update payload
