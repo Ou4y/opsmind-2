@@ -1,4 +1,6 @@
 import { NextFunction, Request, Response } from "express";
+import { checkDatabaseConnection } from "../../lib/prisma";
+import { checkRabbitMQConnection } from "../../lib/rabbitmq";
 import { slaRepository } from "./sla.repository";
 import { slaService } from "./sla.service";
 
@@ -17,10 +19,30 @@ export const slaController = {
     });
   },
 
+  async ready(_req: Request, res: Response) {
+    const [database, rabbitmq] = await Promise.all([
+      checkDatabaseConnection(),
+      checkRabbitMQConnection(),
+    ]);
+
+    const ready = database && rabbitmq;
+    res.status(ready ? 200 : 503).json({
+      success: ready,
+      service: "opsmind-sla-service",
+      status: ready ? "ready" : "degraded",
+      checks: {
+        database: database ? "ok" : "fail",
+        rabbitmq: rabbitmq ? "ok" : "fail",
+      },
+      timestamp: new Date().toISOString(),
+    });
+  },
+
   async start(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await slaService.start({
         ticketId: req.body.ticketId,
+        title: req.body.title,
         priority: slaRepository.parsePriority(req.body.priority),
         createdAt: req.body.createdAt,
         assignedTo: req.body.assignedTo,
@@ -30,6 +52,8 @@ export const slaController = {
         room: req.body.room,
         supportGroupId: req.body.supportGroupId,
         requesterId: req.body.requesterId,
+        technician: req.body.technician,
+        supervisor: req.body.supervisor,
       });
 
       res.status(201).json({ success: true, data: result });
@@ -41,6 +65,27 @@ export const slaController = {
   async getByTicketId(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await slaService.getByTicketId(getSingleParam(req.params.ticketId, "ticketId"));
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async listTickets(req: Request, res: Response, next: NextFunction) {
+    try {
+      const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+      const offsetRaw = typeof req.query.offset === "string" ? parseInt(req.query.offset, 10) : undefined;
+
+      const result = await slaService.listTickets({
+        q: typeof req.query.q === "string" ? req.query.q : undefined,
+        status: typeof req.query.status === "string" ? req.query.status : undefined,
+        priority: typeof req.query.priority === "string" ? req.query.priority : undefined,
+        ticketStatus: typeof req.query.ticketStatus === "string" ? req.query.ticketStatus : undefined,
+        assignedTo: typeof req.query.assignedTo === "string" ? req.query.assignedTo : undefined,
+        limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+        offset: Number.isFinite(offsetRaw) ? offsetRaw : undefined,
+      });
+
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -73,6 +118,7 @@ export const slaController = {
       const result = await slaService.updateStatus(getSingleParam(req.params.ticketId, "ticketId"), {
         ticketStatus: req.body.ticketStatus,
         assignedTo: req.body.assignedTo,
+        title: req.body.title,
         resolvedAt: req.body.resolvedAt,
         closedAt: req.body.closedAt,
         firstResponseAt: req.body.firstResponseAt,
@@ -80,6 +126,8 @@ export const slaController = {
         floor: req.body.floor,
         room: req.body.room,
         supportGroupId: req.body.supportGroupId,
+        technician: req.body.technician,
+        supervisor: req.body.supervisor,
       });
 
       res.status(200).json({ success: true, data: result });

@@ -22,6 +22,7 @@ export const swaggerSpec = swaggerJsdoc({
           required: ["ticketId", "priority"],
           properties: {
             ticketId: { type: "string", example: "T1" },
+            title: { type: "string", nullable: true, example: "Printer offline on floor 2" },
             priority: { type: "string", enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"], example: "HIGH" },
             createdAt: { type: "string", format: "date-time", example: "2026-04-11T10:00:00.000Z" },
             assignedTo: { type: "string", nullable: true, example: "tech1" },
@@ -31,14 +32,32 @@ export const swaggerSpec = swaggerJsdoc({
             room: { type: "string", nullable: true, example: "204" },
             supportGroupId: { type: "string", nullable: true, example: "grp-1" },
             requesterId: { type: "string", nullable: true, example: "user-1" },
+            technician: {
+              type: "object",
+              nullable: true,
+              properties: {
+                id: { type: "string", example: "42" },
+                name: { type: "string", example: "Ali Hassan" },
+                email: { type: "string", format: "email", example: "ali@example.com" },
+              },
+            },
+            supervisor: {
+              type: "object",
+              nullable: true,
+              properties: {
+                id: { type: "string", example: "7" },
+                name: { type: "string", example: "Mona Adel" },
+                email: { type: "string", format: "email", example: "mona@example.com" },
+              },
+            },
           },
         },
         UpdateStatusRequest: {
           type: "object",
-          required: ["ticketStatus"],
           properties: {
             ticketStatus: { type: "string", example: "IN_PROGRESS" },
             assignedTo: { type: "string", nullable: true, example: "tech1" },
+            title: { type: "string", nullable: true, example: "Printer offline on floor 2" },
             firstResponseAt: { type: "string", format: "date-time", example: "2026-04-11T10:20:00.000Z" },
             resolvedAt: { type: "string", format: "date-time", example: "2026-04-11T11:30:00.000Z" },
             closedAt: { type: "string", format: "date-time", example: "2026-04-11T11:45:00.000Z" },
@@ -46,6 +65,24 @@ export const swaggerSpec = swaggerJsdoc({
             floor: { type: "integer", nullable: true, example: 2 },
             room: { type: "string", nullable: true, example: "204" },
             supportGroupId: { type: "string", nullable: true, example: "grp-1" },
+            technician: {
+              type: "object",
+              nullable: true,
+              properties: {
+                id: { type: "string", example: "42" },
+                name: { type: "string", example: "Ali Hassan" },
+                email: { type: "string", format: "email", example: "ali@example.com" },
+              },
+            },
+            supervisor: {
+              type: "object",
+              nullable: true,
+              properties: {
+                id: { type: "string", example: "7" },
+                name: { type: "string", example: "Mona Adel" },
+                email: { type: "string", format: "email", example: "mona@example.com" },
+              },
+            },
           },
         },
         PauseRequest: {
@@ -72,6 +109,16 @@ export const swaggerSpec = swaggerJsdoc({
     },
     paths: {
       "/health": { get: { tags: ["Health"], summary: "Health check", responses: { "200": { description: "Service healthy" } } } },
+      "/health/ready": {
+        get: {
+          tags: ["Health"],
+          summary: "Readiness check",
+          responses: {
+            "200": { description: "Dependencies ready" },
+            "503": { description: "One or more dependencies unavailable" },
+          },
+        },
+      },
       "/sla/start": {
         post: {
           tags: ["SLA"],
@@ -94,6 +141,22 @@ export const swaggerSpec = swaggerJsdoc({
           summary: "Get SLA by ticket ID",
           parameters: [{ in: "path", name: "ticketId", required: true, schema: { type: "string" }, example: "T1" }],
           responses: { "200": { description: "SLA returned" }, "404": { description: "Not found" } },
+        },
+      },
+      "/sla/tickets": {
+        get: {
+          tags: ["SLA"],
+          summary: "List SLA-linked tickets",
+          parameters: [
+            { in: "query", name: "q", required: false, schema: { type: "string" }, example: "printer" },
+            { in: "query", name: "status", required: false, schema: { type: "string", enum: ["ACTIVE", "PAUSED", "BREACHED", "RESOLVED", "CLOSED"] } },
+            { in: "query", name: "priority", required: false, schema: { type: "string", enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"] } },
+            { in: "query", name: "ticketStatus", required: false, schema: { type: "string" }, example: "IN_PROGRESS" },
+            { in: "query", name: "assignedTo", required: false, schema: { type: "string" }, example: "42" },
+            { in: "query", name: "limit", required: false, schema: { type: "integer", default: 50 } },
+            { in: "query", name: "offset", required: false, schema: { type: "integer", default: 0 } },
+          ],
+          responses: { "200": { description: "SLA ticket list returned" } },
         },
       },
       "/sla/tickets/{ticketId}/status": {
