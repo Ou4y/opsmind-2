@@ -50,6 +50,17 @@ export function getChannel(): Channel {
   return channel;
 }
 
+export async function checkRabbitMQConnection(): Promise<boolean> {
+  if (!connection || !channel) return false;
+
+  try {
+    await channel.checkExchange(config.rabbitmq.exchange);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function closeRabbitMQ(): Promise<void> {
   if (channel) {
     await channel.close().catch(() => undefined);

@@ -67,6 +67,12 @@ model TicketSLA {
   room                      String?
   supportGroupId            String?
   requesterId               String?
+  ticketTitle               String?
+  technicianName            String?
+  technicianEmail           String?
+  supervisorId              String?
+  supervisorName            String?
+  supervisorEmail           String?
   createdAt                 DateTime
   responseDueAt             DateTime
   resolutionDueAt           DateTime
