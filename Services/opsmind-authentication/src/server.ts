@@ -18,6 +18,7 @@ import { errorHandler, notFoundHandler } from '@middlewares/error.middleware';
 
 // Import routes
 import authRoutes from '@modules/auth/auth.routes';
+import { authController } from '@modules/auth/auth.controller';
 import adminRoutes from '@modules/admin/admin.routes';
 
 class Server {
@@ -110,6 +111,9 @@ class Server {
         timestamp: new Date().toISOString(),
       });
     });
+
+    // Internal service-to-service route used by ticket-service for SLA enrichment.
+    this.app.get('/users/:id', authController.getUserById.bind(authController));
 
     // API routes
     this.app.use('/auth', authRoutes);
