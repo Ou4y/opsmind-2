@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpsMind SLA Tracking - View tickets connected to SLA">
+    <title>SLA Tracking - OpsMind</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/css/main.css" rel="stylesheet">
+    <script src="/assets/js/config.js"></script>
+</head>
+<body class="app-body">
+    <nav class="navbar-main" id="navbar-container"></nav>
+
+    <div class="app-wrapper">
+        <div id="sidebar-container"></div>
+
+        <main class="main-content">
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">
+                        <i class="bi bi-speedometer2 me-2"></i>
+                        SLA Tracking
+                    </h1>
+                    <p class="page-description mb-1" id="slaTicketCount">Loading SLA tickets...</p>
+                    <p class="page-subtitle mb-0" id="slaConnectionStatus">Checking connected ticket data</p>
+                </div>
+                <div class="page-header-actions">
+                    <button class="btn btn-outline-primary" id="refreshSlaBtn">
+                        <i class="bi bi-arrow-clockwise me-2"></i>Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="page-content">
+                <div class="card filter-card mb-4">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                    <input type="text" class="form-control" id="slaSearchInput" placeholder="Search by ticket ID or title">
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <select class="form-select" id="slaStatusFilter">
+                                    <option value="">All SLA Status</option>
+                                    <option value="ACTIVE">Active</option>
+                                    <option value="PAUSED">Paused</option>
+                                    <option value="BREACHED">Breached</option>
+                                    <option value="RESOLVED">Resolved</option>
+                                    <option value="CLOSED">Closed</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <select class="form-select" id="slaPriorityFilter">
+                                    <option value="">All Priority</option>
+                                    <option value="LOW">Low</option>
+                                    <option value="MEDIUM">Medium</option>
+                                    <option value="HIGH">High</option>
+                                    <option value="CRITICAL">Critical</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-outline-secondary w-100" id="clearSlaFilters">
+                                    <i class="bi bi-x-circle me-1"></i>Clear
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header bg-white border-bottom">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <h5 class="card-title mb-0">Tickets Connected To SLA</h5>
+                            <span class="badge bg-light text-dark">Live SLA records</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="slaLoading" class="text-center py-5 d-none">
+                            <div class="spinner-border text-primary mb-3" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="text-muted mb-0">Loading SLA tickets...</p>
+                        </div>
+
+                        <div id="slaEmpty" class="empty-state d-none">
+                            <i class="bi bi-inbox"></i>
+                            <h3>No SLA Tickets Yet</h3>
+                            <p>No tickets are currently connected to the SLA service, or the current filters returned no results.</p>
+                        </div>
+
+                        <div id="slaError" class="error-state d-none">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <h3>Failed to Load SLA Tickets</h3>
+                            <p id="slaErrorMessage">An error occurred while loading SLA data.</p>
+                            <button class="btn btn-primary" id="retrySlaLoad" onclick="document.getElementById('refreshSlaBtn').click()">
+                                <i class="bi bi-arrow-clockwise me-2"></i>Retry
+                            </button>
+                        </div>
+
+                        <div class="table-responsive d-none" id="slaTableContainer">
+                            <table class="table table-hover align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Ticket</th>
+                                        <th>Ticket Status</th>
+                                        <th>SLA Status</th>
+                                        <th>Priority</th>
+                                        <th>Assigned To</th>
+                                        <th>Response Due</th>
+                                        <th>Resolution Due</th>
+                                        <th>Remaining</th>
+                                        <th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="slaTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal fade" id="slaDetailsModal" tabindex="-1" aria-labelledby="slaDetailsTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="slaDetailsTitle">SLA Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="slaDetailsBody"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module" src="/assets/js/pages/sla.js"></script>
+</body>
+</html>
