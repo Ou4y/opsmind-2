@@ -34,7 +34,8 @@ const Router = {
     // Pages for TECHNICIAN role (includes claim/routing features)
     technicianPages: [
         'junior-dashboard.html',
-        'tickets.html'  // Technicians can see and claim tickets
+        'tickets.html',  // Technicians can see and claim tickets
+        'report.html'  // Technicians can view reports
     ],
     
     // Pages for SENIOR role (building managers)
