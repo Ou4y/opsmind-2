@@ -47,6 +47,44 @@ export const slaRepository = {
     });
   },
 
+  async listTicketSlas(filters: {
+    q?: string;
+    status?: TicketSLAStatus;
+    priority?: TicketPriority;
+    ticketStatus?: string;
+    assignedTo?: string;
+    limit: number;
+    offset: number;
+  }) {
+    const where: Prisma.TicketSLAWhereInput = {
+      ...(filters.status ? { status: filters.status } : {}),
+      ...(filters.priority ? { priority: filters.priority } : {}),
+      ...(filters.ticketStatus ? { ticketStatus: filters.ticketStatus } : {}),
+      ...(filters.assignedTo ? { assignedTo: filters.assignedTo } : {}),
+      ...(filters.q
+        ? {
+            OR: [
+              { ticketId: { contains: filters.q } },
+              { ticketTitle: { contains: filters.q } },
+            ],
+          }
+        : {}),
+    };
+
+    const [items, total] = await prisma.$transaction([
+      prisma.ticketSLA.findMany({
+        where,
+        include: { policy: true },
+        orderBy: [{ updatedRowAt: "desc" }, { resolutionDueAt: "asc" }],
+        skip: filters.offset,
+        take: filters.limit,
+      }),
+      prisma.ticketSLA.count({ where }),
+    ]);
+
+    return { items, total };
+  },
+
   createTicketSla(data: Prisma.TicketSLACreateInput) {
     return prisma.ticketSLA.create({
       data,

@@ -12,11 +12,13 @@ import {
 export const slaRoutes = Router();
 
 slaRoutes.get("/health", slaController.health);
+slaRoutes.get("/health/ready", slaController.ready);
 slaRoutes.get("/", slaController.health);
 
 slaRoutes.post("/sla/start", validate(startSlaSchema), slaController.start);
 slaRoutes.post("/sla/calculate", validate(startSlaSchema), slaController.start);
 
+slaRoutes.get("/sla/tickets", slaController.listTickets);
 slaRoutes.get("/sla/tickets/:ticketId", validate(ticketIdParamsSchema), slaController.getByTicketId);
 
 slaRoutes.get("/sla/policies", slaController.getPolicies);

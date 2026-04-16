@@ -5,8 +5,15 @@ import { AppError } from "../../errors/AppError";
 import { slaRepository } from "./sla.repository";
 import { slaPublisher } from "./sla.publisher";
 
+type ContactPayload = {
+  id: string | number;
+  name?: string | null;
+  email?: string | null;
+};
+
 type StartPayload = {
   ticketId: string;
+  title?: string | null;
   priority: TicketPriority;
   createdAt?: string;
   assignedTo?: string | null;
@@ -16,11 +23,14 @@ type StartPayload = {
   room?: string | null;
   supportGroupId?: string | number | null;
   requesterId?: string | number | null;
+  technician?: ContactPayload | null;
+  supervisor?: ContactPayload | null;
 };
 
 type StatusPayload = {
-  ticketStatus: string;
+  ticketStatus?: string;
   assignedTo?: string | null;
+  title?: string | null;
   resolvedAt?: string;
   closedAt?: string;
   firstResponseAt?: string;
@@ -28,6 +38,8 @@ type StatusPayload = {
   floor?: number | null;
   room?: string | null;
   supportGroupId?: string | number | null;
+  technician?: ContactPayload | null;
+  supervisor?: ContactPayload | null;
 };
 
 function addMinutes(date: Date, minutes: number): Date {
@@ -48,6 +60,71 @@ function minutesRemaining(dueAt: Date, paused: boolean): number {
 
 function normalizeStatus(status: string): string {
   return status.trim().toUpperCase();
+}
+
+function normalizeContact(contact?: ContactPayload | null) {
+  if (!contact) return null;
+  return {
+    id: String(contact.id),
+    name: contact.name?.trim() || null,
+    email: contact.email?.trim().toLowerCase() || null,
+  };
+}
+
+function fallbackName(email: string | null | undefined, id: string | null | undefined, label: string): string {
+  if (email) return email.split("@")[0];
+  if (id) return id;
+  return label;
+}
+
+function toNotificationEnvelope(record: {
+  ticketId: string;
+  ticketTitle: string | null;
+  ticketStatus: string;
+  priority: TicketPriority;
+  assignedTo: string | null;
+  technicianName: string | null;
+  technicianEmail: string | null;
+  supervisorId: string | null;
+  supervisorName: string | null;
+  supervisorEmail: string | null;
+  building: string | null;
+  floor: number | null;
+  room: string | null;
+  supportGroupId: string | null;
+  createdAt?: Date;
+  responseDueAt?: Date;
+  resolutionDueAt?: Date;
+}) {
+  const technicianId = record.assignedTo ?? "unknown-technician";
+  const supervisorId = record.supervisorId ?? "unknown-supervisor";
+  const ticketTitle = record.ticketTitle ?? `Ticket ${record.ticketId}`;
+
+  return {
+    ticket: {
+      id: record.ticketId,
+      title: ticketTitle,
+      status: record.ticketStatus,
+      priority: record.priority,
+      building: record.building,
+      floor: record.floor,
+      room: record.room,
+      supportGroupId: record.supportGroupId,
+      createdAt: record.createdAt?.toISOString(),
+      responseDueAt: record.responseDueAt?.toISOString(),
+      resolutionDueAt: record.resolutionDueAt?.toISOString(),
+    },
+    technician: {
+      id: technicianId,
+      name: record.technicianName ?? fallbackName(record.technicianEmail, technicianId, "Technician"),
+      email: record.technicianEmail,
+    },
+    supervisor: {
+      id: supervisorId,
+      name: record.supervisorName ?? fallbackName(record.supervisorEmail, supervisorId, "Supervisor"),
+      email: record.supervisorEmail,
+    },
+  };
 }
 
 function workflowPayload(record: {
@@ -100,11 +177,19 @@ export const slaService = {
     const createdAt = payload.createdAt ? new Date(payload.createdAt) : new Date();
     const responseDueAt = addMinutes(createdAt, policy.responseMinutes);
     const resolutionDueAt = addMinutes(createdAt, policy.resolutionMinutes);
+    const technician = normalizeContact(payload.technician);
+    const supervisor = normalizeContact(payload.supervisor);
 
     const entity = await slaRepository.createTicketSla({
       ticketId: payload.ticketId,
       priority: payload.priority,
+      ticketTitle: payload.title?.trim() || null,
       assignedTo: payload.assignedTo ?? null,
+      technicianName: technician?.name ?? null,
+      technicianEmail: technician?.email ?? null,
+      supervisorId: supervisor?.id ?? null,
+      supervisorName: supervisor?.name ?? null,
+      supervisorEmail: supervisor?.email ?? null,
       ticketStatus: normalizeStatus(payload.ticketStatus ?? "OPEN"),
       building: payload.building ?? null,
       floor: payload.floor ?? null,
@@ -119,7 +204,9 @@ export const slaService = {
     });
 
     const eventPayload = {
+      ...toNotificationEnvelope(entity),
       ticketId: entity.ticketId,
+      title: entity.ticketTitle,
       priority: entity.priority,
       ticketStatus: entity.ticketStatus,
       assignedTo: entity.assignedTo,
@@ -153,6 +240,26 @@ export const slaService = {
     return entity;
   },
 
+  listTickets(filters: {
+    q?: string;
+    status?: string;
+    priority?: string;
+    ticketStatus?: string;
+    assignedTo?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    return slaRepository.listTicketSlas({
+      q: filters.q?.trim() || undefined,
+      status: filters.status ? (filters.status.toUpperCase() as TicketSLAStatus) : undefined,
+      priority: filters.priority ? slaRepository.parsePriority(filters.priority) : undefined,
+      ticketStatus: filters.ticketStatus ? normalizeStatus(filters.ticketStatus) : undefined,
+      assignedTo: filters.assignedTo?.trim() || undefined,
+      limit: filters.limit ?? 50,
+      offset: filters.offset ?? 0,
+    });
+  },
+
   getPolicies() {
     return slaRepository.getPolicies();
   },
@@ -175,10 +282,17 @@ export const slaService = {
     const entity = await slaRepository.findByTicketId(ticketId);
     if (!entity) throw new AppError(`SLA not found for ticket ${ticketId}`, 404);
 
-    const normalized = normalizeStatus(body.ticketStatus);
+    const technician = normalizeContact(body.technician);
+    const supervisor = normalizeContact(body.supervisor);
+    const normalized = body.ticketStatus ? normalizeStatus(body.ticketStatus) : entity.ticketStatus;
     const updates: any = {
-      ticketStatus: normalized,
       assignedTo: body.assignedTo ?? entity.assignedTo,
+      ticketTitle: body.title !== undefined ? body.title?.trim() || null : entity.ticketTitle,
+      technicianName: technician ? technician.name : entity.technicianName,
+      technicianEmail: technician ? technician.email : entity.technicianEmail,
+      supervisorId: supervisor ? supervisor.id : entity.supervisorId,
+      supervisorName: supervisor ? supervisor.name : entity.supervisorName,
+      supervisorEmail: supervisor ? supervisor.email : entity.supervisorEmail,
       building: body.building ?? entity.building,
       floor: body.floor ?? entity.floor,
       room: body.room ?? entity.room,
@@ -189,21 +303,31 @@ export const slaService = {
       lastUpdatedAt: new Date(),
     };
 
+    if (body.ticketStatus) {
+      updates.ticketStatus = normalized;
+    }
+
     if (body.firstResponseAt && !entity.firstResponseAt) {
       updates.firstResponseAt = new Date(body.firstResponseAt);
     }
 
     if (body.resolvedAt || normalized === "RESOLVED") {
       updates.resolvedAt = body.resolvedAt ? new Date(body.resolvedAt) : new Date();
+      updates.ticketStatus = "RESOLVED";
       updates.status = TicketSLAStatus.RESOLVED;
     }
 
     if (body.closedAt || normalized === "CLOSED") {
       updates.closedAt = body.closedAt ? new Date(body.closedAt) : new Date();
+      updates.ticketStatus = "CLOSED";
       updates.status = TicketSLAStatus.CLOSED;
     }
 
-    if (!["RESOLVED", "CLOSED"].includes(normalized) && entity.status !== TicketSLAStatus.PAUSED) {
+    if (
+      body.ticketStatus &&
+      !["RESOLVED", "CLOSED"].includes(normalized) &&
+      entity.status !== TicketSLAStatus.PAUSED
+    ) {
       updates.status = entity.responseBreachSent || entity.resolutionBreachSent
         ? TicketSLAStatus.BREACHED
         : TicketSLAStatus.ACTIVE;
@@ -212,7 +336,9 @@ export const slaService = {
     const updated = await slaRepository.updateTicketSla(ticketId, updates);
 
     const payload = {
+      ...toNotificationEnvelope(updated),
       ticketId: updated.ticketId,
+      title: updated.ticketTitle,
       ticketStatus: updated.ticketStatus,
       assignedTo: updated.assignedTo,
       building: updated.building,
@@ -226,10 +352,12 @@ export const slaService = {
       updatedAt: updated.lastUpdatedAt.toISOString(),
     };
 
-    let message = `Ticket SLA status updated to ${normalized}`;
-    if (normalized === "RESOLVED") {
+    let message = body.ticketStatus
+      ? `Ticket SLA status updated to ${normalized}`
+      : "Ticket SLA metadata synchronized";
+    if (updated.ticketStatus === "RESOLVED") {
       await slaRepository.createEventLog(updated.id, updated.ticketId, SlaActionType.RESOLVED, message, payload);
-    } else if (normalized === "CLOSED") {
+    } else if (updated.ticketStatus === "CLOSED") {
       await slaRepository.createEventLog(updated.id, updated.ticketId, SlaActionType.CLOSED, message, payload);
     } else {
       await createLogAndPublishStatusUpdate(updated, message, payload);
@@ -251,11 +379,13 @@ export const slaService = {
       lastUpdatedAt: new Date(),
     });
 
-    const payload = {
-      ticketId: updated.ticketId,
-      reason,
-      pausedAt: updated.pausedAt?.toISOString(),
-      assignedTo: updated.assignedTo,
+      const payload = {
+        ...toNotificationEnvelope(updated),
+        ticketId: updated.ticketId,
+        title: updated.ticketTitle,
+        reason,
+        pausedAt: updated.pausedAt?.toISOString(),
+        assignedTo: updated.assignedTo,
       building: updated.building,
       floor: updated.floor,
       room: updated.room,
@@ -284,11 +414,13 @@ export const slaService = {
       lastUpdatedAt: new Date(),
     });
 
-    const payload = {
-      ticketId: updated.ticketId,
-      pausedMinutes,
-      resumedAt: updated.lastUpdatedAt.toISOString(),
-      assignedTo: updated.assignedTo,
+      const payload = {
+        ...toNotificationEnvelope(updated),
+        ticketId: updated.ticketId,
+        title: updated.ticketTitle,
+        pausedMinutes,
+        resumedAt: updated.lastUpdatedAt.toISOString(),
+        assignedTo: updated.assignedTo,
       building: updated.building,
       floor: updated.floor,
       room: updated.room,
@@ -337,7 +469,9 @@ export const slaService = {
       if (!record.firstResponseAt) {
         if (!record.responseWarning1Sent && responsePercent >= record.policy.warning1Percent) {
           const payload = {
+            ...toNotificationEnvelope(record),
             ticketId: record.ticketId,
+            title: record.ticketTitle,
             warningStage: 1,
             type: "RESPONSE",
             remainingMinutes: responseRemaining,
@@ -362,7 +496,9 @@ export const slaService = {
 
         if (!record.responseWarning2Sent && responsePercent >= record.policy.warning2Percent) {
           const payload = {
+            ...toNotificationEnvelope(record),
             ticketId: record.ticketId,
+            title: record.ticketTitle,
             warningStage: 2,
             type: "RESPONSE",
             remainingMinutes: responseRemaining,
@@ -393,7 +529,9 @@ export const slaService = {
             lastUpdatedAt: breachedAt,
           });
           const payload = {
+            ...toNotificationEnvelope(updated),
             ticketId: updated.ticketId,
+            title: updated.ticketTitle,
             breachedAt: breachedAt.toISOString(),
             type: "RESPONSE",
             assignedTo: updated.assignedTo,
@@ -432,7 +570,9 @@ export const slaService = {
       if (!["RESOLVED", "CLOSED"].includes(record.ticketStatus)) {
         if (!record.resolutionWarning1Sent && resolutionPercent >= record.policy.warning1Percent) {
           const payload = {
+            ...toNotificationEnvelope(record),
             ticketId: record.ticketId,
+            title: record.ticketTitle,
             warningStage: 1,
             type: "RESOLUTION",
             remainingMinutes: resolutionRemaining,
@@ -457,7 +597,9 @@ export const slaService = {
 
         if (!record.resolutionWarning2Sent && resolutionPercent >= record.policy.warning2Percent) {
           const payload = {
+            ...toNotificationEnvelope(record),
             ticketId: record.ticketId,
+            title: record.ticketTitle,
             warningStage: 2,
             type: "RESOLUTION",
             remainingMinutes: resolutionRemaining,
@@ -488,7 +630,9 @@ export const slaService = {
             lastUpdatedAt: breachedAt,
           });
           const payload = {
+            ...toNotificationEnvelope(updated),
             ticketId: updated.ticketId,
+            title: updated.ticketTitle,
             breachedAt: breachedAt.toISOString(),
             type: "RESOLUTION",
             assignedTo: updated.assignedTo,
