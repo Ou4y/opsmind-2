@@ -7,10 +7,110 @@ import { validateAllowedEmailDomain, validatePassword, sanitizeUser } from '@uti
 import { SignupDTO, LoginDTO, VerifyOTPDTO, AuthResponse, RoleName } from '@/types';
 import { logger } from '@config/logger';
 
+type WorkflowFallbackUser = {
+  id: string;
+  name: string;
+  email: string;
+  role?: string;
+};
+
+/**
+ * Temporary compatibility layer for workflow-service numeric technician IDs.
+ * This keeps SLA enrichment working until all services use auth UUIDs consistently.
+ */
+function getWorkflowFallbackUser(userId: string): WorkflowFallbackUser | null {
+  const numericId = Number(userId);
+
+  if (!Number.isInteger(numericId)) {
+    return null;
+  }
+
+  if (numericId === 100) {
+    return {
+      id: userId,
+      name: 'Supervisor Admin',
+      email: 'supervisor.admin@opsmind.local',
+      role: 'SUPERVISOR',
+    };
+  }
+
+  const seniors = [
+    { id: 1, name: 'Senior M', email: 'senior.m@opsmind.local' },
+    { id: 2, name: 'Senior N', email: 'senior.n@opsmind.local' },
+    { id: 3, name: 'Senior S', email: 'senior.s@opsmind.local' },
+    { id: 4, name: 'Senior R', email: 'senior.r@opsmind.local' },
+    { id: 5, name: 'Senior Pharmacy', email: 'senior.pharmacy@opsmind.local' },
+  ];
+
+  const senior = seniors.find((entry) => entry.id === numericId);
+  if (senior) {
+    return {
+      id: userId,
+      name: senior.name,
+      email: senior.email,
+      role: 'TECHNICIAN',
+    };
+  }
+
+  const juniorRanges = [
+    { start: 6, end: 13, building: 'M', floors: 4, prefix: 'm' },
+    { start: 14, end: 21, building: 'N', floors: 4, prefix: 'n' },
+    { start: 22, end: 29, building: 'S', floors: 4, prefix: 's' },
+    { start: 30, end: 39, building: 'R', floors: 5, prefix: 'r' },
+    { start: 40, end: 49, building: 'PH', floors: 5, prefix: 'ph' },
+  ];
+
+  for (const range of juniorRanges) {
+    if (numericId >= range.start && numericId <= range.end) {
+      const zeroBased = numericId - range.start;
+      const floor = Math.floor(zeroBased / 2) + 1;
+      const techNumber = (zeroBased % 2) + 1;
+      const labelBuilding = range.building === 'PH' ? 'PH' : range.building;
+
+      return {
+        id: userId,
+        name: `${labelBuilding}-F${floor} Tech ${techNumber}`,
+        email: `${range.prefix}-f${floor}-tech${techNumber}@opsmind.local`,
+        role: 'TECHNICIAN',
+      };
+    }
+  }
+
+  return null;
+}
+
 export class AuthService {
   async getAllowedDomains(): Promise<string[]> {
     const allowedDomains = await domainRepository.getActiveDomains();
     return allowedDomains.map((domain) => domain.toLowerCase());
+  }
+
+  async getUserById(userId: string): Promise<{
+    id: string;
+    name: string;
+    email: string;
+    role?: string;
+  } | null> {
+    const user = await userRepository.findByIdWithRoles(userId);
+    if (!user) {
+      const fallbackUser = getWorkflowFallbackUser(userId);
+      if (fallbackUser) {
+        logger.warn(`Using temporary workflow fallback identity for user lookup`, {
+          userId,
+          fallbackEmail: fallbackUser.email,
+        });
+        return fallbackUser;
+      }
+
+      return null;
+    }
+
+    return {
+      id: user.id,
+      name: `${user.first_name} ${user.last_name}`.trim(),
+      email: user.email,
+      role: user.roles[0]?.name,
+    };
   }
 
   async signup(data: SignupDTO): Promise<AuthResponse> {
