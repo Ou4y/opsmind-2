@@ -20,6 +20,7 @@ services:
       DB_WAIT_FOR_CONNECTIONS: "true"
       AUTH_SERVICE_URL: http://opsmind-auth-service:3002
       TICKET_SERVICE_URL: http://opsmind-ticket-service:3000
+      SLA_SERVICE_URL: http://opsmind-sla-service:3004
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
       LOG_LEVEL: info
     volumes:

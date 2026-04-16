@@ -20,10 +20,13 @@ services:
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
 
       # User Service (for technician name resolution)
-      USER_SERVICE_URL: http://opsmind-user:3002
+      USER_SERVICE_URL: http://opsmind-auth-service:3002
 
       # Workflow Service (for supervisor details in notifications)
       WORKFLOW_SERVICE_URL: http://opsmind-workflow:3003
+
+      # SLA Service
+      SLA_SERVICE_URL: http://opsmind-sla-service:3004
 
       # Frontend origins
       CORS_ORIGINS: http://localhost:5173,http://localhost:3001,http://localhost:8085
