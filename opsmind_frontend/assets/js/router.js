@@ -216,7 +216,7 @@ const Router = {
         if (!this.isPublicPage()) {
             sessionStorage.setItem('opsmind_redirect', currentUrl);
         }
-        window.location.href = 'index.html';
+        window.location.href = '/index.html';
     },
 
     /**
