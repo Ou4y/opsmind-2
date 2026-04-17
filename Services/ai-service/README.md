@@ -1,7 +1,7 @@
 # OpsMind AI Service
 
 Production-ready AI microservice for the OpsMind ITSM platform.  
-Predicts **ticket priority** (`LOW` / `MEDIUM` / `HIGH`) and **estimated resolution time** using trained Random Forest models.
+Predicts **ticket priority** (`LOW` / `MEDIUM` / `HIGH`) and **estimated resolution time** using trained Histogram Gradient Boosting models.
 
 ---
 
@@ -135,7 +135,7 @@ Returns service status and whether models are loaded.
 
 | Model    | Algorithm                | Target                                          |
 |----------|--------------------------|--------------------------------------------------|
-| Priority | RandomForestClassifier   | `priority` (LOW, MEDIUM, HIGH)                   |
-| EST      | RandomForestRegressor    | `resolution_time_hours` (closed_at − created_at) |
+| Priority | HistGradientBoostingClassifier | `priority` (LOW, MEDIUM, HIGH)             |
+| EST      | HistGradientBoostingRegressor  | `resolution_time_hours` (closed_at − created_at) |
 
 Only ticket-creation-time fields are used as features to prevent data leakage.

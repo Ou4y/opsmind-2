@@ -10,7 +10,7 @@ import { ExternalTicket, ExternalUser } from '../interfaces/types';
  */
 
 const AUTH_SERVICE_URL: string = process.env.AUTH_SERVICE_URL || 'http://opsmind-auth-service:3002';
-const TICKET_SERVICE_URL: string = process.env.TICKET_SERVICE_URL || 'http://opsmind-ticket-service:3000';
+const TICKET_SERVICE_URL: string = process.env.TICKET_SERVICE_URL || 'http://opsmind-ticket-service:3001';
 const SLA_SERVICE_URL: string = process.env.SLA_SERVICE_URL || 'http://opsmind-sla-service:3004';
 
 // ---------- Axios Instances ----------

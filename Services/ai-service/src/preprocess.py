@@ -81,28 +81,31 @@ CSV_LEAKAGE_COLUMNS: List[str] = [
 
 def extract_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """Extract ``created_hour`` and ``created_weekday`` from ``created_at``."""
-    df = df.copy()
-    df["created_at"] = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
-    df["created_hour"] = df["created_at"].dt.hour
-    df["created_weekday"] = df["created_at"].dt.weekday
+    df = df.copy(deep=True)
+    created_at = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
+    df.loc[:, "created_at"] = created_at
+    df.loc[:, "created_hour"] = created_at.dt.hour
+    df.loc[:, "created_weekday"] = created_at.dt.weekday
     return df
 
 
 def compute_resolution_time(df: pd.DataFrame) -> pd.DataFrame:
     """Compute ``resolution_time_hours`` = ``closed_at − created_at``."""
-    df = df.copy()
-    df["created_at"] = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
-    df["closed_at"] = pd.to_datetime(df["closed_at"], dayfirst=True, errors="coerce")
-    df["resolution_time_hours"] = (
-        (df["closed_at"] - df["created_at"]).dt.total_seconds() / 3600.0
+    df = df.copy(deep=True)
+    created_at = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
+    closed_at = pd.to_datetime(df["closed_at"], dayfirst=True, errors="coerce")
+    df.loc[:, "created_at"] = created_at
+    df.loc[:, "closed_at"] = closed_at
+    df.loc[:, "resolution_time_hours"] = (
+        (closed_at - created_at).dt.total_seconds() / 3600.0
     )
     return df
 
 
 def encode_priority(df: pd.DataFrame) -> pd.DataFrame:
     """Map priority labels → integers using the schema ENUM (LOW/MEDIUM/HIGH)."""
-    df = df.copy()
-    df["priority_encoded"] = df["priority"].map(PRIORITY_TO_INT)
+    df = df.copy(deep=True)
+    df.loc[:, "priority_encoded"] = df["priority"].map(PRIORITY_TO_INT)
     return df
 
 
@@ -160,14 +163,14 @@ def _normalise_csv(df: pd.DataFrame) -> pd.DataFrame:
     """Rename CSV columns and map priority values to schema ENUMs."""
     # Drop leakage / lifecycle columns from the CSV
     drop = [c for c in CSV_LEAKAGE_COLUMNS if c in df.columns]
-    df = df.drop(columns=drop)
+    df = df.drop(columns=drop).copy(deep=True)
 
     # Rename remaining columns
-    df = df.rename(columns={k: v for k, v in CSV_COLUMN_MAP.items() if k in df.columns})
+    df = df.rename(columns={k: v for k, v in CSV_COLUMN_MAP.items() if k in df.columns}).copy(deep=True)
 
     # Map priority values: Low→LOW, Medium→MEDIUM, High→HIGH, Critical→HIGH
     if "priority" in df.columns:
-        df["priority"] = df["priority"].map(_CSV_PRIORITY_MAP)
+        df.loc[:, "priority"] = df["priority"].map(_CSV_PRIORITY_MAP)
 
     return df
 
@@ -199,8 +202,8 @@ def preprocess_for_training(
     df = encode_priority(df)
 
     # Drop rows where targets are missing
-    df = df.dropna(subset=["resolution_time_hours", "priority_encoded"])
-    df = df[df["resolution_time_hours"] > 0]
+    df = df.dropna(subset=["resolution_time_hours", "priority_encoded"]).copy(deep=True)
+    df = df[df["resolution_time_hours"] > 0].copy(deep=True)
 
     # Extract hour / weekday from created_at
     df = extract_time_features(df)
