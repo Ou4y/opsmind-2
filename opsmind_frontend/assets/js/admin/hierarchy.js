@@ -8,7 +8,7 @@
  * - Create, update, delete relationships
  */
 
-import UI from '/assets/js/ui.js';
+import UI from '../ui.js';
 import {
     getTechniciansByLevel,
     getHierarchyTree,
@@ -16,8 +16,8 @@ import {
     createHierarchyRelationship,
     updateHierarchyRelationship,
     deleteHierarchyRelationship
-} from '/services/workflowService.js';
-import AuthService from '/services/authService.js';
+} from '../../services/workflowService.js';
+import AuthService from '../../services/authService.js';
 
 /**
  * Page state
@@ -37,57 +37,31 @@ const state = {
  * Initialize the hierarchy management page
  */
 export async function initHierarchyManagement() {
-    console.log('[Hierarchy] Initializing hierarchy management page...');
-    
     // Wait for app to be ready
     await waitForApp();
     
-    console.log('[Hierarchy] Getting current user...');
     // Get current user
     state.currentUser = AuthService.getCurrentUser();
     if (!state.currentUser) {
-        console.log('[Hierarchy] No user found, redirecting to login');
         window.location.href = '/index.html';
         return;
     }
 
-    console.log('[Hierarchy] Current user:', state.currentUser);
-
-    // Check if user is admin or supervisor
-    const userRole = state.currentUser.role?.toUpperCase();
-    console.log('[Hierarchy] User role:', userRole);
-    
-    if (userRole !== 'ADMIN' && userRole !== 'SUPERVISOR') {
-        console.log('[Hierarchy] Access denied for role:', userRole);
-        UI.showToast('Access denied. Admin or Supervisor privileges required.', 'error');
+    // Check if user is admin
+    if (!AuthService.isAdmin()) {
+        UI.showToast('Access denied. Admin privileges required.', 'error');
         setTimeout(() => window.location.href = '/dashboard.html', 2000);
         return;
     }
 
-    console.log('[Hierarchy] Access granted, initializing modals...');
     // Initialize modals
-    try {
-        initializeModals();
-    } catch (err) {
-        console.error('[Hierarchy] Error initializing modals:', err);
-    }
+    initializeModals();
     
-    console.log('[Hierarchy] Setting up event listeners...');
     // Set up event listeners
-    try {
-        setupEventListeners();
-    } catch (err) {
-        console.error('[Hierarchy] Error setting up event listeners:', err);
-    }
+    setupEventListeners();
     
-    console.log('[Hierarchy] Loading initial data...');
     // Load initial data
-    try {
-        await loadAllData();
-    } catch (err) {
-        console.error('[Hierarchy] Fatal error loading data:', err);
-        showError(err.message || 'Failed to load hierarchy data');
-    }
+    await loadAllData();
 }
 
 /**
@@ -95,26 +69,11 @@ export async function initHierarchyManagement() {
  */
 function waitForApp() {
     return new Promise((resolve) => {
-        // If navbar already loaded, resolve immediately
         if (document.querySelector('.navbar-main')) {
-            console.log('[Hierarchy] App already ready');
             resolve();
-            return;
+        } else {
+            document.addEventListener('app:ready', resolve, { once: true });
         }
-        
-        console.log('[Hierarchy] Waiting for app:ready event...');
-        
-        // Set up event listener
-        document.addEventListener('app:ready', () => {
-            console.log('[Hierarchy] App ready event received');
-            resolve();
-        }, { once: true });
-        
-        // Fallback timeout in case event never fires
-        setTimeout(() => {
-            console.log('[Hierarchy] Timeout waiting for app:ready, proceeding anyway');
-            resolve();
-        }, 3000);
     });
 }
 
@@ -157,67 +116,21 @@ async function loadAllData() {
     showLoading();
     
     try {
-        console.log('[Hierarchy] Loading hierarchy data...');
-        
         // Load technicians by level in parallel
         const [adminsRes, supervisorsRes, seniorsRes, juniorsRes, treeRes] = await Promise.all([
-            getTechniciansByLevel('ADMIN').catch(err => {
-                console.error('[Hierarchy] Error loading admins:', err);
-                return { success: false, data: [], message: err.message };
-            }),
-            getTechniciansByLevel('SUPERVISOR').catch(err => {
-                console.error('[Hierarchy] Error loading supervisors:', err);
-                return { success: false, data: [], message: err.message };
-            }),
-            getTechniciansByLevel('SENIOR').catch(err => {
-                console.error('[Hierarchy] Error loading seniors:', err);
-                return { success: false, data: [], message: err.message };
-            }),
-            getTechniciansByLevel('JUNIOR').catch(err => {
-                console.error('[Hierarchy] Error loading juniors:', err);
-                return { success: false, data: [], message: err.message };
-            }),
-            getHierarchyTree().catch(err => {
-                console.error('[Hierarchy] Error loading tree:', err);
-                return { success: false, data: [], message: err.message };
-            })
+            getTechniciansByLevel('ADMIN'),
+            getTechniciansByLevel('SUPERVISOR'),
+            getTechniciansByLevel('SENIOR'),
+            getTechniciansByLevel('JUNIOR'),
+            getHierarchyTree()
         ]);
-
-        console.log('[Hierarchy] API responses:', {
-            admins: adminsRes,
-            supervisors: supervisorsRes,
-            seniors: seniorsRes,
-            juniors: juniorsRes,
-            tree: treeRes
-        });
 
         // Store data
         state.admins = adminsRes.success ? (adminsRes.data || []) : [];
         state.supervisors = supervisorsRes.success ? (supervisorsRes.data || []) : [];
         state.seniors = seniorsRes.success ? (seniorsRes.data || []) : [];
         state.juniors = juniorsRes.success ? (juniorsRes.data || []) : [];
-
-        // API returns { data: { relationships: [...], technicians: [...] } } — build nested tree
-        const rawTreeData = treeRes.success ? (treeRes.data || {}) : {};
-        if (Array.isArray(rawTreeData)) {
-            state.hierarchyTree = rawTreeData;
-        } else {
-            state.hierarchyTree = buildTreeFromFlatData(
-                rawTreeData.relationships || [],
-                rawTreeData.technicians || [],
-                state.supervisors,
-                state.seniors,
-                state.juniors
-            );
-        }
-
-        console.log('[Hierarchy] Loaded data:', {
-            admins: state.admins.length,
-            supervisors: state.supervisors.length,
-            seniors: state.seniors.length,
-            juniors: state.juniors.length,
-            treeNodes: state.hierarchyTree.length
-        });
+        state.hierarchyTree = treeRes.success ? (treeRes.data || []) : [];
 
         // Extract relationships from hierarchy tree
         extractRelationships();
@@ -225,160 +138,16 @@ async function loadAllData() {
         // Hide loading, show content
         hideLoading();
 
-        // Update summary stat pills
-        updateStatPills();
-
         // Render all sections
-        console.log('[Hierarchy] Starting to render all sections...');
-        
-        try {
-            console.log('[Hierarchy] Rendering technicians by level...');
-            renderTechniciansByLevel();
-        } catch (err) {
-            console.error('[Hierarchy] Error in renderTechniciansByLevel:', err);
-        }
-        
-        try {
-            console.log('[Hierarchy] Rendering hierarchy tree...');
-            renderHierarchyTree();
-        } catch (err) {
-            console.error('[Hierarchy] Error in renderHierarchyTree:', err);
-        }
-        
-        try {
-            console.log('[Hierarchy] Rendering relationships table...');
-            renderRelationshipsTable();
-        } catch (err) {
-            console.error('[Hierarchy] Error in renderRelationshipsTable:', err);
-        }
-        
-        try {
-            console.log('[Hierarchy] Populating form options...');
-            populateFormOptions();
-        } catch (err) {
-            console.error('[Hierarchy] Error in populateFormOptions:', err);
-        }
-
-        console.log('[Hierarchy] Data loaded and rendered successfully');
+        renderTechniciansByLevel();
+        renderHierarchyTree();
+        renderRelationshipsTable();
+        populateFormOptions();
 
     } catch (error) {
-        console.error('[Hierarchy] Error loading hierarchy data:', error);
-        showError(error.message || 'Failed to load hierarchy data. Please check the console for details.');
+        console.error('Error loading hierarchy data:', error);
+        showError(error.message || 'Failed to load hierarchy data');
     }
-}
-
-/**
- * Build a nested supervisor→senior→junior tree from the flat API response.
- * The /hierarchy/tree endpoint returns { relationships: [...], technicians: [...] }
- * but the rendering code expects an array of supervisor nodes with .seniors[].juniors[].
- *
- * @param {Array} relationships - Flat relationship list from API
- * @param {Array} technicians   - Flat technician list from API
- * @param {Array} supervisors   - Already-loaded supervisors (fallback if API tech list is empty)
- * @param {Array} seniors       - Already-loaded seniors (fallback)
- * @param {Array} juniors       - Already-loaded juniors (fallback)
- * @returns {Array} Nested tree ready for renderSupervisors()
- */
-function buildTreeFromFlatData(relationships, technicians, supervisors, seniors, juniors) {
-    // Build a quick lookup: user_id → tech object
-    const techMap = {};
-
-    // Use API technicians first, fall back to already-fetched level lists
-    const allTechs = technicians.length > 0
-        ? technicians
-        : [...supervisors, ...seniors, ...juniors];
-
-    // Build a map: childUserId → real relationship record (for real DB IDs)
-    const relByChild = {};
-    relationships.forEach(r => {
-        const child = r.child_user_id || r.childUserId;
-        if (child) relByChild[child] = r;
-    });
-
-    allTechs.forEach(t => {
-        const uid = t.user_id || t.userId || t.id;
-        if (!uid) return;
-        const rel = relByChild[uid];
-        techMap[uid] = {
-            userId: uid,
-            name: t.name || t.username || `User #${uid}`,
-            email: t.email || '',
-            level: (t.level || '').toUpperCase(),
-            relationshipId: (rel && (rel.id || rel.relationship_id)) || null,
-            createdAt: (rel && (rel.createdAt || rel.created_at)) || t.createdAt || t.created_at || null,
-            seniors: [],
-            juniors: []
-        };
-    });
-
-    // Build parent→children maps from relationships
-    const seniorsBySupervisor = {};  // supervisorId → [seniorId]
-    const juniorsBySenior = {};      // seniorId    → [juniorId]
-
-    relationships.forEach(r => {
-        const child  = r.child_user_id  || r.childUserId;
-        const parent = r.parent_user_id || r.parentUserId;
-        const type   = r.relationship_type || r.relationshipType || '';
-
-        if (!child || !parent) return;
-
-        if (type === 'SENIOR_TO_SUPERVISOR' || type === 'SUPERVISOR_TO_SENIOR') {
-            if (!seniorsBySupervisor[parent]) seniorsBySupervisor[parent] = [];
-            seniorsBySupervisor[parent].push(child);
-        } else if (type === 'JUNIOR_TO_SENIOR' || type === 'SENIOR_TO_JUNIOR') {
-            if (!juniorsBySenior[parent]) juniorsBySenior[parent] = [];
-            juniorsBySenior[parent].push(child);
-        }
-    });
-
-    // Collect supervisor-level users
-    const supervisorIds = new Set([
-        ...Object.keys(seniorsBySupervisor).map(Number),
-        ...allTechs.filter(t => (t.level || '').toUpperCase() === 'SUPERVISOR')
-                   .map(t => t.user_id || t.userId || t.id)
-    ]);
-
-    const tree = [];
-
-    supervisorIds.forEach(supId => {
-        const supNode = techMap[supId]
-            ? { ...techMap[supId], seniors: [] }
-            : { userId: supId, name: `Supervisor #${supId}`, email: '', level: 'SUPERVISOR', seniors: [] };
-
-        const seniorIds = seniorsBySupervisor[supId] || [];
-        seniorIds.forEach(senId => {
-            const senNode = techMap[senId]
-                ? { ...techMap[senId], juniors: [] }
-                : { userId: senId, name: `Senior #${senId}`, email: '', level: 'SENIOR', juniors: [] };
-
-            const juniorIds = juniorsBySenior[senId] || [];
-            juniorIds.forEach(junId => {
-                const junNode = techMap[junId]
-                    || { userId: junId, name: `Junior #${junId}`, email: '', level: 'JUNIOR' };
-                senNode.juniors.push({ ...junNode });
-            });
-
-            supNode.seniors.push(senNode);
-        });
-
-        tree.push(supNode);
-    });
-
-    // If no relationships exist yet, show supervisors as empty root nodes
-    if (tree.length === 0 && supervisors.length > 0) {
-        supervisors.forEach(sup => {
-            const uid = sup.user_id || sup.userId || sup.id;
-            tree.push({
-                userId: uid,
-                name: sup.name || sup.username || `Supervisor #${uid}`,
-                email: sup.email || '',
-                level: 'SUPERVISOR',
-                seniors: []
-            });
-        });
-    }
-
-    return tree;
 }
 
 /**
@@ -447,23 +216,6 @@ function extractRelationships() {
 }
 
 /**
- * Update summary stat pills in the hero section
- */
-function updateStatPills() {
-    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-    set('statAdmins', state.admins.length);
-    set('statSupervisors', state.supervisors.length);
-    set('statSeniors', state.seniors.length);
-    set('statJuniors', state.juniors.length);
-    set('relationshipCount', state.relationships.length);
-    set('relCountBadge', state.relationships.length);
-    set('adminsCountBadge', state.admins.length);
-    set('supervisorsCountBadge', state.supervisors.length);
-    set('seniorsCountBadge', state.seniors.length);
-    set('juniorsCountBadge', state.juniors.length);
-}
-
-/**
  * Show loading state
  */
 function showLoading() {
@@ -528,25 +280,26 @@ function renderTechnicianList(level, technicians, color) {
 
     listEl.innerHTML = '';
 
-    // Map Bootstrap color names to CSS class names used in new design
-    const cssLevelMap = { danger: 'admin', primary: 'supervisor', success: 'senior', info: 'junior' };
-    const cssLevel = cssLevelMap[color] || color;
-    const roleName = level.slice(0, -1).toUpperCase();
-
     technicians.forEach(tech => {
         const item = document.createElement('div');
-        item.className = 'member-row';
+        item.className = 'list-group-item list-group-item-action';
         
         const name = tech.name || tech.username || `User #${tech.userId || tech.id}`;
-        const email = tech.email || '';
+        const email = tech.email || 'No email';
         
         item.innerHTML = `
-            <div class="member-avatar ${cssLevel}">${name.charAt(0).toUpperCase()}</div>
-            <div class="member-info">
-                <div class="member-name">${UI.escapeHTML(name)}</div>
-                ${email ? `<div class="member-email">${UI.escapeHTML(email)}</div>` : ''}
+            <div class="d-flex align-items-center">
+                <div class="avatar-circle bg-${color} text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
+                    ${name.charAt(0).toUpperCase()}
+                </div>
+                <div class="flex-grow-1">
+                    <div class="fw-semibold">${UI.escapeHTML(name)}</div>
+                    <small class="text-muted">${UI.escapeHTML(email)}</small>
+                </div>
+                <span class="badge bg-${color}-subtle text-${color}">
+                    ${level.slice(0, -1).toUpperCase()}
+                </span>
             </div>
-            <span class="member-badge ${cssLevel}">${roleName}</span>
         `;
 
         listEl.appendChild(item);
@@ -584,42 +337,30 @@ function renderHierarchyTree() {
             const adminName = admin.name || admin.username || `Admin #${admin.userId || admin.id}`;
             const adminEmail = admin.email || '';
             
-            // Count total team under admin
+            // Count supervisors under this admin
             const supervisorCount = state.hierarchyTree.length;
-            let seniorCount = 0;
-            let juniorCount = 0;
-            state.hierarchyTree.forEach(sup => {
-                seniorCount += sup.seniors?.length || 0;
-                sup.seniors?.forEach(sen => {
-                    juniorCount += sen.juniors?.length || 0;
-                });
-            });
-            const totalTeam = supervisorCount + seniorCount + juniorCount;
             
             html += `
                 <div class="tree-node admin-node">
                     <div class="node-card">
                         <div class="card-body p-4">
-                            <div class="node-content">
-                                <div class="avatar-circle text-white">
+                            <div class="d-flex align-items-center">
+                                <div class="avatar-circle text-white me-3">
                                     ${adminName.charAt(0).toUpperCase()}
                                 </div>
-                                <div class="node-details">
-                                    <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                <div class="flex-grow-1">
+                                    <div class="d-flex align-items-center gap-2 mb-1">
                                         <h5 class="mb-0 fw-bold">${UI.escapeHTML(adminName)}</h5>
-                                        <span class="role-badge role-badge-admin">Administrator</span>
+                                        <span class="role-badge role-badge-admin">ADMIN</span>
                                     </div>
-                                    ${adminEmail ? `
-                                        <div class="node-info-text">
-                                            <i class="bi bi-envelope-fill"></i>
-                                            <span>${UI.escapeHTML(adminEmail)}</span>
-                                        </div>
-                                    ` : ''}
+                                    <div class="text-muted small">
+                                        <i class="bi bi-envelope me-1"></i>${UI.escapeHTML(adminEmail)}
+                                    </div>
                                 </div>
-                                <div class="node-meta">
-                                    <span class="stats-badge" title="Total team members">
-                                        <i class="bi bi-people-fill"></i>
-                                        <span>${totalTeam} member${totalTeam !== 1 ? 's' : ''}</span>
+                                <div class="text-end">
+                                    <span class="stats-badge">
+                                        <i class="bi bi-diagram-3"></i>
+                                        <span>${supervisorCount} supervisor${supervisorCount !== 1 ? 's' : ''}</span>
                                     </span>
                                 </div>
                             </div>
@@ -645,24 +386,20 @@ function renderHierarchyTree() {
 
     treeEl.innerHTML = html;
     
-    // Auto-collapse junior nodes by default for better readability
+    // Auto-collapse senior nodes by default to keep juniors hidden initially
+    // This keeps the view clean when there are many juniors
     setTimeout(() => {
-        document.querySelectorAll('.senior-node').forEach((node, index) => {
-            const juniorChildren = node.querySelector('.tree-children');
-            if (juniorChildren) {
-                const juniorCount = juniorChildren.querySelectorAll('.junior-node').length;
-                // Auto-collapse if more than 3 juniors to keep page clean
-                if (juniorCount > 3) {
-                    node.classList.add('collapsed');
-                    const icon = node.querySelector('.collapse-toggle i');
-                    if (icon) {
-                        icon.classList.remove('bi-chevron-down');
-                        icon.classList.add('bi-chevron-right');
-                    }
+        document.querySelectorAll('.senior-node').forEach(node => {
+            if (node.querySelector('.tree-children')) {
+                node.classList.add('collapsed');
+                const icon = node.querySelector('.collapse-toggle i');
+                if (icon) {
+                    icon.classList.remove('bi-chevron-down');
+                    icon.classList.add('bi-chevron-right');
                 }
             }
         });
-    }, 100);
+    }, 0);
 }
 
 /**
@@ -675,40 +412,30 @@ function renderSupervisors() {
         const supervisorName = supervisor.name || `Supervisor #${supervisor.userId}`;
         const supervisorEmail = supervisor.email || '';
         const seniorCount = supervisor.seniors?.length || 0;
-        
-        // Count juniors under this supervisor
-        let juniorCount = 0;
-        supervisor.seniors?.forEach(sen => {
-            juniorCount += sen.juniors?.length || 0;
-        });
-        const totalTeam = seniorCount + juniorCount;
-        
+        const isLast = index === state.hierarchyTree.length - 1;
         const supervisorId = `supervisor-${supervisor.userId}`;
         
         html += `
             <div class="tree-node supervisor-node" id="${supervisorId}">
                 <div class="node-card">
                     <div class="card-body p-3">
-                        <div class="node-content">
-                            <div class="avatar-circle text-white">
+                        <div class="d-flex align-items-center">
+                            <div class="avatar-circle text-white me-3">
                                 ${supervisorName.charAt(0).toUpperCase()}
                             </div>
-                            <div class="node-details">
-                                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center gap-2 mb-1">
                                     <h6 class="mb-0 fw-semibold">${UI.escapeHTML(supervisorName)}</h6>
-                                    <span class="role-badge role-badge-supervisor">Supervisor</span>
+                                    <span class="role-badge role-badge-supervisor">SUPERVISOR</span>
                                 </div>
-                                ${supervisorEmail ? `
-                                    <div class="node-info-text">
-                                        <i class="bi bi-envelope-fill"></i>
-                                        <span>${UI.escapeHTML(supervisorEmail)}</span>
-                                    </div>
-                                ` : ''}
+                                <div class="text-muted small">
+                                    ${supervisorEmail ? `<i class="bi bi-envelope me-1"></i>${UI.escapeHTML(supervisorEmail)}` : ''}
+                                </div>
                             </div>
-                            <div class="node-meta">
-                                <span class="stats-badge" title="${seniorCount} senior${seniorCount !== 1 ? 's' : ''}, ${juniorCount} junior${juniorCount !== 1 ? 's' : ''}">
-                                    <i class="bi bi-people-fill"></i>
-                                    <span>${totalTeam} member${totalTeam !== 1 ? 's' : ''}</span>
+                            <div class="text-end d-flex align-items-center gap-2">
+                                <span class="stats-badge">
+                                    <i class="bi bi-people"></i>
+                                    <span>${seniorCount} senior${seniorCount !== 1 ? 's' : ''}</span>
                                 </span>
                                 ${seniorCount > 0 ? `
                                     <span class="collapse-toggle" onclick="toggleTreeNode('${supervisorId}')" title="Expand/Collapse">
@@ -729,35 +456,33 @@ function renderSupervisors() {
                 const seniorName = senior.name || `Senior #${senior.userId}`;
                 const seniorEmail = senior.email || '';
                 const juniorCount = senior.juniors?.length || 0;
+                const isSeniorLast = seniorIndex === supervisor.seniors.length - 1;
                 const seniorId = `senior-${senior.userId}`;
                 
                 html += `
                     <div class="tree-node senior-node" id="${seniorId}">
                         <div class="node-card">
                             <div class="card-body p-3">
-                                <div class="node-content">
-                                    <div class="avatar-circle text-white">
+                                <div class="d-flex align-items-center">
+                                    <div class="avatar-circle text-white me-2">
                                         ${seniorName.charAt(0).toUpperCase()}
                                     </div>
-                                    <div class="node-details">
-                                        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex align-items-center gap-2 mb-1">
                                             <div class="fw-semibold">${UI.escapeHTML(seniorName)}</div>
-                                            <span class="role-badge role-badge-senior">Senior</span>
+                                            <span class="role-badge role-badge-senior">SENIOR</span>
                                         </div>
-                                        ${seniorEmail ? `
-                                            <div class="node-info-text">
-                                                <i class="bi bi-envelope-fill"></i>
-                                                <span>${UI.escapeHTML(seniorEmail)}</span>
-                                            </div>
-                                        ` : ''}
+                                        <div class="text-muted small">
+                                            ${seniorEmail ? `<i class="bi bi-envelope me-1"></i>${UI.escapeHTML(seniorEmail)}` : ''}
+                                        </div>
                                     </div>
-                                    <div class="node-meta">
-                                        <span class="stats-badge" title="Assigned juniors">
-                                            <i class="bi bi-person-badge-fill"></i>
+                                    <div class="text-end d-flex align-items-center gap-2">
+                                        <span class="stats-badge">
+                                            <i class="bi bi-person-badge"></i>
                                             <span>${juniorCount} junior${juniorCount !== 1 ? 's' : ''}</span>
                                         </span>
                                         ${juniorCount > 0 ? `
-                                            <span class="collapse-toggle" onclick="toggleTreeNode('${seniorId}')" title="Expand/Collapse juniors">
+                                            <span class="collapse-toggle" onclick="toggleTreeNode('${seniorId}')" title="Expand/Collapse">
                                                 <i class="bi bi-chevron-down"></i>
                                             </span>
                                         ` : ''}
@@ -774,26 +499,22 @@ function renderSupervisors() {
                     senior.juniors.forEach((junior, juniorIndex) => {
                         const juniorName = junior.name || `Junior #${junior.userId}`;
                         const juniorEmail = junior.email || '';
+                        const isJuniorLast = juniorIndex === senior.juniors.length - 1;
                         
                         html += `
                             <div class="tree-node junior-node">
                                 <div class="node-card">
-                                    <div class="card-body p-2 py-3">
-                                        <div class="node-content">
-                                            <div class="avatar-circle text-white">
+                                    <div class="card-body p-2">
+                                        <div class="d-flex align-items-center">
+                                            <div class="avatar-circle text-white me-2">
                                                 ${juniorName.charAt(0).toUpperCase()}
                                             </div>
-                                            <div class="node-details">
-                                                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
-                                                    <div class="fw-medium">${UI.escapeHTML(juniorName)}</div>
-                                                    <span class="role-badge role-badge-junior">Junior</span>
+                                            <div class="flex-grow-1">
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <div class="small fw-medium">${UI.escapeHTML(juniorName)}</div>
+                                                    <span class="role-badge role-badge-junior">JUNIOR</span>
                                                 </div>
-                                                ${juniorEmail ? `
-                                                    <div class="node-info-text" style="font-size: 0.8rem;">
-                                                        <i class="bi bi-envelope-fill"></i>
-                                                        <span>${UI.escapeHTML(juniorEmail)}</span>
-                                                    </div>
-                                                ` : ''}
+                                                ${juniorEmail ? `<div class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-envelope me-1"></i>${UI.escapeHTML(juniorEmail)}</div>` : ''}
                                             </div>
                                         </div>
                                     </div>
@@ -825,44 +546,19 @@ window.toggleTreeNode = function(nodeId) {
     if (!node) return;
     
     const isCollapsed = node.classList.contains('collapsed');
-    const icon = node.querySelector('.collapse-toggle i');
     
     if (isCollapsed) {
-        // Expand with animation
+        // Expand
         node.classList.remove('collapsed');
+        const icon = node.querySelector('.collapse-toggle i');
         if (icon) {
             icon.classList.remove('bi-chevron-right');
             icon.classList.add('bi-chevron-down');
         }
-        
-        // Animate children appearing
-        const children = node.querySelector('.tree-children');
-        if (children) {
-            children.style.opacity = '0';
-            children.style.transform = 'translateY(-10px)';
-            setTimeout(() => {
-                children.style.transition = 'opacity 0.3s, transform 0.3s';
-                children.style.opacity = '1';
-                children.style.transform = 'translateY(0)';
-            }, 10);
-        }
     } else {
-        // Collapse with animation
-        const children = node.querySelector('.tree-children');
-        if (children) {
-            children.style.transition = 'opacity 0.2s, transform 0.2s';
-            children.style.opacity = '0';
-            children.style.transform = 'translateY(-10px)';
-            setTimeout(() => {
-                node.classList.add('collapsed');
-                children.style.transition = '';
-                children.style.opacity = '';
-                children.style.transform = '';
-            }, 200);
-        } else {
-            node.classList.add('collapsed');
-        }
-        
+        // Collapse
+        node.classList.add('collapsed');
+        const icon = node.querySelector('.collapse-toggle i');
         if (icon) {
             icon.classList.remove('bi-chevron-down');
             icon.classList.add('bi-chevron-right');
@@ -874,52 +570,32 @@ window.toggleTreeNode = function(nodeId) {
  * Expand all tree nodes
  */
 function expandAllNodes() {
-    const collapsedNodes = document.querySelectorAll('.tree-node.collapsed');
-    
-    collapsedNodes.forEach((node, index) => {
-        setTimeout(() => {
-            node.classList.remove('collapsed');
-            const icon = node.querySelector('.collapse-toggle i');
-            if (icon) {
-                icon.classList.remove('bi-chevron-right');
-                icon.classList.add('bi-chevron-down');
-            }
-        }, index * 50); // Stagger the expansion for visual effect
+    document.querySelectorAll('.tree-node.collapsed').forEach(node => {
+        node.classList.remove('collapsed');
+        const icon = node.querySelector('.collapse-toggle i');
+        if (icon) {
+            icon.classList.remove('bi-chevron-right');
+            icon.classList.add('bi-chevron-down');
+        }
     });
-    
-    if (collapsedNodes.length > 0) {
-        UI.showToast(`Expanded ${collapsedNodes.length} node${collapsedNodes.length !== 1 ? 's' : ''}`, 'success');
-    } else {
-        UI.showToast('All nodes already expanded', 'info');
-    }
+    UI.showToast('All nodes expanded', 'success');
 }
 
 /**
  * Collapse all tree nodes
  */
 function collapseAllNodes() {
-    const expandableNodes = document.querySelectorAll('.tree-node:not(.admin-node)');
-    let collapsedCount = 0;
-    
-    expandableNodes.forEach((node, index) => {
-        if (node.querySelector('.tree-children') && !node.classList.contains('collapsed')) {
-            setTimeout(() => {
-                node.classList.add('collapsed');
-                const icon = node.querySelector('.collapse-toggle i');
-                if (icon) {
-                    icon.classList.remove('bi-chevron-down');
-                    icon.classList.add('bi-chevron-right');
-                }
-            }, index * 30); // Stagger the collapse for visual effect
-            collapsedCount++;
+    document.querySelectorAll('.tree-node:not(.admin-node)').forEach(node => {
+        if (node.querySelector('.tree-children')) {
+            node.classList.add('collapsed');
+            const icon = node.querySelector('.collapse-toggle i');
+            if (icon) {
+                icon.classList.remove('bi-chevron-down');
+                icon.classList.add('bi-chevron-right');
+            }
         }
     });
-    
-    if (collapsedCount > 0) {
-        UI.showToast(`Collapsed ${collapsedCount} node${collapsedCount !== 1 ? 's' : ''}`, 'success');
-    } else {
-        UI.showToast('All nodes already collapsed', 'info');
-    }
+    UI.showToast('All nodes collapsed', 'success');
 }
 
 /**
@@ -933,9 +609,6 @@ function renderRelationshipsTable() {
     if (countEl) {
         countEl.textContent = state.relationships.length;
     }
-    // Also update the new badge elements
-    const relCountBadge = document.getElementById('relCountBadge');
-    if (relCountBadge) relCountBadge.textContent = state.relationships.length;
 
     if (state.relationships.length === 0) {
         if (emptyEl) emptyEl.classList.remove('d-none');
@@ -948,40 +621,35 @@ function renderRelationshipsTable() {
 
     tableBodyEl.innerHTML = '';
 
-    const roleCssMap = {
-        'ADMIN': 'admin', 'SUPERVISOR': 'supervisor', 'SENIOR': 'senior', 'JUNIOR': 'junior'
-    };
-
-    state.relationships.forEach((rel, idx) => {
+    state.relationships.forEach(rel => {
         const row = document.createElement('tr');
-        const subCss  = roleCssMap[rel.subordinateRole]  || 'junior';
-        const mgrCss  = roleCssMap[rel.managerRole]      || 'admin';
-        const subInit = (rel.subordinateName || '?').charAt(0).toUpperCase();
-        const mgrInit = (rel.managerName     || '?').charAt(0).toUpperCase();
+        
+        const roleColorMap = {
+            'ADMIN': 'danger',
+            'SUPERVISOR': 'primary',
+            'SENIOR': 'success',
+            'JUNIOR': 'info'
+        };
+
+        const subordinateColor = roleColorMap[rel.subordinateRole] || 'secondary';
+        const managerColor = roleColorMap[rel.managerRole] || 'secondary';
 
         row.innerHTML = `
-            <td style="color:#9ca3af;font-size:.82rem;">${idx + 1}</td>
+            <td>${rel.id}</td>
+            <td>${UI.escapeHTML(rel.subordinateName)}</td>
+            <td><span class="badge bg-${subordinateColor}">${rel.subordinateRole}</span></td>
+            <td>${UI.escapeHTML(rel.managerName)}</td>
+            <td><span class="badge bg-${managerColor}">${rel.managerRole}</span></td>
+            <td>${UI.formatDate(rel.createdAt)}</td>
             <td>
-                <div class="rel-person">
-                    <div class="rel-avatar ${subCss}">${subInit}</div>
-                    <span class="rel-name">${UI.escapeHTML(rel.subordinateName)}</span>
-                </div>
-            </td>
-            <td><span class="rel-role-badge ${subCss}">${rel.subordinateRole}</span></td>
-            <td><i class="bi bi-arrow-right rel-arrow"></i></td>
-            <td>
-                <div class="rel-person">
-                    <div class="rel-avatar ${mgrCss}">${mgrInit}</div>
-                    <span class="rel-name">${UI.escapeHTML(rel.managerName)}</span>
-                </div>
-            </td>
-            <td><span class="rel-role-badge ${mgrCss}">${rel.managerRole}</span></td>
-            <td style="color:#6b7280;font-size:.82rem;">${UI.formatDate(rel.createdAt)}</td>
-            <td>
-                <button class="rel-action-btn edit" onclick="window.editRelationship(${rel.id})" title="Edit">
+                <button class="btn btn-sm btn-outline-primary me-1" 
+                        onclick="window.editRelationship(${rel.id})"
+                        title="Edit relationship">
                     <i class="bi bi-pencil"></i>
                 </button>
-                <button class="rel-action-btn delete ms-1" onclick="window.deleteRelationship(${rel.id})" title="Delete">
+                <button class="btn btn-sm btn-outline-danger" 
+                        onclick="window.deleteRelationship(${rel.id})"
+                        title="Delete relationship">
                     <i class="bi bi-trash"></i>
                 </button>
             </td>
@@ -1159,10 +827,8 @@ async function handleCreateRelationship() {
         return;
     }
 
-    const subordinateSelect = document.getElementById('createSubordinateId');
-    const subordinateId = parseInt(subordinateSelect.value);
+    const subordinateId = parseInt(document.getElementById('createSubordinateId').value);
     const managerId = parseInt(document.getElementById('createManagerId').value);
-    const subordinateRole = subordinateSelect.options[subordinateSelect.selectedIndex]?.dataset.role;
 
     if (!subordinateId || !managerId) {
         UI.showToast('Please select both subordinate and manager', 'warning');
@@ -1175,25 +841,12 @@ async function handleCreateRelationship() {
         return;
     }
 
-    // Determine relationship type from subordinate role
-    const relationshipTypeMap = {
-        'JUNIOR':     'JUNIOR_TO_SENIOR',
-        'SENIOR':     'SENIOR_TO_SUPERVISOR',
-        'SUPERVISOR': 'SUPERVISOR_TO_ADMIN'
-    };
-    const relationshipType = relationshipTypeMap[subordinateRole];
-    if (!relationshipType) {
-        UI.showToast('Could not determine relationship type. Please re-select the subordinate.', 'error');
-        return;
-    }
-
     UI.showToast('Creating relationship...', 'info');
 
     try {
         const response = await createHierarchyRelationship({
-            childUserId: subordinateId,
-            parentUserId: managerId,
-            relationshipType
+            subordinate_id: subordinateId,
+            manager_id: managerId
         });
 
         if (response.success) {
@@ -1289,29 +942,9 @@ async function handleUpdateRelationship() {
 
     UI.showToast('Updating relationship...', 'info');
 
-    // Get the child user ID from current state
-    const existingRelationship = state.relationships.find(r => r.id === relationshipId);
-    if (!existingRelationship) {
-        UI.showToast('Relationship not found in state', 'error');
-        return;
-    }
-
-    const relationshipTypeMap = {
-        'JUNIOR':     'JUNIOR_TO_SENIOR',
-        'SENIOR':     'SENIOR_TO_SUPERVISOR',
-        'SUPERVISOR': 'SUPERVISOR_TO_ADMIN'
-    };
-    const relationshipType = relationshipTypeMap[existingRelationship.subordinateRole];
-    if (!relationshipType) {
-        UI.showToast('Could not determine relationship type', 'error');
-        return;
-    }
-
     try {
-        const response = await updateHierarchyRelationship({
-            childUserId: existingRelationship.subordinateId,
-            parentUserId: newManagerId,
-            relationshipType
+        const response = await updateHierarchyRelationship(relationshipId, {
+            manager_id: newManagerId
         });
 
         if (response.success) {
@@ -1351,10 +984,7 @@ window.deleteRelationship = async function(relationshipId) {
     UI.showToast('Deleting relationship...', 'info');
 
     try {
-        const response = await deleteHierarchyRelationship(
-            relationship.subordinateId,
-            relationship.managerId
-        );
+        const response = await deleteHierarchyRelationship(relationshipId);
 
         if (response.success) {
             UI.showToast('Relationship deleted successfully!', 'success');
