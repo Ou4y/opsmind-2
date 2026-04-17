@@ -42,13 +42,15 @@ const Router = {
     seniorPages: [
         'senior-dashboard.html',
         'workflows.html',  // Can manage workflows
-        'inventory.html'   // Asset inventory
+        'inventory.html',  // Asset inventory
+        'sla.html'         // SLA tracking
     ],
     
     // Pages for SUPERVISOR role (global view)
     supervisorPages: [
         'supervisor-dashboard.html',
-        'ai-insights.html'  // Advanced analytics
+        'ai-insights.html', // Advanced analytics
+        'sla.html'          // SLA tracking
     ],
     
     // Current page name
