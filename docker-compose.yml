@@ -12,7 +12,7 @@ services:
       - mysql_data:/var/lib/mysql
       - ./opsmind-infrastructure/mysql-init/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./Services/opsmind-workflow-service/db/init.sql:/docker-entrypoint-initdb.d/10-workflow-init.sql:ro
-      - ./Services/opsmind-workflow-service/db/seed.sql:/docker-entrypoint-initdb.d/11-workflow-seed.sql:ro
+      - ./Services/opsmind-workflow-service/db/seed_with_hierarchy.sql:/docker-entrypoint-initdb.d/11-workflow-seed.sql:ro
     ports:
       - "127.0.0.1:3306:3306"
     networks:
@@ -330,9 +330,9 @@ services:
     environment:
       OPSMIND_API_URL: http://localhost:3001
       NODE_ENV: production
-      PORT: 80
+      PORT: 85
     ports:
-      - "8085:80"
+      - "8085:85"
     networks:
       - opsmind-net
     restart: unless-stopped

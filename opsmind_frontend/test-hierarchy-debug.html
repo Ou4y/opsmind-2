@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hierarchy API Debug Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .result { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 4px; }
+        .error { background: #ffebee; color: #c62828; }
+        .success { background: #e8f5e9; color: #2e7d32; }
+        button { margin: 5px; padding: 10px; cursor: pointer; }
+        pre { background: #263238; color: #aed581; padding: 15px; border-radius: 4px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Hierarchy API Debug Test</h1>
+    
+    <div>
+        <button onclick="testFetchWithoutAuth()">Test Direct Fetch (No Auth)</button>
+        <button onclick="testFetchWithAuth()">Test Fetch (With Auth)</button>
+        <button onclick="testWorkflowService()">Test Workflow Service</button>
+        <button onclick="clearResults()">Clear Results</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script type="module">
+        import { getTechniciansByLevel, getHierarchyTree } from './services/workflowService.js';
+        
+        window.workflowService = {
+            getTechniciansByLevel,
+            getHierarchyTree
+        };
+    </script>
+
+    <script>
+        const API_BASE = 'http://localhost:3003';
+
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `result ${type}`;
+            div.innerHTML = `<strong>${new Date().toLocaleTimeString()}</strong>: ${message}`;
+            document.getElementById('results').appendChild(div);
+        }
+
+        function logJSON(label, data) {
+            const div = document.createElement('div');
+            div.className = 'result success';
+            div.innerHTML = `<strong>${label}</strong><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            document.getElementById('results').appendChild(div);
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function testFetchWithoutAuth() {
+            try {
+                log('Testing direct fetch WITHOUT authentication...', 'info');
+                
+                // Test technicians endpoint
+                log('Fetching technicians...', 'info');
+                const techResponse = await fetch(`${API_BASE}/workflow/admin/hierarchy/technicians?level=ADMIN`);
+                const techData = await techResponse.json();
+                
+                log(`✓ Technicians Response (${techResponse.status})`, 'success');
+                logJSON('Technicians Data', techData);
+                
+                // Test tree endpoint
+                log('Fetching hierarchy tree...', 'info');
+                const treeResponse = await fetch(`${API_BASE}/workflow/admin/hierarchy/tree`);
+                const treeData = await treeResponse.json();
+                
+                log(`✓ Tree Response (${treeResponse.status})`, 'success');
+                logJSON('Tree Data', treeData);
+                
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+                console.error('Test failed:', error);
+            }
+        }
+
+        async function testFetchWithAuth() {
+            try {
+                log('Testing direct fetch WITH authentication...', 'info');
+                
+                // Get token from localStorage
+                const token = localStorage.getItem('opsmind_token');
+                
+                if (!token) {
+                    log('⚠ No auth token found in localStorage', 'error');
+                    log('Please log in first, then try again', 'error');
+                    return;
+                }
+                
+                log(`Token found: ${token.substring(0, 20)}...`, 'info');
+                
+                const headers = {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                };
+                
+                // Test technicians endpoint
+                log('Fetching technicians with auth...', 'info');
+                const techResponse = await fetch(`${API_BASE}/workflow/admin/hierarchy/technicians?level=ADMIN`, {
+                    headers
+                });
+                const techData = await techResponse.json();
+                
+                log(`✓ Technicians Response (${techResponse.status})`, 'success');
+                logJSON('Technicians Data', techData);
+                
+                // Test tree endpoint
+                log('Fetching hierarchy tree with auth...', 'info');
+                const treeResponse = await fetch(`${API_BASE}/workflow/admin/hierarchy/tree`, {
+                    headers
+                });
+                const treeData = await treeResponse.json();
+                
+                log(`✓ Tree Response (${treeResponse.status})`, 'success');
+                logJSON('Tree Data', treeData);
+                
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+                console.error('Test failed:', error);
+            }
+        }
+
+        async function testWorkflowService() {
+            try {
+                log('Testing through workflowService module...', 'info');
+                
+                if (!window.workflowService) {
+                    log('✗ workflowService not loaded yet', 'error');
+                    return;
+                }
+                
+                // Test getTechniciansByLevel
+                log('Calling getTechniciansByLevel("ADMIN")...', 'info');
+                const admins = await window.workflowService.getTechniciansByLevel('ADMIN');
+                
+                log('✓ getTechniciansByLevel succeeded', 'success');
+                logJSON('Admins Response', admins);
+                
+                // Test getHierarchyTree
+                log('Calling getHierarchyTree()...', 'info');
+                const tree = await window.workflowService.getHierarchyTree();
+                
+                log('✓ getHierarchyTree succeeded', 'success');
+                logJSON('Tree Response', tree);
+                
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+                console.error('Service test failed:', error);
+            }
+        }
+
+        // Auto-test on load
+        window.addEventListener('load', () => {
+            log('Page loaded. Click a button to run tests.', 'info');
+        });
+    </script>
+</body>
+</html>

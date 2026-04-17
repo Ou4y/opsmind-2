@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="OpsMind Admin - Hierarchy Management">
-    <title>Hierarchy Management - OpsMind</title>
+    <meta name="description" content="OpsMind - Team Hierarchy Management">
+    <title>Team Hierarchy - OpsMind</title>
     
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -12,9 +12,430 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
     <link href="../assets/css/main.css" rel="stylesheet">
-
-    <!-- Runtime config -->
+    
+    <!-- Configuration -->
     <script src="../assets/js/config.js"></script>
+    
+    <!-- Hierarchy Tree Custom Styles -->
+    <style>
+        .hierarchy-container {
+            padding: 24px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 16px;
+            position: relative;
+        }
+        
+        .hierarchy-tree {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* Tree Structure - Enhanced Lines */
+        .tree-node {
+            position: relative;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .tree-children {
+            position: relative;
+            padding-left: 48px;
+            margin-top: 16px;
+        }
+        
+        /* Vertical tree line */
+        .tree-children::before {
+            content: '';
+            position: absolute;
+            left: 24px;
+            top: 0;
+            bottom: 16px;
+            width: 3px;
+            background: linear-gradient(180deg, 
+                rgba(108, 117, 125, 0.4) 0%, 
+                rgba(108, 117, 125, 0.2) 70%, 
+                transparent 100%);
+            border-radius: 2px;
+        }
+        
+        /* Horizontal connector lines */
+        .tree-children > .tree-node::before {
+            content: '';
+            position: absolute;
+            left: -24px;
+            top: 32px;
+            width: 24px;
+            height: 3px;
+            background: rgba(108, 117, 125, 0.3);
+            border-radius: 2px;
+        }
+        
+        /* Hide vertical line after last node */
+        .tree-children > .tree-node:last-child::after {
+            content: '';
+            position: absolute;
+            left: -24px;
+            top: 35px;
+            bottom: -16px;
+            width: 3px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        }
+        
+        /* Node Cards - Enhanced Design */
+        .node-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 14px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+            margin-bottom: 12px;
+            background: white;
+            border: 1px solid rgba(0, 0, 0, 0.06);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .node-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, currentColor, transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .node-card:hover {
+            transform: translateX(6px) translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            border-color: rgba(0, 0, 0, 0.1);
+        }
+        
+        .node-card:hover::before {
+            opacity: 1;
+        }
+        
+        /* Admin Node */
+        .admin-node .node-card {
+            border-left: 5px solid #dc3545;
+            background: linear-gradient(135deg, #ffffff 0%, #fff9fa 100%);
+        }
+        
+        .admin-node .node-card::before {
+            color: #dc3545;
+        }
+        
+        .admin-node .avatar-circle {
+            width: 64px;
+            height: 64px;
+            font-size: 1.75rem;
+            background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+            box-shadow: 0 4px 12px rgba(220, 53, 69, 0.3);
+        }
+        
+        /* Supervisor Node */
+        .supervisor-node .node-card {
+            border-left: 5px solid #0d6efd;
+            background: linear-gradient(135deg, #ffffff 0%, #f8fbff 100%);
+        }
+        
+        .supervisor-node .node-card::before {
+            color: #0d6efd;
+        }
+        
+        .supervisor-node .avatar-circle {
+            width: 52px;
+            height: 52px;
+            font-size: 1.35rem;
+            background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
+            box-shadow: 0 4px 12px rgba(13, 110, 253, 0.25);
+        }
+        
+        /* Senior Node */
+        .senior-node .node-card {
+            border-left: 4px solid #198754;
+            background: linear-gradient(135deg, #ffffff 0%, #f8fdf9 100%);
+        }
+        
+        .senior-node .node-card::before {
+            color: #198754;
+        }
+        
+        .senior-node .avatar-circle {
+            width: 44px;
+            height: 44px;
+            font-size: 1.15rem;
+            background: linear-gradient(135deg, #198754 0%, #157347 100%);
+            box-shadow: 0 3px 10px rgba(25, 135, 84, 0.25);
+        }
+        
+        /* Junior Node */
+        .junior-node .node-card {
+            border-left: 3px solid #0dcaf0;
+            background: linear-gradient(135deg, #ffffff 0%, #f8fcfe 100%);
+        }
+        
+        .junior-node .node-card::before {
+            color: #0dcaf0;
+        }
+        
+        .junior-node .avatar-circle {
+            width: 38px;
+            height: 38px;
+            font-size: 1rem;
+            background: linear-gradient(135deg, #0dcaf0 0%, #0aa2c0 100%);
+            box-shadow: 0 3px 8px rgba(13, 202, 240, 0.25);
+        }
+        
+        /* Avatar - Enhanced */
+        .avatar-circle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            font-weight: 700;
+            flex-shrink: 0;
+            transition: transform 0.3s;
+            letter-spacing: 0.5px;
+        }
+        
+        .node-card:hover .avatar-circle {
+            transform: scale(1.08);
+        }
+        
+        /* Role Badges - Enhanced */
+        .role-badge {
+            font-size: 0.7rem;
+            padding: 5px 12px;
+            border-radius: 16px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s;
+        }
+        
+        .node-card:hover .role-badge {
+            transform: translateY(-1px);
+        }
+        
+        .role-badge-admin {
+            background: linear-gradient(135deg, #dc3545 0%, #bb2d3b 100%);
+            color: white;
+        }
+        
+        .role-badge-supervisor {
+            background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
+            color: white;
+        }
+        
+        .role-badge-senior {
+            background: linear-gradient(135deg, #198754 0%, #146c43 100%);
+            color: white;
+        }
+        
+        .role-badge-junior {
+            background: linear-gradient(135deg, #0dcaf0 0%, #0aa2c0 100%);
+            color: white;
+        }
+        
+        /* Stats Badge - Enhanced */
+        .stats-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: #495057;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            padding: 6px 12px;
+            border-radius: 10px;
+            font-weight: 600;
+            border: 1px solid rgba(0, 0, 0, 0.06);
+            transition: all 0.2s;
+        }
+        
+        .stats-badge:hover {
+            background: linear-gradient(135deg, #e9ecef 0%, #dee2e6 100%);
+            transform: translateY(-1px);
+        }
+        
+        .stats-badge i {
+            font-size: 1rem;
+        }
+        
+        /* Collapse Toggle - Enhanced */
+        .collapse-toggle {
+            cursor: pointer;
+            padding: 6px 10px;
+            border-radius: 8px;
+            transition: all 0.2s;
+            font-size: 0.875rem;
+            color: #6c757d;
+            user-select: none;
+            background: rgba(108, 117, 125, 0.05);
+            border: 1px solid transparent;
+        }
+        
+        .collapse-toggle:hover {
+            background: rgba(108, 117, 125, 0.12);
+            border-color: rgba(108, 117, 125, 0.2);
+            color: #495057;
+        }
+        
+        .collapse-toggle:active {
+            transform: scale(0.95);
+        }
+        
+        .collapse-toggle i {
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-block;
+        }
+        
+        /* Collapsed State */
+        .collapsed .tree-children {
+            display: none;
+        }
+        
+        .collapsed > .node-card {
+            opacity: 0.95;
+        }
+        
+        /* Email and Info Text */
+        .node-info-text {
+            font-size: 0.85rem;
+            color: #6c757d;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .node-info-text i {
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+        
+        /* Node Content Layout */
+        .node-content {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .node-details {
+            flex-grow: 1;
+            min-width: 0;
+        }
+        
+        .node-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        
+        /* Smooth Animations */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .tree-node {
+            animation: fadeIn 0.4s ease-out;
+        }
+        
+        .tree-node:nth-child(1) { animation-delay: 0.05s; }
+        .tree-node:nth-child(2) { animation-delay: 0.1s; }
+        .tree-node:nth-child(3) { animation-delay: 0.15s; }
+        .tree-node:nth-child(4) { animation-delay: 0.2s; }
+        .tree-node:nth-child(5) { animation-delay: 0.25s; }
+        
+        /* Loading State */
+        .node-card.loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        
+        /* Empty States for Junior Lists */
+        .juniors-empty {
+            padding: 12px;
+            text-align: center;
+            color: #9ca3af;
+            font-size: 0.875rem;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin: 8px 0;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .hierarchy-container {
+                padding: 16px;
+            }
+            
+            .tree-children {
+                padding-left: 32px;
+            }
+            
+            .tree-children::before {
+                left: 16px;
+            }
+            
+            .tree-children > .tree-node::before {
+                width: 16px;
+                left: -16px;
+            }
+            
+            .tree-children > .tree-node:last-child::after {
+                left: -16px;
+            }
+            
+            .node-card {
+                margin-bottom: 10px;
+            }
+            
+            .node-meta {
+                flex-direction: column;
+                align-items: flex-end;
+                gap: 4px;
+            }
+            
+            .stats-badge {
+                font-size: 0.75rem;
+                padding: 4px 8px;
+            }
+            
+            .role-badge {
+                font-size: 0.65rem;
+                padding: 3px 8px;
+            }
+        }
+        
+        /* Print Styles */
+        @media print {
+            .hierarchy-container {
+                background: white;
+            }
+            
+            .node-card {
+                box-shadow: none;
+                border: 1px solid #dee2e6;
+                page-break-inside: avoid;
+            }
+            
+            .collapse-toggle {
+                display: none;
+            }
+            
+            .collapsed .tree-children {
+                display: block !important;
+            }
+        }
+    </style>
 </head>
 <body class="app-body">
     <!-- Navigation (loaded dynamically) -->
@@ -31,9 +452,9 @@
                 <div class="page-header-content">
                     <h1 class="page-title">
                         <i class="bi bi-diagram-3 me-2"></i>
-                        Hierarchy Management
+                        Team Hierarchy Management
                     </h1>
-                    <p class="page-subtitle">Manage technician reporting relationships</p>
+                    <p class="page-subtitle">Manage team reporting relationships - Add juniors and seniors to your team</p>
                 </div>
                 <div class="page-header-actions">
                     <button class="btn btn-outline-secondary me-2" id="refreshBtn">
@@ -71,7 +492,31 @@
             <div id="pageContent" class="page-content d-none">
                 <!-- Technicians by Level -->
                 <div class="row g-4 mb-4">
-                    <div class="col-lg-4">
+                    <div class="col-lg-3">
+                        <div class="card border-0 shadow-sm h-100 hover-lift">
+                            <div class="card-header bg-danger bg-opacity-10 border-0">
+                                <div class="d-flex align-items-center">
+                                    <div class="icon-box-sm bg-danger text-white rounded me-2">
+                                        <i class="bi bi-shield-check"></i>
+                                    </div>
+                                    <h5 class="card-title mb-0 text-danger fw-bold">
+                                        Admins
+                                    </h5>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="adminsLoading" class="text-center py-3">
+                                    <div class="spinner-border spinner-border-sm text-danger"></div>
+                                </div>
+                                <div id="adminsEmpty" class="text-center py-4 text-muted d-none">
+                                    <i class="bi bi-inbox fs-3 mb-2 d-block opacity-50"></i>
+                                    <p class="mb-0 small">No admins yet</p>
+                                </div>
+                                <div id="adminsList" class="list-group list-group-flush"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-3">
                         <div class="card border-0 shadow-sm h-100 hover-lift">
                             <div class="card-header bg-primary bg-opacity-10 border-0">
                                 <div class="d-flex align-items-center">
@@ -95,7 +540,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="col-lg-4">
+                    <div class="col-lg-3">
                         <div class="card border-0 shadow-sm h-100 hover-lift">
                             <div class="card-header bg-success bg-opacity-10 border-0">
                                 <div class="d-flex align-items-center">
@@ -119,7 +564,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="col-lg-4">
+                    <div class="col-lg-3">
                         <div class="card border-0 shadow-sm h-100 hover-lift">
                             <div class="card-header bg-info bg-opacity-10 border-0">
                                 <div class="d-flex align-items-center">
@@ -148,13 +593,23 @@
                 <!-- Hierarchy Tree -->
                 <div class="card border-0 shadow-sm mb-4">
                     <div class="card-header bg-white border-bottom">
-                        <div class="d-flex align-items-center">
-                            <div class="icon-box-sm bg-primary bg-opacity-10 rounded me-2">
-                                <i class="bi bi-diagram-3 text-primary"></i>
+                        <div class="d-flex align-items-center justify-content-between">
+                            <div class="d-flex align-items-center">
+                                <div class="icon-box-sm bg-primary bg-opacity-10 rounded me-2">
+                                    <i class="bi bi-diagram-3 text-primary"></i>
+                                </div>
+                                <h5 class="card-title mb-0">
+                                    Organization Hierarchy
+                                </h5>
                             </div>
-                            <h5 class="card-title mb-0">
-                                Organization Hierarchy
-                            </h5>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button type="button" class="btn btn-outline-secondary" id="expandAllBtn" title="Expand all nodes">
+                                    <i class="bi bi-arrows-expand"></i> Expand All
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary" id="collapseAllBtn" title="Collapse all nodes">
+                                    <i class="bi bi-arrows-collapse"></i> Collapse All
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div class="card-body p-4">
@@ -239,7 +694,7 @@
                     <form id="createRelationshipForm">
                         <div class="mb-3">
                             <label for="createSubordinateId" class="form-label">
-                                Subordinate (Junior or Senior) <span class="text-danger">*</span>
+                                Subordinate <span class="text-danger">*</span>
                             </label>
                             <select class="form-select" id="createSubordinateId" required>
                                 <option value="">Select subordinate...</option>
@@ -248,7 +703,7 @@
                         </div>
                         <div class="mb-3">
                             <label for="createManagerId" class="form-label">
-                                Manager (Senior or Supervisor) <span class="text-danger">*</span>
+                                Manager <span class="text-danger">*</span>
                             </label>
                             <select class="form-select" id="createManagerId" required>
                                 <option value="">Select manager...</option>
@@ -259,8 +714,9 @@
                             <i class="bi bi-info-circle me-2"></i>
                             <strong>Relationship Rules:</strong>
                             <ul class="mb-0 mt-2">
-                                <li>Junior → Senior: A junior technician reports to a senior</li>
+                                <li>Supervisor → Admin: A supervisor reports to an admin</li>
                                 <li>Senior → Supervisor: A senior technician reports to a supervisor</li>
+                                <li>Junior → Senior: A junior technician reports to a senior</li>
                             </ul>
                         </div>
                     </form>

@@ -23,6 +23,7 @@ import AuthService from '../../services/authService.js';
  * Page state
  */
 const state = {
+    admins: [],
     supervisors: [],
     seniors: [],
     juniors: [],
@@ -36,31 +37,57 @@ const state = {
  * Initialize the hierarchy management page
  */
 export async function initHierarchyManagement() {
+    console.log('[Hierarchy] Initializing hierarchy management page...');
+    
     // Wait for app to be ready
     await waitForApp();
     
+    console.log('[Hierarchy] Getting current user...');
     // Get current user
     state.currentUser = AuthService.getCurrentUser();
     if (!state.currentUser) {
+        console.log('[Hierarchy] No user found, redirecting to login');
         window.location.href = '/index.html';
         return;
     }
 
-    // Check if user is admin
-    if (!AuthService.isAdmin()) {
-        UI.showToast('Access denied. Admin privileges required.', 'error');
+    console.log('[Hierarchy] Current user:', state.currentUser);
+
+    // Check if user is admin or supervisor
+    const userRole = state.currentUser.role?.toUpperCase();
+    console.log('[Hierarchy] User role:', userRole);
+    
+    if (userRole !== 'ADMIN' && userRole !== 'SUPERVISOR') {
+        console.log('[Hierarchy] Access denied for role:', userRole);
+        UI.showToast('Access denied. Admin or Supervisor privileges required.', 'error');
         setTimeout(() => window.location.href = '/dashboard.html', 2000);
         return;
     }
 
+    console.log('[Hierarchy] Access granted, initializing modals...');
     // Initialize modals
-    initializeModals();
+    try {
+        initializeModals();
+    } catch (err) {
+        console.error('[Hierarchy] Error initializing modals:', err);
+    }
     
+    console.log('[Hierarchy] Setting up event listeners...');
     // Set up event listeners
-    setupEventListeners();
+    try {
+        setupEventListeners();
+    } catch (err) {
+        console.error('[Hierarchy] Error setting up event listeners:', err);
+    }
     
+    console.log('[Hierarchy] Loading initial data...');
     // Load initial data
-    await loadAllData();
+    try {
+        await loadAllData();
+    } catch (err) {
+        console.error('[Hierarchy] Fatal error loading data:', err);
+        showError(err.message || 'Failed to load hierarchy data');
+    }
 }
 
 /**
@@ -68,11 +95,26 @@ export async function initHierarchyManagement() {
  */
 function waitForApp() {
     return new Promise((resolve) => {
+        // If navbar already loaded, resolve immediately
         if (document.querySelector('.navbar-main')) {
+            console.log('[Hierarchy] App already ready');
             resolve();
-        } else {
-            document.addEventListener('app:ready', resolve, { once: true });
+            return;
         }
+        
+        console.log('[Hierarchy] Waiting for app:ready event...');
+        
+        // Set up event listener
+        document.addEventListener('app:ready', () => {
+            console.log('[Hierarchy] App ready event received');
+            resolve();
+        }, { once: true });
+        
+        // Fallback timeout in case event never fires
+        setTimeout(() => {
+            console.log('[Hierarchy] Timeout waiting for app:ready, proceeding anyway');
+            resolve();
+        }, 3000);
     });
 }
 
@@ -102,6 +144,10 @@ function setupEventListeners() {
 
     // Form change listeners for dynamic validation
     document.getElementById('createSubordinateId')?.addEventListener('change', updateManagerOptions);
+    
+    // Expand/Collapse all buttons
+    document.getElementById('expandAllBtn')?.addEventListener('click', expandAllNodes);
+    document.getElementById('collapseAllBtn')?.addEventListener('click', collapseAllNodes);
 }
 
 /**
@@ -111,19 +157,54 @@ async function loadAllData() {
     showLoading();
     
     try {
+        console.log('[Hierarchy] Loading hierarchy data...');
+        
         // Load technicians by level in parallel
-        const [supervisorsRes, seniorsRes, juniorsRes, treeRes] = await Promise.all([
-            getTechniciansByLevel('SUPERVISOR'),
-            getTechniciansByLevel('SENIOR'),
-            getTechniciansByLevel('JUNIOR'),
-            getHierarchyTree()
+        const [adminsRes, supervisorsRes, seniorsRes, juniorsRes, treeRes] = await Promise.all([
+            getTechniciansByLevel('ADMIN').catch(err => {
+                console.error('[Hierarchy] Error loading admins:', err);
+                return { success: false, data: [], message: err.message };
+            }),
+            getTechniciansByLevel('SUPERVISOR').catch(err => {
+                console.error('[Hierarchy] Error loading supervisors:', err);
+                return { success: false, data: [], message: err.message };
+            }),
+            getTechniciansByLevel('SENIOR').catch(err => {
+                console.error('[Hierarchy] Error loading seniors:', err);
+                return { success: false, data: [], message: err.message };
+            }),
+            getTechniciansByLevel('JUNIOR').catch(err => {
+                console.error('[Hierarchy] Error loading juniors:', err);
+                return { success: false, data: [], message: err.message };
+            }),
+            getHierarchyTree().catch(err => {
+                console.error('[Hierarchy] Error loading tree:', err);
+                return { success: false, data: [], message: err.message };
+            })
         ]);
 
+        console.log('[Hierarchy] API responses:', {
+            admins: adminsRes,
+            supervisors: supervisorsRes,
+            seniors: seniorsRes,
+            juniors: juniorsRes,
+            tree: treeRes
+        });
+
         // Store data
+        state.admins = adminsRes.success ? (adminsRes.data || []) : [];
         state.supervisors = supervisorsRes.success ? (supervisorsRes.data || []) : [];
         state.seniors = seniorsRes.success ? (seniorsRes.data || []) : [];
         state.juniors = juniorsRes.success ? (juniorsRes.data || []) : [];
         state.hierarchyTree = treeRes.success ? (treeRes.data || []) : [];
+
+        console.log('[Hierarchy] Loaded data:', {
+            admins: state.admins.length,
+            supervisors: state.supervisors.length,
+            seniors: state.seniors.length,
+            juniors: state.juniors.length,
+            treeNodes: state.hierarchyTree.length
+        });
 
         // Extract relationships from hierarchy tree
         extractRelationships();
@@ -132,14 +213,41 @@ async function loadAllData() {
         hideLoading();
 
         // Render all sections
-        renderTechniciansByLevel();
-        renderHierarchyTree();
-        renderRelationshipsTable();
-        populateFormOptions();
+        console.log('[Hierarchy] Starting to render all sections...');
+        
+        try {
+            console.log('[Hierarchy] Rendering technicians by level...');
+            renderTechniciansByLevel();
+        } catch (err) {
+            console.error('[Hierarchy] Error in renderTechniciansByLevel:', err);
+        }
+        
+        try {
+            console.log('[Hierarchy] Rendering hierarchy tree...');
+            renderHierarchyTree();
+        } catch (err) {
+            console.error('[Hierarchy] Error in renderHierarchyTree:', err);
+        }
+        
+        try {
+            console.log('[Hierarchy] Rendering relationships table...');
+            renderRelationshipsTable();
+        } catch (err) {
+            console.error('[Hierarchy] Error in renderRelationshipsTable:', err);
+        }
+        
+        try {
+            console.log('[Hierarchy] Populating form options...');
+            populateFormOptions();
+        } catch (err) {
+            console.error('[Hierarchy] Error in populateFormOptions:', err);
+        }
+
+        console.log('[Hierarchy] Data loaded and rendered successfully');
 
     } catch (error) {
-        console.error('Error loading hierarchy data:', error);
-        showError(error.message || 'Failed to load hierarchy data');
+        console.error('[Hierarchy] Error loading hierarchy data:', error);
+        showError(error.message || 'Failed to load hierarchy data. Please check the console for details.');
     }
 }
 
@@ -154,8 +262,25 @@ function extractRelationships() {
         return;
     }
 
+    // Get admin info if exists
+    const admin = state.admins && state.admins.length > 0 ? state.admins[0] : null;
+
     // Process each supervisor
     state.hierarchyTree.forEach(supervisor => {
+        // Add supervisor → admin relationship if admin exists
+        if (admin) {
+            state.relationships.push({
+                id: supervisor.relationshipId || relationshipId++,
+                subordinateId: supervisor.userId,
+                subordinateName: supervisor.name || `Supervisor #${supervisor.userId}`,
+                subordinateRole: 'SUPERVISOR',
+                managerId: admin.userId || admin.id,
+                managerName: admin.name || admin.username || `Admin #${admin.userId || admin.id}`,
+                managerRole: 'ADMIN',
+                createdAt: supervisor.createdAt || new Date().toISOString()
+            });
+        }
+        
         if (supervisor.seniors && supervisor.seniors.length > 0) {
             supervisor.seniors.forEach(senior => {
                 // Add senior → supervisor relationship
@@ -222,6 +347,9 @@ function showError(message) {
  * Render technicians grouped by level
  */
 function renderTechniciansByLevel() {
+    // Render admins
+    renderTechnicianList('admins', state.admins, 'danger');
+    
     // Render supervisors
     renderTechnicianList('supervisors', state.supervisors, 'primary');
     
@@ -289,7 +417,10 @@ function renderHierarchyTree() {
 
     if (loadingEl) loadingEl.classList.add('d-none');
 
-    if (!state.hierarchyTree || state.hierarchyTree.length === 0) {
+    // Check if we have any hierarchy data
+    const hasData = state.hierarchyTree && state.hierarchyTree.length > 0;
+    
+    if (!hasData) {
         if (emptyEl) emptyEl.classList.remove('d-none');
         if (treeEl) treeEl.innerHTML = '';
         return;
@@ -298,26 +429,146 @@ function renderHierarchyTree() {
     if (emptyEl) emptyEl.classList.add('d-none');
     if (!treeEl) return;
 
+    // Build the hierarchy tree HTML with Admin level
     let html = '<div class="hierarchy-container">';
 
-    state.hierarchyTree.forEach(supervisor => {
+    // Render Admin level (if exists)
+    if (state.admins && state.admins.length > 0) {
+        state.admins.forEach(admin => {
+            const adminName = admin.name || admin.username || `Admin #${admin.userId || admin.id}`;
+            const adminEmail = admin.email || '';
+            
+            // Count total team under admin
+            const supervisorCount = state.hierarchyTree.length;
+            let seniorCount = 0;
+            let juniorCount = 0;
+            state.hierarchyTree.forEach(sup => {
+                seniorCount += sup.seniors?.length || 0;
+                sup.seniors?.forEach(sen => {
+                    juniorCount += sen.juniors?.length || 0;
+                });
+            });
+            const totalTeam = supervisorCount + seniorCount + juniorCount;
+            
+            html += `
+                <div class="tree-node admin-node">
+                    <div class="node-card">
+                        <div class="card-body p-4">
+                            <div class="node-content">
+                                <div class="avatar-circle text-white">
+                                    ${adminName.charAt(0).toUpperCase()}
+                                </div>
+                                <div class="node-details">
+                                    <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                        <h5 class="mb-0 fw-bold">${UI.escapeHTML(adminName)}</h5>
+                                        <span class="role-badge role-badge-admin">Administrator</span>
+                                    </div>
+                                    ${adminEmail ? `
+                                        <div class="node-info-text">
+                                            <i class="bi bi-envelope-fill"></i>
+                                            <span>${UI.escapeHTML(adminEmail)}</span>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                <div class="node-meta">
+                                    <span class="stats-badge" title="Total team members">
+                                        <i class="bi bi-people-fill"></i>
+                                        <span>${totalTeam} member${totalTeam !== 1 ? 's' : ''}</span>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+            `;
+
+            // Render supervisors under admin
+            if (supervisorCount > 0) {
+                html += '<div class="tree-children">';
+                html += renderSupervisors();
+                html += '</div>';
+            }
+
+            html += '</div>'; // Close admin node
+        });
+    } else {
+        // No admin, just render supervisors at root
+        html += renderSupervisors();
+    }
+
+    html += '</div>'; // Close hierarchy container
+
+    treeEl.innerHTML = html;
+    
+    // Auto-collapse junior nodes by default for better readability
+    setTimeout(() => {
+        document.querySelectorAll('.senior-node').forEach((node, index) => {
+            const juniorChildren = node.querySelector('.tree-children');
+            if (juniorChildren) {
+                const juniorCount = juniorChildren.querySelectorAll('.junior-node').length;
+                // Auto-collapse if more than 3 juniors to keep page clean
+                if (juniorCount > 3) {
+                    node.classList.add('collapsed');
+                    const icon = node.querySelector('.collapse-toggle i');
+                    if (icon) {
+                        icon.classList.remove('bi-chevron-down');
+                        icon.classList.add('bi-chevron-right');
+                    }
+                }
+            }
+        });
+    }, 100);
+}
+
+/**
+ * Render supervisors and their subordinates
+ */
+function renderSupervisors() {
+    let html = '';
+    
+    state.hierarchyTree.forEach((supervisor, index) => {
         const supervisorName = supervisor.name || `Supervisor #${supervisor.userId}`;
+        const supervisorEmail = supervisor.email || '';
         const seniorCount = supervisor.seniors?.length || 0;
         
+        // Count juniors under this supervisor
+        let juniorCount = 0;
+        supervisor.seniors?.forEach(sen => {
+            juniorCount += sen.juniors?.length || 0;
+        });
+        const totalTeam = seniorCount + juniorCount;
+        
+        const supervisorId = `supervisor-${supervisor.userId}`;
+        
         html += `
-            <div class="hierarchy-node supervisor-node mb-4">
-                <div class="node-card card border-primary">
-                    <div class="card-body">
-                        <div class="d-flex align-items-center">
-                            <div class="avatar-circle bg-primary text-white me-3">
+            <div class="tree-node supervisor-node" id="${supervisorId}">
+                <div class="node-card">
+                    <div class="card-body p-3">
+                        <div class="node-content">
+                            <div class="avatar-circle text-white">
                                 ${supervisorName.charAt(0).toUpperCase()}
                             </div>
-                            <div>
-                                <h6 class="mb-0">${UI.escapeHTML(supervisorName)}</h6>
-                                <small class="text-muted">
-                                    <i class="bi bi-diagram-3 me-1"></i>
-                                    ${seniorCount} senior${seniorCount !== 1 ? 's' : ''}
-                                </small>
+                            <div class="node-details">
+                                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                    <h6 class="mb-0 fw-semibold">${UI.escapeHTML(supervisorName)}</h6>
+                                    <span class="role-badge role-badge-supervisor">Supervisor</span>
+                                </div>
+                                ${supervisorEmail ? `
+                                    <div class="node-info-text">
+                                        <i class="bi bi-envelope-fill"></i>
+                                        <span>${UI.escapeHTML(supervisorEmail)}</span>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <div class="node-meta">
+                                <span class="stats-badge" title="${seniorCount} senior${seniorCount !== 1 ? 's' : ''}, ${juniorCount} junior${juniorCount !== 1 ? 's' : ''}">
+                                    <i class="bi bi-people-fill"></i>
+                                    <span>${totalTeam} member${totalTeam !== 1 ? 's' : ''}</span>
+                                </span>
+                                ${seniorCount > 0 ? `
+                                    <span class="collapse-toggle" onclick="toggleTreeNode('${supervisorId}')" title="Expand/Collapse">
+                                        <i class="bi bi-chevron-down"></i>
+                                    </span>
+                                ` : ''}
                             </div>
                         </div>
                     </div>
@@ -326,26 +577,44 @@ function renderHierarchyTree() {
 
         // Render seniors under this supervisor
         if (supervisor.seniors && supervisor.seniors.length > 0) {
-            html += '<div class="hierarchy-children ms-4 mt-3">';
+            html += '<div class="tree-children">';
             
-            supervisor.seniors.forEach(senior => {
+            supervisor.seniors.forEach((senior, seniorIndex) => {
                 const seniorName = senior.name || `Senior #${senior.userId}`;
+                const seniorEmail = senior.email || '';
                 const juniorCount = senior.juniors?.length || 0;
+                const seniorId = `senior-${senior.userId}`;
                 
                 html += `
-                    <div class="hierarchy-node senior-node mb-3">
-                        <div class="node-card card border-success">
+                    <div class="tree-node senior-node" id="${seniorId}">
+                        <div class="node-card">
                             <div class="card-body p-3">
-                                <div class="d-flex align-items-center">
-                                    <div class="avatar-circle bg-success text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
+                                <div class="node-content">
+                                    <div class="avatar-circle text-white">
                                         ${seniorName.charAt(0).toUpperCase()}
                                     </div>
-                                    <div>
-                                        <div class="fw-semibold">${UI.escapeHTML(seniorName)}</div>
-                                        <small class="text-muted">
-                                            <i class="bi bi-people me-1"></i>
-                                            ${juniorCount} junior${juniorCount !== 1 ? 's' : ''}
-                                        </small>
+                                    <div class="node-details">
+                                        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                            <div class="fw-semibold">${UI.escapeHTML(seniorName)}</div>
+                                            <span class="role-badge role-badge-senior">Senior</span>
+                                        </div>
+                                        ${seniorEmail ? `
+                                            <div class="node-info-text">
+                                                <i class="bi bi-envelope-fill"></i>
+                                                <span>${UI.escapeHTML(seniorEmail)}</span>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    <div class="node-meta">
+                                        <span class="stats-badge" title="Assigned juniors">
+                                            <i class="bi bi-person-badge-fill"></i>
+                                            <span>${juniorCount} junior${juniorCount !== 1 ? 's' : ''}</span>
+                                        </span>
+                                        ${juniorCount > 0 ? `
+                                            <span class="collapse-toggle" onclick="toggleTreeNode('${seniorId}')" title="Expand/Collapse juniors">
+                                                <i class="bi bi-chevron-down"></i>
+                                            </span>
+                                        ` : ''}
                                     </div>
                                 </div>
                             </div>
@@ -354,20 +623,32 @@ function renderHierarchyTree() {
 
                 // Render juniors under this senior
                 if (senior.juniors && senior.juniors.length > 0) {
-                    html += '<div class="hierarchy-children ms-4 mt-2">';
+                    html += '<div class="tree-children">';
                     
-                    senior.juniors.forEach(junior => {
+                    senior.juniors.forEach((junior, juniorIndex) => {
                         const juniorName = junior.name || `Junior #${junior.userId}`;
+                        const juniorEmail = junior.email || '';
                         
                         html += `
-                            <div class="hierarchy-node junior-node mb-2">
-                                <div class="node-card card border-info">
-                                    <div class="card-body p-2">
-                                        <div class="d-flex align-items-center">
-                                            <div class="avatar-circle bg-info text-white me-2" style="width: 28px; height: 28px; font-size: 0.75rem;">
+                            <div class="tree-node junior-node">
+                                <div class="node-card">
+                                    <div class="card-body p-2 py-3">
+                                        <div class="node-content">
+                                            <div class="avatar-circle text-white">
                                                 ${juniorName.charAt(0).toUpperCase()}
                                             </div>
-                                            <div class="small">${UI.escapeHTML(juniorName)}</div>
+                                            <div class="node-details">
+                                                <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                                                    <div class="fw-medium">${UI.escapeHTML(juniorName)}</div>
+                                                    <span class="role-badge role-badge-junior">Junior</span>
+                                                </div>
+                                                ${juniorEmail ? `
+                                                    <div class="node-info-text" style="font-size: 0.8rem;">
+                                                        <i class="bi bi-envelope-fill"></i>
+                                                        <span>${UI.escapeHTML(juniorEmail)}</span>
+                                                    </div>
+                                                ` : ''}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -386,10 +667,113 @@ function renderHierarchyTree() {
 
         html += '</div>'; // Close supervisor node
     });
+    
+    return html;
+}
 
-    html += '</div>'; // Close hierarchy container
+/**
+ * Toggle tree node collapse/expand (global function)
+ */
+window.toggleTreeNode = function(nodeId) {
+    const node = document.getElementById(nodeId);
+    if (!node) return;
+    
+    const isCollapsed = node.classList.contains('collapsed');
+    const icon = node.querySelector('.collapse-toggle i');
+    
+    if (isCollapsed) {
+        // Expand with animation
+        node.classList.remove('collapsed');
+        if (icon) {
+            icon.classList.remove('bi-chevron-right');
+            icon.classList.add('bi-chevron-down');
+        }
+        
+        // Animate children appearing
+        const children = node.querySelector('.tree-children');
+        if (children) {
+            children.style.opacity = '0';
+            children.style.transform = 'translateY(-10px)';
+            setTimeout(() => {
+                children.style.transition = 'opacity 0.3s, transform 0.3s';
+                children.style.opacity = '1';
+                children.style.transform = 'translateY(0)';
+            }, 10);
+        }
+    } else {
+        // Collapse with animation
+        const children = node.querySelector('.tree-children');
+        if (children) {
+            children.style.transition = 'opacity 0.2s, transform 0.2s';
+            children.style.opacity = '0';
+            children.style.transform = 'translateY(-10px)';
+            setTimeout(() => {
+                node.classList.add('collapsed');
+                children.style.transition = '';
+                children.style.opacity = '';
+                children.style.transform = '';
+            }, 200);
+        } else {
+            node.classList.add('collapsed');
+        }
+        
+        if (icon) {
+            icon.classList.remove('bi-chevron-down');
+            icon.classList.add('bi-chevron-right');
+        }
+    }
+};
 
-    treeEl.innerHTML = html;
+/**
+ * Expand all tree nodes
+ */
+function expandAllNodes() {
+    const collapsedNodes = document.querySelectorAll('.tree-node.collapsed');
+    
+    collapsedNodes.forEach((node, index) => {
+        setTimeout(() => {
+            node.classList.remove('collapsed');
+            const icon = node.querySelector('.collapse-toggle i');
+            if (icon) {
+                icon.classList.remove('bi-chevron-right');
+                icon.classList.add('bi-chevron-down');
+            }
+        }, index * 50); // Stagger the expansion for visual effect
+    });
+    
+    if (collapsedNodes.length > 0) {
+        UI.showToast(`Expanded ${collapsedNodes.length} node${collapsedNodes.length !== 1 ? 's' : ''}`, 'success');
+    } else {
+        UI.showToast('All nodes already expanded', 'info');
+    }
+}
+
+/**
+ * Collapse all tree nodes
+ */
+function collapseAllNodes() {
+    const expandableNodes = document.querySelectorAll('.tree-node:not(.admin-node)');
+    let collapsedCount = 0;
+    
+    expandableNodes.forEach((node, index) => {
+        if (node.querySelector('.tree-children') && !node.classList.contains('collapsed')) {
+            setTimeout(() => {
+                node.classList.add('collapsed');
+                const icon = node.querySelector('.collapse-toggle i');
+                if (icon) {
+                    icon.classList.remove('bi-chevron-down');
+                    icon.classList.add('bi-chevron-right');
+                }
+            }, index * 30); // Stagger the collapse for visual effect
+            collapsedCount++;
+        }
+    });
+    
+    if (collapsedCount > 0) {
+        UI.showToast(`Collapsed ${collapsedCount} node${collapsedCount !== 1 ? 's' : ''}`, 'success');
+    } else {
+        UI.showToast('All nodes already collapsed', 'info');
+    }
 }
 
 /**
@@ -419,9 +803,10 @@ function renderRelationshipsTable() {
         const row = document.createElement('tr');
         
         const roleColorMap = {
-            'JUNIOR': 'info',
+            'ADMIN': 'danger',
+            'SUPERVISOR': 'primary',
             'SENIOR': 'success',
-            'SUPERVISOR': 'primary'
+            'JUNIOR': 'info'
         };
 
         const subordinateColor = roleColorMap[rel.subordinateRole] || 'secondary';
@@ -463,7 +848,7 @@ function populateFormOptions() {
     if (createSubordinateSelect) {
         createSubordinateSelect.innerHTML = '<option value="">Select subordinate...</option>';
         
-        // Add juniors and seniors as potential subordinates
+        // Add supervisors, seniors, and juniors as potential subordinates
         const subordinateGroup1 = document.createElement('optgroup');
         subordinateGroup1.label = 'Juniors';
         state.juniors.forEach(junior => {
@@ -489,12 +874,25 @@ function populateFormOptions() {
         if (state.seniors.length > 0) {
             createSubordinateSelect.appendChild(subordinateGroup2);
         }
+
+        const subordinateGroup3 = document.createElement('optgroup');
+        subordinateGroup3.label = 'Supervisors';
+        state.supervisors.forEach(supervisor => {
+            const option = document.createElement('option');
+            option.value = supervisor.userId || supervisor.id;
+            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
+            option.dataset.role = 'SUPERVISOR';
+            subordinateGroup3.appendChild(option);
+        });
+        if (state.supervisors.length > 0) {
+            createSubordinateSelect.appendChild(subordinateGroup3);
+        }
     }
 
     if (createManagerSelect) {
         createManagerSelect.innerHTML = '<option value="">Select manager...</option>';
         
-        // Add seniors and supervisors as potential managers
+        // Add admins, seniors, and supervisors as potential managers
         const managerGroup1 = document.createElement('optgroup');
         managerGroup1.label = 'Seniors';
         state.seniors.forEach(senior => {
@@ -519,6 +917,19 @@ function populateFormOptions() {
         });
         if (state.supervisors.length > 0) {
             createManagerSelect.appendChild(managerGroup2);
+        }
+
+        const managerGroup3 = document.createElement('optgroup');
+        managerGroup3.label = 'Admins';
+        state.admins.forEach(admin => {
+            const option = document.createElement('option');
+            option.value = admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
+            option.dataset.role = 'ADMIN';
+            managerGroup3.appendChild(option);
+        });
+        if (state.admins.length > 0) {
+            createManagerSelect.appendChild(managerGroup3);
         }
     }
 }
@@ -565,6 +976,20 @@ function updateManagerOptions() {
         });
         if (state.supervisors.length > 0) {
             managerSelect.appendChild(supervisorGroup);
+        }
+    } else if (subordinateRole === 'SUPERVISOR') {
+        // Supervisors can only report to admins
+        const adminGroup = document.createElement('optgroup');
+        adminGroup.label = 'Admins';
+        state.admins.forEach(admin => {
+            const option = document.createElement('option');
+            option.value = admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
+            option.dataset.role = 'ADMIN';
+            adminGroup.appendChild(option);
+        });
+        if (state.admins.length > 0) {
+            managerSelect.appendChild(adminGroup);
         }
     }
 }
@@ -654,6 +1079,17 @@ window.editRelationship = function(relationshipId) {
             option.value = supervisor.userId || supervisor.id;
             option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
             if ((supervisor.userId || supervisor.id) === relationship.managerId) {
+                option.selected = true;
+            }
+            managerSelect.appendChild(option);
+        });
+    } else if (relationship.subordinateRole === 'SUPERVISOR') {
+        // Can reassign to different admin
+        state.admins.forEach(admin => {
+            const option = document.createElement('option');
+            option.value = admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
+            if ((admin.userId || admin.id) === relationship.managerId) {
                 option.selected = true;
             }
             managerSelect.appendChild(option);
