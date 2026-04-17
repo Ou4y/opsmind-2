@@ -9,8 +9,41 @@
 
 import AuthService from './authService.js';
 
+// Most AI endpoints are served directly by the Python AI container.
+// Keep API_BASE_URL for backward compatibility, but prefer OPSMIND_AI_API_URL.
 const API_BASE_URL = window.OPSMIND_API_URL || '/api';
 const AI_API_BASE_URL = window.OPSMIND_AI_API_URL || 'http://localhost:8000';
+
+const NORMALIZED_AI_BASE_URL = String(AI_API_BASE_URL).replace(/\/+$/, '');
+
+function buildAiUrl(path) {
+    const normalizedPath = String(path || '').startsWith('/') ? String(path || '') : `/${path}`;
+    return `${NORMALIZED_AI_BASE_URL}${normalizedPath}`;
+}
+
+function toIsoDate(value) {
+    if (!value) return new Date().toISOString();
+    const d = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+}
+
+function normalizeTicketPayload(ticketData = {}) {
+    return {
+        id: ticketData.id || ticketData.ticket_id || ticketData.ticketId,
+        title: String(ticketData.title || ticketData.subject || '').trim(),
+        description: String(ticketData.description || '').trim(),
+        type_of_request: String(ticketData.type_of_request || ticketData.type || 'INCIDENT'),
+        support_level: String(ticketData.support_level || ticketData.supportLevel || 'L1'),
+        priority: ticketData.priority ? String(ticketData.priority) : undefined,
+        created_at: toIsoDate(ticketData.created_at || ticketData.createdAt),
+        requester_id: ticketData.requester_id || ticketData.requesterId,
+        latitude: ticketData.latitude,
+        longitude: ticketData.longitude,
+        building: ticketData.building,
+        room: ticketData.room,
+        assigned_team: ticketData.assigned_team || ticketData.assignedTeam || ticketData.assignee
+    };
+}
 
 /**
  * Handle API response and errors consistently
@@ -47,8 +80,31 @@ const AIService = {
      * @param {string} ticketId - Ticket ID
      * @returns {Promise<Array>} List of AI recommendations
      */
-    async getRecommendations(ticketId) {
-        const response = await fetch(`${API_BASE_URL}/ai/recommendations/${ticketId}`, {
+    async getRecommendations(ticketOrId) {
+        // Prefer model-powered recommendations by sending the ticket payload.
+        if (ticketOrId && typeof ticketOrId === 'object') {
+            const payload = normalizeTicketPayload(ticketOrId);
+            if (payload.title && payload.description && payload.type_of_request) {
+                const response = await fetch(buildAiUrl('/ai/recommendations'), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...AuthService.getAuthHeaders()
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                return handleResponse(response);
+            }
+        }
+
+        const ticketId = String(ticketOrId || '');
+        if (!ticketId) {
+            throw new Error('Ticket ID is required');
+        }
+
+        // Fallback: id-only recommendations.
+        const response = await fetch(buildAiUrl(`/ai/recommendations/${encodeURIComponent(ticketId)}`), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -64,7 +120,7 @@ const AIService = {
      * @returns {Promise<Object>} AI insights data
      */
     async getInsights() {
-        const response = await fetch(`${API_BASE_URL}/ai/insights`, {
+        const response = await fetch(buildAiUrl('/ai/insights'), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -80,7 +136,7 @@ const AIService = {
      * @returns {Promise<Object>} Recommendation count
      */
     async getRecommendationCount() {
-        const response = await fetch(`${API_BASE_URL}/ai/recommendations/count`, {
+        const response = await fetch(buildAiUrl('/ai/recommendations/count'), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -97,7 +153,7 @@ const AIService = {
      * @returns {Promise<Object>} Suggested category and confidence
      */
     async suggestCategory(description) {
-        const response = await fetch(`${API_BASE_URL}/ai/suggest-category`, {
+        const response = await fetch(buildAiUrl('/ai/suggest-category'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -116,7 +172,7 @@ const AIService = {
      * @returns {Promise<Object>} Suggested priority and reasoning
      */
     async suggestPriority(subject, description) {
-        const response = await fetch(`${API_BASE_URL}/ai/suggest-priority`, {
+        const response = await fetch(buildAiUrl('/ai/suggest-priority'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -135,7 +191,7 @@ const AIService = {
      * @returns {Promise<Array>} Similar tickets
      */
     async getSimilarTickets(ticketId, limit = 5) {
-        const response = await fetch(`${API_BASE_URL}/ai/similar-tickets/${ticketId}?limit=${limit}`, {
+        const response = await fetch(buildAiUrl(`/ai/similar-tickets/${encodeURIComponent(ticketId)}?limit=${limit}`), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -152,7 +208,7 @@ const AIService = {
      * @returns {Promise<Object>} Activity summary
      */
     async getActivitySummary(ticketId) {
-        const response = await fetch(`${API_BASE_URL}/ai/activity-summary/${ticketId}`, {
+        const response = await fetch(buildAiUrl(`/ai/activity-summary/${encodeURIComponent(ticketId)}`), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -169,13 +225,14 @@ const AIService = {
      * @returns {Promise<Object>} Predicted resolution time
      */
     async predictResolutionTime(ticketData) {
-        const response = await fetch(`${API_BASE_URL}/ai/predict-resolution`, {
+        const payload = normalizeTicketPayload(ticketData);
+        const response = await fetch(buildAiUrl('/ai/predict-resolution'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 ...AuthService.getAuthHeaders()
             },
-            body: JSON.stringify(ticketData)
+            body: JSON.stringify(payload)
         });
 
         return handleResponse(response);
@@ -187,7 +244,7 @@ const AIService = {
      * @returns {Promise<Array>} Suggested response templates
      */
     async getSuggestedResponses(ticketId) {
-        const response = await fetch(`${API_BASE_URL}/ai/suggested-responses/${ticketId}`, {
+        const response = await fetch(buildAiUrl(`/ai/suggested-responses/${encodeURIComponent(ticketId)}`), {
             method: 'GET',
             headers: {
                 'Content-Type': 'application/json',
@@ -205,20 +262,22 @@ const AIService = {
      * @returns {Promise<Object>} SLA breach percentage and analysis
      */
     async getSLABreachPrediction(ticketData) {
-        // Map ticket data to backend expected format
-        const createdAt = ticketData.createdAt ? new Date(ticketData.createdAt) : new Date();
+        const payload = normalizeTicketPayload(ticketData);
         const requestBody = {
-            support_level: String(ticketData.support_level || ticketData.type || 'INCIDENT'),
-            priority: String(ticketData.priority || 'MEDIUM'),
-            created_hour: Number(createdAt.getHours()),
-            created_day: String(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][createdAt.getDay()]),
-            assigned_team: String(ticketData.assigned_team || ticketData.assignee || 'General Support')
+            ticket_id: payload.id,
+            title: payload.title,
+            description: payload.description,
+            type_of_request: payload.type_of_request,
+            support_level: payload.support_level,
+            priority: payload.priority,
+            created_at: payload.created_at,
+            assigned_team: payload.assigned_team
         };
 
         console.log('AIService - Predicting SLA breach:', requestBody);
-        console.log('AIService - API URL:', `${AI_API_BASE_URL}/predict-sla`);
+        console.log('AIService - API URL:', buildAiUrl('/predict-sla'));
 
-        const response = await fetch(`${AI_API_BASE_URL}/predict-sla`, {
+        const response = await fetch(buildAiUrl('/predict-sla'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -257,9 +316,9 @@ const AIService = {
         };
 
         console.log('AIService - Sending feedback to backend:', requestBody);
-        console.log('AIService - API URL:', `${AI_API_BASE_URL}/feedback/sla`);
+        console.log('AIService - API URL:', buildAiUrl('/feedback/sla'));
 
-        const response = await fetch(`${AI_API_BASE_URL}/feedback/sla`, {
+        const response = await fetch(buildAiUrl('/feedback/sla'), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

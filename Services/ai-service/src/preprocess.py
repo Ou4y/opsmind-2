@@ -48,13 +48,17 @@ CSV_COLUMN_MAP: Dict[str, str] = {
     "Priority": "priority",
 }
 
-# Categorical columns to one-hot encode (shared by training & inference)
+# Categorical columns to one-hot encode.
+#
+# IMPORTANT: Keep this aligned with what the production API can provide at
+# ticket-creation time.
+#
+# The historical CSV contains extra fields (e.g. source/product_group/country)
+# that are not available in the live Ticket payload. If we train with those,
+# inference will always send them as all-zeros → degraded/unstable behaviour.
 CATEGORICAL_COLUMNS: List[str] = [
     "type_of_request",
     "support_level",
-    "source",
-    "product_group",
-    "country",
 ]
 
 # All columns from the CSV that carry lifecycle / leakage info
@@ -210,6 +214,10 @@ def preprocess_for_training(
 
     # Drop columns not needed as features (datetime, raw priority, closed_at)
     df = df.drop(columns=["created_at", "closed_at", "priority"], errors="ignore")
+
+    # Drop CSV-only features that the production API cannot supply.
+    # (We intentionally keep the live feature set small and consistent.)
+    df = df.drop(columns=["source", "product_group", "country"], errors="ignore")
 
     # One-hot encode categorical columns
     df, ohe_columns = one_hot_encode(df)

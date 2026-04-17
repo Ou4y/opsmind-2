@@ -7,11 +7,11 @@ Aligned with the production Ticket schema:
   - type_of_request: INCIDENT | SERVICE_REQUEST | MAINTENANCE
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class PriorityEnum(str, Enum):
@@ -40,15 +40,32 @@ class TicketInput(BaseModel):
     fields that the Ticket Service sends when a ticket is created.
     """
 
+    # Ticket-service-aligned core fields
     title: str = Field(..., min_length=1, description="Ticket title")
     description: str = Field(..., min_length=1, description="Ticket description")
-    support_level: str = Field(..., description="Support level: L1, L2, L3, L4")
-    building: str = Field(..., description="Building name or identifier")
-    room: str = Field(..., description="Room number or identifier")
     type_of_request: str = Field(
         ..., description="Request type: INCIDENT, SERVICE_REQUEST, MAINTENANCE"
     )
-    created_at: datetime = Field(..., description="Ticket creation timestamp")
+
+    # Optional fields (may not exist on all tickets / pages)
+    requester_id: Optional[str] = Field(None, description="User ID/email that created the ticket")
+    latitude: Optional[float] = Field(None, ge=-90, le=90, description="GPS latitude (optional)")
+    longitude: Optional[float] = Field(None, ge=-180, le=180, description="GPS longitude (optional)")
+
+    # Model-related fields
+    support_level: str = Field(
+        default="L1",
+        description="Support level: L1, L2, L3, L4 (defaults to L1)",
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Ticket creation timestamp (defaults to now)",
+        validation_alias=AliasChoices("created_at", "createdAt"),
+    )
+
+    # Legacy/UI-only fields (not used by the current models)
+    building: Optional[str] = Field(None, description="Building identifier (optional)")
+    room: Optional[str] = Field(None, description="Room identifier (optional)")
 
     model_config = {
         "json_schema_extra": {
@@ -91,3 +108,85 @@ class HealthResponse(BaseModel):
     status: str
     models_loaded: bool
     version: str
+
+
+# ── Additional endpoint schemas (frontend integration) ─────────────────────
+
+
+class RecommendationItem(BaseModel):
+    text: str
+
+
+class RecommendationsCountResponse(BaseModel):
+    count: int = Field(..., ge=0)
+    pending: int = Field(..., ge=0)
+
+
+class SuggestCategoryRequest(BaseModel):
+    description: str = Field(..., min_length=1)
+
+
+class SuggestCategoryResponse(BaseModel):
+    category: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class SuggestPriorityRequest(BaseModel):
+    subject: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+
+
+class SuggestPriorityResponse(BaseModel):
+    suggested_priority: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    reasoning: Optional[str] = None
+
+
+class SimilarTicketsResponse(BaseModel):
+    tickets: list[dict]
+
+
+class ActivitySummaryResponse(BaseModel):
+    summary: str
+
+
+class PredictResolutionResponse(BaseModel):
+    estimated_resolution_hours: float = Field(..., ge=0.0)
+
+
+class SLAPredictRequest(BaseModel):
+    # Allow flexible payloads from different pages.
+    ticket_id: Optional[str] = Field(None, validation_alias=AliasChoices("ticket_id", "ticketId"))
+    title: Optional[str] = None
+    description: Optional[str] = None
+    type_of_request: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("type_of_request", "type", "request_type"),
+    )
+    support_level: Optional[str] = None
+    priority: Optional[str] = None
+    created_at: Optional[datetime] = Field(
+        None,
+        validation_alias=AliasChoices("created_at", "createdAt"),
+    )
+    assigned_team: Optional[str] = Field(None, validation_alias=AliasChoices("assigned_team", "assignedTeam"))
+
+    model_config = {"extra": "allow"}
+
+
+class SLAPredictResponse(BaseModel):
+    sla_breach_probability: float = Field(..., ge=0.0, le=100.0)
+    estimated_resolution_hours: Optional[float] = Field(None, ge=0.0)
+    sla_target_hours: Optional[float] = Field(None, ge=0.0)
+    used_priority: Optional[str] = None
+
+
+class SLAFeedbackRequest(BaseModel):
+    ticket_id: str
+    ai_probability: float = Field(..., ge=0.0, le=100.0)
+    admin_decision: int = Field(..., ge=0, le=1)
+    final_outcome: int = Field(..., ge=0, le=1)
+
+
+class StatusResponse(BaseModel):
+    status: str

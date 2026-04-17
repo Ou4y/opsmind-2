@@ -753,7 +753,8 @@ async function loadAIRecommendations(ticketId) {
     if (!container) return;
 
     try {
-        const recommendations = await AIService.getRecommendations(ticketId);
+        const ticket = state.tickets.find(t => t.id === ticketId) || { id: ticketId };
+        const recommendations = await AIService.getRecommendations(ticket);
         
         if (!recommendations || recommendations.length === 0) {
             UI.toggle(section, false);

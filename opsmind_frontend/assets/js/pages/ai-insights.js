@@ -226,7 +226,7 @@ function renderTickets() {
                     </span>
                 </td>
                 <td>
-                    <span class="text-muted">${UI.formatRelativeTime(ticket.createdAt)}</span>
+                    <span class="text-muted">${UI.formatRelativeTime(ticket.created_at || ticket.createdAt)}</span>
                 </td>
                 <td class="text-end">
                     <button class="btn btn-primary btn-sm" data-action="analyze" data-id="${ticket.id}" title="Analyze with AI">
@@ -316,14 +316,9 @@ async function analyzeTicket(ticketId) {
     modalInstance.show();
     
     try {
-        // Call AI service for SLA breach prediction
-        // Send data in format expected by backend
-        const analysisResult = await AIService.getSLABreachPrediction({
-            support_level: ticket.type || 'INCIDENT',
-            priority: ticket.priority || 'MEDIUM',
-            createdAt: ticket.createdAt,
-            assigned_team: ticket.assignee || 'General Support'
-        });
+        // Call AI service for SLA breach prediction.
+        // Send the full ticket object so the backend can use the trained models.
+        const analysisResult = await AIService.getSLABreachPrediction(ticket);
         
         // Parse response - backend returns breach probability
         const parsedResult = parseBackendResponse(analysisResult, ticket);

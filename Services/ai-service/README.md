@@ -44,11 +44,18 @@ production Ticket schema.  The preprocessing module handles the mapping:
 | `Priority`       | `priority`         | Critical merged → HIGH (schema has 3)    |
 
 The API accepts the exact fields the Ticket Service sends at creation time:
-`title`, `description`, `building`, `room`, `type_of_request`, `support_level`, `created_at`.
+`title`, `description`, `type_of_request`, `support_level`, `created_at` (plus optional `requester_id`, `latitude`, `longitude`).
 
-Fields not in the training data (`title`, `description`, `building`, `room`) are
-dropped during inference.  The model relies on `type_of_request`, `support_level`,
-`created_hour`, and `created_weekday`.
+Text/location fields (`title`, `description`, `building`, `room`, GPS) are currently
+dropped during inference. The trained models rely on:
+- `type_of_request`
+- `support_level`
+- `created_hour`
+- `created_weekday`
+
+Note: although the CSV includes additional categorical columns (e.g. `Source`,
+`Product group`, `Country`), the training pipeline intentionally drops them to
+stay aligned with the production ticket-creation payload.
 
 ## Quick Start
 
@@ -128,6 +135,35 @@ docker run -d -p 8000:8000 --network opsmind-net --name opsmind-ai-service opsmi
 ### `GET /health`
 
 Returns service status and whether models are loaded.
+
+---
+
+## Frontend Compatibility Endpoints
+
+The OpsMind frontend includes an `AIService` wrapper that expects additional
+endpoints. This service exposes them so the UI works out-of-the-box when the
+AI container is running.
+
+### `GET /ai/recommendations/count`
+Returns recommendation counters.
+
+### `GET /ai/recommendations/{ticket_id}`
+Returns a small list of actionable recommendations.
+
+### `POST /ai/recommendations`
+Accepts a ticket payload and returns model-informed recommendations.
+
+### `GET /ai/insights`
+Returns basic service/model metadata.
+
+### `POST /ai/predict-resolution`
+Returns `{ estimated_resolution_hours }` for a ticket payload.
+
+### `POST /predict-sla`
+Returns SLA breach probability (0–100) plus optional model-derived estimates.
+
+### `POST /feedback/sla`
+Accepts feedback payload and returns `{ status: "ok" }`.
 
 ---
 
