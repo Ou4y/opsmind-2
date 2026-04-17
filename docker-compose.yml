@@ -173,6 +173,7 @@ services:
 
       AUTH_SERVICE_URL: http://auth-service:3002
       TICKET_SERVICE_URL: http://ticket-service:3000
+      SLA_SERVICE_URL: http://sla-service:3004
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
 
       JWT_SECRET: "opsmind-local-jwt"
@@ -194,12 +195,18 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      auth-service:
+        condition: service_started
+      sla-service:
+        condition: service_started
     environment:
       NODE_ENV: "production"
       PORT: "3000"
 
       DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/Tickets
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+      USER_SERVICE_URL: http://auth-service:3002
+      SLA_SERVICE_URL: http://sla-service:3004
       WORKFLOW_SERVICE_URL: http://workflow-service:3003
 
       CORS_ORIGINS: http://localhost:8085,http://localhost:8080
