@@ -249,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!role || !roles.map(r => r.toUpperCase()).includes(role)) {
         console.warn('Unauthorized role access attempt:', role);
         // keep user on a safe page for their role
-        window.location.href = '/' + (role === 'ADMIN' ? 'admin/domains.html' : 'dashboard.html');
+        window.location.href = role === 'ADMIN' ? '/pages/admin/domains.html' : '/pages/dashboard.html';
     }
 }
 

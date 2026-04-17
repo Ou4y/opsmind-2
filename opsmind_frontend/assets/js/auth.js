@@ -23,23 +23,23 @@ function getRoleBasedDashboard() {
     switch(role) {
         case 'STUDENT':
         case 'DOCTOR':
-            return 'dashboard.html';
+            return '/pages/dashboard.html';
         
         case 'TECHNICIAN':
         case 'JUNIOR':
-            return 'junior-dashboard.html';
+            return '/pages/junior-dashboard.html';
         
         case 'SENIOR':
-            return 'senior-dashboard.html';
+            return '/pages/senior-dashboard.html';
         
         case 'SUPERVISOR':
-            return 'supervisor-dashboard.html';
+            return '/pages/supervisor-dashboard.html';
         
         case 'ADMIN':
-            return 'admin/domains.html';  // Admin sees advanced dashboard
+            return '/pages/admin/domains.html';
         
         default:
-            return 'dashboard.html';  // Fallback to basic dashboard
+            return '/pages/dashboard.html';
     }
 }
 

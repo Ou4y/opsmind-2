@@ -8,7 +8,7 @@
  * - Create, update, delete relationships
  */
 
-import UI from '../ui.js';
+import UI from '/assets/js/ui.js';
 import {
     getTechniciansByLevel,
     getHierarchyTree,
@@ -16,8 +16,8 @@ import {
     createHierarchyRelationship,
     updateHierarchyRelationship,
     deleteHierarchyRelationship
-} from '../../services/workflowService.js';
-import AuthService from '../../services/authService.js';
+} from '/services/workflowService.js';
+import AuthService from '/services/authService.js';
 
 /**
  * Page state

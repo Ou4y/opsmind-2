@@ -11,8 +11,8 @@
 
 import Router from './router.js';
 import UI from './ui.js';
-import AuthService from '../../services/authService.js';
-import NotificationService from '../../services/notificationService.js';
+import AuthService from '/services/authService.js';
+import NotificationService from '/services/notificationService.js';
 
 
 /**

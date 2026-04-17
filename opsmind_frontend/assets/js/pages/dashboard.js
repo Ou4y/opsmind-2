@@ -549,7 +549,7 @@ function renderPriorityTickets(tableBody, emptyState, tickets) {
         const age = getTicketAge(ticket.createdAt);
         
         html += `
-            <tr class="cursor-pointer" onclick="window.location.href='tickets.html?id=${ticket.id}'">
+            <tr class="cursor-pointer" onclick="window.location.href='/pages/tickets.html?id=${ticket.id}'">
                 <td><code>${UI.escapeHTML(ticket.id)}</code></td>
                 <td class="text-truncate" style="max-width: 200px;">${UI.escapeHTML(ticket.subject)}</td>
                 <td><span class="badge ${UI.getStatusBadgeClass(ticket.status)}">${formatStatus(ticket.status)}</span></td>
@@ -641,7 +641,7 @@ function renderActiveWorkflows(tableBody, emptyState, workflows) {
     
     workflows.forEach(workflow => {
         html += `
-            <tr class="cursor-pointer" onclick="window.location.href='workflows.html?id=${workflow.id}'">
+            <tr class="cursor-pointer" onclick="window.location.href='/pages/workflows.html?id=${workflow.id}'">
                 <td>${UI.escapeHTML(workflow.name)}</td>
                 <td><span class="text-muted">${UI.escapeHTML(workflow.trigger)}</span></td>
                 <td><span class="badge badge-execution-${workflow.status}">${formatStatus(workflow.status)}</span></td>

@@ -9,7 +9,7 @@
  */
 
 import UI from '/assets/js/ui.js';
-import AuthService from '../../../services/authService.js';
+import AuthService from '/services/authService.js';
 
 /**
  * Page state
