@@ -143,97 +143,119 @@
     </div>
 
     <div class="modal fade" id="receiveOrderModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content tech-card">
-                <div class="modal-header border-0 pb-0">
-                    <h5 class="modal-title fw-bold tech-gradient-text">Create New Asset</h5>
-                    <button type="button" class="btn-close shadow-none" data-bs-dismiss="modal"></button>
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-plus-circle me-2 text-primary"></i>Create New Asset
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="addAssetForm">
-                        <input type="text" id="assetName" placeholder="Asset Name (e.g. Dell Latitude 5420)" class="form-control rounded-pill mb-3 shadow-sm border-0 px-3" required />
-                        <input type="number" id="assetQuantity" placeholder="Quantity" class="form-control rounded-pill mb-3 shadow-sm border-0 px-3" min="1" required />
-                        
-                        <select id="assetType" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
-                            <option value="">Select Asset Type</option>
-                            <optgroup label="IT & Computing">
-                                <option value="laptop">Laptop</option>
-                                <option value="desktop">Desktop</option>
-                                <option value="tablet">Tablet</option>
-                                <option value="server">Server</option>
-                                <option value="monitor">Monitor</option>
-                                <option value="keyboard">Keyboard</option>
-                                <option value="peripheral">Peripheral</option>
-                                <option value="electronics">Electronics</option>
-                            </optgroup>
-                            <optgroup label="AV & Classroom">
-                                <option value="projector">Projector</option>
-                                <option value="smartboard">Smartboard</option>
-                                <option value="camera">Camera</option>
-                                <option value="microphone">Microphone</option>
-                                <option value="speaker">Speaker System</option>
-                            </optgroup>
-                            <optgroup label="Networking">
-                                <option value="router">Router</option>
-                                <option value="switch">Network Switch</option>
-                                <option value="access_point">Access Point (WiFi)</option>
-                                <option value="firewall">Firewall Appliance</option>
-                            </optgroup>
-                            <optgroup label="Office & Furniture">
-                                <option value="printer">Printer</option>
-                                <option value="scanner">Scanner</option>
-                                <option value="desk">Desk</option>
-                                <option value="chair">Chair</option>
-                                <option value="whiteboard">Whiteboard</option>
-                                <option value="filing_cabinet">Filing Cabinet</option>
-                                <option value="furniture">Furniture</option>
-                            </optgroup>
-                            <optgroup label="Lab & Research">
-                                <option value="microscope">Microscope</option>
-                                <option value="centrifuge">Centrifuge</option>
-                                <option value="oscilloscope">Oscilloscope</option>
-                                <option value="3d_printer">3D Printer</option>
-                            </optgroup>
-                            <optgroup label="Facilities">
-                                <option value="vehicle">University Vehicle</option>
-                                <option value="generator">Generator</option>
-                                <option value="hvac">HVAC Unit</option>
-                                <option value="maintenance_tool">Power Tool</option>
-                            </optgroup>
-                        </select>
-
-                        <select id="assetLocation" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
-                            <option value="">Select Location</option>
-                            <option value="Central Warehouse">Central Warehouse</option>
-                            <option value="Main Building">Main Building</option>
-                            <option value="K Building">K Building</option>
-                            <option value="N Building">N Building</option>
-                            <option value="S Building">S Building</option>
-                            <option value="R Building">R Building</option>
-                            <option value="Pharmacy Building">Pharmacy Building</option>
-                        </select>
-
-                        <select id="assetDepartment" class="form-select rounded-pill mb-3 shadow-sm border-0 px-3" required>
-                            <option value="">Select Department</option>
-                            <option value="Computer Science">Computer Science</option>
-                            <option value="Engineering">Engineering</option>
-                            <option value="Architecture">Architecture</option>
-                            <option value="Business">Business</option>
-                            <option value="Mass Comm">Mass Comm</option>
-                            <option value="Alsun">Alsun</option>
-                            <option value="Pharmacy">Pharmacy</option>
-                            <option value="Dentistry">Dentistry</option>
-                            <option value="Unassigned">Unassigned</option>
-                        </select>
+                        <div class="mb-3">
+                            <label for="assetName" class="form-label">Asset Name <span class="text-danger">*</span></label>
+                            <input type="text" id="assetName" class="form-control" placeholder="e.g. Dell Latitude 5420" required />
+                        </div>
 
                         <div class="mb-3">
-                            <label class="form-label small fw-bold text-primary ms-2">Technical Specs (Optional)</label>
-                            <textarea id="assetSpecs" class="form-control shadow-sm border-0" style="border-radius: 15px; resize: none;" rows="3" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen&#10;Storage: 512GB SSD"></textarea>
-                            <div class="form-text small ms-2">Enter one spec per line (Key: Value)</div>
+                            <label for="assetQuantity" class="form-label">Quantity <span class="text-danger">*</span></label>
+                            <input type="number" id="assetQuantity" class="form-control" placeholder="1" min="1" required />
                         </div>
-                        
-                        <button type="submit" class="btn btn-modern btn-modern-primary w-100">Create Assets</button>
+
+                        <div class="mb-3">
+                            <label for="assetType" class="form-label">Asset Type <span class="text-danger">*</span></label>
+                            <select id="assetType" class="form-select" required>
+                                <option value="">Select Asset Type</option>
+                                <optgroup label="IT & Computing">
+                                    <option value="laptop">Laptop</option>
+                                    <option value="desktop">Desktop</option>
+                                    <option value="tablet">Tablet</option>
+                                    <option value="server">Server</option>
+                                    <option value="monitor">Monitor</option>
+                                    <option value="keyboard">Keyboard</option>
+                                    <option value="peripheral">Peripheral</option>
+                                    <option value="electronics">Electronics</option>
+                                </optgroup>
+                                <optgroup label="AV & Classroom">
+                                    <option value="projector">Projector</option>
+                                    <option value="smartboard">Smartboard</option>
+                                    <option value="camera">Camera</option>
+                                    <option value="microphone">Microphone</option>
+                                    <option value="speaker">Speaker System</option>
+                                </optgroup>
+                                <optgroup label="Networking">
+                                    <option value="router">Router</option>
+                                    <option value="switch">Network Switch</option>
+                                    <option value="access_point">Access Point (WiFi)</option>
+                                    <option value="firewall">Firewall Appliance</option>
+                                </optgroup>
+                                <optgroup label="Office & Furniture">
+                                    <option value="printer">Printer</option>
+                                    <option value="scanner">Scanner</option>
+                                    <option value="desk">Desk</option>
+                                    <option value="chair">Chair</option>
+                                    <option value="whiteboard">Whiteboard</option>
+                                    <option value="filing_cabinet">Filing Cabinet</option>
+                                    <option value="furniture">Furniture</option>
+                                </optgroup>
+                                <optgroup label="Lab & Research">
+                                    <option value="microscope">Microscope</option>
+                                    <option value="centrifuge">Centrifuge</option>
+                                    <option value="oscilloscope">Oscilloscope</option>
+                                    <option value="3d_printer">3D Printer</option>
+                                </optgroup>
+                                <optgroup label="Facilities">
+                                    <option value="vehicle">University Vehicle</option>
+                                    <option value="generator">Generator</option>
+                                    <option value="hvac">HVAC Unit</option>
+                                    <option value="maintenance_tool">Power Tool</option>
+                                </optgroup>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="assetLocation" class="form-label">Location <span class="text-danger">*</span></label>
+                            <select id="assetLocation" class="form-select" required>
+                                <option value="">Select Location</option>
+                                <option value="Central Warehouse">Central Warehouse</option>
+                                <option value="Main Building">Main Building</option>
+                                <option value="K Building">K Building</option>
+                                <option value="N Building">N Building</option>
+                                <option value="S Building">S Building</option>
+                                <option value="R Building">R Building</option>
+                                <option value="Pharmacy Building">Pharmacy Building</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="assetDepartment" class="form-label">Department <span class="text-danger">*</span></label>
+                            <select id="assetDepartment" class="form-select" required>
+                                <option value="">Select Department</option>
+                                <option value="Computer Science">Computer Science</option>
+                                <option value="Engineering">Engineering</option>
+                                <option value="Architecture">Architecture</option>
+                                <option value="Business">Business</option>
+                                <option value="Mass Comm">Mass Comm</option>
+                                <option value="Alsun">Alsun</option>
+                                <option value="Pharmacy">Pharmacy</option>
+                                <option value="Dentistry">Dentistry</option>
+                                <option value="Unassigned">Unassigned</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="assetSpecs" class="form-label">Technical Specs <span class="text-muted fw-normal">(Optional)</span></label>
+                            <textarea id="assetSpecs" class="form-control font-monospace" rows="3" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen&#10;Storage: 512GB SSD"></textarea>
+                            <div class="form-text">Enter one spec per line (Key: Value)</div>
+                        </div>
                     </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" form="addAssetForm" class="btn btn-primary">
+                        <i class="bi bi-plus-lg me-1"></i> Create Assets
+                    </button>
                 </div>
             </div>
         </div>
