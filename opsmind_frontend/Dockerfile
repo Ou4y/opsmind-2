@@ -11,7 +11,7 @@ RUN apk add --no-cache gettext && npm -g install serve@14
 # Copy static site content
 COPY . .
 
-RUN chmod +x /app/docker-entrypoint.sh
+RUN sed -i 's/\r//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 85
 

@@ -38,7 +38,7 @@ COPY --from=builder /app/node_modules/.bin ./node_modules/.bin
 COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/dist ./dist
 COPY start.sh ./start.sh
-RUN chmod +x ./start.sh
+RUN sed -i 's/\r//' ./start.sh && chmod +x ./start.sh
 
 # Ensure the runtime user can run Prisma (it may write engine files on first run)
 RUN chown -R appuser:nodejs /app/node_modules /app/prisma /app/dist
