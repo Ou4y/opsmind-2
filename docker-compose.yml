@@ -332,7 +332,7 @@ services:
       NODE_ENV: production
       PORT: 80
     ports:
-      - "8085:85"
+      - "8085:80"
     networks:
       - opsmind-net
     restart: unless-stopped
