@@ -225,6 +225,9 @@ async function loadAllData() {
         // Hide loading, show content
         hideLoading();
 
+        // Update summary stat pills
+        updateStatPills();
+
         // Render all sections
         console.log('[Hierarchy] Starting to render all sections...');
         
@@ -444,6 +447,23 @@ function extractRelationships() {
 }
 
 /**
+ * Update summary stat pills in the hero section
+ */
+function updateStatPills() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    set('statAdmins', state.admins.length);
+    set('statSupervisors', state.supervisors.length);
+    set('statSeniors', state.seniors.length);
+    set('statJuniors', state.juniors.length);
+    set('relationshipCount', state.relationships.length);
+    set('relCountBadge', state.relationships.length);
+    set('adminsCountBadge', state.admins.length);
+    set('supervisorsCountBadge', state.supervisors.length);
+    set('seniorsCountBadge', state.seniors.length);
+    set('juniorsCountBadge', state.juniors.length);
+}
+
+/**
  * Show loading state
  */
 function showLoading() {
@@ -508,26 +528,25 @@ function renderTechnicianList(level, technicians, color) {
 
     listEl.innerHTML = '';
 
+    // Map Bootstrap color names to CSS class names used in new design
+    const cssLevelMap = { danger: 'admin', primary: 'supervisor', success: 'senior', info: 'junior' };
+    const cssLevel = cssLevelMap[color] || color;
+    const roleName = level.slice(0, -1).toUpperCase();
+
     technicians.forEach(tech => {
         const item = document.createElement('div');
-        item.className = 'list-group-item list-group-item-action';
+        item.className = 'member-row';
         
         const name = tech.name || tech.username || `User #${tech.userId || tech.id}`;
-        const email = tech.email || 'No email';
+        const email = tech.email || '';
         
         item.innerHTML = `
-            <div class="d-flex align-items-center">
-                <div class="avatar-circle bg-${color} text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
-                    ${name.charAt(0).toUpperCase()}
-                </div>
-                <div class="flex-grow-1">
-                    <div class="fw-semibold">${UI.escapeHTML(name)}</div>
-                    <small class="text-muted">${UI.escapeHTML(email)}</small>
-                </div>
-                <span class="badge bg-${color}-subtle text-${color}">
-                    ${level.slice(0, -1).toUpperCase()}
-                </span>
+            <div class="member-avatar ${cssLevel}">${name.charAt(0).toUpperCase()}</div>
+            <div class="member-info">
+                <div class="member-name">${UI.escapeHTML(name)}</div>
+                ${email ? `<div class="member-email">${UI.escapeHTML(email)}</div>` : ''}
             </div>
+            <span class="member-badge ${cssLevel}">${roleName}</span>
         `;
 
         listEl.appendChild(item);
@@ -914,6 +933,9 @@ function renderRelationshipsTable() {
     if (countEl) {
         countEl.textContent = state.relationships.length;
     }
+    // Also update the new badge elements
+    const relCountBadge = document.getElementById('relCountBadge');
+    if (relCountBadge) relCountBadge.textContent = state.relationships.length;
 
     if (state.relationships.length === 0) {
         if (emptyEl) emptyEl.classList.remove('d-none');
@@ -926,35 +948,40 @@ function renderRelationshipsTable() {
 
     tableBodyEl.innerHTML = '';
 
-    state.relationships.forEach(rel => {
-        const row = document.createElement('tr');
-        
-        const roleColorMap = {
-            'ADMIN': 'danger',
-            'SUPERVISOR': 'primary',
-            'SENIOR': 'success',
-            'JUNIOR': 'info'
-        };
+    const roleCssMap = {
+        'ADMIN': 'admin', 'SUPERVISOR': 'supervisor', 'SENIOR': 'senior', 'JUNIOR': 'junior'
+    };
 
-        const subordinateColor = roleColorMap[rel.subordinateRole] || 'secondary';
-        const managerColor = roleColorMap[rel.managerRole] || 'secondary';
+    state.relationships.forEach((rel, idx) => {
+        const row = document.createElement('tr');
+        const subCss  = roleCssMap[rel.subordinateRole]  || 'junior';
+        const mgrCss  = roleCssMap[rel.managerRole]      || 'admin';
+        const subInit = (rel.subordinateName || '?').charAt(0).toUpperCase();
+        const mgrInit = (rel.managerName     || '?').charAt(0).toUpperCase();
 
         row.innerHTML = `
-            <td>${rel.id}</td>
-            <td>${UI.escapeHTML(rel.subordinateName)}</td>
-            <td><span class="badge bg-${subordinateColor}">${rel.subordinateRole}</span></td>
-            <td>${UI.escapeHTML(rel.managerName)}</td>
-            <td><span class="badge bg-${managerColor}">${rel.managerRole}</span></td>
-            <td>${UI.formatDate(rel.createdAt)}</td>
+            <td style="color:#9ca3af;font-size:.82rem;">${idx + 1}</td>
             <td>
-                <button class="btn btn-sm btn-outline-primary me-1" 
-                        onclick="window.editRelationship(${rel.id})"
-                        title="Edit relationship">
+                <div class="rel-person">
+                    <div class="rel-avatar ${subCss}">${subInit}</div>
+                    <span class="rel-name">${UI.escapeHTML(rel.subordinateName)}</span>
+                </div>
+            </td>
+            <td><span class="rel-role-badge ${subCss}">${rel.subordinateRole}</span></td>
+            <td><i class="bi bi-arrow-right rel-arrow"></i></td>
+            <td>
+                <div class="rel-person">
+                    <div class="rel-avatar ${mgrCss}">${mgrInit}</div>
+                    <span class="rel-name">${UI.escapeHTML(rel.managerName)}</span>
+                </div>
+            </td>
+            <td><span class="rel-role-badge ${mgrCss}">${rel.managerRole}</span></td>
+            <td style="color:#6b7280;font-size:.82rem;">${UI.formatDate(rel.createdAt)}</td>
+            <td>
+                <button class="rel-action-btn edit" onclick="window.editRelationship(${rel.id})" title="Edit">
                     <i class="bi bi-pencil"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-danger" 
-                        onclick="window.deleteRelationship(${rel.id})"
-                        title="Delete relationship">
+                <button class="rel-action-btn delete ms-1" onclick="window.deleteRelationship(${rel.id})" title="Delete">
                     <i class="bi bi-trash"></i>
                 </button>
             </td>

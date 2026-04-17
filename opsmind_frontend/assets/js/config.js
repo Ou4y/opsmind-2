@@ -14,5 +14,5 @@ window.OPSMIND_WORKFLOW_API_URL = window.OPSMIND_WORKFLOW_API_URL || 'http://loc
 window.OPSMIND_AI_API_URL = window.OPSMIND_AI_API_URL || 'http://localhost:8000';  // AI/ML Service
 
 // Google Gemini AI Configuration
-window.GEMINI_API_KEY = 'AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78';
-window.GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent';
+window.GEMINI_API_KEY = window.GEMINI_API_KEY || '';
+window.GEMINI_API_URL = window.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent';

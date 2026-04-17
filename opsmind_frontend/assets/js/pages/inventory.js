@@ -280,8 +280,9 @@ function renderTable() {
 async function handleAddAsset(e) {
   e.preventDefault();
 
-  const submitBtn = e.target.querySelector('button[type="submit"]');
-  const originalText = submitBtn.innerHTML;
+  // The submit button lives outside the <form> (in modal-footer) so querySelector on the form won't find it
+  const submitBtn = document.querySelector('button[form="addAssetForm"][type="submit"]');
+  const originalText = submitBtn ? submitBtn.innerHTML : '';
   
   const name = document.getElementById('assetName').value;
   const quantity = parseInt(document.getElementById('assetQuantity').value, 10);
@@ -356,8 +357,10 @@ async function handleAddAsset(e) {
       confirmButtonColor: '#4361ee'
     });
   } finally {
-    submitBtn.innerHTML = originalText;
-    submitBtn.disabled = false;
+    if (submitBtn) {
+      submitBtn.innerHTML = originalText;
+      submitBtn.disabled = false;
+    }
   }
 }
 

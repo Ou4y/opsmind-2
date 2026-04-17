@@ -23,7 +23,7 @@ const GeminiService = {
         try {
             // Check if API key is configured
             if (!GEMINI_API_KEY) {
-                throw new Error('Gemini API key is not configured. Please add your API key to config.js');
+                throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY in your .env file and restart the frontend container.');
             }
 
             // Build the conversation context
@@ -87,7 +87,7 @@ const GeminiService = {
             
             // Provide helpful error messages
             if (error.message.includes('API key')) {
-                throw new Error('Please configure your Gemini API key in config.js');
+                throw new Error('Please configure GEMINI_API_KEY in your .env file and restart the frontend container.');
             }
             
             if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
