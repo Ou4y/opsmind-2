@@ -196,7 +196,20 @@ async function loadAllData() {
         state.supervisors = supervisorsRes.success ? (supervisorsRes.data || []) : [];
         state.seniors = seniorsRes.success ? (seniorsRes.data || []) : [];
         state.juniors = juniorsRes.success ? (juniorsRes.data || []) : [];
-        state.hierarchyTree = treeRes.success ? (treeRes.data || []) : [];
+
+        // API returns { data: { relationships: [...], technicians: [...] } } — build nested tree
+        const rawTreeData = treeRes.success ? (treeRes.data || {}) : {};
+        if (Array.isArray(rawTreeData)) {
+            state.hierarchyTree = rawTreeData;
+        } else {
+            state.hierarchyTree = buildTreeFromFlatData(
+                rawTreeData.relationships || [],
+                rawTreeData.technicians || [],
+                state.supervisors,
+                state.seniors,
+                state.juniors
+            );
+        }
 
         console.log('[Hierarchy] Loaded data:', {
             admins: state.admins.length,
@@ -249,6 +262,120 @@ async function loadAllData() {
         console.error('[Hierarchy] Error loading hierarchy data:', error);
         showError(error.message || 'Failed to load hierarchy data. Please check the console for details.');
     }
+}
+
+/**
+ * Build a nested supervisor→senior→junior tree from the flat API response.
+ * The /hierarchy/tree endpoint returns { relationships: [...], technicians: [...] }
+ * but the rendering code expects an array of supervisor nodes with .seniors[].juniors[].
+ *
+ * @param {Array} relationships - Flat relationship list from API
+ * @param {Array} technicians   - Flat technician list from API
+ * @param {Array} supervisors   - Already-loaded supervisors (fallback if API tech list is empty)
+ * @param {Array} seniors       - Already-loaded seniors (fallback)
+ * @param {Array} juniors       - Already-loaded juniors (fallback)
+ * @returns {Array} Nested tree ready for renderSupervisors()
+ */
+function buildTreeFromFlatData(relationships, technicians, supervisors, seniors, juniors) {
+    // Build a quick lookup: user_id → tech object
+    const techMap = {};
+
+    // Use API technicians first, fall back to already-fetched level lists
+    const allTechs = technicians.length > 0
+        ? technicians
+        : [...supervisors, ...seniors, ...juniors];
+
+    // Build a map: childUserId → real relationship record (for real DB IDs)
+    const relByChild = {};
+    relationships.forEach(r => {
+        const child = r.child_user_id || r.childUserId;
+        if (child) relByChild[child] = r;
+    });
+
+    allTechs.forEach(t => {
+        const uid = t.user_id || t.userId || t.id;
+        if (!uid) return;
+        const rel = relByChild[uid];
+        techMap[uid] = {
+            userId: uid,
+            name: t.name || t.username || `User #${uid}`,
+            email: t.email || '',
+            level: (t.level || '').toUpperCase(),
+            relationshipId: (rel && (rel.id || rel.relationship_id)) || null,
+            createdAt: (rel && (rel.createdAt || rel.created_at)) || t.createdAt || t.created_at || null,
+            seniors: [],
+            juniors: []
+        };
+    });
+
+    // Build parent→children maps from relationships
+    const seniorsBySupervisor = {};  // supervisorId → [seniorId]
+    const juniorsBySenior = {};      // seniorId    → [juniorId]
+
+    relationships.forEach(r => {
+        const child  = r.child_user_id  || r.childUserId;
+        const parent = r.parent_user_id || r.parentUserId;
+        const type   = r.relationship_type || r.relationshipType || '';
+
+        if (!child || !parent) return;
+
+        if (type === 'SENIOR_TO_SUPERVISOR' || type === 'SUPERVISOR_TO_SENIOR') {
+            if (!seniorsBySupervisor[parent]) seniorsBySupervisor[parent] = [];
+            seniorsBySupervisor[parent].push(child);
+        } else if (type === 'JUNIOR_TO_SENIOR' || type === 'SENIOR_TO_JUNIOR') {
+            if (!juniorsBySenior[parent]) juniorsBySenior[parent] = [];
+            juniorsBySenior[parent].push(child);
+        }
+    });
+
+    // Collect supervisor-level users
+    const supervisorIds = new Set([
+        ...Object.keys(seniorsBySupervisor).map(Number),
+        ...allTechs.filter(t => (t.level || '').toUpperCase() === 'SUPERVISOR')
+                   .map(t => t.user_id || t.userId || t.id)
+    ]);
+
+    const tree = [];
+
+    supervisorIds.forEach(supId => {
+        const supNode = techMap[supId]
+            ? { ...techMap[supId], seniors: [] }
+            : { userId: supId, name: `Supervisor #${supId}`, email: '', level: 'SUPERVISOR', seniors: [] };
+
+        const seniorIds = seniorsBySupervisor[supId] || [];
+        seniorIds.forEach(senId => {
+            const senNode = techMap[senId]
+                ? { ...techMap[senId], juniors: [] }
+                : { userId: senId, name: `Senior #${senId}`, email: '', level: 'SENIOR', juniors: [] };
+
+            const juniorIds = juniorsBySenior[senId] || [];
+            juniorIds.forEach(junId => {
+                const junNode = techMap[junId]
+                    || { userId: junId, name: `Junior #${junId}`, email: '', level: 'JUNIOR' };
+                senNode.juniors.push({ ...junNode });
+            });
+
+            supNode.seniors.push(senNode);
+        });
+
+        tree.push(supNode);
+    });
+
+    // If no relationships exist yet, show supervisors as empty root nodes
+    if (tree.length === 0 && supervisors.length > 0) {
+        supervisors.forEach(sup => {
+            const uid = sup.user_id || sup.userId || sup.id;
+            tree.push({
+                userId: uid,
+                name: sup.name || sup.username || `Supervisor #${uid}`,
+                email: sup.email || '',
+                level: 'SUPERVISOR',
+                seniors: []
+            });
+        });
+    }
+
+    return tree;
 }
 
 /**
@@ -1005,8 +1132,10 @@ async function handleCreateRelationship() {
         return;
     }
 
-    const subordinateId = parseInt(document.getElementById('createSubordinateId').value);
+    const subordinateSelect = document.getElementById('createSubordinateId');
+    const subordinateId = parseInt(subordinateSelect.value);
     const managerId = parseInt(document.getElementById('createManagerId').value);
+    const subordinateRole = subordinateSelect.options[subordinateSelect.selectedIndex]?.dataset.role;
 
     if (!subordinateId || !managerId) {
         UI.showToast('Please select both subordinate and manager', 'warning');
@@ -1019,12 +1148,25 @@ async function handleCreateRelationship() {
         return;
     }
 
+    // Determine relationship type from subordinate role
+    const relationshipTypeMap = {
+        'JUNIOR':     'JUNIOR_TO_SENIOR',
+        'SENIOR':     'SENIOR_TO_SUPERVISOR',
+        'SUPERVISOR': 'SUPERVISOR_TO_ADMIN'
+    };
+    const relationshipType = relationshipTypeMap[subordinateRole];
+    if (!relationshipType) {
+        UI.showToast('Could not determine relationship type. Please re-select the subordinate.', 'error');
+        return;
+    }
+
     UI.showToast('Creating relationship...', 'info');
 
     try {
         const response = await createHierarchyRelationship({
-            subordinate_id: subordinateId,
-            manager_id: managerId
+            childUserId: subordinateId,
+            parentUserId: managerId,
+            relationshipType
         });
 
         if (response.success) {
@@ -1120,9 +1262,29 @@ async function handleUpdateRelationship() {
 
     UI.showToast('Updating relationship...', 'info');
 
+    // Get the child user ID from current state
+    const existingRelationship = state.relationships.find(r => r.id === relationshipId);
+    if (!existingRelationship) {
+        UI.showToast('Relationship not found in state', 'error');
+        return;
+    }
+
+    const relationshipTypeMap = {
+        'JUNIOR':     'JUNIOR_TO_SENIOR',
+        'SENIOR':     'SENIOR_TO_SUPERVISOR',
+        'SUPERVISOR': 'SUPERVISOR_TO_ADMIN'
+    };
+    const relationshipType = relationshipTypeMap[existingRelationship.subordinateRole];
+    if (!relationshipType) {
+        UI.showToast('Could not determine relationship type', 'error');
+        return;
+    }
+
     try {
-        const response = await updateHierarchyRelationship(relationshipId, {
-            manager_id: newManagerId
+        const response = await updateHierarchyRelationship({
+            childUserId: existingRelationship.subordinateId,
+            parentUserId: newManagerId,
+            relationshipType
         });
 
         if (response.success) {
@@ -1162,7 +1324,10 @@ window.deleteRelationship = async function(relationshipId) {
     UI.showToast('Deleting relationship...', 'info');
 
     try {
-        const response = await deleteHierarchyRelationship(relationshipId);
+        const response = await deleteHierarchyRelationship(
+            relationship.subordinateId,
+            relationship.managerId
+        );
 
         if (response.success) {
             UI.showToast('Relationship deleted successfully!', 'success');

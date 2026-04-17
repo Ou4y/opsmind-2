@@ -10,7 +10,7 @@
  */
 
 import UI from '/assets/js/ui.js';
-import { getSupervisorDashboard } from '/services/workflowService.js';
+import { getSupervisorDashboard, resolveWorkflowUserId } from '/services/workflowService.js';
 import AuthService from '/services/authService.js';
 
 /**
@@ -80,9 +80,18 @@ async function loadDashboardData() {
     showLoading();
     
     try {
-        console.log('Loading supervisor dashboard for user:', state.currentUser.id);
+        // Resolve numeric workflow user_id from the auth UUID via email lookup
+        const workflowUserId = await resolveWorkflowUserId(state.currentUser.email, 'SUPERVISOR');
+        if (!workflowUserId) {
+            throw new Error(
+                `Your account (${state.currentUser.email}) was not found in the technician system. ` +
+                `Please contact your administrator to ensure your supervisor profile is set up.`
+            );
+        }
+
+        console.log('Loading supervisor dashboard for workflow user_id:', workflowUserId);
         
-        const response = await getSupervisorDashboard(state.currentUser.id);
+        const response = await getSupervisorDashboard(workflowUserId);
         
         if (!response.success || !response.data) {
             throw new Error(response.message || 'Failed to load dashboard data');

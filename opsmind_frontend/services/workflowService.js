@@ -688,8 +688,27 @@ export async function getSeniorDashboard(userId) {
 }
 
 /**
+ * Resolve the numeric workflow user_id for the current user by matching their email
+ * against the technicians table. Needed because auth service uses UUID strings
+ * while the workflow service uses integer user_ids.
+ * @param {string} email - User's email address
+ * @param {string} level - Technician level: "JUNIOR"|"SENIOR"|"SUPERVISOR"|"ADMIN"
+ * @returns {Promise<number|null>} Numeric user_id or null if not found
+ */
+export async function resolveWorkflowUserId(email, level) {
+    try {
+        const response = await getTechniciansByLevel(level);
+        if (!response.success || !Array.isArray(response.data)) return null;
+        const match = response.data.find(t => t.email === email);
+        return match ? (match.user_id || match.userId || null) : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Get SUPERVISOR dashboard showing team structure and metrics
- * @param {number} userId - Supervisor user ID from auth service
+ * @param {number} userId - Numeric technician user_id (from workflow service, NOT auth UUID)
  * @returns {Promise<Object>} Supervisor dashboard data
  * @example
  * const dashboard = await getSupervisorDashboard(100);
@@ -799,12 +818,13 @@ export async function createHierarchyRelationship(data) {
  *   parentUserId: 2  // Reassign from Senior M (1) to Senior N (2)
  * });
  */
-export async function updateHierarchyRelationship(relationshipId, data) {
-    return workflowRequest(`/workflow/admin/hierarchy/relationships/${relationshipId}`, {
+export async function updateHierarchyRelationship(data) {
+    return workflowRequest('/workflow/admin/hierarchy/relationships', {
         method: 'PUT',
         body: JSON.stringify({
             childUserId: data.childUserId,
-            parentUserId: data.parentUserId
+            parentUserId: data.parentUserId,
+            relationshipType: data.relationshipType
         })
     });
 }
@@ -817,9 +837,10 @@ export async function updateHierarchyRelationship(relationshipId, data) {
  * const result = await deleteHierarchyRelationship(7);
  * // Returns: { success: true, message: "Relationship deleted successfully" }
  */
-export async function deleteHierarchyRelationship(relationshipId) {
-    return workflowRequest(`/workflow/admin/hierarchy/relationships/${relationshipId}`, {
-        method: 'DELETE'
+export async function deleteHierarchyRelationship(childUserId, parentUserId) {
+    return workflowRequest('/workflow/admin/hierarchy/relationships', {
+        method: 'DELETE',
+        body: JSON.stringify({ childUserId, parentUserId })
     });
 }
 
@@ -870,6 +891,7 @@ const WorkflowService = {
     getRecentActivity,
     getSeniorDashboard,
     getSupervisorDashboard,
+    resolveWorkflowUserId,
     
     // Group Management
     getGroupInfo,

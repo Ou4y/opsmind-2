@@ -17,86 +17,128 @@
     <div class="app-wrapper">
         <div id="sidebar-container"></div>
 
-        <main class="main-content"> 
-            
-            <div id="eolAlertBanner" style="display: none;"></div>
+        <main class="main-content">
 
-            <div class="d-flex justify-content-between align-items-center mb-4 fade-in-bounce delay-1">
-                <div>
-                    <h2 class="h2 mb-1 tech-gradient-text">University Inventory</h2>
-                    <p class="text-muted small mb-0 fw-bold"><i class="bi bi-cpu text-primary me-1"></i> Grouped View</p>
+            <!-- Page Header -->
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">
+                        <i class="bi bi-boxes me-2 text-primary"></i>University Inventory
+                    </h1>
+                    <p class="page-subtitle">Asset management, tracking, and lifecycle reporting</p>
                 </div>
-                
-                <div class="d-flex gap-2 align-items-start">
-                    <div class="input-group input-group-sm search-input-group bg-white">
-                        <span class="input-group-text bg-transparent border-0"><i class="bi bi-search text-primary"></i></span>
-                        <input type="text" id="searchInput" class="form-control border-0 bg-transparent shadow-none" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
-                    </div>
-
-                    <button class="btn btn-dark btn-modern shadow-sm mb-3" id="printLabelsBtn" onclick="window.printQRLabels('ALL')">
-                        <i class="bi bi-qr-code"></i> Print Labels
+                <div class="page-header-actions">
+                    <button class="btn btn-outline-secondary" id="printLabelsBtn" onclick="window.printQRLabels('ALL')">
+                        <i class="bi bi-qr-code me-1"></i> Print Labels
                     </button>
-
-                    <button class="btn btn-outline-success btn-modern btn-modern-success mb-3" onclick="exportAssetsToDetailedPDF()">
-                        <i class="bi bi-file-pdf"></i> Export PDF
+                    <button class="btn btn-outline-success" onclick="exportAssetsToDetailedPDF()">
+                        <i class="bi bi-file-pdf me-1"></i> Export PDF
                     </button>
-
-                    <button class="btn btn-outline-danger btn-modern btn-modern-danger mb-3" onclick="generateEOLReport()">
-                        <i class="bi bi-graph-up-arrow"></i> EOL Budget
+                    <button class="btn btn-outline-danger" onclick="generateEOLReport()">
+                        <i class="bi bi-graph-up-arrow me-1"></i> EOL Budget
                     </button>
-
-                    <button class="btn btn-modern btn-create-asset mb-3 d-flex align-items-center gap-2 shadow" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
-                        <i class="bi bi-plus-lg border border-2 border-white rounded-circle p-1" style="font-size: 0.7rem;"></i> Create Asset
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
+                        <i class="bi bi-plus-lg me-1"></i> Create Asset
                     </button>
                 </div>
             </div>
 
-            <div class="card tech-card mb-4 fade-in-bounce delay-2">
-                <div class="card-body py-3">
-                    <div class="row g-3 align-items-center">
-                        <div class="col-auto">
-                            <span class="fw-bold text-primary small"><i class="bi bi-funnel-fill me-1"></i> FILTERS:</span>
-                        </div>
-                        <div class="col-md-3">
-                            <select id="filterBuilding" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
-                                <option value="all">All Buildings</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <select id="filterDept" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
-                                <option value="all">All Departments</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <select id="filterType" class="form-select form-select-sm rounded-pill border-0 shadow-sm bg-white" onchange="syncFilters()">
-                                <option value="all">All Asset Types</option>
-                            </select>
-                        </div>
-                        <div class="col-md-2">
-                            <button class="btn btn-light btn-sm w-100 rounded-pill shadow-sm fw-bold text-secondary" onclick="resetFilters()">Reset</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <!-- Page Content -->
+            <div class="page-content">
 
-            <div class="card tech-card fade-in-bounce delay-3">
-                <div class="card-body p-0">
-                    <div class="table-responsive" style="border-radius: 20px; overflow: hidden;">
-                        <table class="table table-hover align-middle mb-0" id="groupTable">
-                            <thead style="background: rgba(248,249,250,0.6);">
-                                <tr class="text-uppercase small text-muted">
-                                    <th class="ps-4 py-3 border-0">Asset Name</th>
-                                    <th class="border-0">Type</th>
-                                    <th class="border-0 text-center">Total Qty</th>
-                                    <th class="border-0">Locations Found</th>
-                                    <th class="text-end pe-4 border-0">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="inventoryTableBody"></tbody>
-                        </table>
+                <!-- EOL Alert Banner (populated dynamically by inventory.js) -->
+                <div id="eolAlertBanner" style="display: none;"></div>
+
+                <!-- Filters Card -->
+                <div class="card filter-card mb-4">
+                    <div class="card-body">
+                        <div class="row g-3 align-items-end">
+                            <!-- Search -->
+                            <div class="col-12 col-md-4 col-lg-3">
+                                <label for="searchInput" class="form-label">Search</label>
+                                <div class="input-group">
+                                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                    <input type="text" id="searchInput" class="form-control" placeholder="Search name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
+                                </div>
+                            </div>
+                            <!-- Building Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="filterBuilding" class="form-label">Building</label>
+                                <select id="filterBuilding" class="form-select" onchange="syncFilters()">
+                                    <option value="all">All Buildings</option>
+                                </select>
+                            </div>
+                            <!-- Department Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="filterDept" class="form-label">Department</label>
+                                <select id="filterDept" class="form-select" onchange="syncFilters()">
+                                    <option value="all">All Departments</option>
+                                </select>
+                            </div>
+                            <!-- Asset Type Filter -->
+                            <div class="col-6 col-md-4 col-lg-2">
+                                <label for="filterType" class="form-label">Asset Type</label>
+                                <select id="filterType" class="form-select" onchange="syncFilters()">
+                                    <option value="all">All Asset Types</option>
+                                </select>
+                            </div>
+                            <!-- Reset -->
+                            <div class="col-6 col-md-4 col-lg-1 d-flex align-items-end">
+                                <button class="btn btn-outline-secondary w-100" onclick="resetFilters()">
+                                    <i class="bi bi-x-lg"></i>
+                                    <span class="d-none d-xl-inline ms-1">Reset</span>
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
+
+                <!-- Inventory Table Card -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-table me-2"></i>Asset Groups
+                        </h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0" id="groupTable">
+                                <thead>
+                                    <tr>
+                                        <th>Asset Name</th>
+                                        <th>Type</th>
+                                        <th class="text-center">Total Qty</th>
+                                        <th>Locations Found</th>
+                                        <th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inventoryTableBody"></tbody>
+                            </table>
+                        </div>
+
+                        <!-- Empty State -->
+                        <div class="empty-state d-none" id="inventoryEmpty">
+                            <i class="bi bi-boxes"></i>
+                            <h4>No Assets Found</h4>
+                            <p>No assets match your current filters. Try adjusting your search or reset the filters.</p>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
+                                <i class="bi bi-plus-lg me-1"></i> Create Asset
+                            </button>
+                        </div>
+
+                        <!-- Error State -->
+                        <div class="error-state d-none" id="inventoryError">
+                            <i class="bi bi-exclamation-circle"></i>
+                            <h4>Unable to Load Inventory</h4>
+                            <p id="inventoryErrorMessage">An error occurred while loading assets. Please check the connection and try again.</p>
+                            <button class="btn btn-primary" onclick="location.reload()">
+                                <i class="bi bi-arrow-clockwise me-1"></i> Try Again
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /.page-content -->
         </main>
     </div>
 

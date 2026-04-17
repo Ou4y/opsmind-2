@@ -9,7 +9,7 @@
  */
 
 import UI from '/assets/js/ui.js';
-import { getSeniorDashboard } from '/services/workflowService.js';
+import { getSeniorDashboard, resolveWorkflowUserId } from '/services/workflowService.js';
 import AuthService from '/services/authService.js';
 
 /**
@@ -79,9 +79,18 @@ async function loadDashboardData() {
     showLoading();
     
     try {
-        console.log('Loading senior dashboard for user:', state.currentUser.id);
+        // Resolve numeric workflow user_id from the auth UUID via email lookup
+        const workflowUserId = await resolveWorkflowUserId(state.currentUser.email, 'SENIOR');
+        if (!workflowUserId) {
+            throw new Error(
+                `Your account (${state.currentUser.email}) was not found in the technician system. ` +
+                `Please contact your administrator to ensure your senior profile is set up.`
+            );
+        }
+
+        console.log('Loading senior dashboard for workflow user_id:', workflowUserId);
         
-        const response = await getSeniorDashboard(state.currentUser.id);
+        const response = await getSeniorDashboard(workflowUserId);
         
         if (!response.success || !response.data) {
             throw new Error(response.message || 'Failed to load dashboard data');
