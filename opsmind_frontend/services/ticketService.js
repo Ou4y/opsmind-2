@@ -42,6 +42,153 @@ async function handleResponse(response) {
     return response.json();
 }
 
+const NORMALIZED_API_BASE_URL = API_BASE_URL.replace(/\/+$/, '');
+
+const TICKET_ROUTE_CANDIDATES = (() => {
+    if (/\/api\/tickets$/i.test(NORMALIZED_API_BASE_URL) || /\/tickets$/i.test(NORMALIZED_API_BASE_URL)) {
+        return [''];
+    }
+    if (/\/api$/i.test(NORMALIZED_API_BASE_URL)) {
+        return ['/tickets'];
+    }
+    return ['/api/tickets', '/tickets'];
+})();
+
+function jsonHeaders() {
+    return {
+        'Content-Type': 'application/json',
+        ...AuthService.getAuthHeaders()
+    };
+}
+
+function buildTicketUrl(routePrefix, path = '', params) {
+    const normalizedPrefix = routePrefix === '' ? '' : routePrefix.replace(/\/+$/, '');
+    const normalizedPath = path ? `/${String(path).replace(/^\/+/, '')}` : '';
+    const query = params instanceof URLSearchParams && params.toString()
+        ? `?${params.toString()}`
+        : '';
+    return `${NORMALIZED_API_BASE_URL}${normalizedPrefix}${normalizedPath}${query}`;
+}
+
+async function requestTicketsApi({ path = '', method = 'GET', params, body, expectJson = true }) {
+    let lastResponse = null;
+
+    for (let idx = 0; idx < TICKET_ROUTE_CANDIDATES.length; idx += 1) {
+        const routePrefix = TICKET_ROUTE_CANDIDATES[idx];
+        const url = buildTicketUrl(routePrefix, path, params);
+
+        const response = await fetch(url, {
+            method,
+            headers: jsonHeaders(),
+            ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+        });
+
+        const shouldFallback = (response.status === 404 || response.status === 405)
+            && idx < TICKET_ROUTE_CANDIDATES.length - 1;
+
+        if (shouldFallback) {
+            continue;
+        }
+
+        lastResponse = response;
+
+        if (!expectJson) {
+            if (response.status === 401) {
+                AuthService.clearAuth();
+                window.location.href = '/index.html';
+                throw new Error('Session expired');
+            }
+
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.message || `Request failed with status ${response.status}`);
+            }
+
+            return response;
+        }
+
+        return handleResponse(response);
+    }
+
+    if (lastResponse) {
+        return handleResponse(lastResponse);
+    }
+
+    throw new Error('Ticket API request failed: no route candidates available');
+}
+
+function extractTicketsArray(response) {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.tickets)) return response.tickets;
+    if (Array.isArray(response?.items)) return response.items;
+    if (Array.isArray(response?.data)) return response.data;
+    return [];
+}
+
+function applyTicketFilters(tickets, options = {}) {
+    return tickets.filter((ticket) => {
+        if (options.assigned_to && String(ticket.assigned_to || '') !== String(options.assigned_to)) {
+            return false;
+        }
+
+        if (options.support_level && String(ticket.support_level || '').toUpperCase() !== String(options.support_level).toUpperCase()) {
+            return false;
+        }
+
+        if (options.building) {
+            const ticketBuilding = String(ticket.building || '').toLowerCase();
+            if (!ticketBuilding.includes(String(options.building).toLowerCase())) {
+                return false;
+            }
+        }
+
+        if (options.search) {
+            const query = String(options.search).toLowerCase();
+            const blob = [ticket.id, ticket.title, ticket.description, ticket.type_of_request]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+            if (!blob.includes(query)) {
+                return false;
+            }
+        }
+
+        return true;
+    });
+}
+
+function withTicketsPayload(originalResponse, tickets) {
+    if (Array.isArray(originalResponse)) {
+        return tickets;
+    }
+    if (Array.isArray(originalResponse?.tickets)) {
+        return { ...originalResponse, tickets, total: tickets.length };
+    }
+    if (Array.isArray(originalResponse?.items)) {
+        return { ...originalResponse, items: tickets, total: tickets.length };
+    }
+    if (Array.isArray(originalResponse?.data)) {
+        return { ...originalResponse, data: tickets, total: tickets.length };
+    }
+    return originalResponse;
+}
+
+function normalizeStatus(status) {
+    return String(status || '').toUpperCase();
+}
+
+function parseTicketDate(ticket, ...candidateFields) {
+    for (const field of candidateFields) {
+        const raw = ticket?.[field];
+        if (!raw) continue;
+        const parsed = new Date(raw);
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
 /**
  * TicketService - Singleton service for ticket operations
  */
@@ -65,38 +212,42 @@ const TicketService = {
      */
     async getTickets(options = {}) {
         const params = new URLSearchParams();
-        
-        // Add query parameters
-        if (options.page) params.append('page', options.page);
-        if (options.limit) params.append('limit', options.limit);
+
+        const limit = options.limit || options.pageSize;
+        const offset = options.offset !== undefined
+            ? options.offset
+            : (options.page && limit ? (Number(options.page) - 1) * Number(limit) : undefined);
+
+        // Add query parameters supported by ticket-service
+        if (limit !== undefined) params.append('limit', String(limit));
+        if (offset !== undefined) params.append('offset', String(offset));
         if (options.status) params.append('status', options.status);
         if (options.priority) params.append('priority', options.priority);
-        if (options.category) params.append('category', options.category);
-        if (options.search) params.append('search', options.search);
-        if (options.dateRange) params.append('dateRange', options.dateRange);
-        if (options.sortBy) params.append('sortBy', options.sortBy);
-        if (options.sortOrder) params.append('sortOrder', options.sortOrder);
-        if (options.assigned_to) params.append('assigned_to', options.assigned_to);
-        if (options.support_level) params.append('support_level', options.support_level);
-        if (options.building) params.append('building', options.building);
 
-        const queryString = params.toString();
-        const url = `${API_BASE_URL}/tickets${queryString ? '?' + queryString : ''}`;
+        const requesterId = options.requester_id || options.requester;
+        if (requesterId) params.append('requester_id', requesterId);
 
-        console.log('[TicketService.getTickets] API Endpoint:', url);
-        console.log('[TicketService.getTickets] Filters:', options);
-
-        const response = await fetch(url, {
+        const data = await requestTicketsApi({
             method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
+            params
         });
 
-        const data = await handleResponse(response);
+        const requiresClientFiltering = Boolean(
+            options.assigned_to ||
+            options.support_level ||
+            options.building ||
+            options.search
+        );
+
+        if (!requiresClientFiltering) {
+            return data;
+        }
+
+        const filteredTickets = applyTicketFilters(extractTicketsArray(data), options);
+        const filteredPayload = withTicketsPayload(data, filteredTickets);
+
         console.log('[TicketService.getTickets] Response:', data);
-        return data;
+        return filteredPayload;
     },
 
     /**
@@ -105,15 +256,10 @@ const TicketService = {
      * @returns {Promise<Object>} Ticket details
      */
     async getTicket(ticketId) {
-        const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
+        return requestTicketsApi({
+            path: ticketId,
+            method: 'GET'
         });
-
-        return handleResponse(response);
     },
 
     /**
@@ -128,17 +274,10 @@ const TicketService = {
      * @returns {Promise<Object>} Created ticket
      */
     async createTicket(ticketData) {
-        // Backend expects: title, description, type_of_request, latitude, longitude, requester_id
-        const response = await fetch(`${API_BASE_URL}/tickets`, {
+        return requestTicketsApi({
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            },
-            body: JSON.stringify(ticketData)
+            body: ticketData
         });
-
-        return handleResponse(response);
     },
 
     /**
@@ -153,17 +292,12 @@ const TicketService = {
         if (resolution_summary) {
             updateData.resolution_summary = resolution_summary;
         }
-        
-        const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}`, {
-            method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            },
-            body: JSON.stringify(updateData)
-        });
 
-        return handleResponse(response);
+        return requestTicketsApi({
+            path: ticketId,
+            method: 'PATCH',
+            body: updateData
+        });
     },
 
     /**
@@ -173,16 +307,11 @@ const TicketService = {
      * @returns {Promise<Object>} Updated ticket
      */
     async updateTicket(ticketId, updates) {
-        const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}`, {
+        return requestTicketsApi({
+            path: ticketId,
             method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            },
-            body: JSON.stringify(updates)
+            body: updates
         });
-
-        return handleResponse(response);
     },
 
     /**
@@ -191,23 +320,11 @@ const TicketService = {
      * @returns {Promise<void>}
      */
     async deleteTicket(ticketId) {
-        const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}`, {
+        await requestTicketsApi({
+            path: ticketId,
             method: 'DELETE',
-            headers: {
-                ...AuthService.getAuthHeaders()
-            }
+            expectJson: false
         });
-
-        if (response.status === 401) {
-            AuthService.clearAuth();
-            window.location.href = '/index.html';
-            throw new Error('Session expired');
-        }
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.message || 'Failed to delete ticket');
-        }
     },
 
     /**
@@ -220,16 +337,11 @@ const TicketService = {
      * @returns {Promise<Object>} Updated ticket
      */
     async escalateTicket(ticketId, escalationData) {
-        const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/escalate`, {
+        return requestTicketsApi({
+            path: `${ticketId}/escalate`,
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            },
-            body: JSON.stringify(escalationData)
+            body: escalationData
         });
-
-        return handleResponse(response);
     },
 
     /**
@@ -244,6 +356,8 @@ const TicketService = {
     async getTicketsByTechnician(technicianId, options = {}) {
         const filters = {
             assigned_to: technicianId,
+            limit: options.limit || 500,
+            offset: options.offset || 0,
             ...options
         };
         
@@ -261,24 +375,17 @@ const TicketService = {
      */
     async getTicketsByRequester(requesterId, options = {}) {
         const params = new URLSearchParams();
-        
+
         if (options.status) params.append('status', options.status);
         if (options.priority) params.append('priority', options.priority);
         if (options.limit) params.append('limit', options.limit);
         if (options.offset) params.append('offset', options.offset);
 
-        const queryString = params.toString();
-        const url = `${API_BASE_URL}/tickets/requester/${requesterId}${queryString ? '?' + queryString : ''}`;
-
-        const response = await fetch(url, {
+        return requestTicketsApi({
+            path: `requester/${requesterId}`,
             method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
+            params
         });
-
-        return handleResponse(response);
     },
 
     /**
@@ -286,15 +393,21 @@ const TicketService = {
      * @returns {Promise<Object>} Ticket statistics
      */
     async getStatistics() {
-        const response = await fetch(`${API_BASE_URL}/tickets/statistics`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
-        });
+        const response = await this.getTickets({ limit: 500, offset: 0 });
+        const tickets = extractTicketsArray(response);
 
-        return handleResponse(response);
+        const open = tickets.filter((t) => normalizeStatus(t.status) === 'OPEN').length;
+        const inProgress = tickets.filter((t) => normalizeStatus(t.status) === 'IN_PROGRESS').length;
+        const slaViolations = tickets.filter((t) => normalizeStatus(t.status) === 'ESCALATED').length;
+
+        return {
+            open,
+            inProgress,
+            slaViolations,
+            openChange: '0%',
+            inProgressChange: '0%',
+            slaChange: '0'
+        };
     },
 
     /**
@@ -303,15 +416,15 @@ const TicketService = {
      * @returns {Promise<Array>} High priority tickets
      */
     async getHighPriority(limit = 5) {
-        const response = await fetch(`${API_BASE_URL}/tickets/high-priority?limit=${limit}`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
+        const response = await this.getTickets({
+            priority: 'HIGH',
+            limit: Math.max(limit, 20),
+            offset: 0
         });
-
-        return handleResponse(response);
+        const tickets = extractTicketsArray(response)
+            .filter((ticket) => normalizeStatus(ticket.priority) === 'HIGH')
+            .slice(0, limit);
+        return tickets;
     },
 
     /**
@@ -320,15 +433,35 @@ const TicketService = {
      * @returns {Promise<Array>} Recent activities
      */
     async getRecentActivity(limit = 10) {
-        const response = await fetch(`${API_BASE_URL}/tickets/activity?limit=${limit}`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
-            }
-        });
+        const response = await this.getTickets({ limit: Math.max(limit * 5, 50), offset: 0 });
+        const tickets = extractTicketsArray(response);
 
-        return handleResponse(response);
+        const activities = tickets
+            .map((ticket) => {
+                const createdAt = parseTicketDate(ticket, 'created_at', 'createdAt');
+                const updatedAt = parseTicketDate(ticket, 'updated_at', 'updatedAt');
+                const status = normalizeStatus(ticket.status);
+
+                const title = ticket.title || ticket.subject || 'Untitled Ticket';
+
+                if (status === 'RESOLVED' || status === 'CLOSED') {
+                    return {
+                        type: 'ticket_resolved',
+                        message: `Ticket ${ticket.id} resolved: "${title}"`,
+                        time: updatedAt || createdAt || new Date()
+                    };
+                }
+
+                return {
+                    type: 'ticket_created',
+                    message: `Ticket ${ticket.id} created: "${title}"`,
+                    time: createdAt || updatedAt || new Date()
+                };
+            })
+            .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+            .slice(0, limit);
+
+        return activities;
     },
 
     /**
@@ -337,15 +470,52 @@ const TicketService = {
      * @returns {Promise<Object>} Trend data
      */
     async getTrends(days = 30) {
-        const response = await fetch(`${API_BASE_URL}/tickets/trends?days=${days}`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
+        const response = await this.getTickets({ limit: 1000, offset: 0 });
+        const tickets = extractTicketsArray(response);
+
+        const now = new Date();
+        const totalDays = Math.max(1, Number(days) || 30);
+        const bucketCount = totalDays <= 31 ? totalDays : 12;
+        const bucketSize = Math.max(1, Math.ceil(totalDays / bucketCount));
+
+        const labels = [];
+        const created = Array.from({ length: bucketCount }, () => 0);
+        const resolved = Array.from({ length: bucketCount }, () => 0);
+
+        for (let i = bucketCount - 1; i >= 0; i -= 1) {
+            const start = new Date(now);
+            start.setDate(now.getDate() - (i + 1) * bucketSize + 1);
+            labels.push(start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+        }
+
+        const createdCutoff = new Date(now);
+        createdCutoff.setDate(now.getDate() - totalDays);
+
+        tickets.forEach((ticket) => {
+            const createdAt = parseTicketDate(ticket, 'created_at', 'createdAt');
+            const updatedAt = parseTicketDate(ticket, 'updated_at', 'updatedAt', 'closed_at', 'closedAt');
+
+            if (createdAt && createdAt >= createdCutoff) {
+                const daysAgo = Math.floor((now.getTime() - createdAt.getTime()) / 86400000);
+                const bucketFromEnd = Math.floor(daysAgo / bucketSize);
+                const index = bucketCount - 1 - bucketFromEnd;
+                if (index >= 0 && index < bucketCount) {
+                    created[index] += 1;
+                }
+            }
+
+            const status = normalizeStatus(ticket.status);
+            if ((status === 'RESOLVED' || status === 'CLOSED') && updatedAt && updatedAt >= createdCutoff) {
+                const daysAgo = Math.floor((now.getTime() - updatedAt.getTime()) / 86400000);
+                const bucketFromEnd = Math.floor(daysAgo / bucketSize);
+                const index = bucketCount - 1 - bucketFromEnd;
+                if (index >= 0 && index < bucketCount) {
+                    resolved[index] += 1;
+                }
             }
         });
 
-        return handleResponse(response);
+        return { labels, created, resolved };
     },
 
     /**
@@ -353,15 +523,40 @@ const TicketService = {
      * @returns {Promise<Array>} List of users who can be assigned tickets
      */
     async getAssignees() {
-        const response = await fetch(`${API_BASE_URL}/users/assignees`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                ...AuthService.getAuthHeaders()
+        // Preferred new endpoint (if exposed by backend)
+        try {
+            const response = await requestTicketsApi({
+                path: 'assignees',
+                method: 'GET'
+            });
+
+            if (Array.isArray(response)) {
+                return response;
+            }
+            if (Array.isArray(response?.data)) {
+                return response.data;
+            }
+        } catch (error) {
+            console.warn('[TicketService.getAssignees] /assignees not available, using ticket-derived assignees.');
+        }
+
+        // Fallback: derive assignees from currently available tickets
+        const ticketsResponse = await this.getTickets({ limit: 1000, offset: 0 });
+        const tickets = extractTicketsArray(ticketsResponse);
+
+        const assigneeMap = new Map();
+        tickets.forEach((ticket) => {
+            if (!ticket.assigned_to) return;
+            const id = String(ticket.assigned_to);
+            if (!assigneeMap.has(id)) {
+                assigneeMap.set(id, {
+                    id,
+                    name: ticket.assigned_to_name || ticket.assignedToName || `Technician #${id}`
+                });
             }
         });
 
-        return handleResponse(response);
+        return Array.from(assigneeMap.values());
     }
 };
 

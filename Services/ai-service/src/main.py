@@ -115,10 +115,21 @@ async def predict(ticket: TicketInput) -> PredictionResponse:
         )
 
         # ── Priority prediction ─────────────────────────────────────────
-        priority_proba = store.priority_model.predict_proba(features)[0]
-        priority_idx = int(np.argmax(priority_proba))
-        priority_label = INT_TO_PRIORITY.get(priority_idx, "Unknown")
-        priority_confidence = round(float(priority_proba[priority_idx]), 4)
+        predicted_priority = int(store.priority_model.predict(features)[0])
+        priority_label = INT_TO_PRIORITY.get(predicted_priority, "Unknown")
+
+        priority_confidence = 0.0
+        if hasattr(store.priority_model, "predict_proba"):
+            priority_proba = store.priority_model.predict_proba(features)[0]
+            if hasattr(store.priority_model, "classes_"):
+                classes = list(store.priority_model.classes_)
+                if predicted_priority in classes:
+                    class_index = classes.index(predicted_priority)
+                else:
+                    class_index = int(np.argmax(priority_proba))
+            else:
+                class_index = int(np.argmax(priority_proba))
+            priority_confidence = round(float(priority_proba[class_index]), 4)
 
         # ── Resolution time prediction ──────────────────────────────────
         est_hours = float(store.est_model.predict(features)[0])
