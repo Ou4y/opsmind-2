@@ -40,7 +40,9 @@ const state = {
     isLoading: false,
     viewMode: 'table', // 'table' or 'card'
     map: null, // Leaflet map instance
-    mapMarker: null // Map marker instance
+    mapMarker: null, // Map marker instance
+    predictionTimer: null,
+    predictionRequestSeq: 0
 };
 
 /**
@@ -215,6 +217,11 @@ function setupEventListeners() {
     // Manual coordinate inputs
     document.getElementById('manualLatitude')?.addEventListener('input', handleManualCoordinates);
     document.getElementById('manualLongitude')?.addEventListener('input', handleManualCoordinates);
+
+    // AI model preview listeners for create form
+    document.getElementById('newTicketSubject')?.addEventListener('input', scheduleCreatePrediction);
+    document.getElementById('newTicketDescription')?.addEventListener('input', scheduleCreatePrediction);
+    document.getElementById('newTicketType')?.addEventListener('change', scheduleCreatePrediction);
 }
 
 /**
@@ -934,6 +941,7 @@ function openCreateModal() {
     
     // Reset form
     UI.resetFormValidation(form);
+    resetCreatePredictionFeedback();
     
     const modalInstance = new bootstrap.Modal(modal);
     modalInstance.show();
@@ -942,6 +950,135 @@ function openCreateModal() {
     modal.addEventListener('shown.bs.modal', function() {
         initializeMap();
     }, { once: true });
+}
+
+function getCreatePayloadForPrediction() {
+    const title = document.getElementById('newTicketSubject')?.value?.trim() || '';
+    const description = document.getElementById('newTicketDescription')?.value?.trim() || '';
+    const type_of_request = document.getElementById('newTicketType')?.value || 'INCIDENT';
+
+    return {
+        title,
+        description,
+        type_of_request,
+        support_level: 'L1',
+        created_at: new Date().toISOString()
+    };
+}
+
+function setPredictionStateBadge(text, className) {
+    const badge = document.getElementById('aiPredictionStateBadge');
+    if (!badge) return;
+    badge.className = `badge ${className}`;
+    badge.textContent = text;
+}
+
+function resetCreatePredictionFeedback() {
+    const priorityInput = document.getElementById('newTicketPriority');
+    if (priorityInput) {
+        priorityInput.value = 'System Assigned';
+    }
+
+    const helper = document.getElementById('aiPredictionHelperText');
+    if (helper) {
+        helper.textContent = 'Enter title and description to see predicted priority and estimated resolution time.';
+    }
+
+    const priorityText = document.getElementById('aiPredPriorityText');
+    const estText = document.getElementById('aiPredEstTimeText');
+    const confText = document.getElementById('aiPredConfidenceText');
+    const confBar = document.getElementById('aiPredConfidenceBar');
+
+    if (priorityText) priorityText.textContent = '-';
+    if (estText) estText.textContent = '-';
+    if (confText) confText.textContent = '-';
+
+    if (confBar) {
+        confBar.style.width = '0%';
+        confBar.textContent = '0%';
+        confBar.className = 'progress-bar bg-info';
+    }
+
+    setPredictionStateBadge('Waiting for input', 'bg-light text-secondary');
+}
+
+function renderCreatePredictionFeedback(prediction) {
+    const priority = String(prediction?.suggested_priority || 'UNKNOWN').toUpperCase();
+    const confidenceRaw = Number(prediction?.priority_confidence ?? 0);
+    const confidencePct = Math.max(0, Math.min(100, Math.round(confidenceRaw * 100)));
+    const estHours = Number(prediction?.estimated_resolution_hours ?? 0);
+
+    const priorityInput = document.getElementById('newTicketPriority');
+    if (priorityInput) {
+        priorityInput.value = `${priority} (${confidencePct}% confidence)`;
+    }
+
+    const helper = document.getElementById('aiPredictionHelperText');
+    if (helper) {
+        helper.textContent = 'Prediction generated from the trained priority and resolution-time models.';
+    }
+
+    const priorityText = document.getElementById('aiPredPriorityText');
+    const estText = document.getElementById('aiPredEstTimeText');
+    const confText = document.getElementById('aiPredConfidenceText');
+    const confBar = document.getElementById('aiPredConfidenceBar');
+
+    if (priorityText) priorityText.textContent = priority;
+    if (estText) estText.textContent = `${estHours.toFixed(2)} hours`;
+    if (confText) confText.textContent = `${confidencePct}%`;
+
+    if (confBar) {
+        confBar.style.width = `${confidencePct}%`;
+        confBar.textContent = `${confidencePct}%`;
+
+        let barClass = 'progress-bar bg-success';
+        if (confidencePct < 60) barClass = 'progress-bar bg-warning';
+        if (confidencePct < 40) barClass = 'progress-bar bg-danger';
+        confBar.className = barClass;
+    }
+
+    setPredictionStateBadge('Model updated', 'bg-success-subtle text-success');
+}
+
+function scheduleCreatePrediction() {
+    if (state.predictionTimer) {
+        clearTimeout(state.predictionTimer);
+    }
+
+    state.predictionTimer = setTimeout(runCreatePrediction, 500);
+}
+
+async function runCreatePrediction() {
+    const payload = getCreatePayloadForPrediction();
+
+    if (!payload.title || !payload.description) {
+        resetCreatePredictionFeedback();
+        return;
+    }
+
+    const requestSeq = ++state.predictionRequestSeq;
+    setPredictionStateBadge('Predicting...', 'bg-info text-dark');
+
+    try {
+        const prediction = await AIService.predictPriorityAndResolution(payload);
+
+        // Ignore stale async responses.
+        if (requestSeq !== state.predictionRequestSeq) {
+            return;
+        }
+
+        renderCreatePredictionFeedback(prediction);
+    } catch (error) {
+        if (requestSeq !== state.predictionRequestSeq) {
+            return;
+        }
+
+        const helper = document.getElementById('aiPredictionHelperText');
+        if (helper) {
+            helper.textContent = `Prediction unavailable: ${error.message || 'please try again.'}`;
+        }
+        setPredictionStateBadge('Prediction failed', 'bg-danger-subtle text-danger');
+    }
 }
 
 /**

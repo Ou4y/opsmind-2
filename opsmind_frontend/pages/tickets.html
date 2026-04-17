@@ -137,6 +137,27 @@
                 padding: 0.75rem 1rem;
             }
         }
+
+        /* AI Model Prediction Panel */
+        .ai-model-panel {
+            border: 1px solid #dbe5ff;
+            background: linear-gradient(180deg, #f7f9ff 0%, #fdfdff 100%);
+            border-radius: 10px;
+            padding: 0.9rem;
+        }
+
+        .ai-model-panel .metric-label {
+            font-size: 0.78rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 0.2rem;
+        }
+
+        .ai-model-panel .metric-value {
+            font-weight: 600;
+            color: #0f172a;
+        }
     </style>
 </head>
 <body class="app-body">
@@ -519,6 +540,48 @@
                                 <input type="text" class="form-control" id="newTicketPriority" value="System Assigned" disabled>
                                 <small class="text-muted">Priority will be automatically assigned</small>
                             </div>
+
+                            <!-- AI Model Prediction Feedback -->
+                            <div class="col-12">
+                                <div class="ai-model-panel" id="createAIPredictionPanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <div class="fw-semibold text-primary">
+                                            <i class="bi bi-cpu me-1"></i>Model Preview
+                                        </div>
+                                        <span class="badge bg-light text-secondary" id="aiPredictionStateBadge">Waiting for input</span>
+                                    </div>
+
+                                    <div class="small text-muted mb-3" id="aiPredictionHelperText">
+                                        Enter title and description to see predicted priority and estimated resolution time.
+                                    </div>
+
+                                    <div class="row g-3 align-items-center">
+                                        <div class="col-12 col-md-4">
+                                            <div class="metric-label">Predicted Priority</div>
+                                            <div class="metric-value" id="aiPredPriorityText">-</div>
+                                        </div>
+                                        <div class="col-12 col-md-4">
+                                            <div class="metric-label">Estimated Time</div>
+                                            <div class="metric-value" id="aiPredEstTimeText">-</div>
+                                        </div>
+                                        <div class="col-12 col-md-4">
+                                            <div class="metric-label">Model Confidence</div>
+                                            <div class="metric-value" id="aiPredConfidenceText">-</div>
+                                        </div>
+                                    </div>
+
+                                    <div class="progress mt-3" role="progressbar" aria-label="AI confidence">
+                                        <div
+                                            class="progress-bar bg-info"
+                                            id="aiPredConfidenceBar"
+                                            style="width: 0%"
+                                        >
+                                            0%
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- Location Section -->
                             <div class="col-12">
                                 <label class="form-label">Location <span class="text-danger">*</span></label>

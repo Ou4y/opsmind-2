@@ -76,6 +76,25 @@ async function handleResponse(response) {
  */
 const AIService = {
     /**
+     * Get model prediction for priority and estimated resolution time
+     * @param {Object} ticketData - Ticket payload
+     * @returns {Promise<Object>} Prediction response from /predict
+     */
+    async predictPriorityAndResolution(ticketData) {
+        const payload = normalizeTicketPayload(ticketData);
+        const response = await fetch(buildAiUrl('/predict'), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...AuthService.getAuthHeaders()
+            },
+            body: JSON.stringify(payload)
+        });
+
+        return handleResponse(response);
+    },
+
+    /**
      * Get AI recommendations for a specific ticket
      * @param {string} ticketId - Ticket ID
      * @returns {Promise<Array>} List of AI recommendations
