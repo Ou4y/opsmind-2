@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="OpsMind - Team Hierarchy Management">
-    <title>Team Hierarchy - OpsMind</title>
+    <title>Team Management - OpsMind</title>
     
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -18,6 +18,171 @@
     
     <!-- Hierarchy Tree Custom Styles -->
     <style>
+        /* ============================
+           Page Layout & Hero Header
+           ============================ */
+        .tm-hero {
+            background: linear-gradient(135deg, #4361ee 0%, #3f37c9 50%, #7209b7 100%);
+            border-radius: 20px;
+            padding: 32px 36px;
+            margin-bottom: 28px;
+            position: relative;
+            overflow: hidden;
+            color: white;
+        }
+        .tm-hero::before {
+            content: '';
+            position: absolute;
+            top: -60px; right: -60px;
+            width: 220px; height: 220px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.07);
+        }
+        .tm-hero::after {
+            content: '';
+            position: absolute;
+            bottom: -40px; left: 30%;
+            width: 160px; height: 160px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.05);
+        }
+        .tm-hero-title { font-size: 1.75rem; font-weight: 700; margin-bottom: 4px; }
+        .tm-hero-subtitle { font-size: 0.95rem; opacity: .82; margin-bottom: 0; }
+        .tm-hero-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        .btn-hero-primary {
+            background: white; color: #4361ee; font-weight: 600; border: none;
+            padding: 10px 22px; border-radius: 12px; font-size: 0.9rem;
+            transition: all .2s; box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+        }
+        .btn-hero-primary:hover { background: #f0f2ff; color: #3651d4; transform: translateY(-1px); }
+        .btn-hero-outline {
+            background: rgba(255,255,255,0.15); color: white; font-weight: 500;
+            border: 1.5px solid rgba(255,255,255,0.4); padding: 10px 22px;
+            border-radius: 12px; font-size: 0.9rem; transition: all .2s; backdrop-filter: blur(4px);
+        }
+        .btn-hero-outline:hover { background: rgba(255,255,255,0.25); color: white; transform: translateY(-1px); }
+
+        /* ============================
+           Summary Stat Pills
+           ============================ */
+        .tm-stats { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 28px; }
+        .tm-stat-pill {
+            flex: 1; min-width: 130px; background: white;
+            border-radius: 16px; padding: 18px 20px;
+            box-shadow: 0 2px 12px rgba(67,97,238,0.08);
+            border: 1px solid rgba(67,97,238,0.06);
+            display: flex; align-items: center; gap: 14px;
+            transition: all .25s;
+        }
+        .tm-stat-pill:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(67,97,238,0.12); }
+        .tm-stat-icon {
+            width: 48px; height: 48px; border-radius: 14px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.4rem; flex-shrink: 0;
+        }
+        .tm-stat-icon.admin   { background: #fee2e2; color: #dc2626; }
+        .tm-stat-icon.supervisor { background: #dbeafe; color: #2563eb; }
+        .tm-stat-icon.senior  { background: #d1fae5; color: #059669; }
+        .tm-stat-icon.junior  { background: #cffafe; color: #0891b2; }
+        .tm-stat-value { font-size: 1.6rem; font-weight: 700; line-height: 1; color: #1f2937; }
+        .tm-stat-label { font-size: 0.78rem; color: #6b7280; font-weight: 500; margin-top: 2px; text-transform: uppercase; letter-spacing: .5px; }
+
+        /* ============================
+           Team Level Cards
+           ============================ */
+        .team-level-card {
+            background: white; border-radius: 16px; border: 1px solid #f0f0f5;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05); overflow: hidden;
+        }
+        .team-level-header {
+            padding: 16px 20px; border-bottom: 1px solid #f0f0f5;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .team-level-header-left { display: flex; align-items: center; gap: 10px; }
+        .level-icon {
+            width: 36px; height: 36px; border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.1rem;
+        }
+        .level-icon.admin      { background: #fee2e2; color: #dc2626; }
+        .level-icon.supervisor { background: #dbeafe; color: #2563eb; }
+        .level-icon.senior     { background: #d1fae5; color: #059669; }
+        .level-icon.junior     { background: #cffafe; color: #0891b2; }
+        .level-title { font-weight: 700; font-size: 0.95rem; color: #1f2937; }
+        .level-count { font-size: 0.78rem; background: #f3f4f6; color: #6b7280; border-radius: 20px; padding: 2px 10px; font-weight: 600; }
+
+        /* Search inside level cards */
+        .level-search { padding: 10px 12px; border-bottom: 1px solid #f5f5f5; }
+        .level-search .form-control {
+            border-radius: 10px; font-size: 0.82rem; border-color: #e5e7eb; padding: 6px 12px 6px 34px;
+        }
+        .level-search-wrapper { position: relative; }
+        .level-search-wrapper .bi-search {
+            position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: #9ca3af; font-size: 0.82rem;
+        }
+
+        .team-level-body { padding: 8px 0; max-height: 320px; overflow-y: auto; }
+        .team-level-body::-webkit-scrollbar { width: 4px; }
+        .team-level-body::-webkit-scrollbar-track { background: transparent; }
+        .team-level-body::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+
+        /* Member row */
+        .member-row {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 16px; cursor: default; transition: background .15s;
+        }
+        .member-row:hover { background: #f9fafb; }
+        .member-avatar {
+            width: 38px; height: 38px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.95rem; flex-shrink: 0; color: white;
+        }
+        .member-avatar.admin      { background: linear-gradient(135deg,#ef4444,#dc2626); }
+        .member-avatar.supervisor { background: linear-gradient(135deg,#3b82f6,#2563eb); }
+        .member-avatar.senior     { background: linear-gradient(135deg,#10b981,#059669); }
+        .member-avatar.junior     { background: linear-gradient(135deg,#06b6d4,#0891b2); }
+        .member-info { flex: 1; min-width: 0; }
+        .member-name { font-weight: 600; font-size: 0.875rem; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .member-email { font-size: 0.77rem; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .member-badge {
+            font-size: 0.7rem; padding: 3px 9px; border-radius: 20px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: .4px; flex-shrink: 0;
+        }
+        .member-badge.admin      { background: #fee2e2; color: #dc2626; }
+        .member-badge.supervisor { background: #dbeafe; color: #2563eb; }
+        .member-badge.senior     { background: #d1fae5; color: #059669; }
+        .member-badge.junior     { background: #cffafe; color: #0891b2; }
+
+        /* Empty state within cards */
+        .level-empty {
+            padding: 28px 16px; text-align: center; color: #9ca3af;
+        }
+        .level-empty i { font-size: 2rem; display: block; margin-bottom: 8px; opacity: .4; }
+        .level-empty p { font-size: 0.85rem; margin: 0; }
+
+        /* ============================
+           Hierarchy Tree Section
+           ============================ */
+        .hierarchy-section {
+            background: white; border-radius: 16px; border: 1px solid #f0f0f5;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05); overflow: hidden; margin-bottom: 24px;
+        }
+        .hierarchy-section-header {
+            padding: 18px 24px; border-bottom: 1px solid #f0f0f5;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .hierarchy-section-title {
+            display: flex; align-items: center; gap: 10px;
+            font-weight: 700; font-size: 1rem; color: #1f2937;
+        }
+        .hierarchy-section-title .section-icon {
+            width: 36px; height: 36px; border-radius: 10px;
+            background: #eef2ff; color: #4361ee;
+            display: flex; align-items: center; justify-content: center; font-size: 1.1rem;
+        }
+        .hierarchy-section-body { padding: 24px; }
+
+        /* Tree Layout */
         .hierarchy-container {
             padding: 24px;
             background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
@@ -417,24 +582,120 @@
         
         /* Print Styles */
         @media print {
-            .hierarchy-container {
-                background: white;
-            }
-            
-            .node-card {
-                box-shadow: none;
-                border: 1px solid #dee2e6;
-                page-break-inside: avoid;
-            }
-            
-            .collapse-toggle {
-                display: none;
-            }
-            
-            .collapsed .tree-children {
-                display: block !important;
-            }
+            .hierarchy-container { background: white; }
+            .node-card { box-shadow: none; border: 1px solid #dee2e6; page-break-inside: avoid; }
+            .collapse-toggle { display: none; }
+            .collapsed .tree-children { display: block !important; }
         }
+
+        /* ============================
+           Relationships Table Styling
+           ============================ */
+        .relationships-section {
+            background: white; border-radius: 16px; border: 1px solid #f0f0f5;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.05); overflow: hidden;
+        }
+        .relationships-header {
+            padding: 18px 24px; border-bottom: 1px solid #f0f0f5;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .rel-table { width: 100%; font-size: 0.875rem; }
+        .rel-table thead th {
+            background: #f9fafb; padding: 12px 16px; font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: .6px; font-weight: 700;
+            color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
+        }
+        .rel-table tbody td { padding: 13px 16px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+        .rel-table tbody tr:last-child td { border-bottom: none; }
+        .rel-table tbody tr:hover td { background: #fafafa; }
+        .rel-person {
+            display: flex; align-items: center; gap: 9px;
+        }
+        .rel-avatar {
+            width: 32px; height: 32px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.8rem; color: white; flex-shrink: 0;
+        }
+        .rel-avatar.admin      { background: linear-gradient(135deg,#ef4444,#dc2626); }
+        .rel-avatar.supervisor { background: linear-gradient(135deg,#3b82f6,#2563eb); }
+        .rel-avatar.senior     { background: linear-gradient(135deg,#10b981,#059669); }
+        .rel-avatar.junior     { background: linear-gradient(135deg,#06b6d4,#0891b2); }
+        .rel-name { font-weight: 600; color: #1f2937; }
+        .rel-role-badge {
+            font-size: 0.7rem; padding: 3px 9px; border-radius: 20px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: .4px;
+        }
+        .rel-role-badge.admin      { background: #fee2e2; color: #dc2626; }
+        .rel-role-badge.supervisor { background: #dbeafe; color: #2563eb; }
+        .rel-role-badge.senior     { background: #d1fae5; color: #059669; }
+        .rel-role-badge.junior     { background: #cffafe; color: #0891b2; }
+        .rel-arrow { color: #d1d5db; font-size: 1rem; }
+        .rel-action-btn {
+            width: 30px; height: 30px; border-radius: 8px; border: 1px solid #e5e7eb;
+            background: white; display: inline-flex; align-items: center; justify-content: center;
+            font-size: 0.82rem; cursor: pointer; transition: all .15s; color: #6b7280;
+        }
+        .rel-action-btn:hover.edit   { background: #eef2ff; border-color: #c7d2fe; color: #4361ee; }
+        .rel-action-btn:hover.delete { background: #fee2e2; border-color: #fca5a5; color: #dc2626; }
+
+        /* ============================
+           Modal Improvements
+           ============================ */
+        .modal-content { border-radius: 18px; border: none; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+        .modal-header {
+            border-bottom: 1px solid #f0f0f5; padding: 20px 24px;
+            background: linear-gradient(135deg, #4361ee 0%, #3f37c9 100%); border-radius: 18px 18px 0 0;
+        }
+        .modal-header .modal-title { color: white; font-weight: 700; font-size: 1rem; }
+        .modal-header .btn-close { filter: brightness(0) invert(1); opacity: .8; }
+        .modal-body { padding: 24px; }
+        .modal-footer { padding: 16px 24px; border-top: 1px solid #f0f0f5; }
+
+        .form-label { font-weight: 600; font-size: 0.875rem; color: #374151; margin-bottom: 6px; }
+        .form-select, .form-control {
+            border-radius: 10px; border-color: #e5e7eb; font-size: 0.875rem;
+            padding: 10px 14px; transition: border-color .15s, box-shadow .15s;
+        }
+        .form-select:focus, .form-control:focus {
+            border-color: #4361ee; box-shadow: 0 0 0 3px rgba(67,97,238,0.12);
+        }
+        .rules-card {
+            background: #f0f4ff; border: 1px solid #c7d2fe; border-radius: 12px;
+            padding: 14px 16px; margin-top: 4px;
+        }
+        .rules-card-title { font-weight: 700; font-size: 0.82rem; color: #4361ee; margin-bottom: 8px; }
+        .rules-list { list-style: none; padding: 0; margin: 0; }
+        .rules-list li {
+            font-size: 0.82rem; color: #4b5563; padding: 4px 0;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .rules-list li::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background: #4361ee; flex-shrink: 0;
+        }
+
+        /* ============================
+           Page Loading / Error States
+           ============================ */
+        .page-loading-overlay {
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; padding: 80px 20px; gap: 16px;
+        }
+        .page-loading-spinner {
+            width: 48px; height: 48px; border-radius: 50%;
+            border: 4px solid #e5e7eb; border-top-color: #4361ee;
+            animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .page-loading-text { font-size: 0.9rem; color: #6b7280; font-weight: 500; }
+
+        .page-error-card {
+            background: #fff5f5; border: 1px solid #fca5a5; border-radius: 16px;
+            padding: 28px; display: flex; align-items: flex-start; gap: 16px;
+        }
+        .page-error-icon { font-size: 2rem; color: #ef4444; flex-shrink: 0; }
+        .page-error-title { font-weight: 700; color: #b91c1c; margin-bottom: 4px; }
+        .page-error-msg { font-size: 0.875rem; color: #7f1d1d; margin: 0; }
     </style>
 </head>
 <body class="app-body">
@@ -447,183 +708,241 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <!-- Page Header -->
-            <div class="page-header">
-                <div class="page-header-content">
-                    <h1 class="page-title">
-                        <i class="bi bi-diagram-3 me-2"></i>
-                        Team Hierarchy Management
-                    </h1>
-                    <p class="page-subtitle">Manage team reporting relationships - Add juniors and seniors to your team</p>
-                </div>
-                <div class="page-header-actions">
-                    <button class="btn btn-outline-secondary me-2" id="refreshBtn">
-                        <i class="bi bi-arrow-clockwise me-1"></i> Refresh
-                    </button>
-                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createRelationshipModal">
-                        <i class="bi bi-plus-circle me-1"></i> Create Relationship
-                    </button>
-                </div>
-            </div>
 
             <!-- Loading State -->
-            <div id="pageLoading" class="text-center py-5">
-                <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
-                    <span class="visually-hidden">Loading...</span>
+            <div id="pageLoading">
+                <div class="page-loading-overlay">
+                    <div class="page-loading-spinner"></div>
+                    <p class="page-loading-text">Loading team data...</p>
                 </div>
-                <p class="mt-3 text-muted">Loading hierarchy data...</p>
             </div>
 
             <!-- Error State -->
-            <div id="pageError" class="alert alert-danger d-none" role="alert">
-                <div class="d-flex align-items-center">
-                    <i class="bi bi-exclamation-triangle-fill me-3 fs-3"></i>
-                    <div class="flex-grow-1">
-                        <h5 class="alert-heading mb-1">Error Loading Data</h5>
-                        <p class="mb-0" id="errorMessage">Failed to load hierarchy data</p>
+            <div id="pageError" class="d-none" style="padding: 24px;">
+                <div class="page-error-card">
+                    <i class="bi bi-exclamation-triangle-fill page-error-icon"></i>
+                    <div>
+                        <div class="page-error-title">Failed to Load Data</div>
+                        <p class="page-error-msg" id="errorMessage">Failed to load hierarchy data</p>
+                        <button class="btn btn-sm btn-danger mt-3" onclick="location.reload()">
+                            <i class="bi bi-arrow-clockwise me-1"></i> Retry
+                        </button>
                     </div>
-                    <button class="btn btn-outline-danger" onclick="location.reload()">
-                        <i class="bi bi-arrow-clockwise me-1"></i> Retry
-                    </button>
                 </div>
             </div>
 
             <!-- Page Content -->
             <div id="pageContent" class="page-content d-none">
-                <!-- Technicians by Level -->
-                <div class="row g-4 mb-4">
-                    <div class="col-lg-3">
-                        <div class="card border-0 shadow-sm h-100 hover-lift">
-                            <div class="card-header bg-danger bg-opacity-10 border-0">
-                                <div class="d-flex align-items-center">
-                                    <div class="icon-box-sm bg-danger text-white rounded me-2">
-                                        <i class="bi bi-shield-check"></i>
-                                    </div>
-                                    <h5 class="card-title mb-0 text-danger fw-bold">
-                                        Admins
-                                    </h5>
+
+                <!-- Hero Header -->
+                <div class="tm-hero">
+                    <div class="row align-items-center g-3">
+                        <div class="col-md-7">
+                            <div class="d-flex align-items-center gap-3 mb-2">
+                                <div style="width:48px;height:48px;background:rgba(255,255,255,0.2);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;flex-shrink:0;">
+                                    <i class="bi bi-diagram-3"></i>
+                                </div>
+                                <div>
+                                    <h1 class="tm-hero-title mb-0">Team Management</h1>
+                                    <p class="tm-hero-subtitle">Manage reporting relationships across your organization</p>
                                 </div>
                             </div>
-                            <div class="card-body">
+                        </div>
+                        <div class="col-md-5 text-md-end">
+                            <div class="tm-hero-actions justify-content-md-end">
+                                <button class="btn-hero-outline" id="refreshBtn">
+                                    <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                                </button>
+                                <button class="btn-hero-primary" data-bs-toggle="modal" data-bs-target="#createRelationshipModal">
+                                    <i class="bi bi-plus-circle me-1"></i> Create Relationship
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Summary Stats -->
+                <div class="tm-stats">
+                    <div class="tm-stat-pill">
+                        <div class="tm-stat-icon admin"><i class="bi bi-shield-check"></i></div>
+                        <div>
+                            <div class="tm-stat-value" id="statAdmins">0</div>
+                            <div class="tm-stat-label">Admins</div>
+                        </div>
+                    </div>
+                    <div class="tm-stat-pill">
+                        <div class="tm-stat-icon supervisor"><i class="bi bi-person-workspace"></i></div>
+                        <div>
+                            <div class="tm-stat-value" id="statSupervisors">0</div>
+                            <div class="tm-stat-label">Supervisors</div>
+                        </div>
+                    </div>
+                    <div class="tm-stat-pill">
+                        <div class="tm-stat-icon senior"><i class="bi bi-people"></i></div>
+                        <div>
+                            <div class="tm-stat-value" id="statSeniors">0</div>
+                            <div class="tm-stat-label">Seniors</div>
+                        </div>
+                    </div>
+                    <div class="tm-stat-pill">
+                        <div class="tm-stat-icon junior"><i class="bi bi-person-badge"></i></div>
+                        <div>
+                            <div class="tm-stat-value" id="statJuniors">0</div>
+                            <div class="tm-stat-label">Juniors</div>
+                        </div>
+                    </div>
+                    <div class="tm-stat-pill">
+                        <div class="tm-stat-icon" style="background:#f3e8ff;color:#7c3aed;"><i class="bi bi-link-45deg"></i></div>
+                        <div>
+                            <div class="tm-stat-value" id="relationshipCount">0</div>
+                            <div class="tm-stat-label">Relationships</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Team Members by Level -->
+                <div class="row g-3 mb-4">
+                    <!-- Admins -->
+                    <div class="col-xl-3 col-md-6">
+                        <div class="team-level-card h-100">
+                            <div class="team-level-header">
+                                <div class="team-level-header-left">
+                                    <div class="level-icon admin"><i class="bi bi-shield-check"></i></div>
+                                    <span class="level-title">Admins</span>
+                                </div>
+                                <span class="level-count" id="adminsCountBadge">0</span>
+                            </div>
+                            <div class="level-search">
+                                <div class="level-search-wrapper">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="form-control" placeholder="Search admins..." oninput="filterLevel('admins', this.value)">
+                                </div>
+                            </div>
+                            <div class="team-level-body" id="adminsListContainer">
                                 <div id="adminsLoading" class="text-center py-3">
-                                    <div class="spinner-border spinner-border-sm text-danger"></div>
+                                    <div class="spinner-border spinner-border-sm" style="color:#dc2626;"></div>
                                 </div>
-                                <div id="adminsEmpty" class="text-center py-4 text-muted d-none">
-                                    <i class="bi bi-inbox fs-3 mb-2 d-block opacity-50"></i>
-                                    <p class="mb-0 small">No admins yet</p>
+                                <div id="adminsEmpty" class="level-empty d-none">
+                                    <i class="bi bi-inbox"></i><p>No admins yet</p>
                                 </div>
-                                <div id="adminsList" class="list-group list-group-flush"></div>
+                                <div id="adminsList"></div>
                             </div>
                         </div>
                     </div>
-                    <div class="col-lg-3">
-                        <div class="card border-0 shadow-sm h-100 hover-lift">
-                            <div class="card-header bg-primary bg-opacity-10 border-0">
-                                <div class="d-flex align-items-center">
-                                    <div class="icon-box-sm bg-primary text-white rounded me-2">
-                                        <i class="bi bi-person-workspace"></i>
-                                    </div>
-                                    <h5 class="card-title mb-0 text-primary fw-bold">
-                                        Supervisors
-                                    </h5>
+
+                    <!-- Supervisors -->
+                    <div class="col-xl-3 col-md-6">
+                        <div class="team-level-card h-100">
+                            <div class="team-level-header">
+                                <div class="team-level-header-left">
+                                    <div class="level-icon supervisor"><i class="bi bi-person-workspace"></i></div>
+                                    <span class="level-title">Supervisors</span>
+                                </div>
+                                <span class="level-count" id="supervisorsCountBadge">0</span>
+                            </div>
+                            <div class="level-search">
+                                <div class="level-search-wrapper">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="form-control" placeholder="Search supervisors..." oninput="filterLevel('supervisors', this.value)">
                                 </div>
                             </div>
-                            <div class="card-body">
+                            <div class="team-level-body" id="supervisorsListContainer">
                                 <div id="supervisorsLoading" class="text-center py-3">
-                                    <div class="spinner-border spinner-border-sm text-primary"></div>
+                                    <div class="spinner-border spinner-border-sm" style="color:#2563eb;"></div>
                                 </div>
-                                <div id="supervisorsEmpty" class="text-center py-4 text-muted d-none">
-                                    <i class="bi bi-inbox fs-3 mb-2 d-block opacity-50"></i>
-                                    <p class="mb-0 small">No supervisors yet</p>
+                                <div id="supervisorsEmpty" class="level-empty d-none">
+                                    <i class="bi bi-inbox"></i><p>No supervisors yet</p>
                                 </div>
-                                <div id="supervisorsList" class="list-group list-group-flush"></div>
+                                <div id="supervisorsList"></div>
                             </div>
                         </div>
                     </div>
-                    <div class="col-lg-3">
-                        <div class="card border-0 shadow-sm h-100 hover-lift">
-                            <div class="card-header bg-success bg-opacity-10 border-0">
-                                <div class="d-flex align-items-center">
-                                    <div class="icon-box-sm bg-success text-white rounded me-2">
-                                        <i class="bi bi-people"></i>
-                                    </div>
-                                    <h5 class="card-title mb-0 text-success fw-bold">
-                                        Seniors
-                                    </h5>
+
+                    <!-- Seniors -->
+                    <div class="col-xl-3 col-md-6">
+                        <div class="team-level-card h-100">
+                            <div class="team-level-header">
+                                <div class="team-level-header-left">
+                                    <div class="level-icon senior"><i class="bi bi-people"></i></div>
+                                    <span class="level-title">Seniors</span>
+                                </div>
+                                <span class="level-count" id="seniorsCountBadge">0</span>
+                            </div>
+                            <div class="level-search">
+                                <div class="level-search-wrapper">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="form-control" placeholder="Search seniors..." oninput="filterLevel('seniors', this.value)">
                                 </div>
                             </div>
-                            <div class="card-body">
+                            <div class="team-level-body" id="seniorsListContainer">
                                 <div id="seniorsLoading" class="text-center py-3">
-                                    <div class="spinner-border spinner-border-sm text-success"></div>
+                                    <div class="spinner-border spinner-border-sm" style="color:#059669;"></div>
                                 </div>
-                                <div id="seniorsEmpty" class="text-center py-4 text-muted d-none">
-                                    <i class="bi bi-inbox fs-3 mb-2 d-block opacity-50"></i>
-                                    <p class="mb-0 small">No seniors yet</p>
+                                <div id="seniorsEmpty" class="level-empty d-none">
+                                    <i class="bi bi-inbox"></i><p>No seniors yet</p>
                                 </div>
-                                <div id="seniorsList" class="list-group list-group-flush"></div>
+                                <div id="seniorsList"></div>
                             </div>
                         </div>
                     </div>
-                    <div class="col-lg-3">
-                        <div class="card border-0 shadow-sm h-100 hover-lift">
-                            <div class="card-header bg-info bg-opacity-10 border-0">
-                                <div class="d-flex align-items-center">
-                                    <div class="icon-box-sm bg-info text-white rounded me-2">
-                                        <i class="bi bi-person-badge"></i>
-                                    </div>
-                                    <h5 class="card-title mb-0 text-info fw-bold">
-                                        Juniors
-                                    </h5>
+
+                    <!-- Juniors -->
+                    <div class="col-xl-3 col-md-6">
+                        <div class="team-level-card h-100">
+                            <div class="team-level-header">
+                                <div class="team-level-header-left">
+                                    <div class="level-icon junior"><i class="bi bi-person-badge"></i></div>
+                                    <span class="level-title">Juniors</span>
+                                </div>
+                                <span class="level-count" id="juniorsCountBadge">0</span>
+                            </div>
+                            <div class="level-search">
+                                <div class="level-search-wrapper">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="form-control" placeholder="Search juniors..." oninput="filterLevel('juniors', this.value)">
                                 </div>
                             </div>
-                            <div class="card-body">
+                            <div class="team-level-body" id="juniorsListContainer">
                                 <div id="juniorsLoading" class="text-center py-3">
-                                    <div class="spinner-border spinner-border-sm text-info"></div>
+                                    <div class="spinner-border spinner-border-sm" style="color:#0891b2;"></div>
                                 </div>
-                                <div id="juniorsEmpty" class="text-center py-4 text-muted d-none">
-                                    <i class="bi bi-inbox fs-3 mb-2 d-block opacity-50"></i>
-                                    <p class="mb-0 small">No juniors yet</p>
+                                <div id="juniorsEmpty" class="level-empty d-none">
+                                    <i class="bi bi-inbox"></i><p>No juniors yet</p>
                                 </div>
-                                <div id="juniorsList" class="list-group list-group-flush"></div>
+                                <div id="juniorsList"></div>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Hierarchy Tree -->
-                <div class="card border-0 shadow-sm mb-4">
-                    <div class="card-header bg-white border-bottom">
-                        <div class="d-flex align-items-center justify-content-between">
-                            <div class="d-flex align-items-center">
-                                <div class="icon-box-sm bg-primary bg-opacity-10 rounded me-2">
-                                    <i class="bi bi-diagram-3 text-primary"></i>
-                                </div>
-                                <h5 class="card-title mb-0">
-                                    Organization Hierarchy
-                                </h5>
-                            </div>
-                            <div class="btn-group btn-group-sm" role="group">
-                                <button type="button" class="btn btn-outline-secondary" id="expandAllBtn" title="Expand all nodes">
-                                    <i class="bi bi-arrows-expand"></i> Expand All
-                                </button>
-                                <button type="button" class="btn btn-outline-secondary" id="collapseAllBtn" title="Collapse all nodes">
-                                    <i class="bi bi-arrows-collapse"></i> Collapse All
-                                </button>
-                            </div>
+                <div class="hierarchy-section mb-4">
+                    <div class="hierarchy-section-header">
+                        <div class="hierarchy-section-title">
+                            <div class="section-icon"><i class="bi bi-diagram-3"></i></div>
+                            Organization Chart
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-secondary" id="expandAllBtn" style="border-radius:8px;font-size:.8rem;">
+                                <i class="bi bi-arrows-expand me-1"></i>Expand All
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" id="collapseAllBtn" style="border-radius:8px;font-size:.8rem;">
+                                <i class="bi bi-arrows-collapse me-1"></i>Collapse All
+                            </button>
                         </div>
                     </div>
-                    <div class="card-body p-4">
+                    <div class="hierarchy-section-body">
                         <div id="hierarchyTreeLoading" class="text-center py-5">
                             <div class="spinner-border text-primary"></div>
-                            <p class="mt-2 text-muted">Loading hierarchy tree...</p>
+                            <p class="mt-2 text-muted small">Building organization chart...</p>
                         </div>
-                        <div id="hierarchyTreeEmpty" class="text-center py-5 text-muted d-none">
-                            <div class="mb-3">
-                                <i class="bi bi-diagram-2 fs-1 opacity-50"></i>
+                        <div id="hierarchyTreeEmpty" class="text-center py-5 d-none">
+                            <div style="width:80px;height:80px;background:#f0f4ff;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+                                <i class="bi bi-diagram-2" style="font-size:2rem;color:#4361ee;"></i>
                             </div>
-                            <h5 class="text-muted mb-2">No Hierarchy Defined</h5>
-                            <p class="text-muted mb-4">Create your first reporting relationship to build the organizational structure.</p>
-                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createRelationshipModal">
+                            <h5 style="color:#374151;font-weight:700;">No Hierarchy Defined</h5>
+                            <p class="text-muted mb-4" style="font-size:.9rem;">Create your first reporting relationship to build the organizational structure.</p>
+                            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createRelationshipModal" style="border-radius:10px;">
                                 <i class="bi bi-plus-circle me-1"></i> Create First Relationship
                             </button>
                         </div>
@@ -632,98 +951,94 @@
                 </div>
 
                 <!-- Relationships Table -->
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white border-bottom">
-                        <div class="d-flex align-items-center justify-content-between">
-                            <div class="d-flex align-items-center">
-                                <div class="icon-box-sm bg-info bg-opacity-10 rounded me-2">
-                                    <i class="bi bi-link-45deg text-info"></i>
-                                </div>
-                                <h5 class="card-title mb-0">
-                                    Reporting Relationships
-                                </h5>
-                            </div>
-                            <span class="badge bg-info-subtle text-info fs-6 px-3 py-2">
-                                <i class="bi bi-diagram-2 me-1"></i>
-                                <span id="relationshipCount">0</span> Total
-                            </span>
+                <div class="relationships-section">
+                    <div class="relationships-header">
+                        <div class="hierarchy-section-title">
+                            <div class="section-icon" style="background:#f3e8ff;color:#7c3aed;"><i class="bi bi-link-45deg"></i></div>
+                            Reporting Relationships
                         </div>
+                        <span style="background:#f3e8ff;color:#7c3aed;border-radius:20px;padding:4px 14px;font-size:.82rem;font-weight:700;">
+                            <i class="bi bi-diagram-2 me-1"></i>
+                            <span id="relCountBadge">0</span> total
+                        </span>
                     </div>
-                    <div class="card-body p-4">
-                        <div id="relationshipsEmpty" class="text-center py-5 text-muted d-none">
-                            <div class="mb-3">
-                                <i class="bi bi-link fs-1 opacity-50"></i>
-                            </div>
-                            <h5 class="text-muted mb-2">No Relationships Defined</h5>
-                            <p class="text-muted mb-0">Create reporting relationships to establish your organizational hierarchy.</p>
+
+                    <div id="relationshipsEmpty" class="text-center py-5 d-none">
+                        <div style="width:72px;height:72px;background:#f9fafb;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+                            <i class="bi bi-link" style="font-size:1.8rem;color:#d1d5db;"></i>
                         </div>
-                        <div class="table-responsive">
-                            <table class="table table-hover align-middle" id="relationshipsTable">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th class="text-uppercase small fw-semibold">ID</th>
-                                        <th class="text-uppercase small fw-semibold">Subordinate</th>
-                                        <th class="text-uppercase small fw-semibold">Role</th>
-                                        <th class="text-uppercase small fw-semibold">Reports To</th>
-                                        <th class="text-uppercase small fw-semibold">Manager Role</th>
-                                        <th class="text-uppercase small fw-semibold">Created</th>
-                                        <th class="text-uppercase small fw-semibold">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="relationshipsTableBody"></tbody>
-                            </table>
-                        </div>
+                        <h6 style="color:#374151;font-weight:700;">No Relationships Yet</h6>
+                        <p class="text-muted mb-0" style="font-size:.875rem;">Create reporting relationships to establish your organizational hierarchy.</p>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="rel-table" id="relationshipsTable">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Subordinate</th>
+                                    <th>Role</th>
+                                    <th></th>
+                                    <th>Reports To</th>
+                                    <th>Manager Role</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="relationshipsTableBody"></tbody>
+                        </table>
                     </div>
                 </div>
-            </div>
+
+            </div><!-- /pageContent -->
         </main>
     </div>
 
     <!-- Create Relationship Modal -->
     <div class="modal fade" id="createRelationshipModal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title">
-                        <i class="bi bi-plus-circle me-2"></i>
-                        Create Relationship
+                        <i class="bi bi-plus-circle me-2"></i>Create Reporting Relationship
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="createRelationshipForm">
-                        <div class="mb-3">
+                        <div class="mb-4">
                             <label for="createSubordinateId" class="form-label">
-                                Subordinate <span class="text-danger">*</span>
+                                Subordinate <span style="color:#ef4444;">*</span>
                             </label>
                             <select class="form-select" id="createSubordinateId" required>
-                                <option value="">Select subordinate...</option>
+                                <option value="">Choose who will report...</option>
                             </select>
-                            <div class="form-text">Select the technician who will report to a manager</div>
+                            <div class="form-text" style="color:#9ca3af;font-size:.8rem;">The technician who reports to a manager</div>
                         </div>
-                        <div class="mb-3">
+                        <div class="mb-4">
                             <label for="createManagerId" class="form-label">
-                                Manager <span class="text-danger">*</span>
+                                Reports To <span style="color:#ef4444;">*</span>
                             </label>
                             <select class="form-select" id="createManagerId" required>
-                                <option value="">Select manager...</option>
+                                <option value="">Choose the manager...</option>
                             </select>
-                            <div class="form-text">Select the manager this technician will report to</div>
+                            <div class="form-text" style="color:#9ca3af;font-size:.8rem;">The manager this technician will report to</div>
                         </div>
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle me-2"></i>
-                            <strong>Relationship Rules:</strong>
-                            <ul class="mb-0 mt-2">
-                                <li>Supervisor → Admin: A supervisor reports to an admin</li>
-                                <li>Senior → Supervisor: A senior technician reports to a supervisor</li>
-                                <li>Junior → Senior: A junior technician reports to a senior</li>
+                        <div class="rules-card">
+                            <div class="rules-title" style="font-weight:700;font-size:.82rem;color:#4361ee;margin-bottom:8px;">
+                                <i class="bi bi-info-circle me-1"></i>Hierarchy Rules
+                            </div>
+                            <ul class="rules-list">
+                                <li>Junior → reports to → Senior</li>
+                                <li>Senior → reports to → Supervisor</li>
+                                <li>Supervisor → reports to → Admin</li>
                             </ul>
                         </div>
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="createRelationshipBtn">
+                    <button type="button" class="btn btn-light" data-bs-dismiss="modal" style="border-radius:10px;">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="createRelationshipBtn" style="border-radius:10px;padding:9px 20px;">
                         <i class="bi bi-check-circle me-1"></i> Create Relationship
                     </button>
                 </div>
@@ -733,36 +1048,35 @@
 
     <!-- Edit Relationship Modal -->
     <div class="modal fade" id="editRelationshipModal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title">
-                        <i class="bi bi-pencil me-2"></i>
-                        Edit Relationship
+                        <i class="bi bi-pencil me-2"></i>Edit Relationship
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <form id="editRelationshipForm">
                         <input type="hidden" id="editRelationshipId">
-                        <div class="mb-3">
+                        <div class="mb-4">
                             <label class="form-label">Current Subordinate</label>
-                            <input type="text" class="form-control" id="editCurrentSubordinate" readonly>
+                            <input type="text" class="form-control" id="editCurrentSubordinate" readonly
+                                   style="background:#f9fafb;color:#6b7280;">
                         </div>
-                        <div class="mb-3">
+                        <div class="mb-2">
                             <label for="editManagerId" class="form-label">
-                                New Manager <span class="text-danger">*</span>
+                                New Manager <span style="color:#ef4444;">*</span>
                             </label>
                             <select class="form-select" id="editManagerId" required>
                                 <option value="">Select new manager...</option>
                             </select>
-                            <div class="form-text">Select the new manager for this technician</div>
                         </div>
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" id="updateRelationshipBtn">
+                    <button type="button" class="btn btn-light" data-bs-dismiss="modal" style="border-radius:10px;">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="updateRelationshipBtn" style="border-radius:10px;padding:9px 20px;">
                         <i class="bi bi-check-circle me-1"></i> Update Relationship
                     </button>
                 </div>
@@ -776,5 +1090,17 @@
     <script src="/assets/js/auth.js" type="module"></script>
     <script src="/assets/js/app.js" type="module"></script>
     <script src="/assets/js/admin/hierarchy.js" type="module"></script>
+
+    <!-- Level search helper -->
+    <script>
+        window.filterLevel = function(level, query) {
+            const q = query.toLowerCase();
+            const rows = document.querySelectorAll(`#${level}List .member-row`);
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(q) ? '' : 'none';
+            });
+        };
+    </script>
 </body>
 </html>
