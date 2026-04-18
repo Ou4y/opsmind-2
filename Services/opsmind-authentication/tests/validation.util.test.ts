@@ -58,6 +58,7 @@ describe("validation.util", () => {
       isVerified: true,
       isActive: false,
       role: "ADMIN",
+      technicianLevel: undefined,
       roles: ["ADMIN"],
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
     });

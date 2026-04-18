@@ -1,6 +1,7 @@
 import Joi from "joi";
 import {
   claimTicketSchema,
+  syncTechnicianFromAuthSchema,
   validateBody,
 } from "../src/middlewares/validation";
 
@@ -58,5 +59,47 @@ describe("claimTicketSchema", () => {
     const result = claimTicketSchema.validate({});
 
     expect(result.error).toBeDefined();
+  });
+});
+
+describe("syncTechnicianFromAuthSchema", () => {
+  it("accepts TECHNICIAN role with workflow-compatible technician level", () => {
+    const result = syncTechnicianFromAuthSchema.validate({
+      authUserId: "550e8400-e29b-41d4-a716-446655440000",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane.doe@example.com",
+      authRole: "TECHNICIAN",
+      technicianLevel: "SENIOR",
+    });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects TECHNICIAN role when technicianLevel is missing", () => {
+    const result = syncTechnicianFromAuthSchema.validate({
+      authUserId: "550e8400-e29b-41d4-a716-446655440000",
+      firstName: "Jane",
+      lastName: "Doe",
+      email: "jane.doe@example.com",
+      authRole: "TECHNICIAN",
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error?.message).toContain("technicianLevel is required");
+  });
+
+  it("rejects role-level conflict for ADMIN with non-ADMIN technicianLevel", () => {
+    const result = syncTechnicianFromAuthSchema.validate({
+      authUserId: "550e8400-e29b-41d4-a716-446655440000",
+      firstName: "Alice",
+      lastName: "Admin",
+      email: "alice.admin@example.com",
+      authRole: "ADMIN",
+      technicianLevel: "SENIOR",
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.error?.message).toContain("ADMIN role can only use ADMIN technicianLevel");
   });
 });

@@ -11,6 +11,8 @@ services:
       - .env
     environment:
       - PORT=3002
+      - WORKFLOW_SERVICE_URL=${WORKFLOW_SERVICE_URL:-http://workflow-service:3003}
+      - WORKFLOW_SYNC_TIMEOUT_MS=${WORKFLOW_SYNC_TIMEOUT_MS:-5000}
     
     networks:
       - opsmind-net

@@ -70,9 +70,14 @@ router.use(roleMiddleware(['ADMIN']));
  *                 description: User's last name
  *               role:
  *                 type: string
- *                 enum: [ADMIN, TECHNICIAN, DOCTOR, STUDENT]
+ *                 enum: [ADMIN, TECHNICIAN, DOCTOR, STUDENT, JUNIOR, SENIOR, SUPERVISOR]
  *                 example: DOCTOR
- *                 description: User role to assign
+ *                 description: User role to assign (JUNIOR/SENIOR/SUPERVISOR are workflow-compatible aliases for TECHNICIAN)
+ *               technicianLevel:
+ *                 type: string
+ *                 enum: [JUNIOR, SENIOR, SUPERVISOR, ADMIN]
+ *                 example: SENIOR
+ *                 description: Required when role is TECHNICIAN; optional for ADMIN (must be ADMIN if provided)
  *               isVerified:
  *                 type: boolean
  *                 default: true

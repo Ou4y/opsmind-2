@@ -12,6 +12,7 @@ USE workflow_db;
 
 ALTER TABLE technicians
   ADD COLUMN user_id INT NOT NULL UNIQUE AFTER id,
+  ADD COLUMN auth_user_id VARCHAR(36) NULL UNIQUE AFTER user_id,
   ADD COLUMN email VARCHAR(255) NULL AFTER name,
   ADD COLUMN level ENUM('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN') NOT NULL DEFAULT 'JUNIOR' AFTER email,
   MODIFY COLUMN status ENUM('ACTIVE', 'OFFLINE', 'INACTIVE', 'ON_LEAVE') DEFAULT 'ACTIVE',
@@ -20,8 +21,21 @@ ALTER TABLE technicians
   ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP AFTER last_location_update,
   ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at,
   ADD INDEX idx_user_id (user_id),
+  ADD INDEX idx_auth_user_id (auth_user_id),
   ADD INDEX idx_level (level),
   ADD INDEX idx_is_active (is_active);
+
+-- ── Step 1b: Create auth UUID ↔ workflow numeric identity map ─
+-- This keeps workflow numeric IDs stable while auth remains UUID-based.
+
+CREATE TABLE IF NOT EXISTS auth_user_identity_map (
+  workflow_user_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  auth_user_id VARCHAR(36) NOT NULL UNIQUE,
+  auth_role ENUM('ADMIN', 'TECHNICIAN', 'DOCTOR', 'STUDENT') NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_auth_role (auth_role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=100000;
 
 -- ── Step 2: Create reporting_relationships table ──────────────
 -- Supports flexible, admin-managed technician hierarchy

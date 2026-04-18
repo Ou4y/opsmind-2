@@ -34,12 +34,15 @@ export interface UserResponse {
   isVerified: boolean;
   isActive: boolean;
   role?: string; // Single role name for display
+  technicianLevel?: TechnicianLevel;
   roles: string[];
   createdAt: Date;
 }
 
 // Role related types
 export type RoleName = 'ADMIN' | 'TECHNICIAN' | 'DOCTOR' | 'STUDENT';
+
+export type TechnicianLevel = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
 
 export interface Role {
   id: string;
@@ -81,6 +84,7 @@ export interface Technician {
   employee_id?: string;
   department?: string;
   specialization?: string;
+  technicianLevel?: TechnicianLevel;
   created_at: Date;
   updated_at: Date;
 }
@@ -90,6 +94,7 @@ export interface CreateTechnicianDTO {
   password: string;
   firstName: string;
   lastName: string;
+  technicianLevel?: TechnicianLevel;
   employeeId?: string;
   department?: string;
   specialization?: string;

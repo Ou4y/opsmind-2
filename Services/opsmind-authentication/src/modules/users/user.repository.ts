@@ -125,10 +125,12 @@ export class UserRepository {
         u.is_active,
         u.created_at,
         u.updated_at,
-        r.name AS role
+        r.name AS role,
+        t.technicianLevel AS technicianLevel
       FROM users u
       LEFT JOIN user_roles ur ON u.id = ur.user_id
       LEFT JOIN roles r ON ur.role_id = r.id
+      LEFT JOIN technicians t ON u.id = t.user_id
     `;
     const params: any[] = [];
 

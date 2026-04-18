@@ -76,3 +76,45 @@ export const deleteRelationshipSchema = Joi.object({
 export const listTechniciansSchema = Joi.object({
   level: Joi.string().valid('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN').optional(),
 }).unknown(true);
+
+export const syncTechnicianFromAuthSchema = Joi.object({
+  authUserId: Joi.string().guid({ version: 'uuidv4' }).required(),
+  firstName: Joi.string().trim().min(1).max(100).required(),
+  lastName: Joi.string().trim().min(1).max(100).required(),
+  email: Joi.string().email().required(),
+  authRole: Joi.string().valid('ADMIN', 'TECHNICIAN', 'DOCTOR', 'STUDENT').required(),
+  technicianLevel: Joi.string().valid('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN').optional(),
+})
+  .custom((value, helpers) => {
+    if (value.authRole === 'TECHNICIAN') {
+      if (!value.technicianLevel) {
+        return helpers.error('any.custom', {
+          message: 'technicianLevel is required when authRole is TECHNICIAN',
+        });
+      }
+
+      if (!['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(value.technicianLevel)) {
+        return helpers.error('any.custom', {
+          message: 'TECHNICIAN role supports only JUNIOR, SENIOR, or SUPERVISOR levels',
+        });
+      }
+    }
+
+    if (value.authRole === 'ADMIN' && value.technicianLevel && value.technicianLevel !== 'ADMIN') {
+      return helpers.error('any.custom', {
+        message: 'ADMIN role can only use ADMIN technicianLevel',
+      });
+    }
+
+    if ((value.authRole === 'DOCTOR' || value.authRole === 'STUDENT') && value.technicianLevel) {
+      return helpers.error('any.custom', {
+        message: `${value.authRole} users cannot be synced as workflow technicians`,
+      });
+    }
+
+    return value;
+  }, 'role-level compatibility validation')
+  .messages({
+    'any.custom': '{{#message}}',
+  })
+  .unknown(false);

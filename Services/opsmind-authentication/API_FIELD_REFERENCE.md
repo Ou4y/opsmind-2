@@ -105,7 +105,7 @@ This document clarifies the correct field names for all API endpoints in the Ops
 
 ### POST /admin/users (NEW!)
 
-**Purpose:** Create a user with any role (ADMIN, TECHNICIAN, DOCTOR, STUDENT)
+**Purpose:** Create a user with any role (ADMIN, TECHNICIAN, DOCTOR, STUDENT, JUNIOR, SENIOR, SUPERVISOR)
 
 **Request Body (camelCase):**
 ```json
@@ -125,7 +125,12 @@ This document clarifies the correct field names for all API endpoints in the Ops
 - `lastName` (required): 2-100 characters
 - `email` (required): Valid email format
 - `password` (required): Min 8 chars, must contain uppercase, lowercase, number, special char
-- `role` (required): One of: `ADMIN`, `TECHNICIAN`, `DOCTOR`, `STUDENT`
+- `role` (required): One of: `ADMIN`, `TECHNICIAN`, `DOCTOR`, `STUDENT`, `JUNIOR`, `SENIOR`, `SUPERVISOR`
+- `technicianLevel` (conditional):
+  - Required when `role` is `TECHNICIAN`
+  - Must be one of: `JUNIOR`, `SENIOR`, `SUPERVISOR` for technicians
+  - If `role` is `ADMIN`, optional but must be `ADMIN` when provided
+  - Not allowed for `DOCTOR` or `STUDENT`
 - `isVerified` (optional): Boolean, defaults to `true` (admin-created users are pre-verified)
 - `isActive` (optional): Boolean, defaults to `true`
 

@@ -29,4 +29,8 @@ export const config = {
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || 'noreply@opsmind.com',
   },
+  workflow: {
+    serviceUrl: process.env.WORKFLOW_SERVICE_URL || 'http://localhost:3003',
+    syncTimeoutMs: parseInt(process.env.WORKFLOW_SYNC_TIMEOUT_MS || '5000', 10),
+  },
 };

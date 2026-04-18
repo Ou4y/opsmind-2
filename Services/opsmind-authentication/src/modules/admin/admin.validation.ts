@@ -24,6 +24,10 @@ export const createTechnicianValidation = [
     .trim()
     .isLength({ min: 2, max: 100 })
     .withMessage('Last name must be between 2 and 100 characters'),
+  body('technicianLevel')
+    .optional()
+    .isIn(['JUNIOR', 'SENIOR', 'SUPERVISOR'])
+    .withMessage('technicianLevel must be one of: JUNIOR, SENIOR, SUPERVISOR'),
   body('employeeId')
     .optional()
     .trim()
@@ -101,8 +105,46 @@ export const createUserValidation = [
     .isLength({ min: 2, max: 100 })
     .withMessage('Last name must be between 2 and 100 characters'),
   body('role')
-    .isIn(['ADMIN', 'TECHNICIAN', 'DOCTOR', 'STUDENT'])
-    .withMessage('Role must be one of: ADMIN, TECHNICIAN, DOCTOR, STUDENT'),
+    .isIn(['ADMIN', 'TECHNICIAN', 'DOCTOR', 'STUDENT', 'JUNIOR', 'SENIOR', 'SUPERVISOR'])
+    .withMessage('Role must be one of: ADMIN, TECHNICIAN, DOCTOR, STUDENT, JUNIOR, SENIOR, SUPERVISOR'),
+  body('technicianLevel')
+    .optional()
+    .isIn(['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'])
+    .withMessage('technicianLevel must be one of: JUNIOR, SENIOR, SUPERVISOR, ADMIN'),
+  body('technicianLevel').custom((value, { req }) => {
+    const role = String(req.body.role || '').toUpperCase();
+    const level = value ? String(value).toUpperCase() : undefined;
+
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(role)) {
+      if (level && level !== role) {
+        throw new Error(`technicianLevel must match role when role is ${role}`);
+      }
+      return true;
+    }
+
+    if (role === 'TECHNICIAN') {
+      if (!level) {
+        throw new Error('technicianLevel is required when role is TECHNICIAN');
+      }
+      if (level === 'ADMIN') {
+        throw new Error('TECHNICIAN role cannot use ADMIN technicianLevel');
+      }
+      return true;
+    }
+
+    if (role === 'ADMIN') {
+      if (level && level !== 'ADMIN') {
+        throw new Error('ADMIN role can only use ADMIN technicianLevel');
+      }
+      return true;
+    }
+
+    if ((role === 'DOCTOR' || role === 'STUDENT') && level) {
+      throw new Error(`${role} users cannot include technicianLevel`);
+    }
+
+    return true;
+  }),
   body('isVerified')
     .optional()
     .isBoolean()

@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '@database/connection';
-import { Technician, Building, TechnicianBuilding } from '@/types';
+import { Technician, Building, TechnicianBuilding, TechnicianLevel } from '@/types';
 
 export class TechnicianRepository {
   async create(data: {
     userId: string;
+    technicianLevel?: TechnicianLevel;
     employeeId?: string;
     department?: string;
     specialization?: string;
@@ -12,9 +13,16 @@ export class TechnicianRepository {
     const id = uuidv4();
     
     await query(
-      `INSERT INTO technicians (id, user_id, employee_id, department, specialization)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, data.userId, data.employeeId || null, data.department || null, data.specialization || null]
+      `INSERT INTO technicians (id, user_id, employee_id, department, specialization, technicianLevel)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        data.userId,
+        data.employeeId || null,
+        data.department || null,
+        data.specialization || null,
+        data.technicianLevel || 'JUNIOR',
+      ]
     );
 
     return this.findById(id) as Promise<Technician>;

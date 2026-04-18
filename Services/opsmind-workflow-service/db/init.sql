@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE TABLE IF NOT EXISTS technicians (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL UNIQUE COMMENT 'Links to auth service user ID',
+  auth_user_id VARCHAR(36) NULL UNIQUE COMMENT 'Auth service UUID (source-of-truth identity)',
   name VARCHAR(255) NOT NULL,
   email VARCHAR(255) NULL COMMENT 'Technician email from auth service',
   level ENUM('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN') NOT NULL DEFAULT 'JUNIOR',
@@ -59,10 +60,22 @@ CREATE TABLE IF NOT EXISTS technicians (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_user_id (user_id),
+  INDEX idx_auth_user_id (auth_user_id),
   INDEX idx_level (level),
   INDEX idx_status (status),
   INDEX idx_is_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Auth Identity Mapping Table
+-- Bridges auth UUID users to stable workflow numeric user_id values
+CREATE TABLE IF NOT EXISTS auth_user_identity_map (
+  workflow_user_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  auth_user_id VARCHAR(36) NOT NULL UNIQUE,
+  auth_role ENUM('ADMIN', 'TECHNICIAN', 'DOCTOR', 'STUDENT') NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_auth_role (auth_role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=100000;
 
 -- Reporting Relationships Table
 -- Defines flexible, admin-managed technician hierarchy

@@ -13,8 +13,11 @@
 
 import AuthService from './authService.js';
 
-// API base URL - should match authService
-const API_BASE_URL = 'http://localhost:3002';
+// API base URL - keep in sync with authService and runtime config.js
+const API_BASE_URL = (
+    (typeof window !== 'undefined' && window.OPSMIND_API_URL) ? window.OPSMIND_API_URL :
+    'http://localhost:3002'
+);
 
 /**
  * UserService - User management operations

@@ -122,10 +122,10 @@ This document provides comprehensive information for documenting the Authenticat
 | **Response Format** | JSON |
 | **Authentication** | JWT Bearer Token (ADMIN role required) |
 | **Rate Limit** | None |
-| **Request Body** | `{ "email": "string", "password": "string", "firstName": "string", "lastName": "string", "role": "ADMIN\|TECHNICIAN\|DOCTOR\|STUDENT", "isVerified": boolean, "isActive": boolean }` |
+| **Request Body** | `{ "email": "string", "password": "string", "firstName": "string", "lastName": "string", "role": "ADMIN\|TECHNICIAN\|DOCTOR\|STUDENT\|JUNIOR\|SENIOR\|SUPERVISOR", "technicianLevel": "JUNIOR\|SENIOR\|SUPERVISOR\|ADMIN", "isVerified": boolean, "isActive": boolean }` |
 | **Success Response** | `{ "success": true, "message": "User created successfully", "data": { "id": "uuid", "email": "string", "firstName": "string", "lastName": "string", "isVerified": boolean, "isActive": boolean, "roles": ["string"], "createdAt": "datetime" } }` |
 | **Error Codes** | 400 (Validation error/User exists), 401 (Unauthorized), 403 (Forbidden - ADMIN required) |
-| **Notes** | isVerified and isActive default to true. Password automatically hashed. Can create users with any role including ADMIN. |
+| **Notes** | Password is required and must satisfy complexity rules. `technicianLevel` is required when `role=TECHNICIAN`. `JUNIOR/SENIOR/SUPERVISOR` are accepted role aliases and map to `TECHNICIAN` with matching technician level. |
 
 ---
 

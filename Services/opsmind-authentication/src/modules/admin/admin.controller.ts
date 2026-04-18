@@ -22,6 +22,7 @@ export class AdminController {
         firstName,
         lastName,
         role,
+        technicianLevel,
         isVerified,
         isActive,
       } = req.body;
@@ -32,6 +33,7 @@ export class AdminController {
         firstName,
         lastName,
         role,
+        technicianLevel,
         isVerified,
         isActive,
       });
@@ -75,6 +77,7 @@ export class AdminController {
         password,
         firstName,
         lastName,
+        technicianLevel,
         employeeId,
         department,
         specialization,
@@ -86,6 +89,7 @@ export class AdminController {
         password,
         firstName,
         lastName,
+        technicianLevel,
         employeeId,
         department,
         specialization,

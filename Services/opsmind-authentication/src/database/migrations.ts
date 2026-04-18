@@ -70,7 +70,7 @@ const migrations: string[] = [
     department VARCHAR(100),
     specialization VARCHAR(255),
 
-    technicianLevel ENUM('JUNIOR','SENIOR','SUPERVISOR','HEAD') NOT NULL DEFAULT 'JUNIOR',
+    technicianLevel ENUM('JUNIOR','SENIOR','SUPERVISOR','ADMIN') NOT NULL DEFAULT 'JUNIOR',
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -128,7 +128,9 @@ const alterTableMigrations: string[] = [
   `ALTER TABLE technicians ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
   `ALTER TABLE technicians ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
 
-  `ALTER TABLE technicians ADD COLUMN technicianLevel ENUM('JUNIOR','SENIOR','SUPERVISOR','HEAD') NOT NULL DEFAULT 'JUNIOR'`,
+  `ALTER TABLE technicians ADD COLUMN technicianLevel ENUM('JUNIOR','SENIOR','SUPERVISOR','ADMIN') NOT NULL DEFAULT 'JUNIOR'`,
+  `UPDATE technicians SET technicianLevel = 'ADMIN' WHERE technicianLevel = 'HEAD'`,
+  `ALTER TABLE technicians MODIFY COLUMN technicianLevel ENUM('JUNIOR','SENIOR','SUPERVISOR','ADMIN') NOT NULL DEFAULT 'JUNIOR'`,
 
   // Fix technician_buildings table - add missing columns if they don't exist
   `ALTER TABLE technician_buildings ADD COLUMN id VARCHAR(36) FIRST`,

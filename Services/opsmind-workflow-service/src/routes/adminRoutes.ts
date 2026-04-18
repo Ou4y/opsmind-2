@@ -8,6 +8,7 @@ import {
   validateBody,
   createRelationshipSchema,
   deleteRelationshipSchema,
+  syncTechnicianFromAuthSchema,
 } from '../middlewares/validation';
 
 /**
@@ -220,6 +221,18 @@ router.get('/groups/:groupId', async (req: Request, res: Response): Promise<void
 // ══════════════════════════════════════
 //  Hierarchy Management
 // ══════════════════════════════════════
+
+/**
+ * POST /workflow/admin/hierarchy/technicians/sync
+ * Sync auth identity (UUID + auth role) into workflow technician model
+ */
+router.post(
+  '/hierarchy/technicians/sync',
+  validateBody(syncTechnicianFromAuthSchema),
+  (req: Request, res: Response) => {
+    hierarchyController.syncTechnicianFromAuth(req, res);
+  }
+);
 
 /**
  * GET /workflow/admin/hierarchy/technicians

@@ -30,6 +30,7 @@ export interface GroupMemberRow {
 export interface TechnicianRow {
   id: number;
   user_id: number;
+  auth_user_id: string | null;
   name: string;
   email: string | null;
   level: 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
@@ -120,6 +121,8 @@ export type RoutingStatus = 'UNASSIGNED' | 'ASSIGNED' | 'ESCALATED';
 
 export type MemberRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
 
+export type AuthRole = 'ADMIN' | 'TECHNICIAN' | 'DOCTOR' | 'STUDENT';
+
 export type MemberStatus = 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE';
 
 export type UserRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'HEAD_OF_IT';
@@ -157,6 +160,15 @@ export interface AddMemberRequest {
   role: MemberRole;
   canAssign?: boolean;
   canEscalate?: boolean;
+}
+
+export interface SyncTechnicianFromAuthRequest {
+  authUserId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  authRole: AuthRole;
+  technicianLevel?: 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
 }
 
 export interface CreateEscalationRuleRequest {

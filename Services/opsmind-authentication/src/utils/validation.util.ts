@@ -57,6 +57,7 @@ export const sanitizeUser = (user: any) => ({
   isVerified: user.is_verified,
   isActive: user.is_active,
   role: user.role, // Single role name from SQL JOIN
+  technicianLevel: user.technicianLevel,
   roles: user.roles || [],
   createdAt: user.created_at,
 });

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { ReportingRelationshipRepository } from '../repositories/ReportingRelationshipRepository';
+import { SyncTechnicianFromAuthRequest } from '../interfaces/types';
 
 /**
  * Hierarchy Controller
@@ -48,6 +49,66 @@ export class HierarchyController {
       res.status(500).json({
         success: false,
         message: error.message || 'Failed to list technicians',
+      });
+    }
+  }
+
+  /**
+   * POST /workflow/admin/hierarchy/technicians/sync
+   * Sync an auth user identity into workflow technicians model.
+   */
+  async syncTechnicianFromAuth(req: Request, res: Response): Promise<void> {
+    try {
+      const payload = req.body as SyncTechnicianFromAuthRequest;
+
+      if (payload.authRole === 'DOCTOR' || payload.authRole === 'STUDENT') {
+        res.status(400).json({
+          success: false,
+          message: `Role conflict: ${payload.authRole} users are not part of workflow technicians hierarchy`,
+        });
+        return;
+      }
+
+      const technicianLevel = payload.authRole === 'ADMIN' ? 'ADMIN' : payload.technicianLevel;
+      if (!technicianLevel) {
+        res.status(400).json({
+          success: false,
+          message: 'Role conflict: technicianLevel is required for TECHNICIAN users',
+        });
+        return;
+      }
+
+      const synced = await this.techRepo.upsertFromAuth({
+        authUserId: payload.authUserId,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        email: payload.email,
+        authRole: payload.authRole,
+        technicianLevel,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: 'Workflow technician identity synced successfully',
+        data: {
+          workflowUserId: synced.user_id,
+          authUserId: synced.auth_user_id,
+          level: synced.level,
+          email: synced.email,
+          name: synced.name,
+        },
+      });
+    } catch (error: any) {
+      console.error('[HierarchyController] Error syncing technician identity:', error);
+
+      const databaseConflict = typeof error?.message === 'string' &&
+        (error.message.includes('Duplicate entry') || error.message.includes('constraint'));
+
+      res.status(databaseConflict ? 400 : 500).json({
+        success: false,
+        message: databaseConflict
+          ? `Workflow identity conflict: ${error.message}`
+          : (error.message || 'Failed to sync workflow technician identity'),
       });
     }
   }

@@ -2,22 +2,160 @@ import bcrypt from 'bcrypt';
 import { userRepository } from '@modules/users/user.repository';
 import { technicianRepository, buildingRepository } from './admin.repository';
 import { domainRepository } from './domain.repository';
-import { otpService } from '@modules/otp/otp.service';
 import { validateAllowedEmailDomain, validatePassword, sanitizeUser } from '@utils/validation.util';
-import { CreateTechnicianDTO, UserResponse, RoleName } from '@/types';
+import { CreateTechnicianDTO, TechnicianLevel, UserResponse, RoleName } from '@/types';
 import { logger } from '@config/logger';
+import { config } from '@config/index';
+
+type CreateUserRoleInput = RoleName | 'JUNIOR' | 'SENIOR' | 'SUPERVISOR';
+type WorkflowSyncRole = 'ADMIN' | 'TECHNICIAN';
 
 export interface CreateUserDTO {
   email: string;
   password: string;
   firstName: string;
   lastName: string;
-  role: RoleName;
+  role: CreateUserRoleInput;
+  technicianLevel?: TechnicianLevel;
   isVerified?: boolean;
   isActive?: boolean;
 }
 
 export class AdminService {
+  private resolveRoleAndTechnicianLevel(
+    roleInput: CreateUserRoleInput,
+    providedTechnicianLevel?: TechnicianLevel
+  ): { valid: boolean; message?: string; role?: RoleName; technicianLevel?: TechnicianLevel } {
+    const normalizedRole = String(roleInput || '').toUpperCase() as CreateUserRoleInput;
+    const normalizedLevel = providedTechnicianLevel
+      ? (String(providedTechnicianLevel).toUpperCase() as TechnicianLevel)
+      : undefined;
+
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(normalizedRole)) {
+      if (normalizedLevel && normalizedLevel !== normalizedRole) {
+        return {
+          valid: false,
+          message: `technicianLevel must match role when role is ${normalizedRole}`,
+        };
+      }
+
+      return {
+        valid: true,
+        role: 'TECHNICIAN',
+        technicianLevel: normalizedRole as TechnicianLevel,
+      };
+    }
+
+    if (normalizedRole === 'TECHNICIAN') {
+      if (!normalizedLevel) {
+        return {
+          valid: false,
+          message: 'technicianLevel is required when role is TECHNICIAN',
+        };
+      }
+
+      if (!['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(normalizedLevel)) {
+        return {
+          valid: false,
+          message: 'TECHNICIAN role supports only JUNIOR, SENIOR, or SUPERVISOR technician levels',
+        };
+      }
+
+      return {
+        valid: true,
+        role: 'TECHNICIAN',
+        technicianLevel: normalizedLevel,
+      };
+    }
+
+    if (normalizedRole === 'ADMIN') {
+      if (normalizedLevel && normalizedLevel !== 'ADMIN') {
+        return {
+          valid: false,
+          message: 'ADMIN role can only use ADMIN technicianLevel',
+        };
+      }
+
+      return {
+        valid: true,
+        role: 'ADMIN',
+        technicianLevel: 'ADMIN',
+      };
+    }
+
+    if ((normalizedRole === 'DOCTOR' || normalizedRole === 'STUDENT') && normalizedLevel) {
+      return {
+        valid: false,
+        message: `${normalizedRole} users cannot include technicianLevel`,
+      };
+    }
+
+    return {
+      valid: true,
+      role: normalizedRole as RoleName,
+    };
+  }
+
+  private async syncWorkflowTechnicianIdentity(data: {
+    authUserId: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+    authRole: WorkflowSyncRole;
+    technicianLevel: TechnicianLevel;
+  }): Promise<{ success: boolean; message?: string }> {
+    const endpoint = `${config.workflow.serviceUrl}/workflow/admin/hierarchy/technicians/sync`;
+    const abortController = new AbortController();
+    const timeoutHandle = setTimeout(() => abortController.abort(), config.workflow.syncTimeoutMs);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+        signal: abortController.signal,
+      });
+
+      const responseBody = (await response.json().catch(() => null)) as { message?: string } | null;
+
+      if (!response.ok) {
+        return {
+          success: false,
+          message: responseBody?.message || `Workflow service responded with status ${response.status}`,
+        };
+      }
+
+      return { success: true };
+    } catch (error) {
+      const err = error as Error;
+      if (err.name === 'AbortError') {
+        return {
+          success: false,
+          message: `Workflow sync timed out after ${config.workflow.syncTimeoutMs}ms`,
+        };
+      }
+
+      const connectionFailed = (err.message || '').toLowerCase().includes('fetch failed')
+        || (err.message || '').toLowerCase().includes('econnrefused');
+
+      if (connectionFailed) {
+        return {
+          success: false,
+          message: `Unable to reach workflow service at ${endpoint}. Check WORKFLOW_SERVICE_URL and service health.`,
+        };
+      }
+
+      return {
+        success: false,
+        message: err.message || 'Workflow sync request failed',
+      };
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  }
+
   private async ensureAllowedEmailDomain(email: string): Promise<{ valid: boolean; message?: string }> {
     const allowedDomains = (await domainRepository.getActiveDomains()).map((domain) => domain.toLowerCase());
 
@@ -49,9 +187,21 @@ export class AdminService {
       firstName,
       lastName,
       role,
+      technicianLevel,
       isVerified = true, // Default to verified since admin creates them
       isActive = true,   // Default to active
     } = data;
+
+    const roleResolution = this.resolveRoleAndTechnicianLevel(role, technicianLevel);
+    if (!roleResolution.valid) {
+      return {
+        success: false,
+        message: roleResolution.message || 'Invalid role/technician level configuration',
+      };
+    }
+
+    const resolvedRole = roleResolution.role!;
+    const resolvedTechnicianLevel = roleResolution.technicianLevel;
 
     const emailValidation = await this.ensureAllowedEmailDomain(email);
     if (!emailValidation.valid) {
@@ -91,18 +241,57 @@ export class AdminService {
     });
 
     // Assign role
-    await userRepository.assignRole(user.id, role);
+    await userRepository.assignRole(user.id, resolvedRole);
+
+    if (resolvedRole === 'TECHNICIAN') {
+      await technicianRepository.create({
+        userId: user.id,
+        technicianLevel: resolvedTechnicianLevel,
+      });
+    }
+
+    if ((resolvedRole === 'TECHNICIAN' || resolvedRole === 'ADMIN') && resolvedTechnicianLevel) {
+      const syncResult = await this.syncWorkflowTechnicianIdentity({
+        authUserId: user.id,
+        firstName,
+        lastName,
+        email,
+        authRole: resolvedRole as WorkflowSyncRole,
+        technicianLevel: resolvedTechnicianLevel,
+      });
+
+      if (!syncResult.success) {
+        logger.error('Workflow identity sync failed during admin user creation', {
+          email,
+          role: resolvedRole,
+          technicianLevel: resolvedTechnicianLevel,
+          error: syncResult.message,
+        });
+
+        try {
+          await userRepository.delete(user.id);
+        } catch (rollbackError) {
+          logger.error('Rollback failed after workflow identity sync error', rollbackError);
+        }
+
+        return {
+          success: false,
+          message: `Workflow schema conflict detected: ${syncResult.message}`,
+        };
+      }
+    }
 
     // Get user with roles
     const userWithRoles = await userRepository.findByIdWithRoles(user.id);
 
-    logger.info(`Admin created new user: ${email} with role ${role}`);
+    logger.info(`Admin created new user: ${email} with role ${resolvedRole}`);
 
     return {
       success: true,
       message: 'User created successfully',
       user: sanitizeUser({
         ...userWithRoles!,
+        technicianLevel: resolvedTechnicianLevel,
         roles: userWithRoles!.roles.map(r => r.name),
       }),
     };
@@ -118,6 +307,7 @@ export class AdminService {
       password,
       firstName,
       lastName,
+      technicianLevel = 'JUNIOR',
       employeeId,
       department,
       specialization,
@@ -190,10 +380,39 @@ export class AdminService {
     // Create technician profile
     const technician = await technicianRepository.create({
       userId: user.id,
+      technicianLevel,
       employeeId,
       department,
       specialization,
     });
+
+    const syncResult = await this.syncWorkflowTechnicianIdentity({
+      authUserId: user.id,
+      firstName,
+      lastName,
+      email,
+      authRole: 'TECHNICIAN',
+      technicianLevel,
+    });
+
+    if (!syncResult.success) {
+      logger.error('Workflow identity sync failed during technician creation', {
+        email,
+        technicianLevel,
+        error: syncResult.message,
+      });
+
+      try {
+        await userRepository.delete(user.id);
+      } catch (rollbackError) {
+        logger.error('Rollback failed after technician workflow sync error', rollbackError);
+      }
+
+      return {
+        success: false,
+        message: `Workflow schema conflict detected: ${syncResult.message}`,
+      };
+    }
 
     // Assign buildings
     if (buildingIds && buildingIds.length > 0) {
@@ -220,6 +439,7 @@ export class AdminService {
         firstName: user.first_name,
         lastName: user.last_name,
         employeeId: technician.employee_id,
+        technicianLevel: technician.technicianLevel,
         department: technician.department,
         specialization: technician.specialization,
         buildings,

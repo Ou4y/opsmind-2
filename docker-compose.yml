@@ -140,6 +140,10 @@ services:
       SMTP_PASS: ""
       SMTP_FROM: "noreply@opsmind.local"
 
+      # Auth -> Workflow identity sync (must use Docker service DNS from inside container)
+      WORKFLOW_SERVICE_URL: http://workflow-service:3003
+      WORKFLOW_SYNC_TIMEOUT_MS: "5000"
+
       CORS_ORIGIN: "*"
     ports:
       - "3002:3002"
