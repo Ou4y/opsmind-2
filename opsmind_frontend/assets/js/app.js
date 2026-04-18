@@ -72,7 +72,7 @@ const App = {
         if (badge) {
             if (unreadCount > 0) {
                 badge.style.display = 'inline-block';
-                badge.textContent = unreadCount;
+                badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
             } else {
                 badge.style.display = 'none';
                 badge.textContent = '';
@@ -92,19 +92,33 @@ const App = {
                 return;
             }
 
-            container.innerHTML = notifications.map(n => `
-                <div 
-                    class="notification-item ${!n.read ? 'unread' : ''}" 
-                    data-id="${n._id}"
-                >
-                    <div class="notification-message">
-                        ${n.message}
-                    </div>
-                    <span class="notification-time">
-                        ${new Date(n.createdAt).toLocaleString()}
-                    </span>
-                </div>
-            `).join('');
+            // Render with DOM APIs to avoid injecting untrusted HTML from notification payloads.
+            container.innerHTML = '';
+            const fragment = document.createDocumentFragment();
+
+            notifications.forEach((notification) => {
+                const item = document.createElement('div');
+                item.className = `notification-item ${!notification.read ? 'unread' : ''}`;
+                item.dataset.id = notification._id || '';
+
+                const message = document.createElement('div');
+                message.className = 'notification-message';
+                message.textContent = notification.message || 'Notification';
+
+                const time = document.createElement('span');
+                time.className = 'notification-time';
+
+                const createdAt = notification.createdAt ? new Date(notification.createdAt) : null;
+                time.textContent = createdAt && !Number.isNaN(createdAt.getTime())
+                    ? createdAt.toLocaleString()
+                    : 'Unknown time';
+
+                item.appendChild(message);
+                item.appendChild(time);
+                fragment.appendChild(item);
+            });
+
+            container.appendChild(fragment);
         }
 
     } catch (error) {
@@ -268,6 +282,20 @@ const App = {
             }
            });
 
+          if (!this._notificationOutsideClickBound) {
+              document.addEventListener('click', (event) => {
+                  const dropdown = document.getElementById('notificationDropdown');
+                  const button = document.getElementById('notificationsBtn');
+                  if (!dropdown || !button) return;
+
+                  if (!dropdown.contains(event.target) && !button.contains(event.target)) {
+                      dropdown.classList.remove('show');
+                  }
+              });
+
+              this._notificationOutsideClickBound = true;
+          }
+
         // Global search (placeholder)
         const globalSearch = document.getElementById('globalSearch');
         globalSearch?.addEventListener('click', () => {
@@ -293,6 +321,11 @@ updateUserDisplay(user) {
     // Create full name from firstName and lastName if name doesn't exist
     const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
     const displayRole = this.formatRole(user.role);
+
+    const brandLink = document.querySelector('.navbar-brand');
+    if (brandLink) {
+        brandLink.setAttribute('href', Router.getRoleBasedDashboard());
+    }
 
     // Avatar initials
     const avatar = document.getElementById('userAvatar');
@@ -321,9 +354,12 @@ formatRole(role) {
     
     const roleMap = {
         'ADMIN': 'Administrator',
-        'DOCTOR': 'Professor',
+        'DOCTOR': 'Doctor',
         'STUDENT': 'Student',
+        'JUNIOR': 'Junior Technician',
         'TECHNICIAN': 'IT Technician',
+        'SENIOR': 'Senior Engineer',
+        'SUPERVISOR': 'Team Supervisor',
         'MANAGER': 'IT Manager',
         'USER': 'User'
     };
@@ -388,6 +424,18 @@ formatRole(role) {
      * Initialize global event listeners
      */
     initGlobalListeners() {
+        if (!this._placeholderLinkHandlerBound) {
+            document.addEventListener('click', (event) => {
+                const placeholderLink = event.target.closest('a.sidebar-link[href="#"], a.dropdown-item[href="#"]');
+                if (!placeholderLink) return;
+
+                event.preventDefault();
+                UI.info('This feature is coming soon.');
+            });
+
+            this._placeholderLinkHandlerBound = true;
+        }
+
         // Handle 401 errors globally (session expired)
         window.addEventListener('unhandledrejection', (event) => {
             if (event.reason?.message?.includes('401') || 

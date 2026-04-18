@@ -285,8 +285,16 @@ const Router = {
         });
         
         // Store error message in session
-        sessionStorage.setItem('opsmind_error', '⚠️ Access Denied: This page requires administrator privileges.');
-        window.location.href = '/pages/dashboard.html';
+        sessionStorage.setItem('opsmind_error', 'Access denied: You do not have permission to view that page.');
+
+        const fallbackUrl = this.getRoleBasedDashboard();
+        // Avoid redirecting to the same page endlessly.
+        if (window.location.pathname === fallbackUrl) {
+            window.location.href = '/index.html';
+            return;
+        }
+
+        window.location.href = fallbackUrl;
     },
 
     /**
