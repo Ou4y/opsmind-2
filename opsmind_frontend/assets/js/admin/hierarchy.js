@@ -30,6 +30,7 @@ const state = {
     hierarchyTree: null,
     relationships: [],
     currentUser: null,
+    lastLoadedAt: null,
     modals: {}
 };
 
@@ -143,6 +144,8 @@ async function loadAllData() {
         // Extract relationships for table display
         extractRelationshipsForTable();
 
+        state.lastLoadedAt = new Date();
+
         // Hide loading, show content
         hideLoading();
 
@@ -254,6 +257,49 @@ function updateStatistics() {
     if (supervisorsCountBadge) supervisorsCountBadge.textContent = state.supervisors.length;
     if (seniorsCountBadge) seniorsCountBadge.textContent = state.seniors.length;
     if (juniorsCountBadge) juniorsCountBadge.textContent = state.juniors.length;
+
+    const assignedSeniors = state.relationships.filter(rel => rel.subordinateRole === 'SENIOR').length;
+    const assignedJuniors = state.relationships.filter(rel => rel.subordinateRole === 'JUNIOR').length;
+
+    const unassignedSeniors = Math.max(state.seniors.length - assignedSeniors, 0);
+    const unassignedJuniors = Math.max(state.juniors.length - assignedJuniors, 0);
+
+    const assignableCount = state.supervisors.length + state.seniors.length + state.juniors.length;
+    const coveragePct = assignableCount > 0
+        ? Math.round((state.relationships.length / assignableCount) * 100)
+        : 100;
+
+    const coverageEl = document.getElementById('hierarchyCoveragePct');
+    const unassignedSeniorsEl = document.getElementById('hierarchyUnassignedSeniors');
+    const unassignedJuniorsEl = document.getElementById('hierarchyUnassignedJuniors');
+    const healthTextEl = document.getElementById('hierarchyHealthText');
+    const healthPillEl = document.getElementById('hierarchyHealthPill');
+    const lastSyncEl = document.getElementById('hierarchyLastSync');
+
+    if (coverageEl) coverageEl.textContent = `${coveragePct}%`;
+    if (unassignedSeniorsEl) unassignedSeniorsEl.textContent = String(unassignedSeniors);
+    if (unassignedJuniorsEl) unassignedJuniorsEl.textContent = String(unassignedJuniors);
+
+    if (healthPillEl) {
+        healthPillEl.classList.remove('is-good', 'is-warn', 'is-critical');
+    }
+
+    if (healthTextEl && healthPillEl) {
+        if (coveragePct >= 95) {
+            healthTextEl.textContent = 'Hierarchy health: strong';
+            healthPillEl.classList.add('is-good');
+        } else if (coveragePct >= 70) {
+            healthTextEl.textContent = 'Hierarchy health: improving';
+            healthPillEl.classList.add('is-warn');
+        } else {
+            healthTextEl.textContent = 'Hierarchy health: needs attention';
+            healthPillEl.classList.add('is-critical');
+        }
+    }
+
+    if (lastSyncEl && state.lastLoadedAt) {
+        lastSyncEl.textContent = `Last synced at ${state.lastLoadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
 }
 
 /**
@@ -371,30 +417,106 @@ function renderTechnicianList(level, technicians, color) {
 
     technicians.forEach(tech => {
         const item = document.createElement('div');
-        item.className = 'list-group-item list-group-item-action';
+        item.className = 'member-row';
         
         const name = tech.name || tech.username || `User #${tech.userId || tech.id}`;
         const email = tech.email || 'No email';
+        const roleKey = level.slice(0, -1);
+        const roleLabel = roleKey.toUpperCase();
+        const initial = name.trim().charAt(0).toUpperCase();
         
         item.innerHTML = `
-            <div class="d-flex align-items-center">
-                <div class="avatar-circle bg-${color} text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
-                    ${name.charAt(0).toUpperCase()}
-                </div>
-                <div class="flex-grow-1">
-                    <div class="fw-semibold">${UI.escapeHTML(name)}</div>
-                    <small class="text-muted">${UI.escapeHTML(email)}</small>
-                </div>
-                <span class="badge bg-${color}-subtle text-${color}">
-                    ${level.slice(0, -1).toUpperCase()}
-                </span>
+            <div class="member-avatar ${roleKey}">
+                ${UI.escapeHTML(initial)}
             </div>
+            <div class="member-info">
+                <div class="member-name">${UI.escapeHTML(name)}</div>
+                <div class="member-email">${UI.escapeHTML(email)}</div>
+            </div>
+            <span class="member-badge ${roleKey}">
+                ${roleLabel}
+            </span>
         `;
+
+        item.dataset.search = `${name} ${email}`.toLowerCase();
 
         listEl.appendChild(item);
     });
 }
 
+/**
+ * Render relationships table
+ */
+function renderRelationshipsTable() {
+    const emptyEl = document.getElementById('relationshipsEmpty');
+    const tableBodyEl = document.getElementById('relationshipsTableBody');
+    const countEl = document.getElementById('relCountBadge');
+
+    // Update count badge
+    if (countEl) {
+        countEl.textContent = state.relationships.length;
+    }
+
+    if (state.relationships.length === 0) {
+        if (emptyEl) emptyEl.classList.remove('d-none');
+        if (tableBodyEl) tableBodyEl.innerHTML = '';
+        return;
+    }
+
+    if (emptyEl) emptyEl.classList.add('d-none');
+    if (!tableBodyEl) return;
+
+    tableBodyEl.innerHTML = '';
+
+    state.relationships.forEach((rel, index) => {
+        const row = document.createElement('tr');
+
+        const subordinateRoleClass = (rel.subordinateRole || '').toLowerCase();
+        const managerRoleClass = (rel.managerRole || '').toLowerCase();
+        const subordinateInitial = (rel.subordinateName || '?').trim().charAt(0).toUpperCase();
+        const managerInitial = (rel.managerName || '?').trim().charAt(0).toUpperCase();
+
+        row.innerHTML = `
+            <td class="text-muted fw-semibold">${index + 1}</td>
+            <td>
+                <div class="rel-person">
+                    <div class="rel-avatar ${subordinateRoleClass}">${UI.escapeHTML(subordinateInitial)}</div>
+                    <div class="min-w-0">
+                        <div class="rel-name">${UI.escapeHTML(rel.subordinateName)}</div>
+                    </div>
+                </div>
+            </td>
+            <td><span class="rel-role-badge ${subordinateRoleClass}">${UI.escapeHTML(rel.subordinateRole)}</span></td>
+            <td class="text-center"><i class="bi bi-arrow-right rel-arrow"></i></td>
+            <td>
+                <div class="rel-person">
+                    <div class="rel-avatar ${managerRoleClass}">${UI.escapeHTML(managerInitial)}</div>
+                    <div class="min-w-0">
+                        <div class="rel-name">${UI.escapeHTML(rel.managerName)}</div>
+                    </div>
+                </div>
+            </td>
+            <td><span class="rel-role-badge ${managerRoleClass}">${UI.escapeHTML(rel.managerRole)}</span></td>
+            <td>${UI.formatDate(rel.createdAt)}</td>
+            <td>
+                <button class="rel-action-btn edit me-1"
+                        onclick="window.editRelationship(${rel.id})"
+                        title="Edit relationship"
+                        aria-label="Edit relationship">
+                    <i class="bi bi-pencil"></i>
+                </button>
+                <button class="rel-action-btn delete"
+                        onclick="window.deleteRelationship(${rel.id})"
+                        title="Delete relationship"
+                        aria-label="Delete relationship">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </td>
+        `;
+
+        tableBodyEl.appendChild(row);
+    });
+}
 /**
  * Render hierarchy tree
  */
@@ -685,69 +807,6 @@ function collapseAllNodes() {
         }
     });
     UI.showToast('All nodes collapsed', 'success');
-}
-
-/**
- * Render relationships table
- */
-function renderRelationshipsTable() {
-    const emptyEl = document.getElementById('relationshipsEmpty');
-    const tableBodyEl = document.getElementById('relationshipsTableBody');
-    const countEl = document.getElementById('relCountBadge');
-
-    // Update count badge
-    if (countEl) {
-        countEl.textContent = state.relationships.length;
-    }
-
-    if (state.relationships.length === 0) {
-        if (emptyEl) emptyEl.classList.remove('d-none');
-        if (tableBodyEl) tableBodyEl.innerHTML = '';
-        return;
-    }
-
-    if (emptyEl) emptyEl.classList.add('d-none');
-    if (!tableBodyEl) return;
-
-    tableBodyEl.innerHTML = '';
-
-    state.relationships.forEach((rel, index) => {
-        const row = document.createElement('tr');
-        
-        const roleColorMap = {
-            'ADMIN': 'danger',
-            'SUPERVISOR': 'primary',
-            'SENIOR': 'success',
-            'JUNIOR': 'info'
-        };
-
-        const subordinateColor = roleColorMap[rel.subordinateRole] || 'secondary';
-        const managerColor = roleColorMap[rel.managerRole] || 'secondary';
-
-        row.innerHTML = `
-            <td>${index + 1}</td>
-            <td>${UI.escapeHTML(rel.subordinateName)}</td>
-            <td><span class="badge bg-${subordinateColor}">${rel.subordinateRole}</span></td>
-            <td class="text-center"><i class="bi bi-arrow-right text-muted"></i></td>
-            <td>${UI.escapeHTML(rel.managerName)}</td>
-            <td><span class="badge bg-${managerColor}">${rel.managerRole}</span></td>
-            <td>${UI.formatDate(rel.createdAt)}</td>
-            <td>
-                <button class="btn btn-sm btn-outline-primary me-1" 
-                        onclick="window.editRelationship(${rel.id})"
-                        title="Edit relationship">
-                    <i class="bi bi-pencil"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-danger" 
-                        onclick="window.deleteRelationship(${rel.id})"
-                        title="Delete relationship">
-                    <i class="bi bi-trash"></i>
-                </button>
-            </td>
-        `;
-
-        tableBodyEl.appendChild(row);
-    });
 }
 
 /**

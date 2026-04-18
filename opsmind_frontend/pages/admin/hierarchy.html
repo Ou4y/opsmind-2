@@ -10,6 +10,9 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
     <!-- Custom CSS -->
     <link href="/assets/css/main.css" rel="stylesheet">
     
@@ -18,49 +21,148 @@
     
     <!-- Hierarchy Tree Custom Styles -->
     <style>
+        :root {
+            --tm-bg-0: #f2f8ff;
+            --tm-bg-1: #e9f6f7;
+            --tm-bg-2: #f8f8fb;
+            --tm-ink: #1f2937;
+            --tm-muted: #64748b;
+            --tm-primary: #0f766e;
+            --tm-primary-deep: #155e75;
+            --tm-primary-soft: #99f6e4;
+        }
+
+        .main-content {
+            position: relative;
+            isolation: isolate;
+            min-height: 100vh;
+            padding-bottom: 28px;
+            background:
+                radial-gradient(1200px 380px at 6% -18%, rgba(15, 118, 110, 0.14), transparent 68%),
+                radial-gradient(980px 300px at 92% -6%, rgba(14, 165, 233, 0.14), transparent 63%),
+                linear-gradient(180deg, var(--tm-bg-0) 0%, var(--tm-bg-1) 36%, var(--tm-bg-2) 100%);
+        }
+
+        .main-content::before,
+        .main-content::after {
+            content: '';
+            position: absolute;
+            pointer-events: none;
+            z-index: -1;
+            border-radius: 999px;
+            filter: blur(0.4px);
+        }
+
+        .main-content::before {
+            width: 220px;
+            height: 220px;
+            right: 8%;
+            top: 180px;
+            background: radial-gradient(circle, rgba(15, 118, 110, 0.12) 0%, rgba(15, 118, 110, 0) 72%);
+        }
+
+        .main-content::after {
+            width: 260px;
+            height: 260px;
+            left: 6%;
+            bottom: 20px;
+            background: radial-gradient(circle, rgba(14, 165, 233, 0.11) 0%, rgba(14, 165, 233, 0) 70%);
+        }
+
         /* ============================
            Page Layout & Hero Header
            ============================ */
         .tm-hero {
-            background: linear-gradient(135deg, #4361ee 0%, #3f37c9 50%, #7209b7 100%);
+            background: linear-gradient(132deg, #0f766e 0%, #155e75 52%, #0e7490 100%);
             border-radius: 20px;
             padding: 32px 36px;
             margin-bottom: 28px;
             position: relative;
             overflow: hidden;
             color: white;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 16px 38px rgba(15, 23, 42, 0.18);
         }
         .tm-hero::before {
             content: '';
             position: absolute;
-            top: -60px; right: -60px;
-            width: 220px; height: 220px;
+            top: -46px; right: -44px;
+            width: 198px; height: 198px;
             border-radius: 50%;
-            background: rgba(255,255,255,0.07);
+            background: radial-gradient(circle, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0) 72%);
+            animation: tmFloat 10s ease-in-out infinite;
         }
         .tm-hero::after {
             content: '';
             position: absolute;
-            bottom: -40px; left: 30%;
-            width: 160px; height: 160px;
+            bottom: -56px; left: 24%;
+            width: 176px; height: 176px;
             border-radius: 50%;
-            background: rgba(255,255,255,0.05);
+            background: radial-gradient(circle, rgba(153,246,228,0.35) 0%, rgba(153,246,228,0) 72%);
+            animation: tmFloat 8s ease-in-out infinite reverse;
         }
-        .tm-hero-title { font-size: 1.75rem; font-weight: 700; margin-bottom: 4px; }
-        .tm-hero-subtitle { font-size: 0.95rem; opacity: .82; margin-bottom: 0; }
+        @keyframes tmFloat {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(8px); }
+        }
+        .tm-hero-title {
+            font-family: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+            font-size: 1.85rem;
+            letter-spacing: -0.02em;
+            font-weight: 700;
+            margin-bottom: 4px;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.14);
+        }
+        .tm-hero-subtitle {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.96rem;
+            opacity: .9;
+            margin-bottom: 0;
+        }
         .tm-hero-actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
         .btn-hero-primary {
-            background: white; color: #4361ee; font-weight: 600; border: none;
+            background: white; color: var(--tm-primary); font-weight: 700; border: none;
             padding: 10px 22px; border-radius: 12px; font-size: 0.9rem;
-            transition: all .2s; box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+            transition: all .2s; box-shadow: 0 8px 16px rgba(0,0,0,0.2);
         }
-        .btn-hero-primary:hover { background: #f0f2ff; color: #3651d4; transform: translateY(-1px); }
+        .btn-hero-primary:hover { background: #ecfeff; color: #0f766e; transform: translateY(-2px); }
         .btn-hero-outline {
-            background: rgba(255,255,255,0.15); color: white; font-weight: 500;
+            background: rgba(255,255,255,0.13); color: white; font-weight: 600;
             border: 1.5px solid rgba(255,255,255,0.4); padding: 10px 22px;
             border-radius: 12px; font-size: 0.9rem; transition: all .2s; backdrop-filter: blur(4px);
         }
         .btn-hero-outline:hover { background: rgba(255,255,255,0.25); color: white; transform: translateY(-1px); }
+        .tm-health-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
+            border-radius: 999px;
+            margin-bottom: 10px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            border: 1px solid rgba(255,255,255,0.35);
+            background: rgba(255,255,255,0.15);
+            color: white;
+        }
+        .tm-health-pill.is-good {
+            background: rgba(16, 185, 129, 0.24);
+            border-color: rgba(255,255,255,0.46);
+        }
+        .tm-health-pill.is-warn {
+            background: rgba(245, 158, 11, 0.24);
+        }
+        .tm-health-pill.is-critical {
+            background: rgba(244, 63, 94, 0.22);
+        }
+        .tm-sync-text {
+            font-size: 0.76rem;
+            opacity: 0.88;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
 
         /* ============================
            Summary Stat Pills
@@ -69,12 +171,12 @@
         .tm-stat-pill {
             flex: 1; min-width: 130px; background: white;
             border-radius: 16px; padding: 18px 20px;
-            box-shadow: 0 2px 12px rgba(67,97,238,0.08);
-            border: 1px solid rgba(67,97,238,0.06);
+            box-shadow: 0 8px 18px rgba(15,23,42,0.06);
+            border: 1px solid rgba(14,116,144,0.08);
             display: flex; align-items: center; gap: 14px;
             transition: all .25s;
         }
-        .tm-stat-pill:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(67,97,238,0.12); }
+        .tm-stat-pill:hover { transform: translateY(-4px); box-shadow: 0 14px 28px rgba(15,23,42,0.13); }
         .tm-stat-icon {
             width: 48px; height: 48px; border-radius: 14px;
             display: flex; align-items: center; justify-content: center;
@@ -84,8 +186,51 @@
         .tm-stat-icon.supervisor { background: #dbeafe; color: #2563eb; }
         .tm-stat-icon.senior  { background: #d1fae5; color: #059669; }
         .tm-stat-icon.junior  { background: #cffafe; color: #0891b2; }
+        .tm-stat-value,
+        .tm-stat-label,
+        .level-title,
+        .member-name,
+        .rel-name,
+        .hierarchy-section-title,
+        .page-error-title {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
         .tm-stat-value { font-size: 1.6rem; font-weight: 700; line-height: 1; color: #1f2937; }
         .tm-stat-label { font-size: 0.78rem; color: #6b7280; font-weight: 500; margin-top: 2px; text-transform: uppercase; letter-spacing: .5px; }
+
+        .tm-signalbar {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin: -8px 0 24px;
+        }
+
+        .tm-signal {
+            background: rgba(255,255,255,0.84);
+            border: 1px solid rgba(148,163,184,0.24);
+            border-radius: 14px;
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            box-shadow: 0 8px 14px rgba(15,23,42,0.04);
+        }
+
+        .tm-signal-label {
+            font-size: 0.75rem;
+            color: var(--tm-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 700;
+        }
+
+        .tm-signal-value {
+            font-size: 1.08rem;
+            color: var(--tm-ink);
+            font-weight: 800;
+            letter-spacing: -0.01em;
+        }
 
         /* ============================
            Team Level Cards
@@ -93,6 +238,11 @@
         .team-level-card {
             background: white; border-radius: 16px; border: 1px solid #f0f0f5;
             box-shadow: 0 2px 12px rgba(0,0,0,0.05); overflow: hidden;
+            transition: transform .2s ease, box-shadow .2s ease;
+        }
+        .team-level-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 16px 30px rgba(15,23,42,0.1);
         }
         .team-level-header {
             padding: 16px 20px; border-bottom: 1px solid #f0f0f5;
@@ -604,10 +754,12 @@
             background: #f9fafb; padding: 12px 16px; font-size: 0.72rem;
             text-transform: uppercase; letter-spacing: .6px; font-weight: 700;
             color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
+            position: sticky; top: 0; z-index: 2;
         }
-        .rel-table tbody td { padding: 13px 16px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+        .rel-table tbody td { padding: 13px 16px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+        .rel-table tbody tr:nth-child(even) td { background: #fcfdff; }
         .rel-table tbody tr:last-child td { border-bottom: none; }
-        .rel-table tbody tr:hover td { background: #fafafa; }
+        .rel-table tbody tr:hover td { background: #f0f9ff; }
         .rel-person {
             display: flex; align-items: center; gap: 9px;
         }
@@ -696,6 +848,41 @@
         .page-error-icon { font-size: 2rem; color: #ef4444; flex-shrink: 0; }
         .page-error-title { font-weight: 700; color: #b91c1c; margin-bottom: 4px; }
         .page-error-msg { font-size: 0.875rem; color: #7f1d1d; margin: 0; }
+
+        @media (max-width: 991.98px) {
+            .tm-signalbar {
+                grid-template-columns: 1fr;
+            }
+            .tm-health-pill,
+            .tm-sync-text {
+                margin-left: auto;
+            }
+        }
+
+        @media (max-width: 767.98px) {
+            .tm-hero {
+                padding: 24px 20px;
+                border-radius: 16px;
+            }
+            .tm-hero-title {
+                font-size: 1.45rem;
+            }
+            .tm-stats {
+                gap: 10px;
+            }
+            .tm-stat-pill {
+                min-width: calc(50% - 8px);
+                padding: 14px;
+            }
+            .tm-stat-value {
+                font-size: 1.3rem;
+            }
+            .relationships-header,
+            .hierarchy-section-header {
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+        }
     </style>
 </head>
 <body class="app-body">
@@ -749,6 +936,14 @@
                             </div>
                         </div>
                         <div class="col-md-5 text-md-end">
+                            <div class="tm-health-pill" id="hierarchyHealthPill">
+                                <i class="bi bi-activity"></i>
+                                <span id="hierarchyHealthText">Calculating hierarchy health...</span>
+                            </div>
+                            <div class="tm-sync-text">
+                                <i class="bi bi-clock-history"></i>
+                                <span id="hierarchyLastSync">Not synced yet</span>
+                            </div>
                             <div class="tm-hero-actions justify-content-md-end">
                                 <button class="btn-hero-outline" id="refreshBtn">
                                     <i class="bi bi-arrow-clockwise me-1"></i> Refresh
@@ -797,6 +992,21 @@
                             <div class="tm-stat-value" id="relationshipCount">0</div>
                             <div class="tm-stat-label">Relationships</div>
                         </div>
+                    </div>
+                </div>
+
+                <div class="tm-signalbar">
+                    <div class="tm-signal">
+                        <div class="tm-signal-label">Link Coverage</div>
+                        <div class="tm-signal-value" id="hierarchyCoveragePct">0%</div>
+                    </div>
+                    <div class="tm-signal">
+                        <div class="tm-signal-label">Unassigned Seniors</div>
+                        <div class="tm-signal-value" id="hierarchyUnassignedSeniors">0</div>
+                    </div>
+                    <div class="tm-signal">
+                        <div class="tm-signal-label">Unassigned Juniors</div>
+                        <div class="tm-signal-value" id="hierarchyUnassignedJuniors">0</div>
                     </div>
                 </div>
 
