@@ -16,8 +16,8 @@ import {
     createHierarchyRelationship,
     updateHierarchyRelationship,
     deleteHierarchyRelationship
-} from '../../services/workflowService.js';
-import AuthService from '../../services/authService.js';
+} from '../../../services/workflowService.js';
+import AuthService from '../../../services/authService.js';
 
 /**
  * Page state
@@ -130,13 +130,24 @@ async function loadAllData() {
         state.supervisors = supervisorsRes.success ? (supervisorsRes.data || []) : [];
         state.seniors = seniorsRes.success ? (seniorsRes.data || []) : [];
         state.juniors = juniorsRes.success ? (juniorsRes.data || []) : [];
-        state.hierarchyTree = treeRes.success ? (treeRes.data || []) : [];
+        
+        // Handle hierarchy tree response (it's an object, not an array)
+        if (treeRes.success && treeRes.data) {
+            state.hierarchyTree = buildHierarchyFromData(treeRes.data);
+            state.relationships = treeRes.data.relationships || [];
+        } else {
+            state.hierarchyTree = [];
+            state.relationships = [];
+        }
 
-        // Extract relationships from hierarchy tree
-        extractRelationships();
+        // Extract relationships for table display
+        extractRelationshipsForTable();
 
         // Hide loading, show content
         hideLoading();
+
+        // Update statistics
+        updateStatistics();
 
         // Render all sections
         renderTechniciansByLevel();
@@ -151,68 +162,146 @@ async function loadAllData() {
 }
 
 /**
- * Extract relationships from hierarchy tree for table display
+ * Build hierarchy tree from relationships and technicians data
  */
-function extractRelationships() {
-    state.relationships = [];
-    let relationshipId = 1;
-
-    if (!state.hierarchyTree || state.hierarchyTree.length === 0) {
-        return;
+function buildHierarchyFromData(data) {
+    const { relationships, technicians } = data;
+    
+    if (!relationships || !technicians) {
+        return [];
     }
 
-    // Get admin info if exists
-    const admin = state.admins && state.admins.length > 0 ? state.admins[0] : null;
-
-    // Process each supervisor
-    state.hierarchyTree.forEach(supervisor => {
-        // Add supervisor → admin relationship if admin exists
-        if (admin) {
-            state.relationships.push({
-                id: supervisor.relationshipId || relationshipId++,
-                subordinateId: supervisor.userId,
-                subordinateName: supervisor.name || `Supervisor #${supervisor.userId}`,
-                subordinateRole: 'SUPERVISOR',
-                managerId: admin.userId || admin.id,
-                managerName: admin.name || admin.username || `Admin #${admin.userId || admin.id}`,
-                managerRole: 'ADMIN',
-                createdAt: supervisor.createdAt || new Date().toISOString()
-            });
-        }
-        
-        if (supervisor.seniors && supervisor.seniors.length > 0) {
-            supervisor.seniors.forEach(senior => {
-                // Add senior → supervisor relationship
-                state.relationships.push({
-                    id: senior.relationshipId || relationshipId++,
-                    subordinateId: senior.userId,
-                    subordinateName: senior.name,
-                    subordinateRole: 'SENIOR',
-                    managerId: supervisor.userId,
-                    managerName: supervisor.name,
-                    managerRole: 'SUPERVISOR',
-                    createdAt: senior.createdAt || new Date().toISOString()
-                });
-
-                // Process juniors under this senior
-                if (senior.juniors && senior.juniors.length > 0) {
-                    senior.juniors.forEach(junior => {
-                        // Add junior → senior relationship
-                        state.relationships.push({
-                            id: junior.relationshipId || relationshipId++,
-                            subordinateId: junior.userId,
-                            subordinateName: junior.name,
-                            subordinateRole: 'JUNIOR',
-                            managerId: senior.userId,
-                            managerName: senior.name,
-                            managerRole: 'SENIOR',
-                            createdAt: junior.createdAt || new Date().toISOString()
-                        });
-                    });
-                }
-            });
-        }
+    // Create lookup maps
+    const techMap = {};
+    technicians.forEach(tech => {
+        techMap[tech.user_id] = tech;
     });
+
+    // Build hierarchy tree starting from supervisors
+    const supervisors = technicians.filter(t => t.level === 'SUPERVISOR');
+    
+    return supervisors.map(supervisor => {
+        // Find seniors under this supervisor
+        const seniorRels = relationships.filter(r => 
+            r.parent_user_id === supervisor.user_id && 
+            r.relationship_type === 'SENIOR_TO_SUPERVISOR'
+        );
+        
+        const seniors = seniorRels.map(rel => {
+            const senior = techMap[rel.child_user_id];
+            if (!senior) return null;
+            
+            // Find juniors under this senior
+            const juniorRels = relationships.filter(r =>
+                r.parent_user_id === senior.user_id &&
+                r.relationship_type === 'JUNIOR_TO_SENIOR'
+            );
+            
+            const juniors = juniorRels.map(jRel => {
+                const junior = techMap[jRel.child_user_id];
+                return junior ? {
+                    userId: junior.user_id,
+                    name: junior.name,
+                    email: junior.email,
+                    relationshipId: jRel.id,
+                    createdAt: jRel.created_at
+                } : null;
+            }).filter(Boolean);
+            
+            return {
+                userId: senior.user_id,
+                name: senior.name,
+                email: senior.email,
+                relationshipId: rel.id,
+                createdAt: rel.created_at,
+                juniors
+            };
+        }).filter(Boolean);
+        
+        return {
+            userId: supervisor.user_id,
+            name: supervisor.name,
+            email: supervisor.email,
+            seniors
+        };
+    });
+}
+
+/**
+ * Update statistics display
+ */
+function updateStatistics() {
+    // Update top stat pills
+    const statAdmins = document.getElementById('statAdmins');
+    const statSupervisors = document.getElementById('statSupervisors');
+    const statSeniors = document.getElementById('statSeniors');
+    const statJuniors = document.getElementById('statJuniors');
+    const statRelationships = document.getElementById('relationshipCount');
+
+    if (statAdmins) statAdmins.textContent = state.admins.length;
+    if (statSupervisors) statSupervisors.textContent = state.supervisors.length;
+    if (statSeniors) statSeniors.textContent = state.seniors.length;
+    if (statJuniors) statJuniors.textContent = state.juniors.length;
+    if (statRelationships) statRelationships.textContent = state.relationships.length;
+
+    // Update card badges
+    const adminsCountBadge = document.getElementById('adminsCountBadge');
+    const supervisorsCountBadge = document.getElementById('supervisorsCountBadge');
+    const seniorsCountBadge = document.getElementById('seniorsCountBadge');
+    const juniorsCountBadge = document.getElementById('juniorsCountBadge');
+
+    if (adminsCountBadge) adminsCountBadge.textContent = state.admins.length;
+    if (supervisorsCountBadge) supervisorsCountBadge.textContent = state.supervisors.length;
+    if (seniorsCountBadge) seniorsCountBadge.textContent = state.seniors.length;
+    if (juniorsCountBadge) juniorsCountBadge.textContent = state.juniors.length;
+}
+
+/**
+ * Extract relationships from raw data for table display
+ */
+function extractRelationshipsForTable() {
+    // Get all technicians in one lookup map
+    const allTechs = [...state.admins, ...state.supervisors, ...state.seniors, ...state.juniors];
+    const techMap = {};
+    allTechs.forEach(tech => {
+        techMap[tech.user_id || tech.userId] = tech;
+    });
+
+    // Role mapping based on relationship type
+    const roleMap = {
+        'JUNIOR_TO_SENIOR': { childRole: 'JUNIOR', parentRole: 'SENIOR' },
+        'SENIOR_TO_SUPERVISOR': { childRole: 'SENIOR', parentRole: 'SUPERVISOR' },
+        'SUPERVISOR_TO_ADMIN': { childRole: 'SUPERVISOR', parentRole: 'ADMIN' }
+    };
+
+    // Transform raw relationships into display format
+    const displayRelationships = [];
+    
+    if (state.relationships && state.relationships.length > 0) {
+        state.relationships.forEach(rel => {
+            const child = techMap[rel.child_user_id];
+            const parent = techMap[rel.parent_user_id];
+            
+            if (!child || !parent) return;
+            
+            const roles = roleMap[rel.relationship_type];
+            if (!roles) return;
+            
+            displayRelationships.push({
+                id: rel.id,
+                subordinateId: child.user_id || child.userId,
+                subordinateName: child.name || child.username || `User #${child.user_id}`,
+                subordinateRole: roles.childRole,
+                managerId: parent.user_id || parent.userId,
+                managerName: parent.name || parent.username || `User #${parent.user_id}`,
+                managerRole: roles.parentRole,
+                createdAt: rel.created_at || rel.createdAt
+            });
+        });
+    }
+    
+    // Replace state.relationships with formatted data for rendering
+    state.relationships = displayRelationships;
 }
 
 /**
@@ -604,8 +693,9 @@ function collapseAllNodes() {
 function renderRelationshipsTable() {
     const emptyEl = document.getElementById('relationshipsEmpty');
     const tableBodyEl = document.getElementById('relationshipsTableBody');
-    const countEl = document.getElementById('relationshipCount');
+    const countEl = document.getElementById('relCountBadge');
 
+    // Update count badge
     if (countEl) {
         countEl.textContent = state.relationships.length;
     }
@@ -621,7 +711,7 @@ function renderRelationshipsTable() {
 
     tableBodyEl.innerHTML = '';
 
-    state.relationships.forEach(rel => {
+    state.relationships.forEach((rel, index) => {
         const row = document.createElement('tr');
         
         const roleColorMap = {
@@ -635,9 +725,10 @@ function renderRelationshipsTable() {
         const managerColor = roleColorMap[rel.managerRole] || 'secondary';
 
         row.innerHTML = `
-            <td>${rel.id}</td>
+            <td>${index + 1}</td>
             <td>${UI.escapeHTML(rel.subordinateName)}</td>
             <td><span class="badge bg-${subordinateColor}">${rel.subordinateRole}</span></td>
+            <td class="text-center"><i class="bi bi-arrow-right text-muted"></i></td>
             <td>${UI.escapeHTML(rel.managerName)}</td>
             <td><span class="badge bg-${managerColor}">${rel.managerRole}</span></td>
             <td>${UI.formatDate(rel.createdAt)}</td>
@@ -675,8 +766,8 @@ function populateFormOptions() {
         subordinateGroup1.label = 'Juniors';
         state.juniors.forEach(junior => {
             const option = document.createElement('option');
-            option.value = junior.userId || junior.id;
-            option.textContent = junior.name || junior.username || `User #${junior.userId || junior.id}`;
+            option.value = junior.user_id || junior.userId || junior.id;
+            option.textContent = junior.name || junior.username || `User #${junior.user_id || junior.userId || junior.id}`;
             option.dataset.role = 'JUNIOR';
             subordinateGroup1.appendChild(option);
         });
@@ -688,8 +779,8 @@ function populateFormOptions() {
         subordinateGroup2.label = 'Seniors';
         state.seniors.forEach(senior => {
             const option = document.createElement('option');
-            option.value = senior.userId || senior.id;
-            option.textContent = senior.name || senior.username || `User #${senior.userId || senior.id}`;
+            option.value = senior.user_id || senior.userId || senior.id;
+            option.textContent = senior.name || senior.username || `User #${senior.user_id || senior.userId || senior.id}`;
             option.dataset.role = 'SENIOR';
             subordinateGroup2.appendChild(option);
         });
@@ -701,8 +792,8 @@ function populateFormOptions() {
         subordinateGroup3.label = 'Supervisors';
         state.supervisors.forEach(supervisor => {
             const option = document.createElement('option');
-            option.value = supervisor.userId || supervisor.id;
-            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
+            option.value = supervisor.user_id || supervisor.userId || supervisor.id;
+            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.user_id || supervisor.userId || supervisor.id}`;
             option.dataset.role = 'SUPERVISOR';
             subordinateGroup3.appendChild(option);
         });
@@ -719,8 +810,8 @@ function populateFormOptions() {
         managerGroup1.label = 'Seniors';
         state.seniors.forEach(senior => {
             const option = document.createElement('option');
-            option.value = senior.userId || senior.id;
-            option.textContent = senior.name || senior.username || `User #${senior.userId || senior.id}`;
+            option.value = senior.user_id || senior.userId || senior.id;
+            option.textContent = senior.name || senior.username || `User #${senior.user_id || senior.userId || senior.id}`;
             option.dataset.role = 'SENIOR';
             managerGroup1.appendChild(option);
         });
@@ -732,8 +823,8 @@ function populateFormOptions() {
         managerGroup2.label = 'Supervisors';
         state.supervisors.forEach(supervisor => {
             const option = document.createElement('option');
-            option.value = supervisor.userId || supervisor.id;
-            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
+            option.value = supervisor.user_id || supervisor.userId || supervisor.id;
+            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.user_id || supervisor.userId || supervisor.id}`;
             option.dataset.role = 'SUPERVISOR';
             managerGroup2.appendChild(option);
         });
@@ -745,8 +836,8 @@ function populateFormOptions() {
         managerGroup3.label = 'Admins';
         state.admins.forEach(admin => {
             const option = document.createElement('option');
-            option.value = admin.userId || admin.id;
-            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
+            option.value = admin.user_id || admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.user_id || admin.userId || admin.id}`;
             option.dataset.role = 'ADMIN';
             managerGroup3.appendChild(option);
         });
@@ -841,12 +932,48 @@ async function handleCreateRelationship() {
         return;
     }
 
+    // Determine subordinate level
+    let subordinateLevel = null;
+    let managerLevel = null;
+    
+    // Find subordinate in state arrays
+    if (state.juniors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'JUNIOR';
+    } else if (state.seniors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'SENIOR';
+    } else if (state.supervisors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'SUPERVISOR';
+    }
+    
+    // Find manager in state arrays
+    if (state.seniors.find(t => (t.user_id || t.userId) === managerId)) {
+        managerLevel = 'SENIOR';
+    } else if (state.supervisors.find(t => (t.user_id || t.userId) === managerId)) {
+        managerLevel = 'SUPERVISOR';
+    } else if (state.admins.find(t => (t.user_id || t.userId) === managerId)) {
+        managerLevel = 'ADMIN';
+    }
+    
+    // Determine relationship type
+    let relationshipType = null;
+    if (subordinateLevel === 'JUNIOR' && managerLevel === 'SENIOR') {
+        relationshipType = 'JUNIOR_TO_SENIOR';
+    } else if (subordinateLevel === 'SENIOR' && managerLevel === 'SUPERVISOR') {
+        relationshipType = 'SENIOR_TO_SUPERVISOR';
+    } else if (subordinateLevel === 'SUPERVISOR' && managerLevel === 'ADMIN') {
+        relationshipType = 'SUPERVISOR_TO_ADMIN';
+    } else {
+        UI.showToast(`Invalid relationship: ${subordinateLevel} cannot report to ${managerLevel}`, 'error');
+        return;
+    }
+
     UI.showToast('Creating relationship...', 'info');
 
     try {
         const response = await createHierarchyRelationship({
-            subordinate_id: subordinateId,
-            manager_id: managerId
+            childUserId: subordinateId,
+            parentUserId: managerId,
+            relationshipType: relationshipType
         });
 
         if (response.success) {
@@ -940,11 +1067,58 @@ async function handleUpdateRelationship() {
         return;
     }
 
+    // Find the relationship being edited
+    const relationship = state.relationships.find(r => r.id === relationshipId);
+    if (!relationship) {
+        UI.showToast('Relationship not found', 'error');
+        return;
+    }
+
+    // Get subordinate ID from the relationship
+    const subordinateId = relationship.subordinateId;
+    
+    // Determine subordinate level
+    let subordinateLevel = null;
+    let managerLevel = null;
+    
+    // Find subordinate in state arrays
+    if (state.juniors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'JUNIOR';
+    } else if (state.seniors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'SENIOR';
+    } else if (state.supervisors.find(t => (t.user_id || t.userId) === subordinateId)) {
+        subordinateLevel = 'SUPERVISOR';
+    }
+    
+    // Find new manager in state arrays
+    if (state.seniors.find(t => (t.user_id || t.userId) === newManagerId)) {
+        managerLevel = 'SENIOR';
+    } else if (state.supervisors.find(t => (t.user_id || t.userId) === newManagerId)) {
+        managerLevel = 'SUPERVISOR';
+    } else if (state.admins.find(t => (t.user_id || t.userId) === newManagerId)) {
+        managerLevel = 'ADMIN';
+    }
+    
+    // Determine relationship type
+    let relationshipType = null;
+    if (subordinateLevel === 'JUNIOR' && managerLevel === 'SENIOR') {
+        relationshipType = 'JUNIOR_TO_SENIOR';
+    } else if (subordinateLevel === 'SENIOR' && managerLevel === 'SUPERVISOR') {
+        relationshipType = 'SENIOR_TO_SUPERVISOR';
+    } else if (subordinateLevel === 'SUPERVISOR' && managerLevel === 'ADMIN') {
+        relationshipType = 'SUPERVISOR_TO_ADMIN';
+    } else {
+        UI.showToast(`Invalid relationship: ${subordinateLevel} cannot report to ${managerLevel}`, 'error');
+        return;
+    }
+
     UI.showToast('Updating relationship...', 'info');
 
     try {
-        const response = await updateHierarchyRelationship(relationshipId, {
-            manager_id: newManagerId
+        const response = await updateHierarchyRelationship({
+            childUserId: subordinateId,
+            parentUserId: newManagerId,
+            relationshipType: relationshipType
         });
 
         if (response.success) {
