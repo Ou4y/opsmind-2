@@ -2,9 +2,8 @@
  * OpsMind - Junior Technician Dashboard Module
  * 
  * Handles junior technician functionality:
- * - View assigned tickets
- * - Claim available tickets
- * - Update ticket status
+ * - View tickets assigned to the logged-in technician
+ * - Update ticket status (OPEN → IN_PROGRESS → RESOLVED)
  * - Escalate to senior
  * - View workflow history
  */
@@ -19,7 +18,6 @@ import AuthService from '/services/authService.js';
  */
 const state = {
     myTickets: [],
-    availableTickets: [],
     selectedTicket: null,
     workflowLogs: [],
     slaData: {},
@@ -89,15 +87,7 @@ function setupEventListeners() {
         myTicketsTab.show();
     });
 
-    // Tab change events
-    document.querySelectorAll('#dashboardTabs button[data-bs-toggle="tab"]').forEach(tab => {
-        tab.addEventListener('shown.bs.tab', (event) => {
-            const targetId = event.target.getAttribute('data-bs-target');
-            if (targetId === '#available-pane' && state.availableTickets.length === 0) {
-                loadAvailableTickets();
-            }
-        });
-    });
+    // Tab change events (no-op: Available to Claim tab has been removed)
 
     // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
@@ -120,17 +110,50 @@ async function loadDashboardData() {
         // Load my tickets
         await loadMyTickets();
         
-        // Load available tickets
-        await loadAvailableTickets();
-        
         // Update statistics
         updateStatistics();
         
     } catch (error) {
-        console.error('Error loading dashboard data:', error);
-        UI.showToast('Failed to load dashboard data', 'error');
+        console.error('[Junior Dashboard] Unexpected error loading dashboard data:', error);
+        UI.showToast('Failed to load assigned tickets. Check Ticket Service connection.', 'error');
     } finally {
         state.isLoading = false;
+    }
+}
+
+/**
+ * Auto-assign any unassigned OPEN tickets to the given technician.
+ * Runs silently — failures are logged but do not block the dashboard load.
+ * @param {string} technicianId
+ */
+async function autoAssignOpenTickets(technicianId) {
+    try {
+        const rawData = await TicketService.getTickets({ status: 'OPEN', limit: 500, offset: 0 });
+        const allOpen = Array.isArray(rawData)          ? rawData
+                      : Array.isArray(rawData?.tickets)  ? rawData.tickets
+                      : Array.isArray(rawData?.data)     ? rawData.data
+                      : Array.isArray(rawData?.items)    ? rawData.items
+                      : [];
+
+        const unassigned = allOpen.filter(isUnassigned);
+        if (unassigned.length === 0) {
+            console.log('[Junior Dashboard] No unassigned OPEN tickets to auto-assign');
+            return;
+        }
+
+        console.log(`[Junior Dashboard] Auto-assigning ${unassigned.length} unassigned OPEN ticket(s) to technician ${technicianId}`);
+
+        await Promise.all(unassigned.map(async (ticket) => {
+            try {
+                await TicketService.updateTicket(ticket.id, { assigned_to: String(technicianId) });
+                console.log(`[Junior Dashboard] Auto-assigned ticket ${ticket.id}`);
+            } catch (err) {
+                console.warn(`[Junior Dashboard] Failed to auto-assign ticket ${ticket.id}:`, err.message);
+            }
+        }));
+    } catch (err) {
+        // Non-blocking — dashboard load continues even if this step fails
+        console.warn('[Junior Dashboard] Auto-assignment step failed (non-blocking):', err.message);
     }
 }
 
@@ -138,56 +161,64 @@ async function loadDashboardData() {
  * Load my assigned tickets
  */
 async function loadMyTickets() {
+    // Grab DOM references first — all three are required; guard against missing elements
     const loadingEl = document.getElementById('myTicketsLoading');
-    const emptyEl = document.getElementById('myTicketsEmpty');
-    const listEl = document.getElementById('myTicketsList');
-    
-    loadingEl.style.display = 'block';
-    emptyEl.style.display = 'none';
-    listEl.innerHTML = '';
-    
+    const emptyEl   = document.getElementById('myTicketsEmpty');
+    const listEl    = document.getElementById('myTicketsList');
+
     try {
+        if (loadingEl) loadingEl.style.display = 'block';
+        if (emptyEl)   emptyEl.style.display   = 'none';
+        if (listEl)    listEl.innerHTML         = '';
+
         console.log('═══════════════════════════════════════════');
         console.log('[Junior Dashboard] Loading My Tickets');
-        console.log('[Junior Dashboard] Current User:', state.currentUser);
-        
-        // Build filters for assigned tickets
-        const filters = {};
-        
-        // Get technician level for filtering
-        const techLevel = AuthService.getTechnicianLevel();
-        if (techLevel) {
-            filters.support_level = techLevel;
-            console.log('[Junior Dashboard] Support Level Filter:', techLevel);
+        console.log('[Junior Dashboard] Current User object:', state.currentUser);
+
+        // Resolve technician ID — support all common field names stored by the auth service
+        const currentTechnicianId = (
+            state.currentUser?.id ||
+            state.currentUser?.userId ||
+            state.currentUser?.user_id ||
+            state.currentUser?.technicianId
+        );
+
+        console.log('[Junior Dashboard] Resolved currentTechnicianId:', currentTechnicianId);
+
+        if (!currentTechnicianId) {
+            console.error('[Junior Dashboard] Cannot resolve technician ID from user object:', state.currentUser);
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (emptyEl)   emptyEl.style.display   = 'block';
+            return;
         }
-        
-        // Get building from user profile
-        const building = state.currentUser.building || AuthService.getUserBuilding();
-        if (building) {
-            filters.building = building;
-            console.log('[Junior Dashboard] Building Filter:', building);
-        }
-        
-        console.log('[Junior Dashboard] Calling TicketService.getTicketsByTechnician');
-        console.log('[Junior Dashboard] Technician ID:', state.currentUser.id);
-        console.log('[Junior Dashboard] Filters:', filters);
-        
-        // Use TicketService directly with filters: assigned_to, support_level, building
-        const response = await TicketService.getTicketsByTechnician(state.currentUser.id, filters);
-        
-        console.log('[Junior Dashboard] API Response:', response);
-        
-        // Handle different response formats
-        if (response.data) {
-            state.myTickets = Array.isArray(response.data) ? response.data : [];
-        } else if (Array.isArray(response)) {
-            state.myTickets = response;
-        } else {
-            state.myTickets = [];
-        }
-        
-        console.log('[Junior Dashboard] Parsed Tickets:', state.myTickets);
-        console.log('[Junior Dashboard] Ticket Count:', state.myTickets.length);
+
+        // Auto-assign any unassigned OPEN tickets to this technician (demo: Workflow Service may not be running)
+        await autoAssignOpenTickets(currentTechnicianId);
+
+        // Use the dedicated assigned-tickets endpoint (with client-side fallback inside the service)
+        const tickets = await TicketService.getAssignedTickets(String(currentTechnicianId));
+
+        console.log('[Junior Dashboard] Raw tickets from API:', tickets);
+
+        // Normalize assignment field for each ticket so the rest of the UI can use
+        // normalizedAssignedTechnicianId without worrying about backend field name changes.
+        state.myTickets = tickets.map((ticket) => {
+            const normalizedAssignedTechnicianId = String(
+                ticket.assigned_to ??
+                ticket.assignedTo ??
+                ticket.assignedTechnicianId ??
+                ticket.technicianId ??
+                ticket.assignee_id ??
+                ticket.assigned_user_id ??
+                ''
+            );
+            return { ...ticket, normalizedAssignedTechnicianId };
+        });
+
+        console.log('[Junior Dashboard] state.myTickets after normalization:', state.myTickets.length, 'tickets');
+        state.myTickets.forEach((t) => {
+            console.log(`  [ticket ${t.id}] status=${t.status} normalizedAssignedId=${t.normalizedAssignedTechnicianId}`);
+        });
         console.log('═══════════════════════════════════════════');
         
         if (state.myTickets.length === 0) {
@@ -212,122 +243,17 @@ async function loadMyTickets() {
         
     } catch (error) {
         console.error('═══ ERROR ═══');
-        console.error('[Junior Dashboard] Error loading my tickets:', error);
-        console.error('[Junior Dashboard] Error details:', {
-            message: error.message,
-            stack: error.stack
-        });
+        console.error('[Junior Dashboard] Failed to load assigned tickets:', error.message);
+        if (error.status || error.statusCode) {
+            console.error('[Junior Dashboard] HTTP status:', error.status || error.statusCode);
+        }
+        console.error('[Junior Dashboard] Full error:', error);
         console.error('═══════════════');
-        loadingEl.style.display = 'none';
-        UI.showToast('Failed to load your tickets', 'error');
-    }
-}
-
-/**
- * Load available tickets to claim
- */
-async function loadAvailableTickets() {
-    const loadingEl = document.getElementById('availableLoading');
-    const emptyEl = document.getElementById('availableEmpty');
-    const listEl = document.getElementById('availableList');
-    
-    loadingEl.style.display = 'block';
-    emptyEl.style.display = 'none';
-    listEl.innerHTML = '';
-    
-    try {
-        console.log('═════════════════════════════════════════════');
-        console.log('[Junior Dashboard] Loading Available Tickets');
-        
-        // Build filters for available tickets
-        // Note: With location-based assignment, tickets are auto-routed
-        // We look for tickets that are OPEN and not yet claimed by anyone
-        let filters = { 
-            status: 'OPEN'  // Get open tickets that haven't been started
-        };
-        
-        // Apply additional filters for TECHNICIAN role
-        if (AuthService.isTechnician() && !AuthService.isSenior() && !AuthService.isSupervisor()) {
-            // Technicians only see tickets from their building
-            const building = AuthService.getUserBuilding() || state.currentUser.building;
-            if (building) {
-                filters.building = building;
-                console.log('[Junior Dashboard] Building Filter:', building);
-            }
-            
-            // Filter by technician level if available
-            const techLevel = AuthService.getTechnicianLevel();
-            if (techLevel) {
-                filters.support_level = techLevel;
-                console.log('[Junior Dashboard] Support Level Filter:', techLevel);
-            }
-        }
-        
-        console.log('[Junior Dashboard] Calling TicketService.getTickets for available tickets');
-        console.log('[Junior Dashboard] Filters:', filters);
-        
-        // Use TicketService directly to get available tickets
-        const response = await TicketService.getTickets(filters);
-        
-        console.log('[Junior Dashboard] Available Tickets Response:', response);
-        
-        // Handle different response formats
-        if (response.data) {
-            state.availableTickets = Array.isArray(response.data) ? response.data : [];
-        } else if (Array.isArray(response)) {
-            state.availableTickets = response;
-        } else {
-            state.availableTickets = [];
-        }
-        
-        console.log('[Junior Dashboard] Available Tickets:', state.availableTickets);
-        console.log('[Junior Dashboard] Available Ticket Count:', state.availableTickets.length);
-        console.log('═════════════════════════════════════════════');
-        
-        if (state.availableTickets.length === 0) {
-            loadingEl.style.display = 'none';
-            emptyEl.style.display = 'block';
-            return;
-        }
-        
-        // Load SLA data for available tickets
-        const ticketIds = state.availableTickets.map(t => t.id);
-        if (ticketIds.length > 0) {
-            try {
-                const slaResponse = await WorkflowService.getSLAStatus(ticketIds);
-                const availableSLA = slaResponse.data || {};
-                state.slaData = { ...state.slaData, ...availableSLA };
-            } catch (error) {
-                console.error('Error loading SLA data:', error);
-            }
-        }
-        
-        loadingEl.style.display = 'none';
-        renderAvailableTickets();
-        
-    } catch (error) {
-        console.error('═══ ERROR ═══');
-        console.error('[Junior Dashboard] Error loading available tickets:', error);
-        console.error('[Junior Dashboard] Error details:', {
-            message: error.message,
-            stack: error.stack
-        });
-        console.error('═════════════');
-        
-        loadingEl.style.display = 'none';
-        emptyEl.style.display = 'block';
-        
-        // Update empty message to explain the error
-        emptyEl.innerHTML = `
-            <i class="bi bi-exclamation-circle text-muted" style="font-size: 3rem;"></i>
-            <p class="mt-3 text-muted">
-                Unable to load available tickets.<br>
-                ${error.message.includes('500') ? 'The ticket service is temporarily unavailable.' : 'Please check your connection and try again.'}
-            </p>
-        `;
-        
-        // Show a less intrusive notification
-        console.warn('Available tickets section is currently unavailable');
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (emptyEl)   emptyEl.style.display   = 'block';
+        UI.showToast('Failed to load assigned tickets. Check Ticket Service connection.', 'error');
+        // Do NOT re-throw: optional metrics (SLA, etc.) must not block showing the page.
+        // loadDashboardData() will only show its toast if something else throws after this.
     }
 }
 
@@ -344,18 +270,7 @@ function renderMyTickets() {
     });
 }
 
-/**
- * Render available tickets list
- */
-function renderAvailableTickets() {
-    const listEl = document.getElementById('availableList');
-    listEl.innerHTML = '';
-    
-    state.availableTickets.forEach(ticket => {
-        const ticketCard = createTicketCard(ticket, 'available');
-        listEl.appendChild(ticketCard);
-    });
-}
+// renderAvailableTickets() removed — no available-tickets tab in this dashboard.
 
 /**
  * Create a ticket card element
@@ -410,18 +325,20 @@ function renderMyTicketActions(ticket) {
     
     // Status update buttons - visible for TECHNICIAN and above
     if (AuthService.isTechnician() || AuthService.isSenior() || AuthService.isSupervisor()) {
+        // All tickets in state.myTickets are already assigned to the current user.
+        // No need to re-check assigned_to here.
         if (ticket.status === 'OPEN') {
             actions += `
                 <button class="btn btn-sm btn-purple" onclick="window.updateTicketStatus('${ticket.id}', 'IN_PROGRESS')">
-                    <i class="bi bi-play-circle me-1"></i> Start Work
+                    <i class="bi bi-play-circle me-1"></i> Start Working
                 </button>
             `;
         }
-        
+
         if (ticket.status === 'IN_PROGRESS') {
             actions += `
                 <button class="btn btn-sm btn-success" onclick="window.updateTicketStatus('${ticket.id}', 'RESOLVED')">
-                    <i class="bi bi-check-circle me-1"></i> Mark Resolved
+                    <i class="bi bi-check-circle me-1"></i> Resolve Ticket
                 </button>
             `;
         }
@@ -442,22 +359,11 @@ function renderMyTicketActions(ticket) {
 
 /**
  * Render actions for available tickets
+ * NOTE: Available to Claim tab has been removed. This function is no longer called.
+ * Tickets are auto-assigned by the Workflow Service; no manual claiming is needed.
  */
-function renderAvailableTicketActions(ticket) {
-    let actions = '';
-    
-    // Claim button - visible for TECHNICIAN and above
-    // Show for OPEN tickets that are not yet assigned to the current user
-    if ((AuthService.isTechnician() || AuthService.isSenior() || AuthService.isSupervisor()) && 
-        ticket.status === 'OPEN' && ticket.assigned_to !== state.currentUser.id) {
-        actions += `
-            <button class="btn btn-sm btn-success" onclick="window.claimTicket('${ticket.id}')">
-                <i class="bi bi-hand-index me-1"></i> Claim Ticket
-            </button>
-        `;
-    }
-    
-    return actions;
+function renderAvailableTicketActions(_ticket) {
+    return '';
 }
 
 /**
@@ -501,56 +407,99 @@ function getStatusBadgeClass(status) {
 }
 
 /**
- * Update statistics cards
+ * Resolve the assignment field from a ticket, normalizing all possible backend field names.
+ * @param {Object} ticket
+ * @returns {string}
  */
-function updateStatistics() {
-    document.getElementById('myActiveTicketsCount').textContent = state.myTickets.length;
-    document.getElementById('availableTicketsCount').textContent = state.availableTickets.length;
-    document.getElementById('myTicketsBadge').textContent = state.myTickets.length;
-    document.getElementById('availableBadge').textContent = state.availableTickets.length;
-    
-    const slaRisk = Object.values(state.slaData).filter(s => s?.at_risk || s?.sla_breached).length;
-    document.getElementById('slaRiskCount').textContent = slaRisk;
-    
-    const resolvedToday = state.myTickets.filter(t => {
-        if (t.status !== 'RESOLVED') return false;
-        const today = new Date().toDateString();
-        const ticketDate = new Date(t.updated_at).toDateString();
-        return today === ticketDate;
-    }).length;
-    document.getElementById('resolvedTodayCount').textContent = resolvedToday;
+function getAssignedTechnicianId(ticket) {
+    return String(
+        ticket.normalizedAssignedTechnicianId ??
+        ticket.assigned_to ??
+        ticket.assignedTo ??
+        ticket.assignedTechnicianId ??
+        ticket.technicianId ??
+        ticket.assignee_id ??
+        ticket.assigned_user_id ??
+        ''
+    );
+}
+
+/** Returns true when no technician has been assigned to the ticket. */
+function isUnassigned(ticket) {
+    const assigned = ticket.assigned_to || ticket.assignedTo || ticket.assignedTechnicianId
+        || ticket.technicianId || ticket.assignee_id || ticket.assigned_user_id;
+    return !assigned || String(assigned).trim() === '';
 }
 
 /**
- * Claim a ticket
+ * Update statistics cards.
+ *
+ * Shared filtering rule:
+ *   assignedTickets  = allTickets where getAssignedTechnicianId(t) === currentTechnicianId
+ *   openTickets      = assignedTickets where status === "OPEN"
+ *   inProgressTickets= assignedTickets where status === "IN_PROGRESS"
+ *   activeTickets    = assignedTickets where status in ["OPEN", "IN_PROGRESS"]
+ *
+ * state.myTickets is already the assignedTickets set (filtered at fetch time).
  */
-window.claimTicket = async function(ticketId) {
-    if (!confirm('Are you sure you want to claim this ticket?')) {
-        return;
-    }
-    
-    console.log('[Junior Dashboard] Claiming ticket:', ticketId);
-    UI.showToast('Claiming ticket...', 'info');
-    
-    try {
-        const result = await WorkflowService.claimTicket(ticketId, state.currentUser.id);
-        console.log('[Junior Dashboard] Claim result:', result);
-        
-        UI.showToast('Ticket claimed successfully!', 'success');
-        
-        console.log('[Junior Dashboard] Refreshing dashboard after claim...');
-        await loadDashboardData();
-        
-        // Switch to my tickets tab
-        const myTicketsTab = new bootstrap.Tab(document.getElementById('my-tickets-tab'));
-        myTicketsTab.show();
-        
-        console.log('[Junior Dashboard] Dashboard refresh complete');
-    } catch (error) {
-        console.error('[Junior Dashboard] Error claiming ticket:', error);
-        UI.showToast(error.message || 'Failed to claim ticket', 'error');
-    }
-};
+function updateStatistics() {
+    const currentTechnicianId = String(
+        state.currentUser?.id ||
+        state.currentUser?.userId ||
+        state.currentUser?.user_id ||
+        state.currentUser?.technicianId ||
+        ''
+    );
+
+    // Shared dashboard rule
+    const assignedTickets   = state.myTickets.filter(t =>
+        getAssignedTechnicianId(t) === currentTechnicianId
+    );
+    const openTickets        = assignedTickets.filter(t => t.status === 'OPEN');
+    const inProgressTickets  = assignedTickets.filter(t => t.status === 'IN_PROGRESS');
+    const activeTickets      = assignedTickets.filter(t =>
+        t.status === 'OPEN' || t.status === 'IN_PROGRESS'
+    );
+
+    const myActiveEl = document.getElementById('myActiveTicketsCount');
+    if (myActiveEl) myActiveEl.textContent = activeTickets.length;
+
+    const openTicketsCountEl = document.getElementById('openTicketsCount');
+    if (openTicketsCountEl) openTicketsCountEl.textContent = openTickets.length;
+
+    // Tab badge shows active (OPEN + IN_PROGRESS) tickets
+    const badgeEl = document.getElementById('myTicketsBadge');
+    if (badgeEl) badgeEl.textContent = activeTickets.length;
+
+    // availableTicketsCount / availableBadge removed from DOM — guard against missing elements
+    const availableTicketsCountEl = document.getElementById('availableTicketsCount');
+    if (availableTicketsCountEl) availableTicketsCountEl.textContent = 0;
+    const availableBadgeEl = document.getElementById('availableBadge');
+    if (availableBadgeEl) availableBadgeEl.textContent = 0;
+
+    const slaRisk = Object.values(state.slaData).filter(s => s?.at_risk || s?.sla_breached).length;
+    document.getElementById('slaRiskCount').textContent = slaRisk;
+
+    const today = new Date().toDateString();
+    const resolvedToday = assignedTickets.filter(t => {
+        if (t.status !== 'RESOLVED') return false;
+        const resolvedDate = t.updated_at || t.updatedAt || t.resolved_at || t.resolvedAt;
+        if (!resolvedDate) return false;
+        return new Date(resolvedDate).toDateString() === today;
+    }).length;
+    document.getElementById('resolvedTodayCount').textContent = resolvedToday;
+
+    // Expose counts for debugging
+    console.log('[Junior Dashboard] Stats — assigned:', assignedTickets.length,
+        '| open:', openTickets.length,
+        '| inProgress:', inProgressTickets.length,
+        '| active:', activeTickets.length,
+        '| slaRisk:', slaRisk,
+        '| resolvedToday:', resolvedToday);
+}
+
+// claimTicket() removed: tickets are auto-assigned by the Workflow Service.
+// Junior Technicians no longer manually claim tickets.
 
 /**
  * Update ticket status
@@ -608,9 +557,7 @@ window.escalateTicket = async function(ticketId) {
  * View ticket details
  */
 window.viewTicketDetails = async function(ticketId) {
-    // Find ticket in either list
-    const ticket = state.myTickets.find(t => t.id === ticketId) || 
-                   state.availableTickets.find(t => t.id === ticketId);
+    const ticket = state.myTickets.find(t => t.id === ticketId);
     
     if (!ticket) {
         UI.showToast('Ticket not found', 'error');
@@ -713,8 +660,7 @@ function renderTicketDetails() {
             <!-- Action Buttons -->
             <div class="col-12">
                 <div class="d-flex gap-2 flex-wrap">
-                    ${state.myTickets.find(t => t.id === ticket.id) ? renderMyTicketActions(ticket) : ''}
-                    ${state.availableTickets.find(t => t.id === ticket.id) ? renderAvailableTicketActions(ticket) : ''}
+                    ${renderMyTicketActions(ticket)}
                 </div>
             </div>
         </div>

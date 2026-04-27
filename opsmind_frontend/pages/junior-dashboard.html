@@ -30,7 +30,7 @@
             <div class="page-header">
                 <div class="page-header-content">
                     <h1 class="page-title">Technician Dashboard</h1>
-                    <p class="page-subtitle">Manage your assigned tickets and claim new ones</p>
+                    <p class="page-subtitle">Manage your assigned tickets</p>
                 </div>
                 <div class="page-header-actions">
                     <button class="btn btn-outline-secondary me-2" id="refreshDashboard">
@@ -57,11 +57,11 @@
                     <div class="col-6 col-lg-3">
                         <div class="stat-card-mini">
                             <div class="stat-icon bg-success">
-                                <i class="bi bi-hand-index"></i>
+                                <i class="bi bi-envelope-open"></i>
                             </div>
                             <div class="stat-info">
-                                <div class="stat-label">Available to Claim</div>
-                                <div class="stat-value" id="availableTicketsCount">0</div>
+                                <div class="stat-label">Open Tickets</div>
+                                <div class="stat-value" id="openTicketsCount">0</div>
                             </div>
                         </div>
                     </div>
@@ -100,13 +100,7 @@
                                     <span class="badge bg-primary ms-2" id="myTicketsBadge">0</span>
                                 </button>
                             </li>
-                            <li class="nav-item">
-                                <button class="nav-link" id="available-tab" data-bs-toggle="tab" 
-                                        data-bs-target="#available-pane" type="button" role="tab">
-                                    <i class="bi bi-inbox me-1"></i> Available to Claim
-                                    <span class="badge bg-success ms-2" id="availableBadge">0</span>
-                                </button>
-                            </li>
+                            <!-- Available to Claim tab removed: tickets are auto-assigned by Workflow Service -->
                             <li class="nav-item" id="detailsTabItem" style="display: none;">
                                 <button class="nav-link" id="details-tab" data-bs-toggle="tab" 
                                         data-bs-target="#details-pane" type="button" role="tab">
@@ -127,24 +121,9 @@
                                 </div>
                                 <div id="myTicketsEmpty" class="text-center py-5" style="display: none;">
                                     <i class="bi bi-inbox text-muted" style="font-size: 3rem;"></i>
-                                    <p class="mt-3 text-muted">No tickets assigned to you yet.<br>Check available tickets to claim one!</p>
+                                    <p class="mt-3 text-muted">No tickets assigned to you yet.<br>Tickets are automatically assigned by the system.</p>
                                 </div>
                                 <div id="myTicketsList"></div>
-                            </div>
-
-                            <!-- Available Tickets Tab -->
-                            <div class="tab-pane fade" id="available-pane" role="tabpanel">
-                                <div id="availableLoading" class="text-center py-5">
-                                    <div class="spinner-border text-success" role="status">
-                                        <span class="visually-hidden">Loading...</span>
-                                    </div>
-                                    <p class="mt-2 text-muted">Loading available tickets...</p>
-                                </div>
-                                <div id="availableEmpty" class="text-center py-5" style="display: none;">
-                                    <i class="bi bi-check-circle text-muted" style="font-size: 3rem;"></i>
-                                    <p class="mt-3 text-muted">All available tickets have been assigned.<br>New tickets are automatically routed based on location and priority.</p>
-                                </div>
-                                <div id="availableList"></div>
                             </div>
 
                             <!-- Ticket Details Tab -->

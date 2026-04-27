@@ -199,7 +199,7 @@ async function loadUserTicketStatistics() {
             const tickets = response.tickets;
             
             // Calculate user's ticket stats
-            const myOpen = tickets.filter(t => ['UNASSIGNED', 'ASSIGNED'].includes(t.status)).length;
+            const myOpen = tickets.filter(t => t.status === 'OPEN').length;
             const myInProgress = tickets.filter(t => t.status === 'IN_PROGRESS').length;
             const myResolved = tickets.filter(t => t.status === 'RESOLVED').length;
             const myTotal = tickets.length;

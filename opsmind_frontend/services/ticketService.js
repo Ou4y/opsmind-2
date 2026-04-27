@@ -35,8 +35,13 @@ async function handleResponse(response) {
     }
 
     if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.message || `Request failed with status ${response.status}`);
+        const errorBody = await response.json().catch(() => ({}));
+        // Backend returns { error: "...", details: [...] } — not { message: "..." }
+        const message = errorBody.message || errorBody.error || `Request failed with status ${response.status}`;
+        if (errorBody.details) {
+            console.error('[TicketService] Validation details:', errorBody.details);
+        }
+        throw new Error(message);
     }
 
     return response.json();
@@ -100,8 +105,12 @@ async function requestTicketsApi({ path = '', method = 'GET', params, body, expe
             }
 
             if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.message || `Request failed with status ${response.status}`);
+                const errorBody = await response.json().catch(() => ({}));
+                const message = errorBody.message || errorBody.error || `Request failed with status ${response.status}`;
+                if (errorBody.details) {
+                    console.error('[TicketService] Validation details:', errorBody.details);
+                }
+                throw new Error(message);
             }
 
             return response;
@@ -365,6 +374,53 @@ const TicketService = {
         console.log('[TicketService.getTicketsByTechnician] Filters:', filters);
         
         return this.getTickets(filters);
+    },
+
+    /**
+     * Get tickets assigned to a technician via the dedicated backend endpoint.
+     * Falls back to client-side filtering if the endpoint is unavailable.
+     * Normalizes assignment fields so the filter works regardless of which field
+     * the backend uses (assigned_to, assignedTo, assignedTechnicianId, etc.).
+     * @param {string} technicianId - Technician user ID
+     * @returns {Promise<Array>} Array of assigned tickets
+     */
+    async getAssignedTickets(technicianId) {
+        console.log('[TicketService.getAssignedTickets] technicianId:', technicianId);
+
+        // 1. Try the dedicated endpoint first
+        try {
+            const data = await requestTicketsApi({
+                path: `assigned/${technicianId}`,
+                method: 'GET'
+            });
+            const tickets = extractTicketsArray(data);
+            console.log('[TicketService.getAssignedTickets] Dedicated endpoint returned', tickets.length, 'tickets');
+            return tickets;
+        } catch (err) {
+            console.warn('[TicketService.getAssignedTickets] Dedicated endpoint failed, falling back to client-side filter:', err.message);
+        }
+
+        // 2. Fallback: fetch all tickets and filter client-side
+        const data = await requestTicketsApi({ method: 'GET', params: new URLSearchParams({ limit: '500', offset: '0' }) });
+        const all = extractTicketsArray(data);
+        console.log('[TicketService.getAssignedTickets] Fallback: fetched', all.length, 'total tickets');
+
+        const techId = String(technicianId);
+        const assigned = all.filter((ticket) => {
+            // Normalize all possible assignment fields
+            const candidates = [
+                ticket.assigned_to,
+                ticket.assignedTo,
+                ticket.assignedTechnicianId,
+                ticket.technicianId,
+                ticket.assignee_id,
+                ticket.assigned_user_id,
+            ];
+            return candidates.some((v) => v !== undefined && v !== null && String(v) === techId);
+        });
+
+        console.log('[TicketService.getAssignedTickets] Fallback filtered to', assigned.length, 'assigned tickets');
+        return assigned;
     },
 
     /**

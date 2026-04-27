@@ -171,18 +171,18 @@ function updateSummaryCards() {
     const { juniors, tickets, workload } = state.dashboardData;
     
     // Juniors count
-    document.getElementById('juniorsCount').textContent = juniors?.length || 0;
+    document.getElementById('totalJuniors').textContent = juniors?.length || 0;
     
     // Total tickets
-    document.getElementById('totalTicketsCount').textContent = tickets?.length || 0;
+    document.getElementById('totalTickets').textContent = tickets?.length || 0;
     
-    // In Progress tickets
-    const inProgressCount = workload?.byStatus?.IN_PROGRESS || 0;
-    document.getElementById('inProgressCount').textContent = inProgressCount;
+    // Active tickets (OPEN + IN_PROGRESS)
+    const activeCount = (workload?.byStatus?.OPEN || 0) + (workload?.byStatus?.IN_PROGRESS || 0);
+    document.getElementById('inProgressTickets').textContent = activeCount;
     
     // Resolved tickets
     const resolvedCount = workload?.byStatus?.RESOLVED || 0;
-    document.getElementById('resolvedCount').textContent = resolvedCount;
+    document.getElementById('resolvedTickets').textContent = resolvedCount;
 }
 
 /**

@@ -291,10 +291,41 @@ async function loadTickets() {
         
         let response;
         
-        // Regular users: only fetch their own tickets
-        // Admins: fetch all tickets
-        if (!isAdmin && currentUser?.id) {
-            // Use requester-specific endpoint for regular users
+        // Determine fetch strategy based on role:
+        //   technicians / seniors / supervisors → tickets assigned to them
+        //   regular users (students / doctors)  → tickets they submitted
+        //   admins                              → all tickets
+        const isTech = AuthService.isTechnician() || AuthService.isSenior() || AuthService.isSupervisor();
+
+        if (!isAdmin && isTech) {
+            // Technicians see tickets assigned to them
+            const techId = String(
+                currentUser?.id || currentUser?.userId ||
+                currentUser?.user_id || currentUser?.technicianId || ''
+            );
+            if (techId) {
+                const assigned = await TicketService.getAssignedTickets(techId);
+                // Apply active filters client-side
+                let filtered = assigned;
+                if (state.filters.status) {
+                    filtered = filtered.filter(t => t.status === state.filters.status);
+                }
+                if (state.filters.priority) {
+                    filtered = filtered.filter(t => t.priority === state.filters.priority);
+                }
+                if (state.filters.search) {
+                    const q = state.filters.search.toLowerCase();
+                    filtered = filtered.filter(t =>
+                        [t.id, t.title, t.description, t.type_of_request]
+                            .filter(Boolean).join(' ').toLowerCase().includes(q)
+                    );
+                }
+                response = filtered;
+            } else {
+                response = [];
+            }
+        } else if (!isAdmin && currentUser?.id) {
+            // Regular users (students / doctors): see their own submitted tickets
             response = await TicketService.getTicketsByRequester(currentUser.id, {
                 limit: state.pageSize,
                 offset,
@@ -302,7 +333,7 @@ async function loadTickets() {
                 priority: state.filters.priority
             });
         } else {
-            // Use general endpoint for admins
+            // Admins see all tickets
             response = await TicketService.getTickets({
                 limit: state.pageSize,
                 offset,
@@ -1281,14 +1312,14 @@ async function handleCreateTicket(e) {
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
     
-    // Get current user ID as requester_id
+    // Get current user ID as requester_id — must be a UUID, never fall back to email
     const currentUser = AuthService.getUser?.();
-    const requester_id = currentUser?.id || currentUser?.userId || currentUser?.email || '';
+    const requester_id = currentUser?.id || currentUser?.userId || currentUser?.user_id || '';
 
     // Guard: backend requires title, description, type_of_request, latitude, longitude, requester_id
     if (!title || !description || !type_of_request || isNaN(lat) || isNaN(lng) || !requester_id) {
         UI.setButtonLoading(submitBtn, false);
-        UI.error('All required fields must be filled');
+        UI.error('All required fields must be filled. Make sure you are logged in and location is captured.');
         return;
     }
 

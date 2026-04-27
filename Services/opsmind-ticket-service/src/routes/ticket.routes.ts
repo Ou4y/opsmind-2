@@ -257,6 +257,59 @@ router.get("/requester/:requester_id", async (req, res, next) => {
 
 /**
  * @openapi
+ * /tickets/assigned/{technicianId}:
+ *   get:
+ *     tags: [Tickets]
+ *     summary: Get tickets assigned to a technician
+ *     description: "Returns all non-deleted tickets where assigned_to matches the given technician ID."
+ *     parameters:
+ *       - in: path
+ *         name: technicianId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 500
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *     responses:
+ *       200:
+ *         description: OK
+ */
+router.get("/assigned/:technicianId", async (req, res, next) => {
+  try {
+    const { technicianId } = req.params;
+    const { status, limit, offset } = req.query;
+    const tickets = await prisma.ticket.findMany({
+      where: {
+        is_deleted: false,
+        assigned_to: technicianId,
+        ...(typeof status === "string" && { status: status as any }),
+      },
+      orderBy: { created_at: "desc" },
+      take: typeof limit === "string" ? parseInt(limit, 10) : 500,
+      skip: typeof offset === "string" ? parseInt(offset, 10) : 0,
+    });
+    const enrichedTickets = await enrichTicketsWithTechnicianNames(tickets);
+    return res.json(enrichedTickets);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @openapi
  * /tickets/{id}:
  *   get:
  *     tags: [Tickets]
