@@ -3,6 +3,7 @@ const router = express.Router();
 const controller = require("../controllers/report.controller");
 
 router.get("/sync", controller.syncTickets);
+router.get("/admin/reports", controller.getAllReports);
 router.get("/technician/:technicianId", controller.getMyTickets);
 router.get("/report/:ticketId", controller.generatePDF);
 router.post("/solution/:ticketId", controller.addSolution);

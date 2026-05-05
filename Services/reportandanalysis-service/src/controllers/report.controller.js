@@ -1,6 +1,21 @@
 const Ticket = require("../models/ticket.model");
 const { getResolvedTickets } = require("../services/ticket.service");
 const PDFDocument = require("pdfkit");
+const axios = require("axios");
+
+//  function get UUID from auth 
+async function getTechnicianUUID(numericId) {
+  try {
+    const res = await axios.get(
+      `http://host.docker.internal:3002/users/${numericId}`
+    );
+
+    return res.data.id;
+  } catch (err) {
+    console.error("Error fetching technician:", err.message);
+    return numericId; 
+  }
+}
 
 //  Sync tickets
 exports.syncTickets = async (req, res) => {
@@ -11,6 +26,9 @@ exports.syncTickets = async (req, res) => {
       const exists = await Ticket.findOne({ id: t.id });
 
       if (!exists) {
+        // 🔥 كل مرة بنضرب auth service
+        const technicianUUID = await getTechnicianUUID(t.assigned_to);
+
         await Ticket.create({
           id: t.id,
           title: t.title,
@@ -19,7 +37,7 @@ exports.syncTickets = async (req, res) => {
           requester_id: t.requester_id,
           latitude: t.location?.lat,
           longitude: t.location?.lng,
-          assigned_to: t.assigned_to,
+          assigned_to: technicianUUID, // ✅ UUID بدل الرقم
           assigned_to_level: t.assigned_to_level,
           priority: t.priority,
           support_level: t.support_level,
@@ -49,6 +67,13 @@ exports.getMyTickets = async (req, res) => {
   const { technicianId } = req.params;
 
   const tickets = await Ticket.find({ assigned_to: technicianId });
+
+  res.json(tickets);
+};
+
+// get all reports for admin
+exports.getAllReports = async (req, res) => {
+  const tickets = await Ticket.find({});
 
   res.json(tickets);
 };
@@ -88,7 +113,6 @@ exports.generatePDF = async (req, res) => {
 
     doc.pipe(res);
 
-    //  Title
     doc
       .fontSize(22)
       .font("Helvetica-Bold")
@@ -96,7 +120,6 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown(2);
 
-    // Ticket Details Section
     doc
       .fontSize(16)
       .font("Helvetica-Bold")
@@ -104,18 +127,9 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown();
 
-    //  Fields (Bold label + normal value)
     const addField = (label, value) => {
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(13)
-        .text(label + ": ", { continued: true });
-
-      doc
-        .font("Helvetica")
-        .fontSize(12)
-        .text(value || "N/A");
-
+      doc.font("Helvetica-Bold").fontSize(13).text(label + ": ", { continued: true });
+      doc.font("Helvetica").fontSize(12).text(value || "N/A");
       doc.moveDown();
     };
 
@@ -123,10 +137,11 @@ exports.generatePDF = async (req, res) => {
     addField("Title", ticket.title);
     addField("Description", ticket.description);
     addField("Priority", ticket.priority);
-    addField("Technician ID", ticket.assigned_to);
+    addField("Technician ID", ticket.assigned_to); // UUID
+    addField("Technician Name", ticket.assigned_to_name);
+    addField("Escalation Count", ticket.escalation_count);
     addField("Created At", ticket.created_at);
 
-    //  Solution Section
     doc.moveDown();
 
     doc

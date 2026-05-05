@@ -10,6 +10,7 @@
 
 import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
+import ReportService from '/services/reportService.js';
 
 /**
  * Page state
@@ -18,47 +19,6 @@ const state = {
     reports: [],
     isLoading: false
 };
-
-/**
- * Mock reports data
- */
-const mockReports = [
-    {
-        ticketId: 'TICK-001',
-        title: 'Network connectivity issue',
-        description: 'User unable to connect to the corporate network from their workstation. Error message indicates DNS resolution failure.',
-        technicianId: 'TECH-003',
-        technician_solution: 'Restarted the DNS client service and flushed DNS cache. Updated network adapter settings and verified connectivity.'
-    },
-    {
-        ticketId: 'TICK-002',
-        title: 'Software installation request',
-        description: 'Request to install Microsoft Office suite on user\'s laptop for new project requirements.',
-        technicianId: 'TECH-005',
-        technician_solution: 'Downloaded and installed Microsoft Office 365 ProPlus. Activated license and configured user profile settings.'
-    },
-    {
-        ticketId: 'TICK-003',
-        title: 'Hardware malfunction',
-        description: 'Printer is producing distorted output and making unusual noises during operation.',
-        technicianId: 'TECH-003',
-        technician_solution: 'Replaced toner cartridge and cleaned print heads. Calibrated printer alignment and tested functionality.'
-    },
-    {
-        ticketId: 'TICK-004',
-        title: 'Password reset',
-        description: 'User forgot their login password and needs immediate access to their account.',
-        technicianId: 'TECH-007',
-        technician_solution: 'Reset user password through Active Directory. Provided temporary password and guided user through password change process.'
-    },
-    {
-        ticketId: 'TICK-005',
-        title: 'Email configuration',
-        description: 'New employee needs email account configured on their workstation and mobile device.',
-        technicianId: 'TECH-005',
-        technician_solution: 'Created email account in Exchange. Configured Outlook client and mobile device synchronization settings.'
-    }
-];
 
 /**
  * Initialize the reports page
@@ -70,16 +30,12 @@ export async function initReportsPage() {
     await waitForApp();
     console.log('App is ready, proceeding with reports page setup...');
 
-    // Initialize state
-    state.reports = mockReports;
-    console.log('Mock reports loaded:', state.reports.length, 'reports');
-
     // Setup event listeners
     setupEventListeners();
     console.log('Event listeners set up');
 
-    // Render reports table
-    renderReportsTable();
+    // Load reports table
+    await loadReports();
     console.log('Reports table rendered');
 
     console.log('Reports page initialized successfully');
@@ -112,10 +68,9 @@ function setupEventListeners() {
     // Refresh button
     const refreshBtn = document.getElementById('refreshReports');
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', () => {
+        refreshBtn.addEventListener('click', async () => {
             console.log('Refresh button clicked');
-            renderReportsTable();
-            UI.showAlert('Reports refreshed', 'success');
+            await loadReports();
         });
         console.log('Refresh button listener attached');
     } else {
@@ -138,6 +93,55 @@ function setupEventListeners() {
     } else {
         console.warn('Submit solution button not found');
     }
+}
+
+/**
+ * Load reports for the current technician
+ */
+async function loadReports() {
+    console.log('Loading reports...');
+
+    const currentUser = AuthService.getCurrentUser();
+    const technicianId = currentUser?.id || currentUser?.userId || currentUser?.user_id || currentUser?.technicianId;
+    const isAdmin = AuthService.isAdmin();
+
+    if (!isAdmin && !technicianId) {
+        state.reports = [];
+        renderReportsTable();
+        UI.error("Failed to load reports");
+        return;
+    }
+
+    state.isLoading = true;
+
+    try {
+        const reports = isAdmin
+            ? await ReportService.getAllReports()
+            : await ReportService.getMyTickets(technicianId);
+        state.reports = Array.isArray(reports) ? reports.map(normalizeReport) : [];
+        renderReportsTable();
+        UI.success('Reports refreshed');          
+        console.log('Reports loaded:', state.reports.length, 'reports');
+    } catch (error) {
+        console.error('Failed to load reports:', error);
+        state.reports = [];
+        renderReportsTable();
+        UI.error(error.message || 'Failed to load reports');
+    } finally {
+        state.isLoading = false;
+    }
+}
+
+/**
+ * Keep existing UI field names while accepting backend ticket fields
+ */
+function normalizeReport(report) {
+    return {
+        ...report,
+        ticketId: report.ticketId || report.id,
+        technicianId: report.technicianId || report.assigned_to,
+        title: report.title || 'Untitled Ticket'
+    };
 }
 
 /**
@@ -173,38 +177,47 @@ function handleAddSolutionClick(event) {
 /**
  * Handle download PDF button clicks
  */
-function handleDownloadPDFClick(event) {
+async function handleDownloadPDFClick(event) {
     if (event.target.closest('.download-pdf-btn')) {
         event.preventDefault();
         const ticketId = event.target.closest('.download-pdf-btn').dataset.ticketId;
         console.log('Download PDF clicked for ticket:', ticketId);
 
-        // Placeholder for PDF download
-        downloadReportPDF(ticketId);
+        await downloadReportPDF(ticketId);
     }
 }
 
 /**
  * Handle submit solution
  */
-function handleSubmitSolution() {
+async function handleSubmitSolution() {
     const solutionText = document.getElementById('solutionText').value.trim();
     const ticketId = document.getElementById('addSolutionModal').dataset.ticketId;
 
     if (!solutionText) {
-        UI.showAlert('Please enter a solution', 'warning');
+        UI.error('Please enter a solution');
         return;
     }
 
-    // Placeholder for submitting solution
-    console.log(`Submitting solution for ticket ${ticketId}:`, solutionText);
+    try {
+        console.log(`Submitting solution for ticket ${ticketId}:`, solutionText);
+        const updatedReport = await ReportService.addSolution(ticketId, solutionText);
+        const reportIndex = state.reports.findIndex(report => report.ticketId === ticketId);
 
-    // Close modal
-    const modal = bootstrap.Modal.getInstance(document.getElementById('addSolutionModal'));
-    modal.hide();
+        if (reportIndex !== -1 && updatedReport) {
+            state.reports[reportIndex] = normalizeReport(updatedReport);
+        }
 
-    // Show success message
-    UI.showAlert('Solution added successfully', 'success');
+        // Close modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('addSolutionModal'));
+        modal.hide();
+
+        renderReportsTable();
+        UI.success('Solution added successfully');
+    } catch (error) {
+        console.error('Failed to submit solution:', error);
+        UI.error(error.message || 'Failed to add solution');
+    }
 }
 
 /**
@@ -278,93 +291,15 @@ function renderReportsTable() {
 /**
  * Download PDF report for a specific ticket
  */
-function downloadReportPDF(ticketId) {
-    console.log(`Generating PDF for ticket: ${ticketId}`);
-
-    // Find the report data
-    const report = state.reports.find(r => r.ticketId === ticketId);
-    if (!report) {
-        UI.showAlert('Report data not found', 'error');
-        return;
-    }
+async function downloadReportPDF(ticketId) {
+    console.log(`Downloading PDF for ticket: ${ticketId}`);
 
     try {
-        // Create new jsPDF instance
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-
-        // Set up document properties
-        doc.setProperties({
-            title: `Ticket Report - ${ticketId}`,
-            subject: 'IT Service Management Report',
-            author: 'OpsMind System',
-            keywords: 'ticket, report, IT, support',
-            creator: 'OpsMind'
-        });
-
-        // Add header
-        doc.setFontSize(20);
-        doc.setFont('helvetica', 'bold');
-        doc.text('OpsMind Ticket Report', 20, 30);
-
-        // Add ticket ID
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'normal');
-        doc.text(`Ticket ID: ${report.ticketId}`, 20, 50);
-
-        // Add title
-        doc.setFontSize(12);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Title:', 20, 70);
-        doc.setFont('helvetica', 'normal');
-        const titleLines = doc.splitTextToSize(report.title, 170);
-        doc.text(titleLines, 20, 80);
-
-        // Calculate Y position after title
-        let yPos = 80 + (titleLines.length * 5) + 10;
-
-        // Add description
-        doc.setFont('helvetica', 'bold');
-        doc.text('Description:', 20, yPos);
-        doc.setFont('helvetica', 'normal');
-        const descLines = doc.splitTextToSize(report.description, 170);
-        doc.text(descLines, 20, yPos + 10);
-
-        // Calculate Y position after description
-        yPos = yPos + 10 + (descLines.length * 5) + 10;
-
-        // Add technician ID
-        doc.setFont('helvetica', 'bold');
-        doc.text('Technician ID:', 20, yPos);
-        doc.setFont('helvetica', 'normal');
-        doc.text(report.technicianId, 20, yPos + 10);
-
-        // Calculate Y position after technician ID
-        yPos = yPos + 20;
-
-        // Add solution
-        doc.setFont('helvetica', 'bold');
-        doc.text('Solution:', 20, yPos);
-        doc.setFont('helvetica', 'normal');
-        const solutionLines = doc.splitTextToSize(report.technician_solution, 170);
-        doc.text(solutionLines, 20, yPos + 10);
-
-        // Add footer
-        const pageHeight = doc.internal.pageSize.height;
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'italic');
-        doc.text('Generated by OpsMind IT Service Management System', 20, pageHeight - 20);
-        doc.text(`Generated on: ${new Date().toLocaleString()}`, 20, pageHeight - 10);
-
-        // Save the PDF
-        const fileName = `ticket-report-${ticketId.replace('TICK-', '')}.pdf`;
-        doc.save(fileName);
-
-        UI.showAlert(`PDF downloaded: ${fileName}`, 'success');
-        console.log(`PDF generated and downloaded: ${fileName}`);
-
+        await ReportService.downloadPDF(ticketId);
+        UI.success('PDF downloaded successfully');
+        console.log(`PDF downloaded for ticket: ${ticketId}`);
     } catch (error) {
-        console.error('Error generating PDF:', error);
-        UI.showAlert('Failed to generate PDF. Please try again.', 'error');
+        console.error('Error downloading PDF:', error);
+        UI.error(error.message || 'Failed to download PDF. Please try again.');
     }
 }
