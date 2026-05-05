@@ -26,7 +26,6 @@ exports.syncTickets = async (req, res) => {
       const exists = await Ticket.findOne({ id: t.id });
 
       if (!exists) {
-        // 🔥 كل مرة بنضرب auth service
         const technicianUUID = await getTechnicianUUID(t.assigned_to);
 
         await Ticket.create({
@@ -37,7 +36,7 @@ exports.syncTickets = async (req, res) => {
           requester_id: t.requester_id,
           latitude: t.location?.lat,
           longitude: t.location?.lng,
-          assigned_to: technicianUUID, // ✅ UUID بدل الرقم
+          assigned_to: technicianUUID, 
           assigned_to_level: t.assigned_to_level,
           priority: t.priority,
           support_level: t.support_level,

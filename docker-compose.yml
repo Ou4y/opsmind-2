@@ -323,6 +323,33 @@ services:
       - opsmind-net
     restart: unless-stopped
 
+  reporting-service:
+    image: opsmind-report-service:local
+    build:
+      context: ./Services/reportandanalysis-service
+    depends_on:
+      - mongodb
+      - rabbitmq
+    environment:
+      PORT: "3000"
+
+      # Mongo (local container)
+      MONGO_URI: mongodb://mongodb:27017/reporting
+
+      # RabbitMQ (same network)
+      RABBITMQ_USER: opsmind
+      RABBITMQ_PASS: opsmindo
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_EXCHANGE: opsmind.events
+      RABBITMQ_QUEUE: reporting.analytics.queue
+
+    ports:
+      - "3006:3000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped     
+
   # ─────────────────────────────────────────────
   # Frontend
   # ─────────────────────────────────────────────
