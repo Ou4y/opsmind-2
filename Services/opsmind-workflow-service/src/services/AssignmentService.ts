@@ -1,6 +1,7 @@
 import { TicketCreatedEvent, TicketAssignedEvent, TechnicianRow, TicketPriority } from '../interfaces/types';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { TicketRepository } from '../repositories/TicketRepository';
+import { WorkflowLogRepository } from '../repositories/WorkflowLogRepository';
 import { haversineDistanceKm } from '../utils/geo';
 import { assignTicket, getTicketDetails, getUserDetails, startSlaTracking } from '../config/externalServices';
 import { NotificationPublisher } from './NotificationPublisher';
@@ -82,6 +83,7 @@ function hasTechnicianLocation(technician: TechnicianRow): technician is Technic
 export class AssignmentService {
   private technicianRepo = new TechnicianRepository();
   private ticketRepo = new TicketRepository();
+  private logRepo = new WorkflowLogRepository();
   private notificationPublisher = new NotificationPublisher();
 
   async assignForTicket(
@@ -234,11 +236,20 @@ export class AssignmentService {
         `assigned_to=${best.user_id} | assigned_to_level=${supportLevel} | status_preserved=OPEN`,
     );
     try {
-      const result = await assignTicket(event.ticket_id, best.user_id, supportLevel);
+      const result = await assignTicket(event.ticket_id, best.user_id, supportLevel, undefined, {
+        assignmentMethod: 'AUTOMATIC',
+        assignmentReason: assignmentReason,
+        performedByRole: 'SYSTEM',
+      });
       console.log(
         `[AssignmentService] ✔ ticket-service PATCH succeeded | source=${source} | ticket=${event.ticket_id} | response:`,
         JSON.stringify(result),
       );
+
+      await this.logRepo.logAction(event.ticket_id, 'ROUTED', {
+        to_member_id: best.user_id,
+        reason: `Auto-assigned by workflow (${assignmentReason})`,
+      });
 
       // Start SLA tracking after successful assignment.
       await this.startSlaTracking(event, best.user_id);

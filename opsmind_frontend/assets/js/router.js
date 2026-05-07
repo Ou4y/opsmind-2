@@ -228,30 +228,43 @@ const Router = {
      */
     getRoleBasedDashboard() {
         const user = AuthService.getCurrentUser();
-        const role = user?.role?.toUpperCase();
-        
-        // Route to specific dashboard based on role
-        switch(role) {
-            case 'STUDENT':
-            case 'DOCTOR':
-                return '/pages/dashboard.html';
-            
-            case 'TECHNICIAN':
-            case 'JUNIOR':
-                return '/pages/junior-dashboard.html';
-            
-            case 'SENIOR':
-                return '/pages/senior-dashboard.html';
-            
-            case 'SUPERVISOR':
-                return '/pages/supervisor-dashboard.html';
-            
-            case 'ADMIN':
-                return '/pages/admin/domains.html';
-            
-            default:
-                return '/pages/dashboard.html';
+        const role = String(user?.role || '').toUpperCase();
+        const roles = Array.isArray(user?.roles)
+            ? user.roles.map((entry) => String(entry).toUpperCase())
+            : [];
+        const technicianLevel = AuthService.getTechnicianLevel();
+
+        const hasAdminRole = role === 'ADMIN' || roles.includes('ADMIN');
+        const hasRequesterRole = role === 'STUDENT' || role === 'DOCTOR' || roles.includes('STUDENT') || roles.includes('DOCTOR');
+        const hasTechnicianRole = role === 'TECHNICIAN' || roles.includes('TECHNICIAN');
+        const hasTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
+
+        if (hasAdminRole) {
+            return '/pages/admin/domains.html';
         }
+
+        if (hasRequesterRole) {
+            return '/pages/dashboard.html';
+        }
+
+        if (hasTechnicianRole || hasTechnicianLevel) {
+            switch (technicianLevel) {
+                case 'JUNIOR':
+                    return '/pages/junior-dashboard.html';
+                case 'SENIOR':
+                    return '/pages/senior-dashboard.html';
+                case 'SUPERVISOR':
+                    return '/pages/supervisor-dashboard.html';
+                case 'ADMIN':
+                    return '/pages/admin/domains.html';
+                default:
+                    sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
+                    AuthService.clearAuth();
+                    return '/index.html';
+            }
+        }
+
+        return '/pages/dashboard.html';
     },
 
     /**

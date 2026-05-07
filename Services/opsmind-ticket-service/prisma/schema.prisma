@@ -34,6 +34,15 @@ enum RequestType {
   MAINTENANCE
 }
 
+enum AssignmentMethod {
+  AUTOMATIC
+  MANUAL
+  ADMIN
+  ESCALATION
+  WORKFLOW
+  SYSTEM
+}
+
 model Ticket {
   id                 String           @id @default(uuid())
   title              String
@@ -71,4 +80,41 @@ model TicketEscalation {
   created_at  DateTime     @default(now())
 
   ticket      Ticket       @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+}
+
+model TicketAssignmentHistory {
+  id                String           @id @default(uuid())
+  ticket_id         String
+  previous_assignee String?
+  new_assignee      String?
+  previous_level    SupportLevel?
+  new_level         SupportLevel?
+  method            AssignmentMethod
+  reason            String?
+  performed_by      String?
+  performed_by_role String?
+  created_at        DateTime         @default(now())
+
+  ticket            Ticket           @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+
+  @@index([ticket_id])
+  @@index([new_assignee])
+  @@index([performed_by])
+}
+
+model TicketStatusHistory {
+  id                String       @id @default(uuid())
+  ticket_id         String
+  old_status        TicketStatus
+  new_status        TicketStatus
+  performed_by      String?
+  performed_by_role String?
+  reason            String?
+  created_at        DateTime     @default(now())
+
+  ticket            Ticket       @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+
+  @@index([ticket_id])
+  @@index([new_status])
+  @@index([performed_by])
 }

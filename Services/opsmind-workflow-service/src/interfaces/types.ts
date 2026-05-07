@@ -398,20 +398,30 @@ export interface ApiResponse<T = any> {
 
 export interface ExternalTicket {
   id: string | number;
-  building?: string;
-  floor?: number;
-  room?: string;
+  title?: string;
+  description?: string;
+  requester_id?: string | null;
+  building?: string | null;
+  floor?: number | null;
+  room?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   assigned_to: number | string | null;
   assigned_to_level?: 'L1' | 'L2' | 'L3' | 'L4' | null;
+  support_level?: 'L1' | 'L2' | 'L3' | 'L4' | null;
   status: string;
   priority: string | null;
   escalation_count: number;
   resolution_summary?: string | null;
+  created_at?: string | Date;
+  updated_at?: string | Date;
+  closed_at?: string | Date | null;
   is_deleted?: boolean;
 }
 
 export interface ExternalUser {
-  id: number;
+  id: string | number;
   email: string;
   role: string;
+  name?: string;
 }

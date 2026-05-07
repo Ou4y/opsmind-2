@@ -10,6 +10,41 @@
  */
 
 import AuthService from '/services/authService.js';
+import { getCurrentTechnicianProfile } from '/services/workflowService.js';
+
+function normalizeRoles(user) {
+    if (!Array.isArray(user?.roles)) {
+        return [];
+    }
+
+    return user.roles.map((entry) => String(entry).toUpperCase());
+}
+
+function resolveTechnicianLevel(user) {
+    const levelCandidate =
+        user?.technicianLevel ||
+        user?.technician_level ||
+        user?.level ||
+        user?.supportLevel ||
+        user?.support_level;
+
+    if (levelCandidate) {
+        return String(levelCandidate).toUpperCase();
+    }
+
+    const role = String(user?.role || '').toUpperCase();
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+        return role;
+    }
+
+    return null;
+}
+
+function isTechnicianUser(user) {
+    const role = String(user?.role || '').toUpperCase();
+    const roles = normalizeRoles(user);
+    return role === 'TECHNICIAN' || roles.includes('TECHNICIAN');
+}
 
 /**
  * Get role-based dashboard URL
@@ -17,36 +52,47 @@ import AuthService from '/services/authService.js';
  */
 function getRoleBasedDashboard() {
     const user = AuthService.getCurrentUser();
-    const role = user?.role?.toUpperCase();
-    
-    // Route to specific dashboard based on role
-    switch(role) {
-        case 'STUDENT':
-        case 'DOCTOR':
-            return '/pages/dashboard.html';
-        
-        case 'TECHNICIAN':
-        case 'JUNIOR':
-            return '/pages/junior-dashboard.html';
-        
-        case 'SENIOR':
-            return '/pages/senior-dashboard.html';
-        
-        case 'SUPERVISOR':
-            return '/pages/supervisor-dashboard.html';
-        
-        case 'ADMIN':
-            return '/pages/admin/domains.html';
-        
-        default:
-            return '/pages/dashboard.html';
+    const role = String(user?.role || '').toUpperCase();
+    const roles = normalizeRoles(user);
+    const technicianLevel = resolveTechnicianLevel(user);
+
+    const hasAdminRole = role === 'ADMIN' || roles.includes('ADMIN');
+    const hasRequesterRole = role === 'STUDENT' || role === 'DOCTOR' || roles.includes('STUDENT') || roles.includes('DOCTOR');
+    const hasTechnicianRole = isTechnicianUser(user);
+    const hasTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
+
+    if (hasAdminRole) {
+        return '/pages/admin/domains.html';
     }
+
+    if (hasRequesterRole) {
+        return '/pages/dashboard.html';
+    }
+
+    if (hasTechnicianRole || hasTechnicianLevel) {
+        switch (technicianLevel) {
+            case 'JUNIOR':
+                return '/pages/junior-dashboard.html';
+            case 'SENIOR':
+                return '/pages/senior-dashboard.html';
+            case 'SUPERVISOR':
+                return '/pages/supervisor-dashboard.html';
+            case 'ADMIN':
+                return '/pages/admin/domains.html';
+            default:
+                sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
+                AuthService.clearAuth();
+                return '/index.html';
+        }
+    }
+
+    return '/pages/dashboard.html';
 }
 
 /**
  * Initialize the login page
  */
-function initLoginPage() {
+async function initLoginPage() {
     console.log('🚀 Initializing login page...');
     
     const loginForm = document.getElementById('loginForm');
@@ -97,7 +143,7 @@ function initLoginPage() {
 
     // Check if already authenticated
     if (AuthService.isAuthenticated()) {
-        window.location.href = getRoleBasedDashboard();
+        await handleExistingSessionRedirect();
         return;
     }
 
@@ -160,6 +206,12 @@ function initLoginPage() {
         setTimeout(() => loginError.classList.remove('shake'), 500);
     }
 
+    const sessionError = sessionStorage.getItem('opsmind_error');
+    if (sessionError) {
+        sessionStorage.removeItem('opsmind_error');
+        showError(sessionError);
+    }
+
     /**
      * Hide login error message
      */
@@ -216,6 +268,55 @@ function initLoginPage() {
      */
     function hideOTPSuccess() {
         otpSuccess.classList.add('d-none');
+    }
+
+    async function handleExistingSessionRedirect() {
+        const currentUser = AuthService.getCurrentUser();
+        if (!currentUser) {
+            return;
+        }
+
+        try {
+            const enrichedUser = await maybeEnrichTechnicianProfile(currentUser);
+            if (enrichedUser) {
+                AuthService.setUser(enrichedUser);
+            }
+        } catch (error) {
+            console.error('Failed to enrich existing technician session:', error);
+            AuthService.clearAuth();
+            showError('Technician profile not found. Please contact admin.');
+            return;
+        }
+
+        window.location.href = getRoleBasedDashboard();
+    }
+
+    async function maybeEnrichTechnicianProfile(user) {
+        if (!isTechnicianUser(user)) {
+            return user;
+        }
+
+        const existingLevel = resolveTechnicianLevel(user);
+        if (existingLevel && (user?.workflowUserId || user?.workflow_user_id || user?.user_id)) {
+            return user;
+        }
+
+        const response = await getCurrentTechnicianProfile();
+        if (!response?.success || !response?.data) {
+            throw new Error(response?.message || 'Technician profile not found');
+        }
+
+        const profile = response.data;
+        const workflowUserId = profile.workflowUserId ?? profile.workflow_user_id ?? profile.user_id ?? null;
+        const technicianId = profile.technicianId ?? profile.technician_id ?? profile.id ?? null;
+        const technicianLevel = profile.level ? String(profile.level).toUpperCase() : null;
+
+        return {
+            ...user,
+            technicianLevel: technicianLevel || user.technicianLevel,
+            workflowUserId,
+            technicianId
+        };
     }
 
     /**
@@ -514,6 +615,19 @@ function initLoginPage() {
                 console.log('✅ Login successful! Auth data stored.');
                 const user = AuthService.getCurrentUser();
                 console.log('👤 Current user:', user);
+
+                try {
+                    const enrichedUser = await maybeEnrichTechnicianProfile(user);
+                    if (enrichedUser) {
+                        AuthService.setUser(enrichedUser);
+                    }
+                } catch (error) {
+                    console.error('Failed to enrich technician profile:', error);
+                    AuthService.clearAuth();
+                    showOTPError('Technician profile not found. Please contact admin.');
+                    return;
+                }
+
                 const dashboardUrl = getRoleBasedDashboard();
                 console.log('🚀 Redirecting to:', dashboardUrl);
                 

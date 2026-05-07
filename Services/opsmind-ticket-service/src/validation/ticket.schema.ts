@@ -4,6 +4,7 @@ const SupportLevelEnum = z.enum(["L1", "L2", "L3", "L4"]);
 const TicketPriorityEnum = z.enum(["LOW", "MEDIUM", "HIGH"]);
 const TicketStatusEnum = z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]);
 const RequestTypeEnum = z.enum(["INCIDENT", "SERVICE_REQUEST", "MAINTENANCE"]);
+const AssignmentMethodEnum = z.enum(["AUTOMATIC", "MANUAL", "ADMIN", "ESCALATION", "WORKFLOW", "SYSTEM"]);
 
 export const createTicketSchema = z.object({
   title: z.string().min(3, "Title must be at least 3 characters"),
@@ -22,6 +23,11 @@ export const updateTicketSchema = z.object({
   resolution_summary: z.string().optional(),
   assigned_to: z.string().optional(),
   assigned_to_level: SupportLevelEnum.optional(),
+  assignment_method: AssignmentMethodEnum.optional(),
+  assignment_reason: z.string().max(500).optional(),
+  performed_by: z.union([z.string(), z.number()]).optional(),
+  performed_by_role: z.string().max(100).optional(),
+  status_reason: z.string().max(500).optional(),
 });
 
 export const escalateTicketSchema = z.object({

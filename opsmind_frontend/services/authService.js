@@ -446,9 +446,24 @@ const AuthService = {
             
             const user = JSON.parse(userData);
             
+            if (Array.isArray(user.roles)) {
+                user.roles = user.roles.map((role) => String(role).toUpperCase());
+            }
+
             // Ensure role is in uppercase format (fix for old data)
             if (user.role && typeof user.role === 'string') {
                 user.role = user.role.toUpperCase();
+            }
+
+            const technicianLevel =
+                user.technicianLevel ||
+                user.technician_level ||
+                user.level ||
+                user.supportLevel ||
+                user.support_level;
+
+            if (technicianLevel) {
+                user.technicianLevel = String(technicianLevel).toUpperCase();
             }
             
             // Ensure name property exists
@@ -527,8 +542,10 @@ const AuthService = {
      */
     isTechnician() {
         const user = this.getUser();
-        return user?.role === 'TECHNICIAN' || user?.role === 'JUNIOR' ||
-               (Array.isArray(user?.roles) && (user.roles.includes('TECHNICIAN') || user.roles.includes('JUNIOR')));
+        const roles = Array.isArray(user?.roles) ? user.roles : [];
+        const technicianLevel = this.getTechnicianLevel();
+        const isTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
+        return user?.role === 'TECHNICIAN' || roles.includes('TECHNICIAN') || isTechnicianLevel;
     },
 
     /**
@@ -537,8 +554,8 @@ const AuthService = {
      */
     isSenior() {
         const user = this.getUser();
-        return user?.role === 'SENIOR' || 
-               (Array.isArray(user?.roles) && user.roles.includes('SENIOR'));
+        const roles = Array.isArray(user?.roles) ? user.roles : [];
+        return user?.role === 'SENIOR' || roles.includes('SENIOR') || this.getTechnicianLevel() === 'SENIOR';
     },
 
     /**
@@ -547,8 +564,8 @@ const AuthService = {
      */
     isSupervisor() {
         const user = this.getUser();
-        return user?.role === 'SUPERVISOR' || 
-               (Array.isArray(user?.roles) && user.roles.includes('SUPERVISOR'));
+        const roles = Array.isArray(user?.roles) ? user.roles : [];
+        return user?.role === 'SUPERVISOR' || roles.includes('SUPERVISOR') || this.getTechnicianLevel() === 'SUPERVISOR';
     },
 
     /**
@@ -578,7 +595,23 @@ const AuthService = {
      */
     getTechnicianLevel() {
         const user = this.getUser();
-        return user?.technicianLevel || user?.level || null;
+        const level =
+            user?.technicianLevel ||
+            user?.technician_level ||
+            user?.level ||
+            user?.supportLevel ||
+            user?.support_level;
+
+        if (level) {
+            return String(level).toUpperCase();
+        }
+
+        const role = String(user?.role || '').toUpperCase();
+        if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+            return role;
+        }
+
+        return null;
     },
 
     /**

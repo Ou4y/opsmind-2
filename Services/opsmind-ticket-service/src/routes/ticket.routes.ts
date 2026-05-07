@@ -207,13 +207,22 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
  */
 router.get("/", async (req, res, next) => {
   try {
-    const { status, priority, requester_id, limit, offset } = req.query;
+    const { status, priority, requester_id, assigned_to, limit, offset } = req.query;
+    const assignedToFilter = typeof assigned_to === "string"
+      ? assigned_to.split(",").map((value) => value.trim()).filter(Boolean)
+      : [];
+
     const tickets = await prisma.ticket.findMany({
       where: {
         is_deleted: false,
         ...(typeof status === "string" && { status: status as any }),
         ...(typeof priority === "string" && { priority: priority as any }),
         ...(typeof requester_id === "string" && { requester_id }),
+        ...(assignedToFilter.length > 0 && {
+          assigned_to: {
+            in: assignedToFilter,
+          },
+        }),
       },
       orderBy: { created_at: "desc" },
       take: typeof limit === "string" ? parseInt(limit, 10) : 50,
@@ -372,6 +381,54 @@ router.get("/:id", async (req, res, next) => {
 });
 
 /**
+ * Get assignment history for a ticket
+ */
+router.get("/:id/assignment-history", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const history = await prisma.ticketAssignmentHistory.findMany({
+      where: { ticket_id: id },
+      orderBy: { created_at: "desc" },
+    });
+    return res.json({ ticketId: id, items: history });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Get status history for a ticket
+ */
+router.get("/:id/status-history", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const history = await prisma.ticketStatusHistory.findMany({
+      where: { ticket_id: id },
+      orderBy: { created_at: "desc" },
+    });
+    return res.json({ ticketId: id, items: history });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Get escalation history for a ticket
+ */
+router.get("/:id/escalations", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const escalations = await prisma.ticketEscalation.findMany({
+      where: { ticket_id: id },
+      orderBy: { created_at: "desc" },
+    });
+    return res.json({ ticketId: id, items: escalations });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * @openapi
  * /tickets/{id}:
  *   patch:
@@ -426,37 +483,91 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
     if (!existing) {
       throw new AppError("Ticket not found", 404);
     }
+
+    const {
+      assignment_method,
+      assignment_reason,
+      performed_by,
+      performed_by_role,
+      status_reason,
+      ...ticketUpdates
+    } = updateData as UpdateTicketInput & {
+      assignment_method?: string;
+      assignment_reason?: string;
+      performed_by?: string | number;
+      performed_by_role?: string;
+      status_reason?: string;
+    };
+
     // State transition validation
-    if (updateData.status) {
+    if (ticketUpdates.status) {
       const validTransitions: Record<string, string[]> = {
         OPEN: ["IN_PROGRESS"],
         IN_PROGRESS: ["RESOLVED"],
         RESOLVED: ["CLOSED"],
       };
       if (
-        !validTransitions[existing.status]?.includes(updateData.status)
+        !validTransitions[existing.status]?.includes(ticketUpdates.status)
       ) {
         return res.status(400).json({ error: "Invalid state transition" });
       }
       // Closed timestamp
-      if (updateData.status === "CLOSED") {
+      if (ticketUpdates.status === "CLOSED") {
         // Prisma expects closed_at in the update object
-        (updateData as any).closed_at = new Date();
+        (ticketUpdates as any).closed_at = new Date();
       }
     }
+
+    const shouldLogStatus =
+      ticketUpdates.status && ticketUpdates.status !== existing.status;
+
+    const shouldLogAssignment =
+      (ticketUpdates.assigned_to !== undefined && ticketUpdates.assigned_to !== existing.assigned_to) ||
+      (ticketUpdates.assigned_to_level !== undefined && ticketUpdates.assigned_to_level !== existing.assigned_to_level);
+
     const ticket = await prisma.ticket.update({
       where: { id },
-      data: updateData,
+      data: ticketUpdates,
     });
+
+    if (shouldLogStatus) {
+      await prisma.ticketStatusHistory.create({
+        data: {
+          ticket_id: id,
+          old_status: existing.status,
+          new_status: ticketUpdates.status as any,
+          performed_by: performed_by != null ? String(performed_by) : null,
+          performed_by_role: performed_by_role || null,
+          reason: status_reason || null,
+        },
+      });
+    }
+
+    if (shouldLogAssignment) {
+      await prisma.ticketAssignmentHistory.create({
+        data: {
+          ticket_id: id,
+          previous_assignee: existing.assigned_to,
+          new_assignee: ticket.assigned_to,
+          previous_level: existing.assigned_to_level,
+          new_level: ticket.assigned_to_level,
+          method: (assignment_method as any) || "WORKFLOW",
+          reason: assignment_reason || null,
+          performed_by: performed_by != null ? String(performed_by) : null,
+          performed_by_role: performed_by_role || null,
+        },
+      });
+    }
+
     await publishTicketUpdated(ticket);
 
     // Update SLA status if status changed
-    if (updateData.status) {
+    if (ticketUpdates.status) {
       await updateSlaOnStatusChange(ticket, existing.status);
     }
 
     // Publish notification event if ticket was resolved
-    if (updateData.status === "RESOLVED") {
+    if (ticketUpdates.status === "RESOLVED") {
       await publishResolvedNotification(ticket);
     }
 

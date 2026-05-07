@@ -278,6 +278,16 @@ export async function getGroupTickets(groupId, filters = {}) {
 // ===================================
 
 /**
+ * Get the authenticated technician profile (workflow service source of truth)
+ * @returns {Promise<Object>} Technician profile data
+ */
+export async function getCurrentTechnicianProfile() {
+    return workflowRequest('/workflow/technicians/me', {
+        method: 'GET'
+    });
+}
+
+/**
  * Get tickets assigned to a specific technician
  * @param {number} technicianId - User ID (from auth service)
  * @param {Object} [filters] - Optional filters
@@ -708,6 +718,15 @@ export async function getSeniorDashboard(userId) {
  */
 export async function resolveWorkflowUserId(email, level) {
     try {
+        const me = await getCurrentTechnicianProfile();
+        if (me?.success && me?.data?.workflowUserId) {
+            return me.data.workflowUserId;
+        }
+    } catch {
+        // Fall through to admin lookup.
+    }
+
+    try {
         const response = await getTechniciansByLevel(level);
         if (!response.success || !Array.isArray(response.data)) return null;
         const match = response.data.find(t => t.email === email);
@@ -727,6 +746,170 @@ export async function resolveWorkflowUserId(email, level) {
  */
 export async function getSupervisorDashboard(userId) {
     return workflowRequest(`/workflow/dashboard/supervisor/${userId}`, {
+        method: 'GET'
+    });
+}
+
+// ===================================
+// 19b. ROLE-BASED DASHBOARD CONTRACTS
+// ===================================
+
+export async function getAdminOverview(filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.seniorId) params.append('seniorId', filters.seniorId);
+    if (filters.supervisorId) params.append('supervisorId', filters.supervisorId);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/admin/overview${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getAdminTickets(filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.limit) params.append('limit', filters.limit);
+    if (filters.offset) params.append('offset', filters.offset);
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.seniorId) params.append('seniorId', filters.seniorId);
+    if (filters.supervisorId) params.append('supervisorId', filters.supervisorId);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/admin/tickets${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getAdminTicketDetails(ticketId) {
+    return workflowRequest(`/workflow/dashboard/admin/tickets/${String(ticketId)}/details`, {
+        method: 'GET'
+    });
+}
+
+export async function getSupervisorOverview(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getSupervisorTickets(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.limit) params.append('limit', filters.limit);
+    if (filters.offset) params.append('offset', filters.offset);
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getSupervisorTicketDetails(userId, ticketId) {
+    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/tickets/${String(ticketId)}/details`, {
+        method: 'GET'
+    });
+}
+
+export async function getSeniorOverview(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/senior/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getSeniorTickets(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.limit) params.append('limit', filters.limit);
+    if (filters.offset) params.append('offset', filters.offset);
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.assignedTo) params.append('assignedTo', filters.assignedTo);
+    if (filters.level) params.append('level', filters.level);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/senior/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getSeniorTicketDetails(userId, ticketId) {
+    return workflowRequest(`/workflow/dashboard/senior/${userId}/tickets/${String(ticketId)}/details`, {
+        method: 'GET'
+    });
+}
+
+export async function getJuniorOverview(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/junior/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getJuniorTickets(userId, filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.limit) params.append('limit', filters.limit);
+    if (filters.offset) params.append('offset', filters.offset);
+    if (filters.status) params.append('status', filters.status);
+    if (filters.priority) params.append('priority', filters.priority);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
+
+    const queryString = params.toString();
+    return workflowRequest(`/workflow/dashboard/junior/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+        method: 'GET'
+    });
+}
+
+export async function getJuniorTicketDetails(userId, ticketId) {
+    return workflowRequest(`/workflow/dashboard/junior/${userId}/tickets/${String(ticketId)}/details`, {
         method: 'GET'
     });
 }
@@ -885,6 +1068,7 @@ const WorkflowService = {
     getGroupTickets,
     getTechnicianTickets,
     getTicketRouting,
+    getCurrentTechnicianProfile,
     
     // SLA
     getSLAStatus,
@@ -902,6 +1086,18 @@ const WorkflowService = {
     getRecentActivity,
     getSeniorDashboard,
     getSupervisorDashboard,
+    getAdminOverview,
+    getAdminTickets,
+    getAdminTicketDetails,
+    getSupervisorOverview,
+    getSupervisorTickets,
+    getSupervisorTicketDetails,
+    getSeniorOverview,
+    getSeniorTickets,
+    getSeniorTicketDetails,
+    getJuniorOverview,
+    getJuniorTickets,
+    getJuniorTicketDetails,
     resolveWorkflowUserId,
     
     // Group Management

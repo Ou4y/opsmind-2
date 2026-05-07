@@ -144,7 +144,13 @@ export class EscalationService {
 
     let assignmentResult: any;
     try {
-      assignmentResult = await assignTicket(ticketId, targetUserId, toLevel);
+      assignmentResult = await assignTicket(ticketId, targetUserId, toLevel, undefined, {
+        assignmentMethod: 'ESCALATION',
+        assignmentReason: escalationReason,
+        performedBy: performedBy,
+        performedByRole: userRole || null,
+        statusReason: 'Escalated ticket',
+      });
     } catch (error: unknown) {
       throw new Error(this.formatTicketServiceError('Failed to update escalated assignment in ticket service', error));
     }

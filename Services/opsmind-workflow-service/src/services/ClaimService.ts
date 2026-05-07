@@ -93,7 +93,13 @@ export class ClaimService {
     });
 
     // PATCH ticket-service
-    await assignTicket(ticketId, userId, 'L1', 'IN_PROGRESS');
+    await assignTicket(ticketId, userId, 'L1', 'IN_PROGRESS', {
+      assignmentMethod: 'MANUAL',
+      assignmentReason: 'Ticket claimed by technician',
+      performedBy: userId,
+      performedByRole: 'JUNIOR',
+      statusReason: 'Claimed and work started',
+    });
 
     // POST-PATCH log
     console.log(`[CLAIM] POST-PATCH: Ticket-service confirmed assignment for ticket=${ticketId}`);

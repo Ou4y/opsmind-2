@@ -35,12 +35,12 @@ export const slaServiceClient: AxiosInstance = axios.create({
 
 // ---------- Auth Service Helpers ----------
 
-export async function validateUser(userId: number): Promise<ExternalUser> {
+export async function validateUser(userId: number | string): Promise<ExternalUser> {
   const { data } = await authServiceClient.get<ExternalUser>(`/users/${userId}`);
   return data;
 }
 
-export async function getUserRole(userId: number): Promise<{ role: string }> {
+export async function getUserRole(userId: number | string): Promise<{ role: string }> {
   const { data } = await authServiceClient.get<{ role: string }>(`/users/${userId}/role`);
   return data;
 }
@@ -48,7 +48,7 @@ export async function getUserRole(userId: number): Promise<{ role: string }> {
 /**
  * Get user details (id, email, role) from auth service
  */
-export async function getUserDetails(userId: number): Promise<ExternalUser> {
+export async function getUserDetails(userId: number | string): Promise<ExternalUser> {
   const { data } = await authServiceClient.get<ExternalUser>(`/users/${userId}`);
   return data;
 }
@@ -94,6 +94,13 @@ export async function assignTicket(
   userId: number | string,
   assignedToLevel: string = 'L1',
   status?: string,
+  options?: {
+    assignmentMethod?: string;
+    assignmentReason?: string;
+    performedBy?: number | string | null;
+    performedByRole?: string | null;
+    statusReason?: string | null;
+  },
 ): Promise<any> {
   const url = `${TICKET_SERVICE_URL}/tickets/${ticketId}`;
   const payload: Record<string, unknown> = {
@@ -102,6 +109,21 @@ export async function assignTicket(
   };
   if (status) {
     payload.status = status;
+  }
+  if (options?.assignmentMethod) {
+    payload.assignment_method = options.assignmentMethod;
+  }
+  if (options?.assignmentReason) {
+    payload.assignment_reason = options.assignmentReason;
+  }
+  if (options?.performedBy !== undefined && options?.performedBy !== null) {
+    payload.performed_by = options.performedBy;
+  }
+  if (options?.performedByRole) {
+    payload.performed_by_role = options.performedByRole;
+  }
+  if (options?.statusReason) {
+    payload.status_reason = options.statusReason;
   }
   console.log(`[externalServices] PATCH ${url} | payload: ${JSON.stringify(payload)}`);
   const { data } = await ticketServiceClient.patch(`/tickets/${ticketId}`, payload);
@@ -131,6 +153,21 @@ export async function escalateTicketInService(
     to_level: toLevel,
     reason,
   });
+  return data;
+}
+
+export async function getTicketAssignmentHistory(ticketId: string): Promise<any> {
+  const { data } = await ticketServiceClient.get(`/tickets/${ticketId}/assignment-history`);
+  return data;
+}
+
+export async function getTicketStatusHistory(ticketId: string): Promise<any> {
+  const { data } = await ticketServiceClient.get(`/tickets/${ticketId}/status-history`);
+  return data;
+}
+
+export async function getTicketEscalations(ticketId: string): Promise<any> {
+  const { data } = await ticketServiceClient.get(`/tickets/${ticketId}/escalations`);
   return data;
 }
 

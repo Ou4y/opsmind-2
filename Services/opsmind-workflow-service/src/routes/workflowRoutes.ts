@@ -5,6 +5,7 @@ import { ReassignmentController } from '../controllers/ReassignmentController';
 import { EscalationController } from '../controllers/EscalationController';
 import { MonitoringController } from '../controllers/MonitoringController';
 import { TechnicianController } from '../controllers/TechnicianController';
+import { RoleDashboardController } from '../controllers/RoleDashboardController';
 import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
@@ -23,6 +24,7 @@ const reassignCtrl = new ReassignmentController();
 const escalationCtrl = new EscalationController();
 const monitorCtrl = new MonitoringController();
 const technicianCtrl = new TechnicianController();
+const roleDashboardCtrl = new RoleDashboardController();
 
 // ── Service / Repo instances for new endpoints ──
 const loggingService = new LoggingService();
@@ -174,6 +176,25 @@ router.get('/dashboard/group/:groupId/metrics', monitorCtrl.getGroupMetrics);
 router.get('/dashboard/activity/recent', monitorCtrl.getRecentActivity);
 
 // ══════════════════════════════════════
+//  Role-based Dashboards (NEW)
+// ══════════════════════════════════════
+router.get('/dashboard/admin/overview', requireAuth, roleDashboardCtrl.getAdminOverview);
+router.get('/dashboard/admin/tickets', requireAuth, roleDashboardCtrl.getAdminTickets);
+router.get('/dashboard/admin/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getAdminTicketDetails);
+
+router.get('/dashboard/supervisor/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getSupervisorOverview);
+router.get('/dashboard/supervisor/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getSupervisorTickets);
+router.get('/dashboard/supervisor/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getSupervisorTicketDetails);
+
+router.get('/dashboard/senior/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getSeniorOverview);
+router.get('/dashboard/senior/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getSeniorTickets);
+router.get('/dashboard/senior/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getSeniorTicketDetails);
+
+router.get('/dashboard/junior/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getJuniorOverview);
+router.get('/dashboard/junior/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getJuniorTickets);
+router.get('/dashboard/junior/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getJuniorTicketDetails);
+
+// ══════════════════════════════════════
 //  Hierarchy-Based Dashboards (NEW)
 // ══════════════════════════════════════
 router.get('/dashboard/senior/:userId', monitorCtrl.getSeniorDashboard);
@@ -241,6 +262,7 @@ router.get('/technician/:technicianId/tickets', async (req: Request, res: Respon
 //  Technician Location Update (NEW)
 //  PUT /workflow/technicians/location
 // ------------------------------
+router.get('/technicians/me', requireAuth, technicianCtrl.getCurrentTechnician);
 router.put(
   '/technicians/location',
   validateBody(updateTechnicianLocationSchema),

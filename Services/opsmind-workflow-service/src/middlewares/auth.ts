@@ -49,7 +49,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     const decoded = jwt.verify(token, JWT_SECRET) as any;
     const roles = Array.isArray(decoded?.roles) ? decoded.roles : (decoded?.role ? [decoded.role] : []);
     req.user = {
-      userId: String(decoded.userId || decoded.id || ''),
+      userId: String(decoded.userId || decoded.id || decoded.sub || ''),
       email: String(decoded.email || ''),
       roles,
       role: roles[0],
@@ -73,7 +73,7 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
       const decoded = jwt.verify(token, JWT_SECRET) as any;
       const roles = Array.isArray(decoded?.roles) ? decoded.roles : (decoded?.role ? [decoded.role] : []);
       req.user = {
-        userId: String(decoded.userId || decoded.id || ''),
+        userId: String(decoded.userId || decoded.id || decoded.sub || ''),
         email: String(decoded.email || ''),
         roles,
         role: roles[0],

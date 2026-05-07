@@ -1,5 +1,5 @@
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
-import { TechnicianStatus } from '../interfaces/types';
+import { TechnicianRow, TechnicianStatus } from '../interfaces/types';
 
 /**
  * Technician Service
@@ -8,6 +8,10 @@ import { TechnicianStatus } from '../interfaces/types';
  */
 export class TechnicianService {
   private technicianRepo = new TechnicianRepository();
+
+  async getByAuthUserId(authUserId: string): Promise<TechnicianRow | null> {
+    return this.technicianRepo.getByAuthUserId(authUserId);
+  }
 
   async updateLocation(
     technicianId: number,

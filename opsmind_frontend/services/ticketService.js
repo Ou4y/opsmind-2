@@ -233,6 +233,10 @@ const TicketService = {
         const requesterId = options.requester_id || options.requester;
         if (requesterId) params.append('requester_id', requesterId);
 
+        if (options.assigned_to) {
+            params.append('assigned_to', String(options.assigned_to));
+        }
+
         const data = await requestTicketsApi({
             method: 'GET',
             params
@@ -297,6 +301,30 @@ const TicketService = {
         const updateData = { status };
         if (resolution_summary) {
             updateData.resolution_summary = resolution_summary;
+        }
+
+        const user = AuthService.getCurrentUser?.() || AuthService.getUser?.();
+        const performedBy =
+            user?.workflowUserId ||
+            user?.workflow_user_id ||
+            user?.user_id ||
+            user?.id ||
+            user?.userId ||
+            null;
+        const performedByRole =
+            user?.technicianLevel ||
+            user?.level ||
+            user?.role ||
+            null;
+
+        if (performedBy) {
+            updateData.performed_by = performedBy;
+        }
+        if (performedByRole) {
+            updateData.performed_by_role = String(performedByRole).toUpperCase();
+        }
+        if (resolution_summary) {
+            updateData.status_reason = resolution_summary;
         }
 
         return requestTicketsApi({
