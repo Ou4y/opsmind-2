@@ -4,7 +4,7 @@
 The hierarchy management page was stuck on "Loading hierarchy data..." indefinitely.
 
 ## Root Cause
-**Missing `config.js` import** in `admin/hierarchy.html`
+**Missing `config.js` import** in `admin/hierarchy.html`test commit
 
 The page was missing the critical configuration file that sets `window.OPSMIND_WORKFLOW_API_URL`. Without this, the `workflowService.js` was trying to make API calls to `undefined` instead of `http://localhost:3003`, causing all requests to fail silently.
 
