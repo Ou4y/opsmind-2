@@ -748,7 +748,7 @@ function startLocationTracking() {
     }
 
     state.locationWatchId = navigator.geolocation.watchPosition(
-        position => sendLocationUpdate(state.currentUser.id, position.coords),
+        position => sendLocationUpdate(state.currentWorkflowTechnicianId || state.currentUser.id, position.coords),
         handleLocationError,
         geoOptions
     );
@@ -763,12 +763,19 @@ function startLocationTracking() {
  */
 async function sendLocationUpdate(technicianId, coords) {
     try {
-        // Use the correct backend API endpoint
-        const API_BASE = window.AppConfig?.API_BASE_URL || 'http://localhost:8000';
-        const response = await fetch(`${API_BASE}/api/technicians/${technicianId}/location`, {
+        const workflowApiBase = (window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003').replace(/\/+$/, '');
+        const workflowTechnicianId = Number(technicianId);
+
+        if (!Number.isFinite(workflowTechnicianId)) {
+            console.warn('Skipping location update: workflow technician ID is missing or invalid.', technicianId);
+            return;
+        }
+
+        const response = await fetch(`${workflowApiBase}/workflow/technicians/location`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                technician_id: workflowTechnicianId,
                 latitude: coords.latitude,
                 longitude: coords.longitude
             })

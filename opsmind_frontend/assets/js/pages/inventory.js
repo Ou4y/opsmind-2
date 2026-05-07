@@ -1,5 +1,9 @@
 // Config is set as globals in config.js (loaded in HTML head)
-const API_URL = 'http://localhost:5000/api';
+const API_URL = (
+  (typeof window !== 'undefined' && window.OPSMIND_INVENTORY_API_URL)
+    ? window.OPSMIND_INVENTORY_API_URL
+    : 'http://localhost:5000/api'
+).replace(/\/+$/, '');
 
 // Define configuration variables globally so the rest of the script can use them
 let BUILDINGS = [];

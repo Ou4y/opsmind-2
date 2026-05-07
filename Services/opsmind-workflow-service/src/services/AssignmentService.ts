@@ -10,12 +10,18 @@ import { NotificationPublisher } from './NotificationPublisher';
  * Technicians at or above this threshold are considered overloaded.
  */
 const MAX_WORKLOAD = 10;
-const NO_AVAILABLE_TECHNICIAN_ERROR = 'NO_AVAILABLE_TECHNICIAN';
-const NO_ELIGIBLE_TECHNICIAN_ERROR = 'NO_ELIGIBLE_TECHNICIAN';
+const NO_ACTIVE_JUNIOR_TECHNICIAN_ERROR = 'No active junior technicians available.';
+const LEGACY_NO_AVAILABLE_TECHNICIAN_ERROR = 'NO_AVAILABLE_TECHNICIAN';
+const LEGACY_NO_ELIGIBLE_TECHNICIAN_ERROR = 'NO_ELIGIBLE_TECHNICIAN';
+const WORKLOAD_ONLY_DISTANCE_KM = 0;
 
 export function isAssignmentPendingError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return message === NO_AVAILABLE_TECHNICIAN_ERROR || message === NO_ELIGIBLE_TECHNICIAN_ERROR;
+  return (
+    message === NO_ACTIVE_JUNIOR_TECHNICIAN_ERROR ||
+    message === LEGACY_NO_AVAILABLE_TECHNICIAN_ERROR ||
+    message === LEGACY_NO_ELIGIBLE_TECHNICIAN_ERROR
+  );
 }
 
 interface PriorityWeights {
@@ -39,10 +45,31 @@ const PRIORITY_WEIGHTS: Record<TicketPriority, PriorityWeights> = {
   LOW:      { distance: 0.3, workload: 0.7 },
 };
 
-interface ScoredTechnician extends TechnicianRow {
-  distance_km: number;
+interface TechnicianWithWorkload extends TechnicianRow {
   workload: number;
+}
+
+interface ScoredTechnician extends TechnicianWithWorkload {
+  distance_km: number;
   score: number;
+}
+
+type AssignmentSource = 'queue' | 'route-ticket' | 'unknown';
+type AssignmentStrategy = 'distance_workload' | 'workload_only' | 'overload_fallback';
+
+interface AssignmentOptions {
+  source?: AssignmentSource;
+}
+
+function hasFiniteCoordinate(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function hasTechnicianLocation(technician: TechnicianRow): technician is TechnicianRow & {
+  latitude: number;
+  longitude: number;
+} {
+  return hasFiniteCoordinate(technician.latitude) && hasFiniteCoordinate(technician.longitude);
 }
 
 /**
@@ -57,143 +84,172 @@ export class AssignmentService {
   private ticketRepo = new TicketRepository();
   private notificationPublisher = new NotificationPublisher();
 
-  async assignForTicket(event: TicketCreatedEvent): Promise<TicketAssignedEvent | null> {
-    // Ensure ticket exists locally for workload tracking
+  async assignForTicket(
+    event: TicketCreatedEvent,
+    options?: AssignmentOptions,
+  ): Promise<TicketAssignedEvent | null> {
+    const source = options?.source ?? 'unknown';
+
+    // Ensure ticket exists locally for workload tracking.
     await this.ticketRepo.upsertTicket(event.ticket_id);
 
-    // Idempotency guard: skip if already assigned (handles duplicate RabbitMQ delivery
-    // and the race between the RabbitMQ consumer and the REST /route-ticket endpoint).
+    // Idempotency guard: skip if already assigned (duplicate RabbitMQ delivery and
+    // race between the consumer and REST /route-ticket endpoint).
     const assignmentCheck = await this.ticketRepo.isAlreadyAssigned(event.ticket_id);
     if (assignmentCheck) {
       console.log(
-        `[AssignmentService] ⚠ Skipping assignment: ticket ${event.ticket_id} already assigned | ` +
+        `[AssignmentService] ⚠ Skipping assignment | source=${source} | ticket=${event.ticket_id} | ` +
           `assigned_to=${assignmentCheck.assigned_to ?? 'null'} | status=${assignmentCheck.status}`,
       );
       return null;
     }
 
-    const technicians = await this.technicianRepo.getAvailableTechnicians();
+    const activeJuniors = await this.technicianRepo.getAvailableTechnicians();
+    const activeWithLocationCount = activeJuniors.filter((tech) => hasTechnicianLocation(tech)).length;
 
     console.log(
-      `[AssignmentService] Ticket ${event.ticket_id} — ` +
-        `${technicians.length} non-OFFLINE technician(s) with coordinates retrieved from DB.`,
+      `[AssignmentService] Ticket received | source=${source} | ticket=${event.ticket_id} | ` +
+        `active_juniors=${activeJuniors.length} | juniors_with_location=${activeWithLocationCount} | ` +
+        `ticket_location=(${event.latitude}, ${event.longitude})`,
     );
 
-    if (!technicians.length) {
-      console.error(`[AssignmentService] No available technicians found (all OFFLINE or no rows).`);
-      throw new Error(NO_AVAILABLE_TECHNICIAN_ERROR);
+    if (!activeJuniors.length) {
+      console.warn(
+        `[AssignmentService] Assignment pending | source=${source} | ticket=${event.ticket_id} | ` +
+          `strategy=pending | reason=${NO_ACTIVE_JUNIOR_TECHNICIAN_ERROR}`,
+      );
+      throw new Error(NO_ACTIVE_JUNIOR_TECHNICIAN_ERROR);
     }
 
     const workloadMap = await this.ticketRepo.getWorkloadMap();
+    const withWorkload: TechnicianWithWorkload[] = activeJuniors.map((tech) => ({
+      ...tech,
+      workload: workloadMap[tech.user_id] ?? 0,
+    }));
+
+    // Prefer technicians below the overload threshold.
+    const underCapacity = withWorkload.filter((tech) => tech.workload < MAX_WORKLOAD);
 
     const priority: TicketPriority = event.priority ?? 'MEDIUM';
     const weights = PRIORITY_WEIGHTS[priority];
-
-    console.log(
-      `[AssignmentService] Priority=${priority} — weights: distance=${weights.distance}, workload=${weights.workload} | ` +
-        `MAX_WORKLOAD threshold=${MAX_WORKLOAD}`,
-    );
-
-    // 1. Compute raw distance + workload for each technician
-    const withMetrics = technicians.map((t) => {
-      const distance_km = haversineDistanceKm(
-        event.latitude,
-        event.longitude,
-        t.latitude as number,
-        t.longitude as number,
-      );
-      const workload = workloadMap[t.user_id] ?? 0;
-      return { ...t, distance_km, workload };
-    });
-
-    // 2. Log every candidate before filtering so exclusions are visible
-    console.log(`[AssignmentService] Candidate evaluation for ticket ${event.ticket_id}:`);
-    withMetrics.forEach((t) => {
-      const overloaded = t.workload >= MAX_WORKLOAD;
-      console.log(
-        `  technician user_id=${t.user_id} row_id=${t.id} (${t.name}) | status=${t.status} | ` +
-          `dist=${t.distance_km.toFixed(3)} km | workload=${t.workload}` +
-          (overloaded ? ` ← EXCLUDED (overloaded)` : ''),
-      );
-    });
-
-    // 3. Exclude overloaded technicians
-    const candidates = withMetrics.filter((t) => t.workload < MAX_WORKLOAD);
-
-    if (!candidates.length) {
-      console.error(
-        `[AssignmentService] No eligible technicians for ticket ${event.ticket_id} ` +
-          `(priority=${priority}). All ${technicians.length} technician(s) are overloaded ` +
-          `(workload >= ${MAX_WORKLOAD}).`,
-      );
-      throw new Error(NO_ELIGIBLE_TECHNICIAN_ERROR);
+    const ticketHasLocation = hasFiniteCoordinate(event.latitude) && hasFiniteCoordinate(event.longitude);
+    const isOverloadFallback = underCapacity.length === 0;
+    const candidatePool = isOverloadFallback ? withWorkload : underCapacity;
+    const locationCandidates = candidatePool.filter((tech) => hasTechnicianLocation(tech));
+    let strategy: AssignmentStrategy = 'workload_only';
+    if (isOverloadFallback) {
+      strategy = 'overload_fallback';
+    } else if (ticketHasLocation && locationCandidates.length > 0) {
+      strategy = 'distance_workload';
     }
 
-    // 4. Normalise distance and workload to [0, 1] so they are comparable
-    const maxDistance = Math.max(...candidates.map((t) => t.distance_km), 1);
-    const maxWorkload = Math.max(...candidates.map((t) => t.workload), 1);
+    const assignmentReason = isOverloadFallback
+      ? `all_active_juniors_over_capacity_threshold_${MAX_WORKLOAD}`
+      : strategy === 'distance_workload'
+      ? 'location_and_workload_scoring'
+      : 'location_missing_or_unusable_workload_only';
 
-    console.log(
-      `[AssignmentService] Normalisation — maxDist=${maxDistance.toFixed(3)} km, maxWorkload=${maxWorkload}`,
-    );
-
-    const scored: ScoredTechnician[] = candidates.map((t) => {
-      const normDist = t.distance_km / maxDistance;
-      const normWork = t.workload / maxWorkload;
-      const score = weights.distance * normDist + weights.workload * normWork;
-      console.log(
-        `  technician ${t.id} (${t.name}) | ` +
-          `normDist=${normDist.toFixed(4)}, normWork=${normWork.toFixed(4)} → score=${score.toFixed(4)}`,
+    if (isOverloadFallback) {
+      console.warn(
+        `[AssignmentService] Overload fallback activated | source=${source} | ticket=${event.ticket_id} | ` +
+          `strategy=${strategy} | reason=${assignmentReason} | active_juniors=${activeJuniors.length}`,
       );
-      return { ...t, score };
-    });
-
-    // 5. Lowest score wins; stable tie-break by id
-    const best = scored.reduce((acc, cur) => (cur.score < acc.score ? cur : acc), scored[0]);
+    }
 
     console.log(
-      `[AssignmentService] ✔ Selected technician user_id=${best.user_id} (${best.name}) for ticket ${event.ticket_id} ` +
-        `| priority=${priority} | dist=${best.distance_km.toFixed(3)} km | ` +
-        `workload=${best.workload} | final score=${best.score.toFixed(4)}`,
+      `[AssignmentService] Strategy selected | source=${source} | ticket=${event.ticket_id} | strategy=${strategy} | ` +
+        `priority=${priority} | candidates=${candidatePool.length} | ` +
+        `location_candidates=${locationCandidates.length} | ticket_has_location=${ticketHasLocation}`,
     );
 
-    // 6. Final race-condition guard: verify ticket is still unassigned before committing
+    let best: ScoredTechnician;
+
+    if (strategy === 'distance_workload') {
+      const withMetrics = locationCandidates.map((tech) => {
+        const distance_km = haversineDistanceKm(
+          event.latitude,
+          event.longitude,
+          tech.latitude,
+          tech.longitude,
+        );
+        return { ...tech, distance_km };
+      });
+
+      const maxDistance = Math.max(...withMetrics.map((tech) => tech.distance_km), 1);
+      const maxWorkload = Math.max(...withMetrics.map((tech) => tech.workload), 1);
+
+      const scored = withMetrics.map((tech) => {
+        const normDist = tech.distance_km / maxDistance;
+        const normWork = tech.workload / maxWorkload;
+        const score = weights.distance * normDist + weights.workload * normWork;
+        return { ...tech, score };
+      });
+
+      scored.sort(
+        (a, b) =>
+          a.score - b.score ||
+          a.workload - b.workload ||
+          a.user_id - b.user_id ||
+          a.id - b.id,
+      );
+      best = scored[0];
+    } else {
+      const sorted = [...candidatePool].sort(
+        (a, b) => a.workload - b.workload || a.user_id - b.user_id || a.id - b.id,
+      );
+      const selected = sorted[0];
+      const maxWorkload = Math.max(...candidatePool.map((tech) => tech.workload), 1);
+      best = {
+        ...selected,
+        distance_km: WORKLOAD_ONLY_DISTANCE_KM,
+        score: selected.workload / maxWorkload,
+      };
+    }
+
+    console.log(
+      `[AssignmentService] ✔ Technician selected | source=${source} | ticket=${event.ticket_id} | ` +
+        `strategy=${strategy} | user_id=${best.user_id} | workload=${best.workload} | ` +
+        `distance_km=${best.distance_km.toFixed(3)} | score=${best.score.toFixed(4)}`,
+    );
+
+    // Final race-condition guard: verify ticket is still unassigned before commit.
     const finalCheck = await this.ticketRepo.isAlreadyAssigned(event.ticket_id);
     if (finalCheck) {
       console.log(
-        `[AssignmentService] ⚠ Race condition detected: ticket ${event.ticket_id} was assigned ` +
+        `[AssignmentService] ⚠ Race condition detected | source=${source} | ticket=${event.ticket_id} | ` +
+          `strategy=${strategy} | ` +
           `during processing | assigned_to=${finalCheck.assigned_to ?? 'null'} | status=${finalCheck.status}`,
       );
       return null;
     }
 
-    // 7. Update local DB first (workload tracking — always required)
+    // Update local DB first (workload tracking).
     await this.ticketRepo.assignTicket(event.ticket_id, best.user_id);
 
-    // 8. Notify ticket-service (authoritative store) — non-blocking in local dev
+    // Notify ticket-service (authoritative store) without forcing status transition.
     // Live technicians table has no level column; default all to L1.
     const supportLevel = 'L1';
     console.log(
-      `[AssignmentService] → PATCH ticket-service | ticket=${event.ticket_id} | ` +
-        `assigned_to=${best.user_id} | assigned_to_level=${supportLevel} | status=IN_PROGRESS`,
+      `[AssignmentService] → PATCH ticket-service | source=${source} | ticket=${event.ticket_id} | ` +
+        `assigned_to=${best.user_id} | assigned_to_level=${supportLevel} | status_preserved=OPEN`,
     );
     try {
-      const result = await assignTicket(event.ticket_id, best.user_id, supportLevel, 'IN_PROGRESS');
+      const result = await assignTicket(event.ticket_id, best.user_id, supportLevel);
       console.log(
-        `[AssignmentService] ✔ ticket-service PATCH succeeded for ticket ${event.ticket_id} | response:`,
+        `[AssignmentService] ✔ ticket-service PATCH succeeded | source=${source} | ticket=${event.ticket_id} | response:`,
         JSON.stringify(result),
       );
 
-      // 9. Start SLA tracking after successful assignment
+      // Start SLA tracking after successful assignment.
       await this.startSlaTracking(event, best.user_id);
 
-      // 10. Publish notification event after successful assignment
+      // Publish notification event after successful assignment.
       await this.publishAssignmentNotification(event.ticket_id, best.user_id);
     } catch (extErr: any) {
       const status = extErr?.response?.status ?? 'NO_RESPONSE';
       const body = extErr?.response?.data ?? extErr?.message;
       console.error(
-        `[AssignmentService] ✘ ticket-service PATCH FAILED for ticket ${event.ticket_id} | ` +
+        `[AssignmentService] ✘ ticket-service PATCH FAILED | source=${source} | ticket=${event.ticket_id} | ` +
           `HTTP ${status} | body: ${JSON.stringify(body)}`,
       );
     }
@@ -204,6 +260,9 @@ export class AssignmentService {
       distance_km: best.distance_km,
       workload: best.workload,
       score: best.score,
+      assignment_strategy: strategy,
+      assignment_path: source,
+      assignment_reason: assignmentReason,
     };
   }
 

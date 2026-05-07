@@ -11,7 +11,7 @@ import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { optionalAuth, requireAuth } from '../middlewares/auth';
-import { validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
+import { routeTicketSchema, validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
 import { getUserDetails } from '../config/externalServices';
 
 const router = Router();
@@ -139,7 +139,7 @@ router.get('/debug/connectivity', async (_req: Request, res: Response): Promise<
 // ══════════════════════════════════════
 //  Routing
 // ══════════════════════════════════════
-router.post('/route-ticket', routingCtrl.routeTicket);
+router.post('/route-ticket', validateBody(routeTicketSchema), routingCtrl.routeTicket);
 router.get('/ticket/:ticketId/routing', routingCtrl.getTicketRouting);
 router.get('/group/:groupId/queue', routingCtrl.getGroupQueue);
 router.get('/group/:groupId/info', routingCtrl.getGroupInfo);

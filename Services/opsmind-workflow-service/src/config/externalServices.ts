@@ -85,20 +85,22 @@ export async function getTicketDetails(ticketId: string): Promise<any> {
 
 /**
  * Assign a ticket via PATCH /tickets/:id
- * Sends assigned_to (string), assigned_to_level (L1-L4), and status (IN_PROGRESS).
+ * Sends assigned_to (string), assigned_to_level (L1-L4), and optional status.
  */
 export async function assignTicket(
   ticketId: string,
   userId: number | string,
   assignedToLevel: string = 'L1',
-  status: string = 'IN_PROGRESS',
+  status?: string,
 ): Promise<any> {
   const url = `${TICKET_SERVICE_URL}/tickets/${ticketId}`;
-  const payload = {
+  const payload: Record<string, unknown> = {
     assigned_to: String(userId),
     assigned_to_level: assignedToLevel,
-    status,
   };
+  if (status) {
+    payload.status = status;
+  }
   console.log(`[externalServices] PATCH ${url} | payload: ${JSON.stringify(payload)}`);
   const { data } = await ticketServiceClient.patch(`/tickets/${ticketId}`, payload);
   return data;

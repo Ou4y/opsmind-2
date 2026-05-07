@@ -227,6 +227,9 @@ export interface TicketAssignedEvent {
   distance_km: number;
   workload: number;
   score: number;
+  assignment_strategy?: 'distance_workload' | 'workload_only' | 'overload_fallback';
+  assignment_path?: 'queue' | 'route-ticket' | 'unknown';
+  assignment_reason?: string;
 }
 
 // ---------- Workflow Log Data ----------

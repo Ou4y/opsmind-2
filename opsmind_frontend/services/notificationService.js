@@ -1,6 +1,9 @@
 import AuthService from './authService.js';
 
-const NOTIFICATION_API = 'http://localhost:3000/api/notifications';
+const NOTIFICATION_API = (
+    (typeof window !== 'undefined' && window.OPSMIND_NOTIFICATION_URL) ? window.OPSMIND_NOTIFICATION_URL :
+    'http://localhost:3005/api/notifications'
+).replace(/\/+$/, '');
 
 const NotificationService = {
 
@@ -45,9 +48,9 @@ const NotificationService = {
 
         try {
             await fetch(
-                `${NOTIFICATION_API}/user/${user.id}/read-all`,
+                `${NOTIFICATION_API}/${user.id}/mark-read`,
                 {
-                    method: 'PATCH'
+                    method: 'PUT'
                 }
             );
 
@@ -61,12 +64,10 @@ const NotificationService = {
     
     async markOneAsRead(notificationId) {
         try {
-            await fetch(
-                `${NOTIFICATION_API}/${notificationId}/read`,
-                {
-                    method: 'PATCH'
-                }
-            );
+            // Backend currently exposes only a user-level mark-read endpoint.
+            // Keep this method non-breaking for callers by falling back to mark-all.
+            console.warn('Single-notification read endpoint is not available; marking all as read instead.', notificationId);
+            await this.markAllAsRead();
 
         } catch (error) {
             console.error("Mark single notification failed:", error);

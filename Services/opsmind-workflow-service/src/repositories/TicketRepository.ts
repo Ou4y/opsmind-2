@@ -87,7 +87,7 @@ export class TicketRepository {
     const result = await execute(
       `
         UPDATE tickets
-        SET assigned_to = ?, status = 'IN_PROGRESS'
+        SET assigned_to = ?
         WHERE id = ? AND assigned_to IS NULL AND status = 'OPEN'
       `,
       [technicianId, ticketId],
@@ -123,7 +123,7 @@ export class TicketRepository {
     }
 
     console.log(
-      `[TicketRepository] ✔ Ticket ${ticketId} assigned to technician ${technicianId}, status → IN_PROGRESS`,
+      `[TicketRepository] ✔ Ticket ${ticketId} assigned to technician ${technicianId}, status remains OPEN`,
     );
   }
 }

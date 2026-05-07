@@ -6,7 +6,7 @@ import { AssignmentService, isAssignmentPendingError } from '../services/Assignm
  * Routing Controller (TypeScript)
  *
  * Handles ticket assignment and routing state queries.
- * Assignment is location-based (coordinates + workload), not building/floor-based.
+ * Assignment prefers location + workload when available, with workload-only fallback.
  */
 export class RoutingController {
   private routingService = new RoutingService();
@@ -17,17 +17,25 @@ export class RoutingController {
     try {
       const { ticketId, latitude, longitude, priority } = req.body;
 
-      if (!ticketId || latitude === undefined || longitude === undefined) {
-        res.status(400).json({ success: false, message: 'Missing required fields: ticketId, latitude, longitude' });
+      if (!ticketId) {
+        res.status(400).json({ success: false, message: 'Missing required field: ticketId' });
         return;
       }
 
+      const normalizedLatitude = Number.isFinite(Number(latitude)) ? Number(latitude) : Number.NaN;
+      const normalizedLongitude = Number.isFinite(Number(longitude)) ? Number(longitude) : Number.NaN;
+
+      console.log(
+        `[RoutingController] route-ticket request | ticket=${ticketId} | ` +
+          `has_location=${Number.isFinite(normalizedLatitude) && Number.isFinite(normalizedLongitude)}`,
+      );
+
       const result = await this.assignmentService.assignForTicket({
         ticket_id: ticketId,
-        latitude: Number(latitude),
-        longitude: Number(longitude),
+        latitude: normalizedLatitude,
+        longitude: normalizedLongitude,
         priority,
-      });
+      }, { source: 'route-ticket' });
 
       if (result === null) {
         res.status(200).json({ success: true, message: 'Ticket already assigned — skipped.' });
@@ -37,10 +45,12 @@ export class RoutingController {
       res.status(200).json({ success: true, data: result });
     } catch (error: any) {
       if (isAssignmentPendingError(error)) {
+        const pendingReason = error instanceof Error ? error.message : 'Ticket remains unassigned for review.';
         res.status(202).json({
           success: true,
           pending: true,
-          message: 'No eligible junior technician is currently available. Ticket remains unassigned for review.',
+          message: pendingReason,
+          pending_reason: pendingReason,
         });
         return;
       }

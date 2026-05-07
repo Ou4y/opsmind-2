@@ -51,8 +51,8 @@ export async function startAssignmentConsumer(): Promise<void> {
           console.log('[AssignmentConsumer] Extracted payload:', payload);
 
           const ticketId: string | undefined = payload.ticket_id ?? payload.id;
-          const latitude: number | undefined = payload.latitude;
-          const longitude: number | undefined = payload.longitude;
+          const latitude: number = Number.isFinite(payload.latitude) ? payload.latitude : Number.NaN;
+          const longitude: number = Number.isFinite(payload.longitude) ? payload.longitude : Number.NaN;
           const priority: string | undefined = payload.priority;
 
           if (!ticketId) {
@@ -60,16 +60,11 @@ export async function startAssignmentConsumer(): Promise<void> {
             ch.nack(msg, false, false);
             return;
           }
-          if (latitude == null || longitude == null) {
-            console.error(`[AssignmentConsumer] Missing lat/lon for ticket ${ticketId} — discarding message.`);
-            ch.nack(msg, false, false);
-            return;
-          }
 
           const ticket: TicketCreatedEvent = { ticket_id: ticketId, latitude, longitude, priority: priority as TicketCreatedEvent['priority'] };
           console.log('[AssignmentConsumer] Final ticket object:', ticket);
 
-          const assignment = await assignmentService.assignForTicket(ticket);
+          const assignment = await assignmentService.assignForTicket(ticket, { source: 'queue' });
 
           if (assignment === null) {
             // Already assigned — idempotency guard fired; ack to drop the duplicate.
@@ -91,8 +86,9 @@ export async function startAssignmentConsumer(): Promise<void> {
           ch.ack(msg);
         } catch (error) {
           if (isAssignmentPendingError(error)) {
+            const pendingReason = error instanceof Error ? error.message : 'Ticket remains unassigned for review.';
             console.warn(
-              '[AssignmentConsumer] Ticket remains unassigned: no eligible junior technician is currently available. Message acknowledged for pending review.',
+              `[AssignmentConsumer] Ticket remains unassigned: ${pendingReason}. Message acknowledged for pending review.`,
             );
             ch.ack(msg);
             return;

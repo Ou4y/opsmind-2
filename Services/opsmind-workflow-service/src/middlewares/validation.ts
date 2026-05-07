@@ -24,8 +24,8 @@ export function validateBody(schema: Joi.ObjectSchema) {
 
 export const routeTicketSchema = Joi.object({
   ticketId: Joi.string().required(),
-  latitude: Joi.number().min(-90).max(90).required(),
-  longitude: Joi.number().min(-180).max(180).required(),
+  latitude: Joi.number().min(-90).max(90).optional(),
+  longitude: Joi.number().min(-180).max(180).optional(),
   priority: Joi.string().valid('CRITICAL', 'HIGH', 'MEDIUM', 'LOW').optional(),
 }).unknown(true);
 

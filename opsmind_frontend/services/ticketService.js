@@ -47,17 +47,14 @@ async function handleResponse(response) {
     return response.json();
 }
 
-const NORMALIZED_API_BASE_URL = API_BASE_URL.replace(/\/+$/, '');
+const NORMALIZED_API_BASE_URL = API_BASE_URL
+    .replace(/\/+$/, '')
+    .replace(/\/api\/tickets$/i, '')
+    .replace(/\/tickets$/i, '')
+    .replace(/\/api$/i, '');
 
-const TICKET_ROUTE_CANDIDATES = (() => {
-    if (/\/api\/tickets$/i.test(NORMALIZED_API_BASE_URL) || /\/tickets$/i.test(NORMALIZED_API_BASE_URL)) {
-        return [''];
-    }
-    if (/\/api$/i.test(NORMALIZED_API_BASE_URL)) {
-        return ['/tickets'];
-    }
-    return ['/api/tickets', '/tickets'];
-})();
+// Ticket service routes are mounted at /tickets (no /api prefix).
+const TICKET_ROUTE_CANDIDATES = ['/tickets'];
 
 function jsonHeaders() {
     return {

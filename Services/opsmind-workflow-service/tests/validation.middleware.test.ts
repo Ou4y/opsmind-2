@@ -1,6 +1,7 @@
 import Joi from "joi";
 import {
   claimTicketSchema,
+  routeTicketSchema,
   syncTechnicianFromAuthSchema,
   validateBody,
 } from "../src/middlewares/validation";
@@ -101,5 +102,33 @@ describe("syncTechnicianFromAuthSchema", () => {
 
     expect(result.error).toBeDefined();
     expect(result.error?.message).toContain("ADMIN role can only use ADMIN technicianLevel");
+  });
+});
+
+describe("routeTicketSchema", () => {
+  it("accepts ticketId without coordinates", () => {
+    const result = routeTicketSchema.validate({ ticketId: "T-100" });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("accepts ticketId with valid coordinates", () => {
+    const result = routeTicketSchema.validate({
+      ticketId: "T-101",
+      latitude: 30.1,
+      longitude: 31.2,
+      priority: "HIGH",
+    });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects invalid latitude when provided", () => {
+    const result = routeTicketSchema.validate({
+      ticketId: "T-102",
+      latitude: 120,
+    });
+
+    expect(result.error).toBeDefined();
   });
 });
