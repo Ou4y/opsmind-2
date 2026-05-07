@@ -12,25 +12,22 @@ import jwt from 'jsonwebtoken';
  */
 
 const JWT_SECRET = process.env.JWT_SECRET || 'opsmind-secret-key';
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
 
 // Extend Express Request to include user
 export interface AuthUser {
-  id: number;
-  firstName?: string;
-  lastName?: string;
+  userId: string;
   email: string;
-  role: string;
-  building?: string;
-  supportGroupId?: number;
-  groupId?: number;
+  roles: string[];
+  role?: string;
   technicianLevel?: string;
-  level?: string;
 }
 
 declare global {
   namespace Express {
     interface Request {
       user?: AuthUser;
+      isService?: boolean;
     }
   }
 }
@@ -49,8 +46,15 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
-    req.user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const roles = Array.isArray(decoded?.roles) ? decoded.roles : (decoded?.role ? [decoded.role] : []);
+    req.user = {
+      userId: String(decoded.userId || decoded.id || ''),
+      email: String(decoded.email || ''),
+      roles,
+      role: roles[0],
+      technicianLevel: decoded.technicianLevel,
+    };
     next();
   } catch (error: any) {
     res.status(401).json({ success: false, message: 'Invalid or expired token' });
@@ -66,8 +70,15 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
-      req.user = decoded;
+      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      const roles = Array.isArray(decoded?.roles) ? decoded.roles : (decoded?.role ? [decoded.role] : []);
+      req.user = {
+        userId: String(decoded.userId || decoded.id || ''),
+        email: String(decoded.email || ''),
+        roles,
+        role: roles[0],
+        technicianLevel: decoded.technicianLevel,
+      };
     } catch {
       // Token invalid — continue without user
     }
@@ -86,11 +97,41 @@ export function requireRole(...roles: string[]) {
       return;
     }
 
-    if (!roles.includes(req.user.role)) {
+    const userRoles = req.user.roles || [];
+    const hasRole = roles.some((role) => userRoles.includes(role));
+    if (!hasRole) {
       res.status(403).json({ success: false, message: 'Insufficient permissions' });
       return;
     }
 
     next();
   };
+}
+
+/**
+ * Allow internal service calls via X-Internal-Token, otherwise require JWT auth.
+ */
+export function requireAuthOrInternal(req: Request, res: Response, next: NextFunction): void {
+  const internalToken = req.headers['x-internal-token'];
+
+  if (INTERNAL_API_TOKEN && internalToken === INTERNAL_API_TOKEN) {
+    req.isService = true;
+    return next();
+  }
+
+  return requireAuth(req, res, next);
+}
+
+/**
+ * Require internal service token (no JWT fallback).
+ */
+export function requireInternalToken(req: Request, res: Response, next: NextFunction): void {
+  const internalToken = req.headers['x-internal-token'];
+
+  if (INTERNAL_API_TOKEN && internalToken === INTERNAL_API_TOKEN) {
+    req.isService = true;
+    return next();
+  }
+
+  res.status(403).json({ success: false, message: 'Internal service token required' });
 }
