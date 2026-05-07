@@ -20,6 +20,11 @@ export const config = {
     url: process.env.SLA_SERVICE_URL ?? "http://opsmind-sla-service:3004",
   },
 
+  workflowService: {
+    url: process.env.WORKFLOW_SERVICE_URL ?? "http://workflow-service:3003",
+    internalApiToken: process.env.INTERNAL_API_TOKEN ?? "",
+  },
+
   cors: {
     origins: (process.env.CORS_ORIGINS ?? "http://localhost:5173")
       .split(",")

@@ -10,7 +10,7 @@ import { TicketRoutingStateRepository } from '../repositories/TicketRoutingState
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
-import { optionalAuth } from '../middlewares/auth';
+import { optionalAuth, requireAuth } from '../middlewares/auth';
 import { validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
 import { getUserDetails } from '../config/externalServices';
 
@@ -147,7 +147,7 @@ router.get('/group/:groupId/info', routingCtrl.getGroupInfo);
 // ══════════════════════════════════════
 //  Claim-on-Open
 // ══════════════════════════════════════
-router.post('/claim/:ticketId', claimCtrl.claimTicket);
+router.post('/claim/:ticketId', requireAuth, claimCtrl.claimTicket);
 router.get('/claim/:ticketId/status', claimCtrl.getClaimStatus);
 router.get('/group/:groupId/unclaimed', claimCtrl.getUnclaimedTickets);
 

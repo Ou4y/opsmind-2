@@ -1,28 +1,60 @@
 import { Request, Response } from 'express';
 import { ClaimService } from '../services/ClaimService';
+import { TechnicianRepository } from '../repositories/TechnicianRepository';
 
 /**
  * Claim Controller (TypeScript)
  */
 export class ClaimController {
   private claimService = new ClaimService();
+  private technicianRepo = new TechnicianRepository();
 
   /** POST /workflow/claim/:ticketId */
   claimTicket = async (req: Request, res: Response): Promise<void> => {
     try {
       const ticketId = req.params.ticketId;
-      // Frontend sends { technician_id }, support legacy { userId } too
-      const userId = req.body.technician_id || req.body.userId;
+      const authUserId = req.user?.userId;
 
-      if (!userId) {
-        res.status(400).json({ success: false, message: 'Missing required field: technician_id' });
+      if (!authUserId) {
+        res.status(401).json({ success: false, message: 'Authentication required' });
         return;
       }
 
-      const result = await this.claimService.claimTicket(ticketId, userId);
-      res.status(200).json({ success: true, data: result });
+      // Security: never trust frontend-supplied technician IDs for protected actions.
+      // Resolve the workflow user from authenticated token context.
+      let technician = await this.technicianRepo.getByAuthUserId(authUserId);
+
+      if (!technician) {
+        const numericUserId = Number(authUserId);
+        if (Number.isInteger(numericUserId)) {
+          technician = await this.technicianRepo.getByUserId(numericUserId);
+        }
+      }
+
+      if (!technician) {
+        res.status(403).json({
+          success: false,
+          message: 'Authenticated user is not mapped to an active workflow technician profile',
+        });
+        return;
+      }
+
+      res.status(403).json({
+        success: false,
+        message: 'Manual ticket claiming is disabled. Tickets are assigned automatically by workflow rules.',
+        data: {
+          ticketId,
+          technicianUserId: technician.user_id,
+        },
+      });
+      return;
     } catch (error: any) {
       console.error('Claim error:', error);
+
+      if (error.message.includes('disabled')) {
+        res.status(403).json({ success: false, message: error.message });
+        return;
+      }
 
       if (error.message.includes('already claimed')) {
         res.status(409).json({ success: false, message: error.message });

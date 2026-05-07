@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { RoutingService } from '../services/RoutingService';
-import { AssignmentService } from '../services/AssignmentService';
+import { AssignmentService, isAssignmentPendingError } from '../services/AssignmentService';
 
 /**
  * Routing Controller (TypeScript)
@@ -36,6 +36,15 @@ export class RoutingController {
 
       res.status(200).json({ success: true, data: result });
     } catch (error: any) {
+      if (isAssignmentPendingError(error)) {
+        res.status(202).json({
+          success: true,
+          pending: true,
+          message: 'No eligible junior technician is currently available. Ticket remains unassigned for review.',
+        });
+        return;
+      }
+
       console.error('Routing error:', error);
       res.status(400).json({ success: false, message: error.message });
     }

@@ -10,6 +10,13 @@ import { NotificationPublisher } from './NotificationPublisher';
  * Technicians at or above this threshold are considered overloaded.
  */
 const MAX_WORKLOAD = 10;
+const NO_AVAILABLE_TECHNICIAN_ERROR = 'NO_AVAILABLE_TECHNICIAN';
+const NO_ELIGIBLE_TECHNICIAN_ERROR = 'NO_ELIGIBLE_TECHNICIAN';
+
+export function isAssignmentPendingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message === NO_AVAILABLE_TECHNICIAN_ERROR || message === NO_ELIGIBLE_TECHNICIAN_ERROR;
+}
 
 interface PriorityWeights {
   distance: number;
@@ -74,7 +81,7 @@ export class AssignmentService {
 
     if (!technicians.length) {
       console.error(`[AssignmentService] No available technicians found (all OFFLINE or no rows).`);
-      throw new Error('No available technicians found');
+      throw new Error(NO_AVAILABLE_TECHNICIAN_ERROR);
     }
 
     const workloadMap = await this.ticketRepo.getWorkloadMap();
@@ -95,7 +102,7 @@ export class AssignmentService {
         t.latitude as number,
         t.longitude as number,
       );
-      const workload = workloadMap[t.id] ?? 0;
+      const workload = workloadMap[t.user_id] ?? 0;
       return { ...t, distance_km, workload };
     });
 
@@ -104,7 +111,7 @@ export class AssignmentService {
     withMetrics.forEach((t) => {
       const overloaded = t.workload >= MAX_WORKLOAD;
       console.log(
-        `  technician ${t.id} (${t.name}) | status=${t.status} | ` +
+        `  technician user_id=${t.user_id} row_id=${t.id} (${t.name}) | status=${t.status} | ` +
           `dist=${t.distance_km.toFixed(3)} km | workload=${t.workload}` +
           (overloaded ? ` ← EXCLUDED (overloaded)` : ''),
       );
@@ -119,7 +126,7 @@ export class AssignmentService {
           `(priority=${priority}). All ${technicians.length} technician(s) are overloaded ` +
           `(workload >= ${MAX_WORKLOAD}).`,
       );
-      throw new Error('No eligible technicians available');
+      throw new Error(NO_ELIGIBLE_TECHNICIAN_ERROR);
     }
 
     // 4. Normalise distance and workload to [0, 1] so they are comparable
@@ -145,7 +152,7 @@ export class AssignmentService {
     const best = scored.reduce((acc, cur) => (cur.score < acc.score ? cur : acc), scored[0]);
 
     console.log(
-      `[AssignmentService] ✔ Selected technician ${best.id} (${best.name}) for ticket ${event.ticket_id} ` +
+      `[AssignmentService] ✔ Selected technician user_id=${best.user_id} (${best.name}) for ticket ${event.ticket_id} ` +
         `| priority=${priority} | dist=${best.distance_km.toFixed(3)} km | ` +
         `workload=${best.workload} | final score=${best.score.toFixed(4)}`,
     );
@@ -161,27 +168,27 @@ export class AssignmentService {
     }
 
     // 7. Update local DB first (workload tracking — always required)
-    await this.ticketRepo.assignTicket(event.ticket_id, best.id);
+    await this.ticketRepo.assignTicket(event.ticket_id, best.user_id);
 
     // 8. Notify ticket-service (authoritative store) — non-blocking in local dev
     // Live technicians table has no level column; default all to L1.
     const supportLevel = 'L1';
     console.log(
       `[AssignmentService] → PATCH ticket-service | ticket=${event.ticket_id} | ` +
-        `assigned_to=${best.id} | assigned_to_level=${supportLevel} | status=IN_PROGRESS`,
+        `assigned_to=${best.user_id} | assigned_to_level=${supportLevel} | status=IN_PROGRESS`,
     );
     try {
-      const result = await assignTicket(event.ticket_id, best.id, supportLevel, 'IN_PROGRESS');
+      const result = await assignTicket(event.ticket_id, best.user_id, supportLevel, 'IN_PROGRESS');
       console.log(
         `[AssignmentService] ✔ ticket-service PATCH succeeded for ticket ${event.ticket_id} | response:`,
         JSON.stringify(result),
       );
 
       // 9. Start SLA tracking after successful assignment
-      await this.startSlaTracking(event, best.id);
+      await this.startSlaTracking(event, best.user_id);
 
       // 10. Publish notification event after successful assignment
-      await this.publishAssignmentNotification(event.ticket_id, best.id);
+      await this.publishAssignmentNotification(event.ticket_id, best.user_id);
     } catch (extErr: any) {
       const status = extErr?.response?.status ?? 'NO_RESPONSE';
       const body = extErr?.response?.data ?? extErr?.message;
@@ -193,7 +200,7 @@ export class AssignmentService {
 
     return {
       ticket_id: event.ticket_id,
-      technician_id: best.id,
+      technician_id: best.user_id,
       distance_km: best.distance_km,
       workload: best.workload,
       score: best.score,
@@ -214,19 +221,21 @@ export class AssignmentService {
    * @returns Enriched user data or null if validation fails
    */
   private async enrichUserData(
-    userId: number,
+    workflowUserId: number,
     userType: 'technician' | 'supervisor',
   ): Promise<{ id: string; name: string; email: string } | null> {
     try {
-      // Step 1: Fetch from local database (preferred source for name)
-      const technicianData = await this.technicianRepo.getById(userId);
+      // Step 1: Resolve by workflow user_id first, fallback to internal row id for compatibility.
+      const technicianData =
+        (await this.technicianRepo.getByUserId(workflowUserId)) ||
+        (await this.technicianRepo.getById(workflowUserId));
       
       // Step 2: Fetch email from Auth Service
-      const authUser = await getUserDetails(userId);
+      const authUser = await getUserDetails(workflowUserId);
 
       // Step 3: Build enriched data object
       const enrichedData = {
-        id: String(userId),
+        id: String(workflowUserId),
         name: technicianData?.name || authUser?.email?.split('@')[0] || '',
         email: authUser?.email || '',
       };
@@ -238,7 +247,7 @@ export class AssignmentService {
         if (!enrichedData.email) missing.push('email');
         
         console.error(
-          `[AssignmentService] ✘ Validation failed for ${userType} ${userId}: ` +
+          `[AssignmentService] ✘ Validation failed for ${userType} ${workflowUserId}: ` +
           `missing ${missing.join(', ')}. Event will not be published.`
         );
         return null;
@@ -252,7 +261,7 @@ export class AssignmentService {
       return enrichedData;
     } catch (error) {
       console.error(
-        `[AssignmentService] ✘ Failed to enrich ${userType} data for user ${userId}:`,
+        `[AssignmentService] ✘ Failed to enrich ${userType} data for user ${workflowUserId}:`,
         error instanceof Error ? error.message : error
       );
       return null;
@@ -280,7 +289,7 @@ export class AssignmentService {
    * - API failures → logged, event not published
    * - Never throws → assignment flow continues
    */
-  private async publishAssignmentNotification(ticketId: string, technicianId: number): Promise<void> {
+  private async publishAssignmentNotification(ticketId: string, technicianUserId: number): Promise<void> {
     try {
       console.log(`[AssignmentService] Publishing notification for ticket ${ticketId}...`);
 
@@ -289,7 +298,7 @@ export class AssignmentService {
       const ticketTitle = ticketDetails?.title || 'Untitled Ticket';
 
       // Step 2: Enrich and validate technician data
-      const technicianData = await this.enrichUserData(technicianId, 'technician');
+      const technicianData = await this.enrichUserData(technicianUserId, 'technician');
       if (!technicianData) {
         console.warn(
           `[AssignmentService] ✘ Skipping notification publish: ` +
@@ -309,7 +318,7 @@ export class AssignmentService {
       }
 
       // Step 4: Enrich and validate supervisor data
-      const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
+      const supervisorData = await this.enrichUserData(supervisor.user_id, 'supervisor');
       if (!supervisorData) {
         console.warn(
           `[AssignmentService] ✘ Skipping notification publish: ` +
@@ -411,7 +420,7 @@ export class AssignmentService {
    * - API failures → logged, SLA not started
    * - Never throws → assignment flow continues even if SLA fails
    */
-  private async startSlaTracking(event: TicketCreatedEvent, technicianId: number): Promise<void> {
+  private async startSlaTracking(event: TicketCreatedEvent, technicianUserId: number): Promise<void> {
     try {
       console.log(`[AssignmentService] Starting SLA tracking for ticket ${event.ticket_id}...`);
 
@@ -426,11 +435,11 @@ export class AssignmentService {
       }
 
       // Step 2: Enrich and validate technician data
-      const technicianData = await this.enrichUserData(technicianId, 'technician');
+      const technicianData = await this.enrichUserData(technicianUserId, 'technician');
       if (!technicianData) {
         console.error(
           `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
-          `reason: technician data enrichment failed for technician ${technicianId}`
+          `reason: technician data enrichment failed for technician ${technicianUserId}`
         );
         return;
       }
@@ -446,11 +455,11 @@ export class AssignmentService {
       }
 
       // Step 4: Enrich and validate supervisor data
-      const supervisorData = await this.enrichUserData(supervisor.id, 'supervisor');
+      const supervisorData = await this.enrichUserData(supervisor.user_id, 'supervisor');
       if (!supervisorData) {
         console.error(
           `[AssignmentService] ✘ SLA validation failed for ticket ${event.ticket_id} | ` +
-          `reason: supervisor data enrichment failed for supervisor ${supervisor.id}`
+          `reason: supervisor data enrichment failed for supervisor ${supervisor.user_id}`
         );
         return;
       }
@@ -462,7 +471,7 @@ export class AssignmentService {
         priority: ticketDetails.priority || event.priority,
         ticketStatus: ticketDetails.status,
         requesterId: ticketDetails.requester_id || ticketDetails.created_by,
-        assignedTo: String(technicianId),
+        assignedTo: String(technicianUserId),
         technician: technicianData,
         supervisor: supervisorData,
       };

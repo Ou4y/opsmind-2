@@ -13,6 +13,7 @@ import { publishTicketCreated, publishTicketUpdated, publishTicketResolvedNotifi
 import { sendTicketOpenedNotification } from "../utils/notificationClient";
 import { validate } from "../middleware/validate.middleware";
 import { logger } from "../config/logger";
+import { config } from "../config";
 import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from "../utils/ticketEnrichment";
 import { fetchUserDetails } from "../utils/userServiceClient";
 import { fetchSupervisor } from "../utils/workflowServiceClient";
@@ -97,8 +98,9 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
     // Fire-and-forget: notification failure must never break ticket creation
     sendTicketOpenedNotification(ticket);
     
-    // Notify Workflow Service (non-blocking) — provides coordinates and priority for intelligent assignment
-    const workflowUrl = "http://opsmind-workflow:3003/workflow/route-ticket";
+    // Best-effort fallback trigger: RabbitMQ is primary, direct HTTP call is safety net.
+    const workflowBaseUrl = config.workflowService.url.replace(/\/+$/, "");
+    const workflowUrl = `${workflowBaseUrl}/workflow/route-ticket`;
     const workflowPayload = {
       ticketId: ticket.id,
       latitude: ticket.latitude,
@@ -113,15 +115,43 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
     });
     
     try {
+      const workflowHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (config.workflowService.internalApiToken) {
+        workflowHeaders["x-internal-token"] = config.workflowService.internalApiToken;
+      }
+
       const workflowResponse = await fetch(workflowUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: workflowHeaders,
         body: JSON.stringify(workflowPayload),
       });
-      logger.info(`✅ Workflow Service notified successfully`, {
-        ticketId: ticket.id,
-        status: workflowResponse.status,
-      });
+
+      if (workflowResponse.ok) {
+        const workflowResult = await workflowResponse.json().catch(() => null);
+
+        if (workflowResponse.status === 202 || workflowResult?.pending) {
+          logger.warn(`⚠️ Workflow assignment deferred`, {
+            ticketId: ticket.id,
+            status: workflowResponse.status,
+            response: workflowResult,
+          });
+        } else {
+          logger.info(`✅ Workflow Service notified successfully`, {
+            ticketId: ticket.id,
+            status: workflowResponse.status,
+          });
+        }
+      } else {
+        const workflowErrorBody = await workflowResponse.text().catch(() => "");
+        logger.warn(`⚠️ Workflow Service accepted ticket but did not auto-assign immediately`, {
+          ticketId: ticket.id,
+          status: workflowResponse.status,
+          response: workflowErrorBody,
+        });
+      }
     } catch (workflowError: any) {
       logger.error(`❌ Failed to notify Workflow Service`, {
         ticketId: ticket.id,
@@ -130,7 +160,7 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
         code: workflowError.code,
       });
       // Do not rollback ticket creation - ticket remains valid
-      logger.warn(`⚠️ Ticket ${ticket.id} created but location-based assignment failed — manual assignment required via PATCH /tickets/:id`);
+      logger.warn(`⚠️ Ticket ${ticket.id} created but immediate workflow assignment callback failed. Ticket remains OPEN/UNASSIGNED for review.`);
     }
     
     return res.status(201).json(ticket);

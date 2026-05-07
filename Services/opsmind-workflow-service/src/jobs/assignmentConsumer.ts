@@ -1,5 +1,5 @@
 import amqplib, { ChannelModel, Channel, ConsumeMessage } from 'amqplib';
-import { AssignmentService } from '../services/AssignmentService';
+import { AssignmentService, isAssignmentPendingError } from '../services/AssignmentService';
 import { TicketCreatedEvent } from '../interfaces/types';
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://opsmind:opsmind@localhost:5672';
@@ -90,6 +90,14 @@ export async function startAssignmentConsumer(): Promise<void> {
 
           ch.ack(msg);
         } catch (error) {
+          if (isAssignmentPendingError(error)) {
+            console.warn(
+              '[AssignmentConsumer] Ticket remains unassigned: no eligible junior technician is currently available. Message acknowledged for pending review.',
+            );
+            ch.ack(msg);
+            return;
+          }
+
           console.error('[AssignmentConsumer] Error handling message:', error);
           ch.nack(msg, false, false); // discard bad message
         }

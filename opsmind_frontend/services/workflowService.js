@@ -77,11 +77,12 @@ export async function healthCheck() {
 // ===================================
 
 /**
- * Route a ticket to appropriate support group by building and floor
+ * Route a ticket for automatic technician assignment
  * @param {Object} data
  * @param {string} data.ticketId - Ticket UUID (string)
- * @param {string} data.building - Building identifier
- * @param {number} data.floor - Floor number
+ * @param {number} data.latitude - Incident latitude
+ * @param {number} data.longitude - Incident longitude
+ * @param {string} [data.priority] - Ticket priority
  * @returns {Promise<Object>} Routing result
  */
 export async function routeTicket(data) {
@@ -89,8 +90,9 @@ export async function routeTicket(data) {
         method: 'POST',
         body: JSON.stringify({
             ticketId: String(data.ticketId),  // Ensure string
-            building: data.building,
-            floor: data.floor
+            latitude: data.latitude,
+            longitude: data.longitude,
+            priority: data.priority
         })
     });
 }

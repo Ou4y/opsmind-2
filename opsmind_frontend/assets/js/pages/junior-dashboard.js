@@ -22,6 +22,7 @@ const state = {
     workflowLogs: [],
     slaData: {},
     currentUser: null,
+    currentWorkflowTechnicianId: null,
     isLoading: false,
     refreshInterval: null,
     locationWatchId: null
@@ -122,39 +123,47 @@ async function loadDashboardData() {
 }
 
 /**
- * Auto-assign any unassigned OPEN tickets to the given technician.
- * Runs silently — failures are logged but do not block the dashboard load.
- * @param {string} technicianId
+ * Resolve the workflow user_id for the logged-in technician.
+ * Auth service identity is UUID-based, while workflow assignment uses numeric user_id.
  */
-async function autoAssignOpenTickets(technicianId) {
-    try {
-        const rawData = await TicketService.getTickets({ status: 'OPEN', limit: 500, offset: 0 });
-        const allOpen = Array.isArray(rawData)          ? rawData
-                      : Array.isArray(rawData?.tickets)  ? rawData.tickets
-                      : Array.isArray(rawData?.data)     ? rawData.data
-                      : Array.isArray(rawData?.items)    ? rawData.items
-                      : [];
-
-        const unassigned = allOpen.filter(isUnassigned);
-        if (unassigned.length === 0) {
-            console.log('[Junior Dashboard] No unassigned OPEN tickets to auto-assign');
-            return;
-        }
-
-        console.log(`[Junior Dashboard] Auto-assigning ${unassigned.length} unassigned OPEN ticket(s) to technician ${technicianId}`);
-
-        await Promise.all(unassigned.map(async (ticket) => {
-            try {
-                await TicketService.updateTicket(ticket.id, { assigned_to: String(technicianId) });
-                console.log(`[Junior Dashboard] Auto-assigned ticket ${ticket.id}`);
-            } catch (err) {
-                console.warn(`[Junior Dashboard] Failed to auto-assign ticket ${ticket.id}:`, err.message);
-            }
-        }));
-    } catch (err) {
-        // Non-blocking — dashboard load continues even if this step fails
-        console.warn('[Junior Dashboard] Auto-assignment step failed (non-blocking):', err.message);
+async function resolveWorkflowTechnicianId() {
+    if (state.currentWorkflowTechnicianId) {
+        return state.currentWorkflowTechnicianId;
     }
+
+    const existingNumericId =
+        state.currentUser?.workflowUserId ||
+        state.currentUser?.workflow_user_id ||
+        state.currentUser?.user_id ||
+        state.currentUser?.technicianId;
+
+    if (existingNumericId && !Number.isNaN(Number(existingNumericId))) {
+        state.currentWorkflowTechnicianId = String(existingNumericId);
+        return state.currentWorkflowTechnicianId;
+    }
+
+    const email = state.currentUser?.email;
+    const levelCandidate = String(
+        state.currentUser?.technicianLevel ||
+        state.currentUser?.level ||
+        AuthService.getTechnicianLevel() ||
+        'JUNIOR'
+    ).toUpperCase();
+
+    const validLevels = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'];
+    const level = validLevels.includes(levelCandidate) ? levelCandidate : 'JUNIOR';
+
+    if (!email) {
+        return null;
+    }
+
+    const workflowUserId = await WorkflowService.resolveWorkflowUserId(email, level);
+    if (!workflowUserId) {
+        return null;
+    }
+
+    state.currentWorkflowTechnicianId = String(workflowUserId);
+    return state.currentWorkflowTechnicianId;
 }
 
 /**
@@ -175,13 +184,8 @@ async function loadMyTickets() {
         console.log('[Junior Dashboard] Loading My Tickets');
         console.log('[Junior Dashboard] Current User object:', state.currentUser);
 
-        // Resolve technician ID — support all common field names stored by the auth service
-        const currentTechnicianId = (
-            state.currentUser?.id ||
-            state.currentUser?.userId ||
-            state.currentUser?.user_id ||
-            state.currentUser?.technicianId
-        );
+        // Resolve workflow technician identity used by assignment persistence.
+        const currentTechnicianId = await resolveWorkflowTechnicianId();
 
         console.log('[Junior Dashboard] Resolved currentTechnicianId:', currentTechnicianId);
 
@@ -191,9 +195,6 @@ async function loadMyTickets() {
             if (emptyEl)   emptyEl.style.display   = 'block';
             return;
         }
-
-        // Auto-assign any unassigned OPEN tickets to this technician (demo: Workflow Service may not be running)
-        await autoAssignOpenTickets(currentTechnicianId);
 
         // Use the dedicated assigned-tickets endpoint (with client-side fallback inside the service)
         const tickets = await TicketService.getAssignedTickets(String(currentTechnicianId));
@@ -424,13 +425,6 @@ function getAssignedTechnicianId(ticket) {
     );
 }
 
-/** Returns true when no technician has been assigned to the ticket. */
-function isUnassigned(ticket) {
-    const assigned = ticket.assigned_to || ticket.assignedTo || ticket.assignedTechnicianId
-        || ticket.technicianId || ticket.assignee_id || ticket.assigned_user_id;
-    return !assigned || String(assigned).trim() === '';
-}
-
 /**
  * Update statistics cards.
  *
@@ -443,13 +437,7 @@ function isUnassigned(ticket) {
  * state.myTickets is already the assignedTickets set (filtered at fetch time).
  */
 function updateStatistics() {
-    const currentTechnicianId = String(
-        state.currentUser?.id ||
-        state.currentUser?.userId ||
-        state.currentUser?.user_id ||
-        state.currentUser?.technicianId ||
-        ''
-    );
+    const currentTechnicianId = String(state.currentWorkflowTechnicianId || '');
 
     // Shared dashboard rule
     const assignedTickets   = state.myTickets.filter(t =>
