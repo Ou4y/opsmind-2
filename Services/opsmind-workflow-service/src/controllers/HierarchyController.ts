@@ -132,6 +132,11 @@ export class HierarchyController {
     try {
       const { childUserId, parentUserId, relationshipType } = req.body;
 
+      console.log(
+        `[HierarchyController] Create relationship request | childUserId=${childUserId} | ` +
+          `parentUserId=${parentUserId} | relationshipType=${relationshipType}`,
+      );
+
       // Validate users exist
       const child = await this.techRepo.getByUserId(childUserId);
       const parent = await this.techRepo.getByUserId(parentUserId);
@@ -186,6 +191,11 @@ export class HierarchyController {
 
       // Create the relationship
       await this.relationshipRepo.create(childUserId, parentUserId, relationshipType);
+
+      console.log(
+        `[HierarchyController] Relationship persisted | childUserId=${childUserId} | ` +
+          `parentUserId=${parentUserId} | relationshipType=${relationshipType}`,
+      );
 
       res.status(201).json({
         success: true,

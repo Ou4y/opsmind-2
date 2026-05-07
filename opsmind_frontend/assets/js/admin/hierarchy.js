@@ -927,8 +927,8 @@ function updateManagerOptions() {
         seniorGroup.label = 'Seniors';
         state.seniors.forEach(senior => {
             const option = document.createElement('option');
-            option.value = senior.userId || senior.id;
-            option.textContent = senior.name || senior.username || `User #${senior.userId || senior.id}`;
+            option.value = senior.user_id || senior.userId || senior.id;
+            option.textContent = senior.name || senior.username || `User #${senior.user_id || senior.userId || senior.id}`;
             option.dataset.role = 'SENIOR';
             seniorGroup.appendChild(option);
         });
@@ -941,8 +941,8 @@ function updateManagerOptions() {
         supervisorGroup.label = 'Supervisors';
         state.supervisors.forEach(supervisor => {
             const option = document.createElement('option');
-            option.value = supervisor.userId || supervisor.id;
-            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
+            option.value = supervisor.user_id || supervisor.userId || supervisor.id;
+            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.user_id || supervisor.userId || supervisor.id}`;
             option.dataset.role = 'SUPERVISOR';
             supervisorGroup.appendChild(option);
         });
@@ -955,8 +955,8 @@ function updateManagerOptions() {
         adminGroup.label = 'Admins';
         state.admins.forEach(admin => {
             const option = document.createElement('option');
-            option.value = admin.userId || admin.id;
-            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
+            option.value = admin.user_id || admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.user_id || admin.userId || admin.id}`;
             option.dataset.role = 'ADMIN';
             adminGroup.appendChild(option);
         });
@@ -988,6 +988,27 @@ async function handleCreateRelationship() {
     // Validation: prevent self-assignment
     if (subordinateId === managerId) {
         UI.showToast('A technician cannot report to themselves', 'error');
+        return;
+    }
+
+    // Validation: avoid duplicate relationship submissions.
+    const existingExact = state.relationships.find(
+        rel => rel.subordinateId === subordinateId && rel.managerId === managerId
+    );
+    if (existingExact) {
+        UI.showToast('This reporting relationship already exists', 'warning');
+        return;
+    }
+
+    const existingManager = state.relationships.find(
+        rel => rel.subordinateId === subordinateId
+    );
+    if (existingManager) {
+        UI.showToast(
+            `${existingManager.subordinateName} already reports to ${existingManager.managerName}. ` +
+            `Use Edit Relationship to reassign.`,
+            'warning',
+        );
         return;
     }
 
@@ -1073,9 +1094,9 @@ window.editRelationship = function(relationshipId) {
         // Can reassign to different senior
         state.seniors.forEach(senior => {
             const option = document.createElement('option');
-            option.value = senior.userId || senior.id;
-            option.textContent = senior.name || senior.username || `User #${senior.userId || senior.id}`;
-            if ((senior.userId || senior.id) === relationship.managerId) {
+            option.value = senior.user_id || senior.userId || senior.id;
+            option.textContent = senior.name || senior.username || `User #${senior.user_id || senior.userId || senior.id}`;
+            if ((senior.user_id || senior.userId || senior.id) === relationship.managerId) {
                 option.selected = true;
             }
             managerSelect.appendChild(option);
@@ -1084,9 +1105,9 @@ window.editRelationship = function(relationshipId) {
         // Can reassign to different supervisor
         state.supervisors.forEach(supervisor => {
             const option = document.createElement('option');
-            option.value = supervisor.userId || supervisor.id;
-            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.userId || supervisor.id}`;
-            if ((supervisor.userId || supervisor.id) === relationship.managerId) {
+            option.value = supervisor.user_id || supervisor.userId || supervisor.id;
+            option.textContent = supervisor.name || supervisor.username || `User #${supervisor.user_id || supervisor.userId || supervisor.id}`;
+            if ((supervisor.user_id || supervisor.userId || supervisor.id) === relationship.managerId) {
                 option.selected = true;
             }
             managerSelect.appendChild(option);
@@ -1095,9 +1116,9 @@ window.editRelationship = function(relationshipId) {
         // Can reassign to different admin
         state.admins.forEach(admin => {
             const option = document.createElement('option');
-            option.value = admin.userId || admin.id;
-            option.textContent = admin.name || admin.username || `User #${admin.userId || admin.id}`;
-            if ((admin.userId || admin.id) === relationship.managerId) {
+            option.value = admin.user_id || admin.userId || admin.id;
+            option.textContent = admin.name || admin.username || `User #${admin.user_id || admin.userId || admin.id}`;
+            if ((admin.user_id || admin.userId || admin.id) === relationship.managerId) {
                 option.selected = true;
             }
             managerSelect.appendChild(option);

@@ -1,6 +1,7 @@
 import Joi from "joi";
 import {
   claimTicketSchema,
+  createRelationshipSchema,
   routeTicketSchema,
   syncTechnicianFromAuthSchema,
   validateBody,
@@ -127,6 +128,37 @@ describe("routeTicketSchema", () => {
     const result = routeTicketSchema.validate({
       ticketId: "T-102",
       latitude: 120,
+    });
+
+    expect(result.error).toBeDefined();
+  });
+});
+
+describe("createRelationshipSchema", () => {
+  it("accepts valid hierarchy relationship payload", () => {
+    const result = createRelationshipSchema.validate({
+      childUserId: 100010,
+      parentUserId: 100011,
+      relationshipType: "JUNIOR_TO_SENIOR",
+    });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects payload with invalid relationship type", () => {
+    const result = createRelationshipSchema.validate({
+      childUserId: 100011,
+      parentUserId: 100012,
+      relationshipType: "JUNIOR_TO_SUPERVISOR",
+    });
+
+    expect(result.error).toBeDefined();
+  });
+
+  it("rejects payload missing child or parent user id", () => {
+    const result = createRelationshipSchema.validate({
+      parentUserId: 100012,
+      relationshipType: "SENIOR_TO_SUPERVISOR",
     });
 
     expect(result.error).toBeDefined();
