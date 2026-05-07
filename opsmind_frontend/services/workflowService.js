@@ -188,9 +188,18 @@ export async function getReassignmentTargets(ticketId) {
  */
 export async function escalateTicket(ticketId, data) {
     const body = {
-        reason: data.reason,
-        escalated_by: data.escalatedBy
+        reason: data.reason
     };
+
+    const performerCandidate = data.escalatedBy ?? data.escalated_by ?? data.performedBy;
+    const performerId = Number(performerCandidate);
+    if (Number.isFinite(performerId)) {
+        body.escalated_by = performerId;
+    }
+
+    if (data.userRole) {
+        body.userRole = String(data.userRole).toUpperCase();
+    }
     
     if (data.triggerType) {
         body.triggerType = data.triggerType;

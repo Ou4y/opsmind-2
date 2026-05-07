@@ -66,6 +66,8 @@ export function toSupportLevel(role: string): string {
     JUNIOR: 'L1',
     SENIOR: 'L2',
     SUPERVISOR: 'L3',
+    ADMIN: 'L4',
+    HEAD_OF_IT: 'L4',
   };
   return map[role] || 'L1';
 }
@@ -169,23 +171,47 @@ export async function startSlaTracking(
  */
 export async function getTicketsByAssignedUsers(userIds: number[]): Promise<any[]> {
   try {
-    if (userIds.length === 0) return [];
-    
-    // Query tickets for each user (ticket service may support filtering)
-    const ticketPromises = userIds.map(async (userId) => {
-      try {
-        const { data } = await ticketServiceClient.get('/tickets', {
-          params: { assigned_to: String(userId) },
-        });
-        return Array.isArray(data) ? data : data.tickets || [];
-      } catch (err) {
-        console.error(`[externalServices] Failed to fetch tickets for user ${userId}:`, err);
-        return [];
-      }
+    const normalizedUserIds = Array.from(
+      new Set(
+        userIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id)),
+      ),
+    );
+
+    if (normalizedUserIds.length === 0) return [];
+
+    const assignedUserSet = new Set(normalizedUserIds.map((id) => String(id)));
+
+    // Request once, then filter locally by assigned_to. This avoids duplicate rows when
+    // downstream services ignore assigned_to query params.
+    const { data } = await ticketServiceClient.get('/tickets', {
+      params: { assigned_to: normalizedUserIds.join(',') },
     });
 
-    const ticketsArrays = await Promise.all(ticketPromises);
-    return ticketsArrays.flat();
+    const rawTickets = Array.isArray(data) ? data : data?.tickets || [];
+    const filteredTickets = rawTickets.filter((ticket: any) => {
+      if (!ticket || ticket.assigned_to == null) return false;
+      return assignedUserSet.has(String(ticket.assigned_to));
+    });
+
+    const dedupedById = new Map<string, any>();
+    for (const ticket of filteredTickets) {
+      const key = String(ticket.id);
+      const existing = dedupedById.get(key);
+      if (!existing) {
+        dedupedById.set(key, ticket);
+        continue;
+      }
+
+      const existingUpdated = new Date(existing.updated_at || existing.created_at || 0).getTime();
+      const candidateUpdated = new Date(ticket.updated_at || ticket.created_at || 0).getTime();
+      if (candidateUpdated >= existingUpdated) {
+        dedupedById.set(key, ticket);
+      }
+    }
+
+    return Array.from(dedupedById.values());
   } catch (error) {
     console.error('[externalServices] Error fetching tickets by assigned users:', error);
     return [];

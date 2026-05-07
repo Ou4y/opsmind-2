@@ -154,8 +154,20 @@ export class DashboardService {
     const juniorUserIds = await this.relationshipRepo.getJuniorsForSenior(seniorUserId);
     const juniors = await this.techRepo.getByUserIds(juniorUserIds);
 
-    // 3. Get all tickets assigned to these juniors
-    const tickets = await getTicketsByAssignedUsers(juniorUserIds);
+    // Include both direct senior ownership and junior team ownership.
+    const trackedUserIds = Array.from(new Set([seniorUserId, ...juniorUserIds]));
+    const trackedUserIdSet = new Set(trackedUserIds.map((id) => String(id)));
+    const juniorUserIdSet = new Set(juniorUserIds.map((id) => String(id)));
+
+    console.log(
+      `[DashboardService] Senior dashboard ticket query | senior_user_id=${seniorUserId} | tracked_user_ids=${trackedUserIds.join(',')}`,
+    );
+
+    // 3. Get all tickets assigned to senior + their juniors
+    const tickets = (await getTicketsByAssignedUsers(trackedUserIds)).filter((ticket) => {
+      if (ticket?.assigned_to == null) return false;
+      return trackedUserIdSet.has(String(ticket.assigned_to));
+    });
 
     // 4. Build junior summaries with ticket counts
     const juniorSummaries: JuniorSummary[] = juniors.map((junior) => {
@@ -181,11 +193,16 @@ export class DashboardService {
       const assignedJunior = juniors.find(
         (j) => String(j.user_id) === String(ticket.assigned_to),
       );
+      const assignedToUserId = ticket.assigned_to != null ? Number(ticket.assigned_to) : null;
+      const assignedToName =
+        assignedToUserId === senior.user_id
+          ? senior.name
+          : assignedJunior?.name || null;
 
       const summary: TicketSummary = {
         ticketId: String(ticket.id),
-        assignedTo: ticket.assigned_to ? Number(ticket.assigned_to) : null,
-        assignedToName: assignedJunior?.name || null,
+        assignedTo: assignedToUserId,
+        assignedToName,
         status: ticket.status || 'UNKNOWN',
         priority: ticket.priority || null,
         createdAt: ticket.created_at ? new Date(ticket.created_at) : new Date(),
@@ -207,7 +224,12 @@ export class DashboardService {
       totalTickets: tickets.length,
       byStatus: this.groupBy(tickets, 'status'),
       byPriority: this.groupBy(tickets, 'priority'),
-      byJunior: this.groupByAssigned(tickets),
+      byJunior: this.groupByAssigned(
+        tickets.filter((ticket) => {
+          if (ticket?.assigned_to == null) return false;
+          return juniorUserIdSet.has(String(ticket.assigned_to));
+        }),
+      ),
     };
 
     return {
@@ -253,14 +275,26 @@ export class DashboardService {
 
     const juniors = await this.techRepo.getByUserIds(allJuniorUserIds);
 
-    // 4. Get all tickets for all juniors
-    const tickets = await getTicketsByAssignedUsers(allJuniorUserIds);
+    // 4. Include direct supervisor ownership + senior ownership + junior ownership.
+    const trackedUserIds = Array.from(new Set([supervisorUserId, ...seniorUserIds, ...allJuniorUserIds]));
+    const trackedUserIdSet = new Set(trackedUserIds.map((id) => String(id)));
+    const juniorUserIdSet = new Set(allJuniorUserIds.map((id) => String(id)));
+
+    console.log(
+      `[DashboardService] Supervisor dashboard ticket query | supervisor_user_id=${supervisorUserId} | tracked_user_ids=${trackedUserIds.join(',')}`,
+    );
+
+    const tickets = (await getTicketsByAssignedUsers(trackedUserIds)).filter((ticket) => {
+      if (ticket?.assigned_to == null) return false;
+      return trackedUserIdSet.has(String(ticket.assigned_to));
+    });
 
     // 5. Build senior team members with ticket counts
     const seniorTeamMembers: SeniorTeamMember[] = seniors.map((senior) => {
       const seniorJuniorIds = juniorsBySenior[senior.user_id] || [];
+      const seniorScopeIds = new Set([String(senior.user_id), ...seniorJuniorIds.map((id) => String(id))]);
       const seniorTickets = tickets.filter((t) =>
-        seniorJuniorIds.includes(Number(t.assigned_to)),
+        t?.assigned_to != null && seniorScopeIds.has(String(t.assigned_to)),
       );
 
       return {
@@ -308,11 +342,19 @@ export class DashboardService {
       const assignedJunior = juniors.find(
         (j) => String(j.user_id) === String(ticket.assigned_to),
       );
+      const assignedSenior = seniors.find(
+        (s) => String(s.user_id) === String(ticket.assigned_to),
+      );
+      const assignedToUserId = ticket.assigned_to != null ? Number(ticket.assigned_to) : null;
+      const assignedToName =
+        assignedToUserId === supervisor.user_id
+          ? supervisor.name
+          : assignedSenior?.name || assignedJunior?.name || null;
 
       const summary: TicketSummary = {
         ticketId: String(ticket.id),
-        assignedTo: ticket.assigned_to ? Number(ticket.assigned_to) : null,
-        assignedToName: assignedJunior?.name || null,
+        assignedTo: assignedToUserId,
+        assignedToName,
         status: ticket.status || 'UNKNOWN',
         priority: ticket.priority || null,
         createdAt: ticket.created_at ? new Date(ticket.created_at) : new Date(),
@@ -334,7 +376,12 @@ export class DashboardService {
       totalTickets: tickets.length,
       byStatus: this.groupBy(tickets, 'status'),
       byPriority: this.groupBy(tickets, 'priority'),
-      byJunior: this.groupByAssigned(tickets),
+      byJunior: this.groupByAssigned(
+        tickets.filter((ticket) => {
+          if (ticket?.assigned_to == null) return false;
+          return juniorUserIdSet.has(String(ticket.assigned_to));
+        }),
+      ),
     };
 
     // 9. Calculate team metrics

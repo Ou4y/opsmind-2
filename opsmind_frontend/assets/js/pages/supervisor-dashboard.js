@@ -219,7 +219,7 @@ function renderSeniorsTable() {
         const row = document.createElement('tr');
         
         const juniorCount = senior.juniorCount || 0;
-        const ticketCount = senior.assignedTicketsCount || 0;
+        const ticketCount = senior.assignedTickets ?? senior.assignedTicketsCount ?? 0;
         const statusClass = ticketCount > 10 ? 'danger' : ticketCount > 5 ? 'warning' : 'success';
         const statusIcon = ticketCount > 10 ? 'exclamation-triangle' : ticketCount > 5 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 10 ? 'Heavy Load' : ticketCount > 5 ? 'Moderate Load' : 'Light Load';
@@ -284,7 +284,7 @@ function renderJuniorsTable() {
     juniors.forEach(junior => {
         const row = document.createElement('tr');
         
-        const ticketCount = junior.assignedTicketsCount || 0;
+        const ticketCount = junior.assignedTickets ?? junior.assignedTicketsCount ?? 0;
         const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
         const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
@@ -350,7 +350,8 @@ function renderTicketsTable() {
         
         const ticketId = ticket.ticketId || ticket.id || 'N/A';
         const title = ticket.title || 'No title';
-        const assignedJunior = ticket.assignedTo || ticket.assigned_to_name || 'Unassigned';
+        const assignedUserLabel = ticket.assignedToName || ticket.assigned_to_name || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+        const avatarInitial = String(assignedUserLabel || 'U').charAt(0).toUpperCase();
         const seniorOwner = ticket.seniorName || 'N/A';
         const status = ticket.status || 'UNKNOWN';
         const priority = ticket.priority || 'UNKNOWN';
@@ -393,9 +394,9 @@ function renderTicketsTable() {
             <td>
                 <div class="d-flex align-items-center">
                     <div class="avatar-circle bg-secondary text-white me-2" style="width: 24px; height: 24px; font-size: 0.7rem;">
-                        ${UI.escapeHTML((assignedJunior || 'U')[0].toUpperCase())}
+                        ${UI.escapeHTML(avatarInitial)}
                     </div>
-                    <small>${UI.escapeHTML(assignedJunior)}</small>
+                    <small>${UI.escapeHTML(String(assignedUserLabel))}</small>
                 </div>
             </td>
             <td><small  class="text-muted">${UI.escapeHTML(seniorOwner)}</small></td>

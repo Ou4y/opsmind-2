@@ -45,11 +45,18 @@ export const reassignTicketSchema = Joi.object({
 }).or('to_technician_id', 'toMemberId').unknown(true);
 
 export const escalateTicketSchema = Joi.object({
-  reason: Joi.string().optional(),
+  reason: Joi.string()
+    .trim()
+    .min(1)
+    .when('triggerType', {
+      is: Joi.valid('SLA', 'CRITICAL', 'REOPEN_COUNT'),
+      then: Joi.optional(),
+      otherwise: Joi.required(),
+    }),
   escalated_by: Joi.number().integer().optional(),
   triggerType: Joi.string().valid('SLA', 'MANUAL', 'CRITICAL', 'REOPEN_COUNT').optional(),
   performedBy: Joi.number().integer().optional(),
-  userRole: Joi.string().optional(),
+  userRole: Joi.string().valid('JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN', 'HEAD_OF_IT', 'TECHNICIAN').optional(),
 }).unknown(true);
 
 export const updateTechnicianLocationSchema = Joi.object({

@@ -10,8 +10,8 @@ import { TicketRoutingStateRepository } from '../repositories/TicketRoutingState
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
-import { optionalAuth, requireAuth } from '../middlewares/auth';
-import { routeTicketSchema, validateBody, updateTechnicianLocationSchema } from '../middlewares/validation';
+import { optionalAuth, requireAuth, requireAuthOrInternal } from '../middlewares/auth';
+import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, escalateTicketSchema } from '../middlewares/validation';
 import { getUserDetails } from '../config/externalServices';
 
 const router = Router();
@@ -160,7 +160,7 @@ router.get('/reassign/:ticketId/targets', reassignCtrl.getReassignmentTargets);
 // ══════════════════════════════════════
 //  Escalation
 // ══════════════════════════════════════
-router.post('/escalate/:ticketId', escalationCtrl.escalateTicket);
+router.post('/escalate/:ticketId', requireAuthOrInternal, validateBody(escalateTicketSchema), escalationCtrl.escalateTicket);
 router.get('/escalate/:ticketId/history', escalationCtrl.getEscalationHistory);
 router.get('/group/:groupId/escalation-path', escalationCtrl.getEscalationPath);
 

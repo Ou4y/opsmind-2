@@ -214,7 +214,7 @@ function renderJuniorsList() {
         const col = document.createElement('div');
         col.className = 'col-md-6 col-lg-4';
         
-        const ticketCount = junior.assignedTicketsCount || 0;
+        const ticketCount = junior.assignedTickets ?? junior.assignedTicketsCount ?? 0;
         const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
         const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
@@ -280,7 +280,8 @@ function renderTicketsTable() {
     tickets.forEach(ticket => {
         const row = document.createElement('tr');
         
-        const assignedTo = ticket.assignedTo || ticket.assigned_to_name || 'Unassigned';
+        const assignedToLabel = ticket.assignedToName || ticket.assigned_to_name || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+        const avatarInitial = String(assignedToLabel || 'U').charAt(0).toUpperCase();
         const location = ticket.location?.latitude && ticket.location?.longitude
             ? `${ticket.location.latitude.toFixed(4)}, ${ticket.location.longitude.toFixed(4)}`
             : 'N/A';
@@ -315,9 +316,9 @@ function renderTicketsTable() {
             <td>
                 <div class="d-flex align-items-center">
                     <div class="avatar-circle bg-secondary text-white me-2" style="width: 28px; height: 28px; font-size: 0.75rem;">
-                        ${UI.escapeHTML((assignedTo || 'U')[0].toUpperCase())}
+                        ${UI.escapeHTML(avatarInitial)}
                     </div>
-                    <span>${UI.escapeHTML(assignedTo)}</span>
+                    <span>${UI.escapeHTML(String(assignedToLabel))}</span>
                 </div>
             </td>
             <td>

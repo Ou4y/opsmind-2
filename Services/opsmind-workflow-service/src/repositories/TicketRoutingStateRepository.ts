@@ -186,4 +186,55 @@ export class TicketRoutingStateRepository {
     sql += ` ORDER BY updated_at DESC`;
     return query<RoutingStateRowData[]>(sql, params);
   }
+
+  /**
+   * Sync escalation ownership in routing state if a routing row exists for the ticket.
+   * Returns rowExists=false when the ticket is not tracked in ticket_routing_state.
+   */
+  async syncEscalationAssignment(
+    ticketId: string,
+    escalatedToUserId: number,
+  ): Promise<{ rowExists: boolean; assignedMemberId: number | null }> {
+    const existing = await this.getByTicketId(ticketId);
+    if (!existing) {
+      return { rowExists: false, assignedMemberId: null };
+    }
+
+    const memberRows = await query<RowDataPacket[]>(
+      `
+        SELECT id
+        FROM group_members
+        WHERE user_id = ? AND status = 'ACTIVE'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+      `,
+      [escalatedToUserId],
+    );
+
+    const assignedMemberId = memberRows[0]?.id ? Number(memberRows[0].id) : null;
+    if (!assignedMemberId) {
+      throw new Error(
+        `Routing state exists for ticket ${ticketId}, but no active group_members row for user ${escalatedToUserId}`,
+      );
+    }
+
+    const result = await execute(
+      `
+        UPDATE ticket_routing_state
+        SET assigned_member_id = ?,
+            status = 'ESCALATED',
+            escalation_count = escalation_count + 1,
+            last_escalated_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE ticket_id = ?
+      `,
+      [assignedMemberId, ticketId],
+    );
+
+    if (result.affectedRows === 0) {
+      throw new Error(`Failed to sync routing escalation assignment for ticket ${ticketId}`);
+    }
+
+    return { rowExists: true, assignedMemberId };
+  }
 }

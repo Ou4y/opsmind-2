@@ -523,11 +523,29 @@ window.escalateTicket = async function(ticketId) {
     UI.showToast('Escalating ticket...', 'info');
     
     try {
+        const performerIdCandidate = await resolveWorkflowTechnicianId();
+        const performerId = Number(performerIdCandidate);
+        const userRole = String(
+            state.currentUser?.technicianLevel ||
+            state.currentUser?.level ||
+            AuthService.getTechnicianLevel() ||
+            'JUNIOR'
+        ).toUpperCase();
+
         await WorkflowService.escalateTicket(ticketId, {
-            reason: reason,
-            escalated_by: state.currentUser.id
+            reason: reason.trim(),
+            escalatedBy: Number.isFinite(performerId) ? performerId : undefined,
+            userRole
         });
-        UI.showToast('Ticket escalated to senior successfully!', 'success');
+
+        const escalationTargets = {
+            JUNIOR: 'senior',
+            SENIOR: 'supervisor',
+            SUPERVISOR: 'admin'
+        };
+        const targetLabel = escalationTargets[userRole] || 'next-level support';
+
+        UI.showToast(`Ticket escalated to ${targetLabel} successfully!`, 'success');
         await loadDashboardData();
         
         // Return to my tickets tab

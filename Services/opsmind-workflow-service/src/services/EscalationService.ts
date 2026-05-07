@@ -1,7 +1,9 @@
-import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
-import { SupportGroupRepository } from '../repositories/SupportGroupRepository';
+import { ReportingRelationshipRepository } from '../repositories/ReportingRelationshipRepository';
+import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { WorkflowLogRepository } from '../repositories/WorkflowLogRepository';
 import { EscalationRuleRepository } from '../repositories/EscalationRuleRepository';
+import { TicketRepository } from '../repositories/TicketRepository';
+import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import {
   EscalateTicketResponse,
   EscalationTrigger,
@@ -9,142 +11,207 @@ import {
   WorkflowLogRow,
   EscalationRuleRow,
 } from '../interfaces/types';
-import { ticketServiceClient, toSupportLevel, escalateTicketInService } from '../config/externalServices';
-import { query } from '../config/database';
-import { RowDataPacket } from 'mysql2/promise';
+import { assignTicket, escalateTicketInService, getTicket, toSupportLevel } from '../config/externalServices';
+
+type HierarchyRelationshipType = 'JUNIOR_TO_SENIOR' | 'SENIOR_TO_SUPERVISOR' | 'SUPERVISOR_TO_ADMIN';
+type EscalationRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
+
+interface EscalationTarget {
+  sourceUserId: number;
+  targetRole: EscalationRole;
+  relationshipType: HierarchyRelationshipType;
+}
 
 /**
  * Escalation Service (TypeScript)
  *
- * Two-tier escalation chain:
- *   Tier 1: Floor Room → Building Senior   (SLA / MANUAL / CRITICAL / REOPEN_COUNT)
- *   Tier 2: Building Senior → UNIVERSITY-SUPERVISOR
+ * Hierarchy-based escalation chain:
+ *   JUNIOR -> SENIOR
+ *   SENIOR -> SUPERVISOR
+ *   SUPERVISOR -> ADMIN
  *
  * On each escalation the service:
- *  1. Finds the escalation rule for the current group
- *  2. Selects the least-loaded SENIOR (or SUPERVISOR) in the target group
- *  3. PATCHes the ticket service with assigned_to + assigned_to_level
- *  4. Updates routing state
- *  5. Logs the ESCALATED action
+ *  1. Validates ticket status and current assignee
+ *  2. Resolves target manager via reporting_relationships
+ *  3. Records escalation in ticket-service and reassigns assignee/level
+ *  4. Logs the ESCALATED action in workflow_logs
  */
 export class EscalationService {
-  private routingRepo = new TicketRoutingStateRepository();
-  private groupRepo = new SupportGroupRepository();
+  private relationshipRepo = new ReportingRelationshipRepository();
+  private technicianRepo = new TechnicianRepository();
   private logRepo = new WorkflowLogRepository();
   private ruleRepo = new EscalationRuleRepository();
+  private ticketRepo = new TicketRepository();
+  private routingRepo = new TicketRoutingStateRepository();
 
   async escalateTicket(
     ticketId: string,
     triggerType: EscalationTrigger,
     performedBy: number | null,
+    userRole?: UserRole,
+    reason?: string,
   ): Promise<EscalateTicketResponse> {
-    const routingState = await this.routingRepo.getByTicketId(ticketId);
-    if (!routingState) throw new Error(`Ticket ${ticketId} not found`);
-
-    const currentGroup = await this.groupRepo.getGroupById(routingState.current_group_id);
-    if (!currentGroup) throw new Error('Current group not found');
-
-    const rule = await this.ruleRepo.getRuleByTrigger(currentGroup.id, triggerType);
-    if (!rule) {
-      throw new Error(`No escalation rule for group ${currentGroup.id} with trigger ${triggerType}`);
+    const ticket = await getTicket(ticketId);
+    if (!ticket) {
+      throw new Error(`Ticket ${ticketId} not found`);
     }
 
-    const targetGroup = await this.groupRepo.getGroupById(rule.target_group_id);
-    if (!targetGroup) throw new Error('Target escalation group not found');
+    const ticketStatus = String(ticket.status || '').toUpperCase();
+    if (ticketStatus === 'RESOLVED' || ticketStatus === 'CLOSED') {
+      throw new Error(`Cannot escalate ticket ${ticketId} because it is ${ticketStatus}`);
+    }
 
-    // Determine target role by tier
-    // Tier 1 (room→senior) assigns to a SENIOR; Tier 2 (senior→supervisor) to a SUPERVISOR
-    const targetRole = rule.priority >= 2 ? 'SUPERVISOR' : 'SENIOR';
+    const assignedToUserId = this.toNumericUserId(ticket.assigned_to);
+    if (assignedToUserId === null) {
+      throw new Error('Cannot escalate an unassigned ticket');
+    }
 
-    // Determine the current support level (from) based on what group type the ticket is in
-    const currentLevel = currentGroup.parent_group_id === null
-      ? toSupportLevel('SUPERVISOR')   // top-level group
-      : currentGroup.floor === 0
-        ? toSupportLevel('SENIOR')     // building senior group
-        : toSupportLevel('JUNIOR');    // floor room group
-    const targetLevel = toSupportLevel(targetRole);
+    const assignedTechnician = await this.technicianRepo.getByUserId(assignedToUserId);
+    const assignedRole = this.resolveAssignedRole(assignedTechnician?.level, ticket.assigned_to_level ?? null);
+    if (!assignedRole) {
+      throw new Error(`Unable to resolve assigned technician level for ticket ${ticketId}`);
+    }
 
-    // Select the least-loaded member of the target role in the target group
-    const techSql = `
-      SELECT gm.id AS member_id, gm.user_id
-      FROM group_members gm
-      LEFT JOIN (
-        SELECT assigned_member_id, COUNT(*) AS ticket_count
-        FROM ticket_routing_state
-        WHERE status IN ('ASSIGNED', 'ESCALATED')
-        GROUP BY assigned_member_id
-      ) tc ON gm.id = tc.assigned_member_id
-      WHERE gm.group_id = ? AND gm.role = ? AND gm.status = 'ACTIVE'
-      ORDER BY COALESCE(tc.ticket_count, 0) ASC
-      LIMIT 1
-    `;
-    const techs = await query<RowDataPacket[]>(techSql, [targetGroup.id, targetRole]);
+    let target: EscalationTarget;
+    if (triggerType === 'MANUAL') {
+      if (performedBy === null) {
+        throw new Error('Manual escalation requires performer identity');
+      }
 
-    // Escalate routing state to target group
-    await this.routingRepo.escalateTicket(ticketId, targetGroup.id);
+      const normalizedRole = this.normalizeRole(userRole);
+      if (!normalizedRole) {
+        throw new Error(`Invalid manual escalation role: ${String(userRole ?? 'UNKNOWN')}`);
+      }
 
-    // If a target member was found, assign them and update ticket service
-    if (techs.length) {
-      const assignee = techs[0];
+      target = await this.resolveManualTarget(normalizedRole, performedBy, assignedToUserId);
+    } else {
+      target = this.resolveAutomaticTarget(assignedToUserId, assignedRole);
+    }
 
-      // Update routing state with the assigned member
-      const updateSql = `
-        UPDATE ticket_routing_state
-        SET assigned_member_id = ?, status = 'ESCALATED'
-        WHERE ticket_id = ?
-      `;
-      const { execute } = await import('../config/database');
-      await execute(updateSql, [assignee.member_id, ticketId]);
+    const relationship = await this.relationshipRepo.getManagerByRelationshipType(
+      target.sourceUserId,
+      target.relationshipType,
+    );
 
-      // 1. POST /tickets/:id/escalate — record the escalation in ticket service
-      try {
-        await escalateTicketInService(
-          ticketId,
-          currentLevel,
-          targetLevel,
-          `Escalated (${triggerType}) from ${currentGroup.name} to ${targetGroup.name}`,
+    if (!relationship) {
+      throw new Error(
+        `No active ${target.relationshipType} relationship found for user ${target.sourceUserId}`,
+      );
+    }
+
+    const targetUserId = relationship.parent_user_id;
+    const targetTechnician = await this.technicianRepo.getByUserId(targetUserId);
+    if (!targetTechnician) {
+      throw new Error(`Escalation target technician ${targetUserId} was not found`);
+    }
+
+    if (targetTechnician.level !== target.targetRole) {
+      throw new Error(
+        `Escalation target level mismatch: expected ${target.targetRole}, found ${targetTechnician.level}`,
+      );
+    }
+
+    const fromLevel = ticket.assigned_to_level || toSupportLevel(assignedRole);
+    const toLevel = toSupportLevel(target.targetRole);
+    const escalationReason = this.buildReason(
+      reason,
+      triggerType,
+      assignedToUserId,
+      targetUserId,
+      assignedRole,
+      target.targetRole,
+    );
+
+    console.log(
+      `[EscalationService] Resolved escalation target | ticket=${ticketId} | trigger=${triggerType} | performer=${performedBy ?? 'system'} | from_user=${assignedToUserId}(${assignedRole}) | to_user=${targetUserId}(${target.targetRole})`,
+    );
+
+    console.log(
+      `[EscalationService] Ticket-service escalation payload | ticket=${ticketId} | from_level=${fromLevel} | to_level=${toLevel}`,
+    );
+
+    let escalatedTicket: any;
+    try {
+      escalatedTicket = await escalateTicketInService(ticketId, fromLevel, toLevel, escalationReason);
+    } catch (error: unknown) {
+      throw new Error(this.formatTicketServiceError('Failed to create escalation record in ticket service', error));
+    }
+
+
+    console.log(
+      `[EscalationService] Ticket-service assignment payload | ticket=${ticketId} | assigned_to=${targetUserId} | assigned_to_level=${toLevel}`,
+    );
+
+    let assignmentResult: any;
+    try {
+      assignmentResult = await assignTicket(ticketId, targetUserId, toLevel);
+    } catch (error: unknown) {
+      throw new Error(this.formatTicketServiceError('Failed to update escalated assignment in ticket service', error));
+    }
+
+    const authoritativeStatus = String(assignmentResult?.status || ticket.status || 'OPEN').toUpperCase();
+
+    console.log(
+      `[EscalationService] Workflow DB sync payload | ticket=${ticketId} | assigned_to=${targetUserId} | status=${authoritativeStatus}`,
+    );
+
+    try {
+      await this.ticketRepo.syncOwnership(ticketId, targetUserId, authoritativeStatus);
+    } catch (error: any) {
+      throw new Error(
+        `Failed to sync workflow ticket ownership after escalation: ${error.message || String(error)}`,
+      );
+    }
+
+    try {
+      const routingSync = await this.routingRepo.syncEscalationAssignment(ticketId, targetUserId);
+      if (routingSync.rowExists) {
+        console.log(
+          `[EscalationService] Routing state synced | ticket=${ticketId} | assigned_member_id=${routingSync.assignedMemberId}`,
         );
-      } catch (err: any) {
-        console.error('Ticket Service escalate call failed:', err.response?.data || err.message);
+      } else {
+        console.log(
+          `[EscalationService] Routing state not present for ticket=${ticketId}; skipped routing assignment sync`,
+        );
       }
-
-      // 2. PATCH /tickets/:id — assign to the new member with correct level
-      try {
-        await ticketServiceClient.patch(`/tickets/${ticketId}`, {
-          assigned_to: String(assignee.user_id),
-          assigned_to_level: targetLevel,
-        });
-      } catch (err: any) {
-        console.error('Ticket Service assignment PATCH failed during escalation:', err.response?.data || err.message);
-      }
+    } catch (error: any) {
+      throw new Error(
+        `Failed to sync workflow routing state after escalation: ${error.message || String(error)}`,
+      );
     }
 
     await this.logRepo.logAction(ticketId, 'ESCALATED', {
-      from_group_id: currentGroup.id,
-      to_group_id: targetGroup.id,
       performed_by: performedBy,
-      to_member_id: techs.length ? techs[0].member_id : null,
-      reason: `Escalated (${triggerType}) from ${currentGroup.name} to ${targetGroup.name}${techs.length ? ` — assigned to user ${techs[0].user_id} (${targetRole})` : ''}`,
+      to_member_id: targetUserId,
+      reason: escalationReason,
     });
 
-    const escalationCount = await this.routingRepo.getEscalationCount(ticketId);
+    const escalationCount = Number(
+      escalatedTicket?.escalation_count ?? ticket.escalation_count + 1,
+    );
 
     return {
       success: true,
       ticketId,
-      fromGroup: currentGroup.name,
-      toGroup: targetGroup.name,
+      fromGroup: `${assignedRole}:${assignedToUserId}`,
+      toGroup: `${target.targetRole}:${targetUserId}`,
       escalationCount,
       triggerType,
-      message: `Ticket escalated to ${targetGroup.name}${techs.length ? ` and assigned to ${targetRole} (user ${techs[0].user_id})` : ''}`,
+      message: `Ticket escalated from ${assignedRole} (${assignedToUserId}) to ${target.targetRole} (${targetUserId})`,
     };
   }
 
-  async manualEscalate(ticketId: string, userId: number, userRole: UserRole): Promise<EscalateTicketResponse> {
-    if (userRole !== 'SENIOR' && userRole !== 'SUPERVISOR') {
-      throw new Error(`Only Seniors and Supervisors can escalate. User role: ${userRole}`);
+  async manualEscalate(
+    ticketId: string,
+    userId: number | null,
+    userRole: UserRole,
+    reason: string,
+  ): Promise<EscalateTicketResponse> {
+    if (userId === null) {
+      throw new Error('Manual escalation requires performer identity');
     }
-    return this.escalateTicket(ticketId, 'MANUAL', userId);
+
+    return this.escalateTicket(ticketId, 'MANUAL', userId, userRole, reason);
   }
 
   async escalateIfCritical(
@@ -152,7 +219,7 @@ export class EscalationService {
     isCritical: boolean,
   ): Promise<EscalateTicketResponse | { success: false; message: string }> {
     if (!isCritical) return { success: false, message: 'Ticket is not critical' };
-    return this.escalateTicket(ticketId, 'CRITICAL', null);
+    return this.escalateTicket(ticketId, 'CRITICAL', null, undefined, undefined);
   }
 
   async escalateOnSLABreach(
@@ -160,7 +227,7 @@ export class EscalationService {
     slaBreached: boolean,
   ): Promise<EscalateTicketResponse | { success: false; message: string }> {
     if (!slaBreached) return { success: false, message: 'SLA not breached' };
-    return this.escalateTicket(ticketId, 'SLA', null);
+    return this.escalateTicket(ticketId, 'SLA', null, undefined, undefined);
   }
 
   async escalateOnReopenThreshold(
@@ -171,7 +238,7 @@ export class EscalationService {
     if (reopenCount < threshold) {
       return { success: false, message: `Reopen count ${reopenCount} below threshold ${threshold}` };
     }
-    return this.escalateTicket(ticketId, 'REOPEN_COUNT', null);
+    return this.escalateTicket(ticketId, 'REOPEN_COUNT', null, undefined, undefined);
   }
 
   async getEscalationPath(groupId: number): Promise<EscalationRuleRow[]> {
@@ -181,5 +248,182 @@ export class EscalationService {
   async getEscalationHistory(ticketId: string): Promise<WorkflowLogRow[]> {
     const logs = await this.logRepo.getTicketLogs(ticketId);
     return logs.filter((l) => l.action === 'ESCALATED');
+  }
+
+  private toNumericUserId(value: number | string | null | undefined): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private normalizeRole(userRole: UserRole | undefined): EscalationRole | null {
+    const normalized = String(userRole || '').toUpperCase();
+    if (normalized === 'HEAD_OF_IT') return 'ADMIN';
+    if (normalized === 'TECHNICIAN') return 'JUNIOR';
+    if (normalized === 'JUNIOR' || normalized === 'SENIOR' || normalized === 'SUPERVISOR' || normalized === 'ADMIN') {
+      return normalized;
+    }
+    return null;
+  }
+
+  private resolveAssignedRole(
+    technicianLevel: string | undefined,
+    assignedLevel: 'L1' | 'L2' | 'L3' | 'L4' | null,
+  ): EscalationRole | null {
+    const fromTechnician = String(technicianLevel || '').toUpperCase();
+    if (fromTechnician === 'JUNIOR' || fromTechnician === 'SENIOR' || fromTechnician === 'SUPERVISOR' || fromTechnician === 'ADMIN') {
+      return fromTechnician;
+    }
+
+    const bySupportLevel: Record<'L1' | 'L2' | 'L3' | 'L4', EscalationRole> = {
+      L1: 'JUNIOR',
+      L2: 'SENIOR',
+      L3: 'SUPERVISOR',
+      L4: 'ADMIN',
+    };
+
+    if (assignedLevel && bySupportLevel[assignedLevel]) {
+      return bySupportLevel[assignedLevel];
+    }
+
+    return null;
+  }
+
+  private resolveAutomaticTarget(sourceUserId: number, sourceRole: EscalationRole): EscalationTarget {
+    switch (sourceRole) {
+      case 'JUNIOR':
+        return {
+          sourceUserId,
+          targetRole: 'SENIOR',
+          relationshipType: 'JUNIOR_TO_SENIOR',
+        };
+      case 'SENIOR':
+        return {
+          sourceUserId,
+          targetRole: 'SUPERVISOR',
+          relationshipType: 'SENIOR_TO_SUPERVISOR',
+        };
+      case 'SUPERVISOR':
+        return {
+          sourceUserId,
+          targetRole: 'ADMIN',
+          relationshipType: 'SUPERVISOR_TO_ADMIN',
+        };
+      case 'ADMIN':
+      default:
+        throw new Error('Ticket is already at highest escalation level');
+    }
+  }
+
+  private async resolveManualTarget(
+    actingRole: EscalationRole,
+    actingUserId: number,
+    assignedToUserId: number,
+  ): Promise<EscalationTarget> {
+    if (actingRole === 'JUNIOR') {
+      if (assignedToUserId !== actingUserId) {
+        throw new Error('Juniors can only escalate tickets assigned to themselves');
+      }
+
+      return {
+        sourceUserId: actingUserId,
+        targetRole: 'SENIOR',
+        relationshipType: 'JUNIOR_TO_SENIOR',
+      };
+    }
+
+    if (actingRole === 'SENIOR') {
+      await this.assertSeniorScope(actingUserId, assignedToUserId);
+      return {
+        sourceUserId: actingUserId,
+        targetRole: 'SUPERVISOR',
+        relationshipType: 'SENIOR_TO_SUPERVISOR',
+      };
+    }
+
+    if (actingRole === 'SUPERVISOR') {
+      await this.assertSupervisorScope(actingUserId, assignedToUserId);
+      return {
+        sourceUserId: actingUserId,
+        targetRole: 'ADMIN',
+        relationshipType: 'SUPERVISOR_TO_ADMIN',
+      };
+    }
+
+    throw new Error('Admins are already at the highest escalation level');
+  }
+
+  private async assertSeniorScope(seniorUserId: number, assignedToUserId: number): Promise<void> {
+    if (assignedToUserId === seniorUserId) {
+      return;
+    }
+
+    const juniors = await this.relationshipRepo.getJuniorsForSenior(seniorUserId);
+    if (!juniors.includes(assignedToUserId)) {
+      throw new Error('Senior can only escalate their own tickets or tickets assigned to direct juniors');
+    }
+  }
+
+  private async assertSupervisorScope(supervisorUserId: number, assignedToUserId: number): Promise<void> {
+    if (assignedToUserId === supervisorUserId) {
+      return;
+    }
+
+    const seniors = await this.relationshipRepo.getSeniorsForSupervisor(supervisorUserId);
+    if (seniors.includes(assignedToUserId)) {
+      return;
+    }
+
+    const juniorsBySenior = await Promise.all(
+      seniors.map((seniorUserId) => this.relationshipRepo.getJuniorsForSenior(seniorUserId)),
+    );
+    const allJuniors = juniorsBySenior.flat();
+
+    if (!allJuniors.includes(assignedToUserId)) {
+      throw new Error(
+        'Supervisor can only escalate tickets in their hierarchy (direct seniors and their juniors)',
+      );
+    }
+  }
+
+  private buildReason(
+    inputReason: string | undefined,
+    triggerType: EscalationTrigger,
+    fromUserId: number,
+    toUserId: number,
+    fromRole: EscalationRole,
+    toRole: EscalationRole,
+  ): string {
+    const trimmed = (inputReason || '').trim();
+    if (trimmed) {
+      return trimmed;
+    }
+
+    return `Escalated (${triggerType}) from ${fromRole} user ${fromUserId} to ${toRole} user ${toUserId}`;
+  }
+
+  private formatTicketServiceError(prefix: string, error: unknown): string {
+    const errorWithResponse = error as {
+      response?: { status?: number; data?: unknown };
+      message?: string;
+    };
+
+    const status = errorWithResponse.response?.status;
+    const responseData = errorWithResponse.response?.data;
+    const responseMessage =
+      typeof responseData === 'object' && responseData !== null && 'message' in responseData
+        ? String((responseData as Record<string, unknown>).message)
+        : undefined;
+
+    const details = responseMessage || errorWithResponse.message || 'Unknown ticket-service error';
+
+    return status ? `${prefix}: HTTP ${status} - ${details}` : `${prefix}: ${details}`;
   }
 }

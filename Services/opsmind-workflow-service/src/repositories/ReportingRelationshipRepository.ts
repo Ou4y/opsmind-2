@@ -42,6 +42,30 @@ export class ReportingRelationshipRepository {
   }
 
   /**
+   * Get the direct manager for a user constrained by relationship type.
+   * This avoids ambiguity when multiple active parent links exist.
+   */
+  async getManagerByRelationshipType(
+    childUserId: number,
+    relationshipType: 'JUNIOR_TO_SENIOR' | 'SENIOR_TO_SUPERVISOR' | 'SUPERVISOR_TO_ADMIN',
+  ): Promise<ReportingRelationshipRow | null> {
+    const rows = await query<ReportingRelationshipRowData[]>(
+      `
+        SELECT *
+        FROM reporting_relationships
+        WHERE child_user_id = ?
+          AND relationship_type = ?
+          AND is_active = TRUE
+        ORDER BY id DESC
+        LIMIT 1
+      `,
+      [childUserId, relationshipType],
+    );
+
+    return rows[0] ?? null;
+  }
+
+  /**
    * Get all juniors reporting to a specific senior
    */
   async getJuniorsForSenior(seniorUserId: number): Promise<number[]> {

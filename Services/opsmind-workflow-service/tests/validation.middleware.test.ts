@@ -2,6 +2,7 @@ import Joi from "joi";
 import {
   claimTicketSchema,
   createRelationshipSchema,
+  escalateTicketSchema,
   routeTicketSchema,
   syncTechnicianFromAuthSchema,
   validateBody,
@@ -162,5 +163,35 @@ describe("createRelationshipSchema", () => {
     });
 
     expect(result.error).toBeDefined();
+  });
+});
+
+describe("escalateTicketSchema", () => {
+  it("requires reason for manual escalation", () => {
+    const result = escalateTicketSchema.validate({
+      triggerType: "MANUAL",
+      escalated_by: 100011,
+      userRole: "JUNIOR",
+    });
+
+    expect(result.error).toBeDefined();
+  });
+
+  it("allows SLA escalation without reason", () => {
+    const result = escalateTicketSchema.validate({
+      triggerType: "SLA",
+    });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("accepts manual escalation with reason and role", () => {
+    const result = escalateTicketSchema.validate({
+      reason: "Need senior assistance",
+      escalated_by: 100010,
+      userRole: "JUNIOR",
+    });
+
+    expect(result.error).toBeUndefined();
   });
 });

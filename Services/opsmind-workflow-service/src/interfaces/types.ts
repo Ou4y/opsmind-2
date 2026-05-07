@@ -125,7 +125,7 @@ export type AuthRole = 'ADMIN' | 'TECHNICIAN' | 'DOCTOR' | 'STUDENT';
 
 export type MemberStatus = 'ACTIVE' | 'INACTIVE' | 'ON_LEAVE';
 
-export type UserRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'HEAD_OF_IT';
+export type UserRole = 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN' | 'HEAD_OF_IT';
 export type TechnicianStatus = 'ONLINE' | 'OFFLINE';
 
 // ---------- Request DTOs ----------
@@ -397,15 +397,17 @@ export interface ApiResponse<T = any> {
 // ---------- External Service Types ----------
 
 export interface ExternalTicket {
-  id: number;
-  building: string;
-  floor: number;
-  room: string;
-  assigned_to: number | null;
+  id: string | number;
+  building?: string;
+  floor?: number;
+  room?: string;
+  assigned_to: number | string | null;
+  assigned_to_level?: 'L1' | 'L2' | 'L3' | 'L4' | null;
   status: string;
-  priority: string;
+  priority: string | null;
   escalation_count: number;
-  resolution_summary: string | null;
+  resolution_summary?: string | null;
+  is_deleted?: boolean;
 }
 
 export interface ExternalUser {

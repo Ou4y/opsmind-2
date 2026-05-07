@@ -126,4 +126,34 @@ export class TicketRepository {
       `[TicketRepository] ✔ Ticket ${ticketId} assigned to technician ${technicianId}, status remains OPEN`,
     );
   }
+
+  /**
+   * Force-sync local workflow ticket ownership to match authoritative ticket-service.
+   * Used by escalation/reassignment flows where ticket is already assigned.
+   */
+  async syncOwnership(ticketId: string, technicianId: number, status?: string): Promise<void> {
+    const normalizedStatus = (() => {
+      const candidate = String(status || '').toUpperCase();
+      if (candidate === 'OPEN' || candidate === 'IN_PROGRESS' || candidate === 'RESOLVED' || candidate === 'CLOSED') {
+        return candidate;
+      }
+      return 'OPEN';
+    })();
+
+    await execute(
+      `
+        INSERT INTO tickets (id, assigned_to, status)
+        VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          assigned_to = VALUES(assigned_to),
+          status = VALUES(status),
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [ticketId, technicianId, normalizedStatus],
+    );
+
+    console.log(
+      `[TicketRepository] ✔ Synced workflow ticket ownership | ticket=${ticketId} | assigned_to=${technicianId} | status=${normalizedStatus}`,
+    );
+  }
 }
