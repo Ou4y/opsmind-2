@@ -97,3 +97,20 @@ export const upsertPolicySchema = z.object({
   params: z.object({}),
   query: z.object({}),
 });
+
+export const bulkTicketStatusSchema = z.object({
+  body: z.object({
+    ticket_ids: z.array(z.string().min(1)).min(1),
+  }),
+  params: z.object({}),
+  query: z.object({}),
+});
+
+export const complianceReportQuerySchema = z.object({
+  body: z.any().optional(),
+  params: z.object({}),
+  query: z.object({
+    start_date: z.string().optional(),
+    end_date: z.string().optional(),
+  }),
+});
