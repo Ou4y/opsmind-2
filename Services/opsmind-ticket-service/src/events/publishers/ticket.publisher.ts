@@ -23,7 +23,11 @@ export async function publishTicketCreated(ticket: Ticket): Promise<void> {
       assigned_to_level: ticket.assigned_to_level,
       status: ticket.status,
       escalation_count: ticket.escalation_count,
+      resolution_summary: ticket.resolution_summary ?? null,
+      resolved_at: ticket.resolved_at ?? null,
       created_at: ticket.created_at,
+      updated_at: ticket.updated_at,
+      closed_at: ticket.closed_at ?? null,
     },
   };
 
@@ -66,6 +70,7 @@ export async function publishTicketUpdated(ticket: Ticket): Promise<void> {
       status: ticket.status,
       escalation_count: ticket.escalation_count,
       resolution_summary: ticket.resolution_summary ?? null,
+      resolved_at: ticket.resolved_at ?? null,
       updated_at: ticket.updated_at,
       closed_at: ticket.closed_at ?? null,
     },

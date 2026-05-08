@@ -1,5 +1,6 @@
 import { RowDataPacket } from 'mysql2/promise';
 import { execute, query } from '../config/database';
+import { TicketSyncPayload } from '../interfaces/types';
 
 interface WorkloadRow extends RowDataPacket {
   technician_id: number;
@@ -155,5 +156,129 @@ export class TicketRepository {
     console.log(
       `[TicketRepository] ✔ Synced workflow ticket ownership | ticket=${ticketId} | assigned_to=${technicianId} | status=${normalizedStatus}`,
     );
+  }
+
+  /**
+   * Sync workflow ticket cache with authoritative ticket-service snapshot.
+   * Idempotent upsert: inserts new ticket or updates existing fields.
+   */
+  async syncTicketFromSource(ticket: TicketSyncPayload): Promise<void> {
+    const assignedTo = this.toNumericUserId(ticket.assigned_to);
+    const normalizedStatus = this.normalizeStatus(ticket.status);
+    const assignedToLevel = this.normalizeSupportLevel(ticket.assigned_to_level);
+    const supportLevel = this.normalizeSupportLevel(ticket.support_level);
+    const priority = ticket.priority ? String(ticket.priority).toUpperCase() : null;
+    const typeOfRequest = ticket.type_of_request ? String(ticket.type_of_request).toUpperCase() : null;
+    const escalationCount = Number.isFinite(Number(ticket.escalation_count))
+      ? Number(ticket.escalation_count)
+      : 0;
+    const createdAt = this.parseDate(ticket.created_at);
+    const updatedAt = this.parseDate(ticket.updated_at);
+    const resolvedAt = this.parseDate(ticket.resolved_at);
+    const closedAt = this.parseDate(ticket.closed_at);
+
+    await execute(
+      `
+        INSERT INTO tickets (
+          id,
+          requester_id,
+          title,
+          description,
+          type_of_request,
+          latitude,
+          longitude,
+          assigned_to,
+          assigned_to_level,
+          priority,
+          support_level,
+          status,
+          escalation_count,
+          resolution_summary,
+          resolved_at,
+          closed_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          requester_id = VALUES(requester_id),
+          title = VALUES(title),
+          description = VALUES(description),
+          type_of_request = VALUES(type_of_request),
+          latitude = VALUES(latitude),
+          longitude = VALUES(longitude),
+          assigned_to = VALUES(assigned_to),
+          assigned_to_level = VALUES(assigned_to_level),
+          priority = VALUES(priority),
+          support_level = VALUES(support_level),
+          status = VALUES(status),
+          escalation_count = COALESCE(VALUES(escalation_count), escalation_count),
+          resolution_summary = VALUES(resolution_summary),
+          resolved_at = VALUES(resolved_at),
+          closed_at = VALUES(closed_at),
+          created_at = COALESCE(VALUES(created_at), created_at),
+          updated_at = COALESCE(VALUES(updated_at), updated_at)
+      `,
+      [
+        ticket.id,
+        ticket.requester_id ?? null,
+        ticket.title ?? null,
+        ticket.description ?? null,
+        typeOfRequest,
+        ticket.latitude ?? null,
+        ticket.longitude ?? null,
+        assignedTo,
+        assignedToLevel,
+        priority,
+        supportLevel,
+        normalizedStatus,
+        escalationCount,
+        ticket.resolution_summary ?? null,
+        resolvedAt,
+        closedAt,
+        createdAt,
+        updatedAt,
+      ],
+    );
+
+    console.log(
+      `[TicketRepository] ✔ Synced workflow ticket snapshot | ticket=${ticket.id} | status=${normalizedStatus} | assigned_to=${assignedTo ?? 'null'}`,
+    );
+  }
+
+  private toNumericUserId(value: number | string | null | undefined): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private normalizeStatus(status?: string | null): string {
+    const normalized = String(status || '').toUpperCase();
+    if (['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'].includes(normalized)) {
+      return normalized;
+    }
+    return 'OPEN';
+  }
+
+  private normalizeSupportLevel(level?: string | null): string | null {
+    const normalized = String(level || '').toUpperCase();
+    if (['L1', 'L2', 'L3', 'L4'].includes(normalized)) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private parseDate(value?: string | Date | null): Date | null {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date;
   }
 }

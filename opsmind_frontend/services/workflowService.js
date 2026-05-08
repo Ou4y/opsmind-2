@@ -52,7 +52,9 @@ async function workflowRequest(path, options = {}) {
     
     // Check success field instead of HTTP status alone
     if (!json.success && response.status >= 400) {
-        throw new Error(json.message || `Request failed with status ${response.status}`);
+        const error = new Error(json.message || `Request failed with status ${response.status}`);
+        error.status = response.status;
+        throw error;
     }
     
     return json;
@@ -754,7 +756,38 @@ export async function getSupervisorDashboard(userId) {
 // 19b. ROLE-BASED DASHBOARD CONTRACTS
 // ===================================
 
+export const DASHBOARD_ENDPOINTS = {
+    admin: {
+        overview: () => '/workflow/dashboard/admin/overview',
+        tickets: () => '/workflow/dashboard/admin/tickets',
+        details: (ticketId) => `/workflow/dashboard/admin/tickets/${String(ticketId)}/details`
+    },
+    senior: {
+        overview: (workflowUserId) => `/workflow/dashboard/senior/${workflowUserId}/overview`,
+        tickets: (workflowUserId) => `/workflow/dashboard/senior/${workflowUserId}/tickets`,
+        details: (workflowUserId, ticketId) => `/workflow/dashboard/senior/${workflowUserId}/tickets/${String(ticketId)}/details`
+    },
+    supervisor: {
+        overview: (workflowUserId) => `/workflow/dashboard/supervisor/${workflowUserId}/overview`,
+        tickets: (workflowUserId) => `/workflow/dashboard/supervisor/${workflowUserId}/tickets`,
+        details: (workflowUserId, ticketId) => `/workflow/dashboard/supervisor/${workflowUserId}/tickets/${String(ticketId)}/details`
+    },
+    junior: {
+        overview: (workflowUserId) => `/workflow/dashboard/junior/${workflowUserId}/overview`,
+        tickets: (workflowUserId) => `/workflow/dashboard/junior/${workflowUserId}/tickets`,
+        details: (workflowUserId, ticketId) => `/workflow/dashboard/junior/${workflowUserId}/tickets/${String(ticketId)}/details`
+    }
+};
+
+function normalizeDashboardFilters(filters) {
+    if (!filters || typeof filters !== 'object') {
+        return {};
+    }
+    return filters;
+}
+
 export async function getAdminOverview(filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.status) params.append('status', filters.status);
     if (filters.priority) params.append('priority', filters.priority);
@@ -767,12 +800,13 @@ export async function getAdminOverview(filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/admin/overview${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.admin.overview()}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getAdminTickets(filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.limit) params.append('limit', filters.limit);
     if (filters.offset) params.append('offset', filters.offset);
@@ -787,18 +821,19 @@ export async function getAdminTickets(filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/admin/tickets${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.admin.tickets()}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getAdminTicketDetails(ticketId) {
-    return workflowRequest(`/workflow/dashboard/admin/tickets/${String(ticketId)}/details`, {
+    return workflowRequest(DASHBOARD_ENDPOINTS.admin.details(ticketId), {
         method: 'GET'
     });
 }
 
 export async function getSupervisorOverview(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.status) params.append('status', filters.status);
     if (filters.priority) params.append('priority', filters.priority);
@@ -809,12 +844,13 @@ export async function getSupervisorOverview(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.supervisor.overview(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getSupervisorTickets(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.limit) params.append('limit', filters.limit);
     if (filters.offset) params.append('offset', filters.offset);
@@ -827,18 +863,19 @@ export async function getSupervisorTickets(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.supervisor.tickets(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getSupervisorTicketDetails(userId, ticketId) {
-    return workflowRequest(`/workflow/dashboard/supervisor/${userId}/tickets/${String(ticketId)}/details`, {
+    return workflowRequest(DASHBOARD_ENDPOINTS.supervisor.details(userId, ticketId), {
         method: 'GET'
     });
 }
 
 export async function getSeniorOverview(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.status) params.append('status', filters.status);
     if (filters.priority) params.append('priority', filters.priority);
@@ -849,12 +886,13 @@ export async function getSeniorOverview(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/senior/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.senior.overview(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getSeniorTickets(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.limit) params.append('limit', filters.limit);
     if (filters.offset) params.append('offset', filters.offset);
@@ -867,18 +905,19 @@ export async function getSeniorTickets(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/senior/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.senior.tickets(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getSeniorTicketDetails(userId, ticketId) {
-    return workflowRequest(`/workflow/dashboard/senior/${userId}/tickets/${String(ticketId)}/details`, {
+    return workflowRequest(DASHBOARD_ENDPOINTS.senior.details(userId, ticketId), {
         method: 'GET'
     });
 }
 
 export async function getJuniorOverview(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.status) params.append('status', filters.status);
     if (filters.priority) params.append('priority', filters.priority);
@@ -887,12 +926,13 @@ export async function getJuniorOverview(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/junior/${userId}/overview${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.junior.overview(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getJuniorTickets(userId, filters = {}) {
+    filters = normalizeDashboardFilters(filters);
     const params = new URLSearchParams();
     if (filters.limit) params.append('limit', filters.limit);
     if (filters.offset) params.append('offset', filters.offset);
@@ -903,13 +943,13 @@ export async function getJuniorTickets(userId, filters = {}) {
     if (filters.escalatedOnly) params.append('escalatedOnly', 'true');
 
     const queryString = params.toString();
-    return workflowRequest(`/workflow/dashboard/junior/${userId}/tickets${queryString ? `?${queryString}` : ''}`, {
+    return workflowRequest(`${DASHBOARD_ENDPOINTS.junior.tickets(userId)}${queryString ? `?${queryString}` : ''}`, {
         method: 'GET'
     });
 }
 
 export async function getJuniorTicketDetails(userId, ticketId) {
-    return workflowRequest(`/workflow/dashboard/junior/${userId}/tickets/${String(ticketId)}/details`, {
+    return workflowRequest(DASHBOARD_ENDPOINTS.junior.details(userId, ticketId), {
         method: 'GET'
     });
 }

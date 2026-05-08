@@ -221,6 +221,27 @@ export interface TicketCreatedEvent {
   priority?: TicketPriority;
 }
 
+export interface TicketSyncPayload {
+  id: string;
+  requester_id?: string | null;
+  title?: string | null;
+  description?: string | null;
+  type_of_request?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  assigned_to?: string | number | null;
+  assigned_to_level?: string | null;
+  priority?: string | null;
+  support_level?: string | null;
+  status?: string | null;
+  escalation_count?: number | null;
+  resolution_summary?: string | null;
+  created_at?: string | Date | null;
+  updated_at?: string | Date | null;
+  resolved_at?: string | Date | null;
+  closed_at?: string | Date | null;
+}
+
 export interface TicketAssignedEvent {
   ticket_id: string;
   technician_id: number;
@@ -400,6 +421,7 @@ export interface ExternalTicket {
   id: string | number;
   title?: string;
   description?: string;
+  type_of_request?: string | null;
   requester_id?: string | null;
   building?: string | null;
   floor?: number | null;
@@ -415,6 +437,7 @@ export interface ExternalTicket {
   resolution_summary?: string | null;
   created_at?: string | Date;
   updated_at?: string | Date;
+  resolved_at?: string | Date | null;
   closed_at?: string | Date | null;
   is_deleted?: boolean;
 }

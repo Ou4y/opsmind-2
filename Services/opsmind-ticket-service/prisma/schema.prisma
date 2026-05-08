@@ -61,9 +61,12 @@ model Ticket {
   is_deleted         Boolean          @default(false)
   created_at         DateTime         @default(now())
   updated_at         DateTime         @updatedAt
+  resolved_at        DateTime?        // nullable
   closed_at          DateTime?        // nullable
 
   escalations        TicketEscalation[]
+  assignment_history TicketAssignmentHistory[]
+  status_history     TicketStatusHistory[]
 
   @@index([status])
   @@index([priority])

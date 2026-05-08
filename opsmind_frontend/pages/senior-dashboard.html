@@ -332,12 +332,19 @@
                             <table class="table table-hover align-middle" id="ticketsTable">
                                 <thead class="table-light">
                                     <tr>
-                                        <th class="text-uppercase small fw-semibold" style="width: 15%;">Ticket ID</th>
-                                        <th class="text-uppercase small fw-semibold" style="width: 20%;">Assigned To</th>
-                                        <th class="text-uppercase small fw-semibold" style="width: 12%;">Status</th>
-                                        <th class="text-uppercase small fw-semibold" style="width: 10%;">Priority</th>
-                                        <th class="text-uppercase small fw-semibold" style="width: 18%;">Created</th>
-                                        <th class="text-uppercase small fw-semibold" style="width: 25%;">Location</th>
+                                        <th class="text-uppercase small fw-semibold">Ticket ID</th>
+                                        <th class="text-uppercase small fw-semibold">Title</th>
+                                        <th class="text-uppercase small fw-semibold">Current Assignee</th>
+                                        <th class="text-uppercase small fw-semibold">Assignee Level</th>
+                                        <th class="text-uppercase small fw-semibold">Junior Owner</th>
+                                        <th class="text-uppercase small fw-semibold">Senior Owner</th>
+                                        <th class="text-uppercase small fw-semibold">Supervisor Owner</th>
+                                        <th class="text-uppercase small fw-semibold">Status</th>
+                                        <th class="text-uppercase small fw-semibold">Priority</th>
+                                        <th class="text-uppercase small fw-semibold">Created</th>
+                                        <th class="text-uppercase small fw-semibold">Location</th>
+                                        <th class="text-uppercase small fw-semibold">Escalations</th>
+                                        <th class="text-uppercase small fw-semibold">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="ticketsTableBody"></tbody>
@@ -348,6 +355,8 @@
             </div>
         </main>
     </div>
+
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
 
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>

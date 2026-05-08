@@ -6,13 +6,14 @@ import { EscalationController } from '../controllers/EscalationController';
 import { MonitoringController } from '../controllers/MonitoringController';
 import { TechnicianController } from '../controllers/TechnicianController';
 import { RoleDashboardController } from '../controllers/RoleDashboardController';
+import { TicketSyncController } from '../controllers/TicketSyncController';
 import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
-import { optionalAuth, requireAuth, requireAuthOrInternal } from '../middlewares/auth';
-import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, escalateTicketSchema } from '../middlewares/validation';
+import { optionalAuth, requireAuth, requireAuthOrInternal, requireInternalToken } from '../middlewares/auth';
+import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, escalateTicketSchema, syncTicketSchema } from '../middlewares/validation';
 import { getUserDetails } from '../config/externalServices';
 
 const router = Router();
@@ -25,6 +26,7 @@ const escalationCtrl = new EscalationController();
 const monitorCtrl = new MonitoringController();
 const technicianCtrl = new TechnicianController();
 const roleDashboardCtrl = new RoleDashboardController();
+const ticketSyncCtrl = new TicketSyncController();
 
 // ── Service / Repo instances for new endpoints ──
 const loggingService = new LoggingService();
@@ -214,6 +216,11 @@ router.get('/logs/:ticketId', async (req: Request, res: Response): Promise<void>
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// ══════════════════════════════════════
+//  Internal Ticket Sync (ticket-service only)
+// ══════════════════════════════════════
+router.post('/internal/tickets/sync', requireInternalToken, validateBody(syncTicketSchema), ticketSyncCtrl.syncTicket);
 
 // ══════════════════════════════════════
 //  Group Tickets (NEW — frontend calls this)

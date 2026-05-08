@@ -51,42 +51,13 @@ function isTechnicianUser(user) {
  * @returns {string} Dashboard URL based on user role
  */
 function getRoleBasedDashboard() {
-    const user = AuthService.getCurrentUser();
-    const role = String(user?.role || '').toUpperCase();
-    const roles = normalizeRoles(user);
-    const technicianLevel = resolveTechnicianLevel(user);
-
-    const hasAdminRole = role === 'ADMIN' || roles.includes('ADMIN');
-    const hasRequesterRole = role === 'STUDENT' || role === 'DOCTOR' || roles.includes('STUDENT') || roles.includes('DOCTOR');
-    const hasTechnicianRole = isTechnicianUser(user);
-    const hasTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
-
-    if (hasAdminRole) {
-        return '/pages/admin/domains.html';
+    const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+    if (context.dashboardType === 'unknown') {
+        sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
+        AuthService.clearAuth();
+        return '/index.html';
     }
-
-    if (hasRequesterRole) {
-        return '/pages/dashboard.html';
-    }
-
-    if (hasTechnicianRole || hasTechnicianLevel) {
-        switch (technicianLevel) {
-            case 'JUNIOR':
-                return '/pages/junior-dashboard.html';
-            case 'SENIOR':
-                return '/pages/senior-dashboard.html';
-            case 'SUPERVISOR':
-                return '/pages/supervisor-dashboard.html';
-            case 'ADMIN':
-                return '/pages/admin/domains.html';
-            default:
-                sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
-                AuthService.clearAuth();
-                return '/index.html';
-        }
-    }
-
-    return '/pages/dashboard.html';
+    return context.dashboardPath;
 }
 
 /**
@@ -98,6 +69,11 @@ async function initLoginPage() {
     const loginForm = document.getElementById('loginForm');
     const signupForm = document.getElementById('signupForm');
     const otpForm = document.getElementById('otpForm');
+    const otpModalEl = document.getElementById('otpModal');
+
+    if (!loginForm || !signupForm || !otpForm || !otpModalEl) {
+        return;
+    }
     const cardWrapper = document.querySelector('.login-card-wrapper');
     const showSignupBtn = document.getElementById('showSignup');
     const showLoginBtn = document.getElementById('showLogin');
@@ -128,7 +104,7 @@ async function initLoginPage() {
     const signupErrorMessage = document.getElementById('signupErrorMessage');
     
     // OTP modal elements
-    const otpModal = new bootstrap.Modal(document.getElementById('otpModal'));
+    const otpModal = new bootstrap.Modal(otpModalEl);
     const otpModalTitle = document.getElementById('otpModalTitle');
     const otpEmail = document.getElementById('otpEmail');
     const otpCode = document.getElementById('otpCode');

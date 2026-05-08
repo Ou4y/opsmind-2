@@ -56,7 +56,7 @@ export class ReassignmentService {
     // On reassignment we keep IN_PROGRESS and update the assignee.
     try {
       const { assignTicket: assignTicketFn, toSupportLevel } = await import('../config/externalServices');
-      const assignmentMethod = userRole === 'HEAD_OF_IT' || userRole === 'ADMIN' ? 'ADMIN' : 'MANUAL';
+      const assignmentMethod = userRole === 'HEAD_OF_IT' ? 'ADMIN' : 'MANUAL';
       await assignTicketFn(
         ticketId,
         targetMember.user_id,

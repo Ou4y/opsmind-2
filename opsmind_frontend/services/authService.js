@@ -615,6 +615,106 @@ const AuthService = {
     },
 
     /**
+     * Resolve a normalized dashboard context for the current user.
+     * @param {Object|null} currentUser - Optional user object to resolve.
+     * @returns {{
+     *   roleCategory: 'ADMIN'|'TECHNICIAN'|'REQUESTER'|'UNKNOWN',
+     *   technicianLevel: 'JUNIOR'|'SENIOR'|'SUPERVISOR'|'ADMIN'|null,
+     *   workflowUserId: number|null,
+     *   dashboardType: 'admin'|'junior'|'senior'|'supervisor'|'requester'|'unknown',
+     *   dashboardPath: string
+     * }}
+     */
+    resolveUserDashboardContext(currentUser = null) {
+        const user = currentUser || this.getUser();
+        const role = String(user?.role || '').toUpperCase();
+        const roles = Array.isArray(user?.roles)
+            ? user.roles.map((entry) => String(entry).toUpperCase())
+            : [];
+
+        const hasRole = (target) => role === target || roles.includes(target);
+
+        const rawLevel =
+            user?.technicianLevel ||
+            user?.technician_level ||
+            user?.level ||
+            user?.supportLevel ||
+            user?.support_level;
+
+        const supportMap = {
+            L1: 'JUNIOR',
+            L2: 'SENIOR',
+            L3: 'SUPERVISOR',
+            L4: 'ADMIN'
+        };
+
+        let technicianLevel = rawLevel ? String(rawLevel).toUpperCase() : null;
+        if (technicianLevel && supportMap[technicianLevel]) {
+            technicianLevel = supportMap[technicianLevel];
+        }
+
+        if (!technicianLevel) {
+            if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+                technicianLevel = role;
+            } else {
+                const roleMatch = roles.find((entry) => ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(entry));
+                technicianLevel = roleMatch || null;
+            }
+        }
+
+        const workflowUserIdRaw =
+            user?.workflowUserId ??
+            user?.workflow_user_id ??
+            user?.user_id ??
+            null;
+        const workflowUserId = Number.isFinite(Number(workflowUserIdRaw))
+            ? Number(workflowUserIdRaw)
+            : null;
+
+        const hasAdminRole = hasRole('ADMIN') || hasRole('HEAD_OF_IT');
+        const hasRequesterRole = hasRole('STUDENT') || hasRole('DOCTOR');
+        const hasTechnicianRole = hasRole('TECHNICIAN') || technicianLevel !== null;
+
+        let roleCategory = 'UNKNOWN';
+        let dashboardType = 'unknown';
+        let dashboardPath = '/index.html';
+
+        if (hasAdminRole || technicianLevel === 'ADMIN') {
+            roleCategory = 'ADMIN';
+            dashboardType = 'admin';
+            dashboardPath = '/pages/admin/admin-dashboard.html';
+        } else if (hasRequesterRole) {
+            roleCategory = 'REQUESTER';
+            dashboardType = 'requester';
+            dashboardPath = '/pages/dashboard.html';
+        } else if (hasTechnicianRole) {
+            roleCategory = 'TECHNICIAN';
+            if (technicianLevel === 'SUPERVISOR') {
+                dashboardType = 'supervisor';
+                dashboardPath = '/pages/supervisor-dashboard.html';
+            } else if (technicianLevel === 'SENIOR') {
+                dashboardType = 'senior';
+                dashboardPath = '/pages/senior-dashboard.html';
+            } else if (technicianLevel === 'JUNIOR') {
+                dashboardType = 'junior';
+                dashboardPath = '/pages/junior-dashboard.html';
+            }
+        }
+
+        if (['junior', 'senior', 'supervisor'].includes(dashboardType) && !workflowUserId) {
+            dashboardType = 'unknown';
+        }
+
+        return {
+            roleCategory,
+            technicianLevel,
+            workflowUserId,
+            dashboardType,
+            dashboardPath
+        };
+    },
+
+    /**
      * Get user's building assignment
      * @returns {string|null} Building ID or null
      */

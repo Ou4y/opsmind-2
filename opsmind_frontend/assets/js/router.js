@@ -94,33 +94,50 @@ const Router = {
     checkRoleAccess() {
         // Public pages - everyone can access
         if (this.isPublicPage()) return true;
+
+        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+
+        if (this.currentPage === 'admin-dashboard.html') {
+            return context.dashboardType === 'admin';
+        }
+
+        if (this.currentPage === 'junior-dashboard.html') {
+            return context.dashboardType === 'junior';
+        }
+
+        if (this.currentPage === 'senior-dashboard.html') {
+            return context.dashboardType === 'senior';
+        }
+
+        if (this.currentPage === 'supervisor-dashboard.html') {
+            return context.dashboardType === 'supervisor';
+        }
         
         // Admin pages - only admins
-        if (this.isAdminPage() && !AuthService.isAdmin()) return false;
+        if (this.isAdminPage()) return context.roleCategory === 'ADMIN';
         
         // Student/Doctor only pages
         if (this.isStudentDoctorPage()) {
             // Only STUDENT or DOCTOR can access
-            return AuthService.isStudent() || AuthService.isDoctor();
+            return context.dashboardType === 'requester';
         }
         
         // Technician pages
         if (this.isTechnicianPage()) {
             // TECHNICIAN, SENIOR, SUPERVISOR, or ADMIN can access
-            return AuthService.isTechnician() || AuthService.isSenior() || 
-                   AuthService.isSupervisor() || AuthService.isAdmin();
+            return context.roleCategory === 'TECHNICIAN' || context.roleCategory === 'ADMIN';
         }
         
         // Senior pages
         if (this.isSeniorPage()) {
             // SENIOR, SUPERVISOR, or ADMIN can access
-            return AuthService.isSenior() || AuthService.isSupervisor() || AuthService.isAdmin();
+            return ['senior', 'supervisor', 'admin'].includes(context.dashboardType);
         }
         
         // Supervisor pages
         if (this.isSupervisorPage()) {
             // SUPERVISOR or ADMIN can access
-            return AuthService.isSupervisor() || AuthService.isAdmin();
+            return ['supervisor', 'admin'].includes(context.dashboardType);
         }
         
         // Default: allow access to non-restricted pages
@@ -227,44 +244,13 @@ const Router = {
      * @returns {string} Dashboard URL based on user role
      */
     getRoleBasedDashboard() {
-        const user = AuthService.getCurrentUser();
-        const role = String(user?.role || '').toUpperCase();
-        const roles = Array.isArray(user?.roles)
-            ? user.roles.map((entry) => String(entry).toUpperCase())
-            : [];
-        const technicianLevel = AuthService.getTechnicianLevel();
-
-        const hasAdminRole = role === 'ADMIN' || roles.includes('ADMIN');
-        const hasRequesterRole = role === 'STUDENT' || role === 'DOCTOR' || roles.includes('STUDENT') || roles.includes('DOCTOR');
-        const hasTechnicianRole = role === 'TECHNICIAN' || roles.includes('TECHNICIAN');
-        const hasTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
-
-        if (hasAdminRole) {
-            return '/pages/admin/domains.html';
+        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+        if (context.dashboardType === 'unknown') {
+            sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
+            AuthService.clearAuth();
+            return '/index.html';
         }
-
-        if (hasRequesterRole) {
-            return '/pages/dashboard.html';
-        }
-
-        if (hasTechnicianRole || hasTechnicianLevel) {
-            switch (technicianLevel) {
-                case 'JUNIOR':
-                    return '/pages/junior-dashboard.html';
-                case 'SENIOR':
-                    return '/pages/senior-dashboard.html';
-                case 'SUPERVISOR':
-                    return '/pages/supervisor-dashboard.html';
-                case 'ADMIN':
-                    return '/pages/admin/domains.html';
-                default:
-                    sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
-                    AuthService.clearAuth();
-                    return '/index.html';
-            }
-        }
-
-        return '/pages/dashboard.html';
+        return context.dashboardPath;
     },
 
     /**

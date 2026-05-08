@@ -318,7 +318,7 @@ export class RoleDashboardController {
   private isAdmin(req: Request) {
     const roles = req.user?.roles || [];
     const role = req.user?.role;
-    const techLevel = req.user?.technicianLevel;
+    const techLevel = this.normalizeLevel(req.user?.technicianLevel);
     return roles.includes('ADMIN') || roles.includes('HEAD_OF_IT') || role === 'ADMIN' || role === 'HEAD_OF_IT' || techLevel === 'ADMIN';
   }
 
@@ -345,7 +345,29 @@ export class RoleDashboardController {
       return { allowed: false, status: 404, message: 'Technician profile not found', workflowUserId: null, level: null, isAdmin: false };
     }
 
-    const level = workflowTechnician.level || req.user.technicianLevel || null;
+    const level = this.normalizeLevel(workflowTechnician.level || req.user.technicianLevel || null);
     return { allowed: true, status: 200, message: '', workflowUserId: workflowTechnician.user_id, level, isAdmin: false };
+  }
+
+  private normalizeLevel(value?: string | null) {
+    const candidate = String(value || '').toUpperCase();
+    if (!candidate) return null;
+
+    const supportMap: Record<string, 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN'> = {
+      L1: 'JUNIOR',
+      L2: 'SENIOR',
+      L3: 'SUPERVISOR',
+      L4: 'ADMIN',
+    };
+
+    if (supportMap[candidate]) {
+      return supportMap[candidate];
+    }
+
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(candidate)) {
+      return candidate as 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
+    }
+
+    return null;
   }
 }

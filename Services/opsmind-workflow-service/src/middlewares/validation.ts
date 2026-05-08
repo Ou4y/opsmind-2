@@ -65,6 +65,36 @@ export const updateTechnicianLocationSchema = Joi.object({
   longitude: Joi.number().min(-180).max(180).required(),
 }).unknown(false);
 
+const syncTicketDateField = Joi.alternatives().try(Joi.date(), Joi.string()).allow(null);
+
+const syncTicketPayloadSchema = Joi.object({
+  id: Joi.string().required(),
+  requester_id: Joi.string().allow(null).optional(),
+  title: Joi.string().allow(null).optional(),
+  description: Joi.string().allow(null).optional(),
+  assigned_to: Joi.alternatives().try(Joi.string(), Joi.number()).allow(null).optional(),
+  assigned_to_level: Joi.string().allow(null).optional(),
+  priority: Joi.string().allow(null).optional(),
+  support_level: Joi.string().allow(null).optional(),
+  status: Joi.string().allow(null).optional(),
+  escalation_count: Joi.number().allow(null).optional(),
+  resolution_summary: Joi.string().allow(null).optional(),
+  resolved_at: syncTicketDateField.optional(),
+  closed_at: syncTicketDateField.optional(),
+  type_of_request: Joi.string().allow(null).optional(),
+  latitude: Joi.number().min(-90).max(90).allow(null).optional(),
+  longitude: Joi.number().min(-180).max(180).allow(null).optional(),
+  building: Joi.string().allow(null).optional(),
+  room: Joi.string().allow(null).optional(),
+  created_at: syncTicketDateField.optional(),
+  updated_at: syncTicketDateField.optional(),
+}).unknown(true);
+
+export const syncTicketSchema = Joi.object({
+  source: Joi.string().optional(),
+  ticket: syncTicketPayloadSchema.required(),
+}).unknown(false);
+
 // ── Hierarchy Management Schemas ──
 
 export const createRelationshipSchema = Joi.object({

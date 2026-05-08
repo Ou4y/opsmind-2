@@ -1,4 +1,5 @@
 import { logger } from "../config/logger";
+import { config } from "../config";
 
 const WORKFLOW_SERVICE_URL = process.env.WORKFLOW_SERVICE_URL || "http://opsmind-workflow:3003";
 
@@ -66,5 +67,68 @@ export async function fetchSupervisor(): Promise<SupervisorDetails | null> {
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  }
+}
+
+/**
+ * Sync ticket snapshot to Workflow Service cache.
+ */
+export async function syncWorkflowTicket(ticket: any, source: string): Promise<void> {
+  const url = `${WORKFLOW_SERVICE_URL}/workflow/internal/tickets/sync`;
+
+  const payload = {
+    source: source || "ticket-service",
+    ticket: {
+      id: ticket.id,
+      requester_id: ticket.requester_id ?? null,
+      title: ticket.title ?? null,
+      description: ticket.description ?? null,
+      assigned_to: ticket.assigned_to ?? null,
+      assigned_to_level: ticket.assigned_to_level ?? null,
+      priority: ticket.priority ?? null,
+      support_level: ticket.support_level ?? null,
+      status: ticket.status ?? null,
+      escalation_count: ticket.escalation_count ?? 0,
+      resolution_summary: ticket.resolution_summary ?? null,
+      created_at: ticket.created_at ?? null,
+      updated_at: ticket.updated_at ?? null,
+      closed_at: ticket.closed_at ?? null,
+      resolved_at: ticket.resolved_at ?? null,
+      type_of_request: ticket.type_of_request ?? null,
+      latitude: ticket.latitude ?? null,
+      longitude: ticket.longitude ?? null,
+    },
+  };
+
+  logger.debug("Syncing ticket snapshot to Workflow Service", {
+    ticketId: ticket.id,
+    url,
+  });
+
+  const internalToken = config.workflowService.internalApiToken?.trim();
+  if (!internalToken) {
+    logger.warn("INTERNAL_API_TOKEN is not configured; refusing workflow sync call", {
+      ticketId: ticket.id,
+      url,
+    });
+    throw new Error("Workflow sync failed: INTERNAL_API_TOKEN is not configured");
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  headers["x-internal-token"] = internalToken;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Workflow sync failed: ${response.status} ${body}`);
   }
 }

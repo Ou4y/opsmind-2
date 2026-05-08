@@ -9,7 +9,8 @@
  */
 
 import UI from '/assets/js/ui.js';
-import WorkflowService from '/services/workflowService.js';
+import WorkflowService, { getJuniorOverview, getJuniorTickets, getJuniorTicketDetails } from '/services/workflowService.js';
+import { renderTicketDetailsInto, getTicketLocationDisplay } from '/assets/js/components/ticketDetailsModal.js';
 import TicketService from '/services/ticketService.js';
 import AuthService from '/services/authService.js';
 
@@ -19,10 +20,13 @@ import AuthService from '/services/authService.js';
 const state = {
     myTickets: [],
     selectedTicket: null,
+    selectedTicketDetails: null,
+    overview: null,
     workflowLogs: [],
     slaData: {},
     currentUser: null,
     currentWorkflowTechnicianId: null,
+    dashboardContext: null,
     isLoading: false,
     refreshInterval: null,
     locationWatchId: null
@@ -43,6 +47,20 @@ export async function initJuniorDashboard() {
         window.location.href = '/index.html';
         return;
     }
+
+    state.dashboardContext = AuthService.resolveUserDashboardContext(state.currentUser);
+    if (state.dashboardContext.dashboardType !== 'junior') {
+        if (redirectToDashboard(state.dashboardContext)) return;
+        showWorkflowProfileError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    if (!state.dashboardContext.workflowUserId) {
+        showWorkflowProfileError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    state.currentWorkflowTechnicianId = String(state.dashboardContext.workflowUserId);
 
     // Start continuous location tracking
     startLocationTracking();
@@ -83,6 +101,7 @@ function setupEventListeners() {
     // Back to tickets button
     document.getElementById('backToTickets')?.addEventListener('click', () => {
         state.selectedTicket = null;
+        state.selectedTicketDetails = null;
         document.getElementById('detailsTabItem').style.display = 'none';
         const myTicketsTab = new bootstrap.Tab(document.getElementById('my-tickets-tab'));
         myTicketsTab.show();
@@ -116,7 +135,11 @@ async function loadDashboardData() {
         
     } catch (error) {
         console.error('[Junior Dashboard] Unexpected error loading dashboard data:', error);
-        UI.showToast('Failed to load assigned tickets. Check Ticket Service connection.', 'error');
+        if (error?.status === 403) {
+            UI.showToast('You do not have access to this dashboard.', 'error');
+        } else {
+            UI.showToast('Failed to load assigned tickets. Check Workflow Service connection.', 'error');
+        }
     } finally {
         state.isLoading = false;
     }
@@ -126,44 +149,43 @@ async function loadDashboardData() {
  * Resolve the workflow user_id for the logged-in technician.
  * Auth service identity is UUID-based, while workflow assignment uses numeric user_id.
  */
-async function resolveWorkflowTechnicianId() {
+function resolveWorkflowTechnicianId() {
     if (state.currentWorkflowTechnicianId) {
         return state.currentWorkflowTechnicianId;
     }
 
-    const existingNumericId =
-        state.currentUser?.workflowUserId ||
-        state.currentUser?.workflow_user_id ||
-        state.currentUser?.user_id ||
-        state.currentUser?.technicianId;
-
-    if (existingNumericId && !Number.isNaN(Number(existingNumericId))) {
-        state.currentWorkflowTechnicianId = String(existingNumericId);
-        return state.currentWorkflowTechnicianId;
-    }
-
-    const email = state.currentUser?.email;
-    const levelCandidate = String(
-        state.currentUser?.technicianLevel ||
-        state.currentUser?.level ||
-        AuthService.getTechnicianLevel() ||
-        'JUNIOR'
-    ).toUpperCase();
-
-    const validLevels = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'];
-    const level = validLevels.includes(levelCandidate) ? levelCandidate : 'JUNIOR';
-
-    if (!email) {
+    if (!state.dashboardContext?.workflowUserId) {
+        showWorkflowProfileError('Workflow profile not found or incomplete. Please logout and login again.');
         return null;
     }
 
-    const workflowUserId = await WorkflowService.resolveWorkflowUserId(email, level);
-    if (!workflowUserId) {
-        return null;
-    }
-
-    state.currentWorkflowTechnicianId = String(workflowUserId);
+    state.currentWorkflowTechnicianId = String(state.dashboardContext.workflowUserId);
     return state.currentWorkflowTechnicianId;
+}
+
+function showWorkflowProfileError(message = 'Workflow profile not found or incomplete. Please logout and login again.') {
+    const loadingEl = document.getElementById('myTicketsLoading');
+    const emptyEl = document.getElementById('myTicketsEmpty');
+
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (emptyEl) {
+        emptyEl.style.display = 'block';
+        const messageEl = emptyEl.querySelector('p');
+        if (messageEl) {
+            messageEl.textContent = message;
+        }
+    }
+
+    UI.showToast(message, 'error');
+}
+
+function redirectToDashboard(context) {
+    const targetPath = context?.dashboardPath || '';
+    if (targetPath && window.location.pathname !== targetPath) {
+        window.location.href = targetPath;
+        return true;
+    }
+    return false;
 }
 
 /**
@@ -177,15 +199,20 @@ async function loadMyTickets() {
 
     try {
         if (loadingEl) loadingEl.style.display = 'block';
-        if (emptyEl)   emptyEl.style.display   = 'none';
+        if (emptyEl) {
+            emptyEl.style.display = 'none';
+            const messageEl = emptyEl.querySelector('p');
+            if (messageEl) {
+                messageEl.textContent = 'No tickets assigned to you yet. Tickets are automatically assigned by the system.';
+            }
+        }
         if (listEl)    listEl.innerHTML         = '';
 
         console.log('═══════════════════════════════════════════');
         console.log('[Junior Dashboard] Loading My Tickets');
         console.log('[Junior Dashboard] Current User object:', state.currentUser);
 
-        // Resolve workflow technician identity used by assignment persistence.
-        const currentTechnicianId = await resolveWorkflowTechnicianId();
+        const currentTechnicianId = resolveWorkflowTechnicianId();
 
         console.log('[Junior Dashboard] Resolved currentTechnicianId:', currentTechnicianId);
 
@@ -196,25 +223,26 @@ async function loadMyTickets() {
             return;
         }
 
-        // Use the dedicated assigned-tickets endpoint (with client-side fallback inside the service)
-        const tickets = await TicketService.getAssignedTickets(String(currentTechnicianId));
+        const [overviewResponse, ticketsResponse] = await Promise.all([
+            getJuniorOverview(currentTechnicianId),
+            getJuniorTickets(currentTechnicianId, { limit: 50, offset: 0 })
+        ]);
 
+        if (!overviewResponse?.success || !overviewResponse?.data) {
+            throw new Error(overviewResponse?.message || 'Failed to load overview data');
+        }
+
+        if (!ticketsResponse?.success || !ticketsResponse?.data) {
+            throw new Error(ticketsResponse?.message || 'Failed to load tickets');
+        }
+
+        state.overview = overviewResponse.data;
+
+        const tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
         console.log('[Junior Dashboard] Raw tickets from API:', tickets);
 
-        // Normalize assignment field for each ticket so the rest of the UI can use
-        // normalizedAssignedTechnicianId without worrying about backend field name changes.
-        state.myTickets = tickets.map((ticket) => {
-            const normalizedAssignedTechnicianId = String(
-                ticket.assigned_to ??
-                ticket.assignedTo ??
-                ticket.assignedTechnicianId ??
-                ticket.technicianId ??
-                ticket.assignee_id ??
-                ticket.assigned_user_id ??
-                ''
-            );
-            return { ...ticket, normalizedAssignedTechnicianId };
-        });
+        state.myTickets = tickets.map((ticket) => normalizeJuniorTicket(ticket));
+        state.slaData = {};
 
         console.log('[Junior Dashboard] state.myTickets after normalization:', state.myTickets.length, 'tickets');
         state.myTickets.forEach((t) => {
@@ -226,17 +254,6 @@ async function loadMyTickets() {
             loadingEl.style.display = 'none';
             emptyEl.style.display = 'block';
             return;
-        }
-        
-        // Load SLA data for my tickets
-        const ticketIds = state.myTickets.map(t => t.id);
-        if (ticketIds.length > 0) {
-            try {
-                const slaResponse = await WorkflowService.getSLAStatus(ticketIds);
-                state.slaData = slaResponse.data || {};
-            } catch (error) {
-                console.error('Error loading SLA data:', error);
-            }
         }
         
         loadingEl.style.display = 'none';
@@ -252,10 +269,35 @@ async function loadMyTickets() {
         console.error('═══════════════');
         if (loadingEl) loadingEl.style.display = 'none';
         if (emptyEl)   emptyEl.style.display   = 'block';
-        UI.showToast('Failed to load assigned tickets. Check Ticket Service connection.', 'error');
+        if (error?.status === 403) {
+            UI.showToast('You do not have access to this dashboard.', 'error');
+        } else {
+            UI.showToast('Failed to load assigned tickets. Check Workflow Service connection.', 'error');
+        }
         // Do NOT re-throw: optional metrics (SLA, etc.) must not block showing the page.
         // loadDashboardData() will only show its toast if something else throws after this.
     }
+}
+
+function normalizeJuniorTicket(ticket) {
+    const ticketId = ticket.ticketId || ticket.id;
+    const assignedTo = ticket.assignedTo ?? ticket.assigned_to ?? null;
+
+    return {
+        ...ticket,
+        id: ticketId,
+        created_at: ticket.createdAt || ticket.created_at,
+        updated_at: ticket.updatedAt || ticket.updated_at,
+        requester_name: ticket.requesterName || ticket.requester_name,
+        assigned_to: assignedTo,
+        assigned_to_name: ticket.assignedToName || ticket.assigned_to_name,
+        assignedToName: ticket.assignedToName || ticket.assigned_to_name,
+        assignedToEmail: ticket.assignedToEmail,
+        assignedToLevel: ticket.assignedToLevel,
+        normalizedAssignedTechnicianId: String(assignedTo ?? ''),
+        building: ticket.building,
+        room: ticket.room
+    };
 }
 
 /**
@@ -279,6 +321,7 @@ function renderMyTickets() {
 function createTicketCard(ticket, type) {
     const sla = state.slaData[ticket.id];
     const isEscalated = ticket.status === 'ESCALATED';
+    const locationLabel = getTicketLocationDisplay(ticket);
     
     const card = document.createElement('div');
     card.className = `card mb-3 ${isEscalated ? 'border-danger' : ''}`;
@@ -295,8 +338,7 @@ function createTicketCard(ticket, type) {
                     </div>
                     <h6 class="card-subtitle mb-2">${UI.escapeHTML(ticket.title)}</h6>
                     <div class="text-muted small">
-                        <div><i class="bi bi-geo-alt me-1"></i> Location: ${ticket.latitude && ticket.longitude ? `${ticket.latitude}, ${ticket.longitude}` : 'Not available'}</div>
-                        ${ticket.latitude && ticket.longitude ? `<div><a href="https://www.google.com/maps?q=${ticket.latitude},${ticket.longitude}" target="_blank" class="text-decoration-none"><i class="bi bi-map me-1"></i> Open in Maps</a></div>` : ''}
+                        <div><i class="bi bi-geo-alt me-1"></i> Location: ${UI.escapeHTML(locationLabel)}</div>
                         <div><i class="bi bi-person me-1"></i> Requester: ${UI.escapeHTML(ticket.requester_name || 'N/A')}</div>
                         ${ticket.assigned_to ? `<div><i class="bi bi-person-badge me-1"></i> Assigned to: ${UI.escapeHTML(ticket.assigned_to_name || ticket.assignedToName || `Technician #${ticket.assigned_to}`)}</div>` : ''}
                         <div><i class="bi bi-calendar me-1"></i> Created: ${UI.formatDate(ticket.created_at)}</div>
@@ -465,7 +507,9 @@ function updateStatistics() {
     const availableBadgeEl = document.getElementById('availableBadge');
     if (availableBadgeEl) availableBadgeEl.textContent = 0;
 
-    const slaRisk = Object.values(state.slaData).filter(s => s?.at_risk || s?.sla_breached).length;
+    const slaRisk = state.overview
+        ? (state.overview.slaAtRiskTickets || 0) + (state.overview.slaBreachedTickets || 0)
+        : Object.values(state.slaData).filter(s => s?.at_risk || s?.sla_breached).length;
     document.getElementById('slaRiskCount').textContent = slaRisk;
 
     const today = new Date().toDateString();
@@ -563,29 +607,44 @@ window.escalateTicket = async function(ticketId) {
  * View ticket details
  */
 window.viewTicketDetails = async function(ticketId) {
-    const ticket = state.myTickets.find(t => t.id === ticketId);
-    
+    const workflowUserId = resolveWorkflowTechnicianId();
+    if (!workflowUserId) return;
+
+    const ticket = state.myTickets.find(t => String(t.id) === String(ticketId));
+
     if (!ticket) {
         UI.showToast('Ticket not found', 'error');
         return;
     }
-    
+
     state.selectedTicket = ticket;
-    
-    // Load workflow logs
+
+    const loading = UI.showLoading('Loading ticket details...');
+
     try {
-        const logsResponse = await WorkflowService.getWorkflowLogs(ticketId);
-        state.workflowLogs = logsResponse.data || [];
+        const detailsResponse = await getJuniorTicketDetails(workflowUserId, ticketId);
+        if (!detailsResponse?.success || !detailsResponse?.data) {
+            throw new Error(detailsResponse?.message || 'Failed to load ticket details');
+        }
+
+        state.selectedTicketDetails = detailsResponse.data;
     } catch (error) {
-        console.error('Error loading workflow logs:', error);
-        state.workflowLogs = [];
+        console.error('Error loading ticket details:', error);
+        if (error?.status === 403) {
+            UI.showToast('You do not have access to this dashboard.', 'error');
+        } else {
+            UI.showToast(error.message || 'Failed to load ticket details', 'error');
+        }
+        state.selectedTicketDetails = null;
+    } finally {
+        loading.hide();
     }
-    
+
     // Show details tab
     document.getElementById('detailsTabItem').style.display = 'block';
     const detailsTab = new bootstrap.Tab(document.getElementById('details-tab'));
     detailsTab.show();
-    
+
     renderTicketDetails();
 };
 
@@ -593,84 +652,24 @@ window.viewTicketDetails = async function(ticketId) {
  * Render ticket details
  */
 function renderTicketDetails() {
-    const ticket = state.selectedTicket;
-    const sla = state.slaData[ticket.id];
-    
     const detailsEl = document.getElementById('ticketDetailsContent');
-    detailsEl.innerHTML = `
-        <div class="row g-4">
-            <!-- Ticket Information -->
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">Ticket Information</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <strong class="text-muted">Ticket ID</strong>
-                                <p class="mb-0">#${UI.escapeHTML(ticket.id)}</p>
-                            </div>
-                            <div class="col-md-6">
-                                <strong class="text-muted">Status</strong>
-                                <p class="mb-0"><span class="badge ${getStatusBadgeClass(ticket.status)}">${UI.escapeHTML(ticket.status)}</span></p>
-                            </div>
-                            <div class="col-md-6">
-                                <strong class="text-muted">Priority</strong>
-                                <p class="mb-0"><span class="badge ${getPriorityBadgeClass(ticket.priority)}">${UI.escapeHTML(ticket.priority)}</span></p>
-                            </div>
-                            <div class="col-md-6">
-                                <strong class="text-muted">Location</strong>
-                                <p class="mb-0">${ticket.latitude && ticket.longitude ? `${ticket.latitude}, ${ticket.longitude}` : 'Not available'}</p>
-                                ${ticket.latitude && ticket.longitude ? `<a href="https://www.google.com/maps?q=${ticket.latitude},${ticket.longitude}" target="_blank" class="btn btn-sm btn-outline-primary mt-2"><i class="bi bi-map me-1"></i> Open in Maps</a>` : ''}
-                            </div>
-                            <div class="col-md-6">
-                                <strong class="text-muted">Requester</strong>
-                                <p class="mb-0">${UI.escapeHTML(ticket.requester_name || 'N/A')}</p>
-                            </div>
-                            <div class="col-md-6">
-                                <strong class="text-muted">Created At</strong>
-                                <p class="mb-0">${UI.formatDate(ticket.created_at)}</p>
-                            </div>
-                            ${sla ? `
-                            <div class="col-md-6">
-                                <strong class="text-muted">SLA Status</strong>
-                                <p class="mb-0">${renderSLABadge(sla)}</p>
-                            </div>
-                            ` : ''}
-                        </div>
-                        <div class="mt-3">
-                            <strong class="text-muted">Title</strong>
-                            <p class="mb-2">${UI.escapeHTML(ticket.title)}</p>
-                        </div>
-                        <div class="mt-3">
-                            <strong class="text-muted">Description</strong>
-                            <p class="mb-0" style="white-space: pre-wrap;">${UI.escapeHTML(ticket.description || 'No description provided')}</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Workflow History -->
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">Workflow History</h5>
-                    </div>
-                    <div class="card-body">
-                        ${renderWorkflowTimeline()}
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Action Buttons -->
-            <div class="col-12">
-                <div class="d-flex gap-2 flex-wrap">
-                    ${renderMyTicketActions(ticket)}
-                </div>
-            </div>
-        </div>
-    `;
+    const details = state.selectedTicketDetails;
+
+    if (!detailsEl) return;
+
+    if (!details) {
+        detailsEl.innerHTML = '<p class="text-muted">No ticket details available.</p>';
+        return;
+    }
+
+    renderTicketDetailsInto(detailsEl, details);
+
+    if (state.selectedTicket) {
+        const actionsWrapper = document.createElement('div');
+        actionsWrapper.className = 'mt-3 d-flex gap-2 flex-wrap';
+        actionsWrapper.innerHTML = renderMyTicketActions(state.selectedTicket);
+        detailsEl.appendChild(actionsWrapper);
+    }
 }
 
 /**

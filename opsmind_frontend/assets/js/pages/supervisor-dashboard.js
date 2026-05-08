@@ -10,15 +10,21 @@
  */
 
 import UI from '/assets/js/ui.js';
-import { getSupervisorDashboard, resolveWorkflowUserId } from '/services/workflowService.js';
+import { getSupervisorOverview, getSupervisorTickets, getSupervisorTicketDetails, escalateTicket } from '/services/workflowService.js';
+import TicketService from '/services/ticketService.js';
+import { openTicketDetailsModal, getTicketLocationDisplay } from '/assets/js/components/ticketDetailsModal.js';
+import { openEscalationModal } from '/assets/js/components/escalationModal.js';
 import AuthService from '/services/authService.js';
 
 /**
  * Page state
  */
 const state = {
-    dashboardData: null,
+    overview: null,
+    tickets: [],
     currentUser: null,
+    workflowUserId: null,
+    dashboardContext: null,
     isLoading: false,
     refreshInterval: null
 };
@@ -37,10 +43,32 @@ export async function initSupervisorDashboard() {
         return;
     }
 
+    state.dashboardContext = AuthService.resolveUserDashboardContext(state.currentUser);
+    if (state.dashboardContext.dashboardType !== 'supervisor') {
+        if (redirectToDashboard(state.dashboardContext)) return;
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    if (!state.dashboardContext.workflowUserId) {
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    state.workflowUserId = state.dashboardContext.workflowUserId;
+
     // Display user name
     const userNameEl = document.getElementById('userName');
     if (userNameEl && state.currentUser.name) {
         userNameEl.textContent = state.currentUser.name;
+    }
+
+    const refreshButton = document.getElementById('refreshDashboard');
+    if (refreshButton) {
+        refreshButton.addEventListener('click', async () => {
+            UI.showToast('Refreshing dashboard...', 'info');
+            await loadDashboardData();
+        });
     }
     
     // Load initial data
@@ -75,44 +103,43 @@ function waitForApp() {
  */
 async function loadDashboardData() {
     if (state.isLoading) return;
-    
+
     state.isLoading = true;
     showLoading();
-    
+
     try {
-        // Resolve numeric workflow user_id from the auth UUID via email lookup
-        const workflowUserId = await resolveWorkflowUserId(state.currentUser.email, 'SUPERVISOR');
-        if (!workflowUserId) {
-            throw new Error(
-                `Your account (${state.currentUser.email}) was not found in the technician system. ` +
-                `Please contact your administrator to ensure your supervisor profile is set up.`
-            );
+        const workflowUserId = resolveWorkflowUserId();
+        if (!workflowUserId) return;
+
+        const [overviewResponse, ticketsResponse] = await Promise.all([
+            getSupervisorOverview(workflowUserId),
+            getSupervisorTickets(workflowUserId, { limit: 50, offset: 0 })
+        ]);
+
+        if (!overviewResponse?.success || !overviewResponse?.data) {
+            throw new Error(overviewResponse?.message || 'Failed to load overview data');
         }
 
-        console.log('Loading supervisor dashboard for workflow user_id:', workflowUserId);
-        
-        const response = await getSupervisorDashboard(workflowUserId);
-        
-        if (!response.success || !response.data) {
-            throw new Error(response.message || 'Failed to load dashboard data');
+        if (!ticketsResponse?.success || !ticketsResponse?.data) {
+            throw new Error(ticketsResponse?.message || 'Failed to load tickets');
         }
-        
-        state.dashboardData = response.data;
-        console.log('Dashboard data loaded:', state.dashboardData);
-        
-        // Hide loading, show content
+
+        state.overview = overviewResponse.data;
+        state.tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
+
         hideLoading();
-        
-        // Update all sections
         updateMetricCards();
         renderSeniorsTable();
         renderJuniorsTable();
         renderTicketsTable();
         renderWorkloadCharts();
-        
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        showError(error.message || 'Failed to load dashboard data');
+        if (error?.status === 403) {
+            showError('You do not have access to this dashboard.');
+        } else {
+            showError(error.message || 'Failed to load dashboard data');
+        }
     } finally {
         state.isLoading = false;
     }
@@ -168,27 +195,21 @@ window.retryLoadDashboard = async function() {
  * Update metric cards
  */
 function updateMetricCards() {
-    if (!state.dashboardData) return;
-    
-    const { teamStructure, tickets } = state.dashboardData;
-    
-    // Seniors count
-    const seniorsCount = teamStructure?.seniors?.length || 0;
+    if (!state.overview) return;
+
+    const overview = state.overview;
+    const seniorTeams = Array.isArray(overview.ticketsPerSeniorTeam) ? overview.ticketsPerSeniorTeam : [];
+    const seniorsCount = seniorTeams.length;
+    const juniorsCount = seniorTeams.reduce((sum, team) => sum + (team.juniorCount || 0), 0);
+    const totalTickets = overview.totalTickets || 0;
+    const avgTickets = juniorsCount > 0 ? (totalTickets / juniorsCount).toFixed(1) : '0';
+
     document.getElementById('seniorsCount').textContent = seniorsCount;
     document.getElementById('seniorCount').textContent = seniorsCount;
-    
-    // Juniors count
-    const juniorsCount = teamStructure?.juniors?.length || 0;
     document.getElementById('juniorsCount').textContent = juniorsCount;
     document.getElementById('juniorCount').textContent = juniorsCount;
-    
-    // Total tickets
-    const totalTickets = tickets?.length || 0;
     document.getElementById('totalTicketsCount').textContent = totalTickets;
     document.getElementById('ticketCount').textContent = totalTickets;
-    
-    // Average tickets per junior
-    const avgTickets = juniorsCount > 0 ? (totalTickets / juniorsCount).toFixed(1) : '0';
     document.getElementById('avgTicketsPerJunior').textContent = avgTickets;
 }
 
@@ -196,15 +217,24 @@ function updateMetricCards() {
  * Render seniors table
  */
 function renderSeniorsTable() {
-    if (!state.dashboardData) return;
-    
-    const { teamStructure } = state.dashboardData;
-    const seniors = teamStructure?.seniors || [];
+    if (!state.overview) return;
+
+    const teams = Array.isArray(state.overview.ticketsPerSeniorTeam)
+        ? state.overview.ticketsPerSeniorTeam
+        : [];
+    const technicians = Array.isArray(state.overview.ticketsPerTechnician)
+        ? state.overview.ticketsPerTechnician
+        : [];
+    const seniorMap = new Map(
+        technicians
+            .filter((tech) => tech.level === 'SENIOR')
+            .map((tech) => [tech.userId, tech])
+    );
     
     const tableBodyEl = document.getElementById('seniorsTableBody');
     const emptyEl = document.getElementById('seniorsEmpty');
     
-    if (seniors.length === 0) {
+    if (teams.length === 0) {
         if (tableBodyEl) tableBodyEl.innerHTML = '';
         if (emptyEl) emptyEl.classList.remove('d-none');
         return;
@@ -215,25 +245,28 @@ function renderSeniorsTable() {
     
     tableBodyEl.innerHTML = '';
     
-    seniors.forEach(senior => {
+    teams.forEach(team => {
         const row = document.createElement('tr');
-        
-        const juniorCount = senior.juniorCount || 0;
-        const ticketCount = senior.assignedTickets ?? senior.assignedTicketsCount ?? 0;
+
+        const seniorTech = seniorMap.get(team.seniorUserId) || {};
+        const juniorCount = team.juniorCount || 0;
+        const ticketCount = team.ticketCount || seniorTech.ticketCount || 0;
         const statusClass = ticketCount > 10 ? 'danger' : ticketCount > 5 ? 'warning' : 'success';
         const statusIcon = ticketCount > 10 ? 'exclamation-triangle' : ticketCount > 5 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 10 ? 'Heavy Load' : ticketCount > 5 ? 'Moderate Load' : 'Light Load';
+        const seniorName = team.seniorName || seniorTech.name || 'Unknown';
+        const seniorEmail = seniorTech.email || 'N/A';
         
         row.innerHTML = `
             <td>
                 <div class="d-flex align-items-center">
                     <div class="avatar-circle bg-primary text-white me-2" style="width: 32px; height: 32px; font-size: 0.875rem;">
-                        ${UI.escapeHTML((senior.name || 'U')[0].toUpperCase())}
+                        ${UI.escapeHTML((seniorName || 'U')[0].toUpperCase())}
                     </div>
-                    <span class="fw-semibold">${UI.escapeHTML(senior.name || 'Unknown')}</span>
+                    <span class="fw-semibold">${UI.escapeHTML(seniorName)}</span>
                 </div>
             </td>
-            <td><small class="text-muted">${UI.escapeHTML(senior.email || 'No email')}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(seniorEmail)}</small></td>
             <td>
                 <span class="badge bg-${statusClass} px-2 py-1">
                     <i class="bi bi-${statusIcon} me-1"></i>
@@ -262,10 +295,9 @@ function renderSeniorsTable() {
  * Render juniors table
  */
 function renderJuniorsTable() {
-    if (!state.dashboardData) return;
-    
-    const { teamStructure } = state.dashboardData;
-    const juniors = teamStructure?.juniors || [];
+    if (!state.tickets) return;
+
+    const juniors = buildJuniorSummary();
     
     const tableBodyEl = document.getElementById('juniorsTableBody');
     const emptyEl = document.getElementById('juniorsEmpty');
@@ -283,8 +315,8 @@ function renderJuniorsTable() {
     
     juniors.forEach(junior => {
         const row = document.createElement('tr');
-        
-        const ticketCount = junior.assignedTickets ?? junior.assignedTicketsCount ?? 0;
+
+        const ticketCount = junior.ticketCount || 0;
         const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
         const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
@@ -327,9 +359,9 @@ function renderJuniorsTable() {
  * Render tickets table
  */
 function renderTicketsTable() {
-    if (!state.dashboardData) return;
+    if (!state.tickets) return;
     
-    const { tickets } = state.dashboardData;
+    const tickets = state.tickets;
     
     const tableBodyEl = document.getElementById('ticketsTableBody');
     const emptyEl = document.getElementById('ticketsEmpty');
@@ -350,17 +382,21 @@ function renderTicketsTable() {
         
         const ticketId = ticket.ticketId || ticket.id || 'N/A';
         const title = ticket.title || 'No title';
-        const assignedUserLabel = ticket.assignedToName || ticket.assigned_to_name || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+        const assignedUserLabel = ticket.assignedToName
+            || ticket.assigned_to_name
+            || ticket.assignedToEmail
+            || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+        const assigneeLevel = ticket.assignedToLevel || ticket.assignedToLevelCode || 'UNASSIGNED';
         const avatarInitial = String(assignedUserLabel || 'U').charAt(0).toUpperCase();
-        const seniorOwner = ticket.seniorName || 'N/A';
+        const juniorOwner = ticket.hierarchy?.junior?.name || 'Unassigned';
+        const seniorOwner = ticket.hierarchy?.senior?.name || 'Unassigned';
+        const supervisorOwner = ticket.hierarchy?.supervisor?.name || 'Unassigned';
         const status = ticket.status || 'UNKNOWN';
         const priority = ticket.priority || 'UNKNOWN';
         const createdAt = ticket.createdAt || ticket.created_at;
-        
-        const location = ticket.location?.latitude && ticket.location?.longitude
-            ? `${ticket.location.latitude.toFixed(4)}, ${ticket.location.longitude.toFixed(4)}`
-            : 'N/A';
-        const hasLocation = ticket.location?.latitude && ticket.location?.longitude;
+        const escalationCount = ticket.escalationCount ?? ticket.escalation_count ?? 0;
+        const allowedActions = ticket.allowedActions || ticket.allowed_actions || {};
+        const location = getTicketLocationDisplay(ticket);
         
         // Status icons
         const statusIcons = {
@@ -381,7 +417,7 @@ function renderTicketsTable() {
         
         row.innerHTML = `
             <td>
-                <a href="#" onclick="window.viewTicket('${UI.escapeHTML(ticketId)}'); return false;" class="text-decoration-none fw-semibold">
+                <a href="#" onclick="window.viewTicketDetails('${UI.escapeHTML(String(ticketId))}'); return false;" class="text-decoration-none fw-semibold">
                     <i class="bi bi-ticket-detailed me-1"></i>
                     ${UI.escapeHTML(ticketId.toString().substring(0, 8))}...
                 </a>
@@ -399,7 +435,10 @@ function renderTicketsTable() {
                     <small>${UI.escapeHTML(String(assignedUserLabel))}</small>
                 </div>
             </td>
-            <td><small  class="text-muted">${UI.escapeHTML(seniorOwner)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(String(assigneeLevel))}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(juniorOwner)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(seniorOwner)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(supervisorOwner)}</small></td>
             <td>
                 <span class="badge ${getStatusBadgeClass(status)} px-2 py-1">
                     <i class="bi bi-${statusIcons[status.toUpperCase()] || 'circle'} me-1"></i>
@@ -413,13 +452,12 @@ function renderTicketsTable() {
                 </span>
             </td>
             <td><small class="text-muted">${UI.formatDate(createdAt)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(location)}</small></td>
             <td>
-                ${hasLocation ? `
-                    <a href="https://www.google.com/maps?q=${ticket.location.latitude},${ticket.location.longitude}" 
-                       target="_blank" class="btn btn-sm btn-outline-primary">
-                        <i class="bi bi-geo-alt"></i>
-                    </a>
-                ` : '<span class="text-muted small">N/A</span>'}
+                <span class="badge bg-warning-subtle text-warning">${UI.escapeHTML(String(escalationCount))}</span>
+            </td>
+            <td>
+                ${buildActionButtons(ticketId, allowedActions)}
             </td>
         `;
         
@@ -427,19 +465,42 @@ function renderTicketsTable() {
     });
 }
 
+function buildActionButtons(ticketId, allowedActions) {
+    const actions = [];
+
+    if (allowedActions?.canStart) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-purple" onclick="window.updateTicketStatus('${UI.escapeHTML(String(ticketId))}', 'IN_PROGRESS')">Start</button>`
+        );
+    }
+
+    if (allowedActions?.canResolve) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-success" onclick="window.updateTicketStatus('${UI.escapeHTML(String(ticketId))}', 'RESOLVED')">Resolve</button>`
+        );
+    }
+
+    if (allowedActions?.canEscalate) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-warning" onclick="window.escalateTicket('${UI.escapeHTML(String(ticketId))}')">Escalate</button>`
+        );
+    }
+
+    actions.push(
+        `<button type="button" class="btn btn-sm btn-outline-primary" onclick="window.viewTicketDetails('${UI.escapeHTML(String(ticketId))}')">View Details</button>`
+    );
+
+    return `<div class="d-flex flex-wrap gap-2">${actions.join('')}</div>`;
+}
+
 /**
  * Render workload charts
  */
 function renderWorkloadCharts() {
-    if (!state.dashboardData || !state.dashboardData.workload) return;
-    
-    const { workload } = state.dashboardData;
-    
-    // Render by Status
-    renderWorkloadByStatus(workload.byStatus || {});
-    
-    // Render by Priority
-    renderWorkloadByPriority(workload.byPriority || {});
+    if (!state.overview) return;
+
+    renderWorkloadByStatus(state.overview.ticketsByStatus || {});
+    renderWorkloadByPriority(state.overview.ticketsByPriority || {});
 }
 
 /**
@@ -546,12 +607,121 @@ function getPriorityBadgeClass(priority) {
 }
 
 /**
+ * Update ticket status
+ */
+window.updateTicketStatus = async function(ticketId, newStatus) {
+    UI.showToast('Updating ticket status...', 'info');
+
+    try {
+        await TicketService.updateStatus(ticketId, newStatus);
+        UI.showToast('Ticket status updated!', 'success');
+        await loadDashboardData();
+    } catch (error) {
+        console.error('Error updating ticket status:', error);
+        UI.showToast(error.message || 'Failed to update ticket status', 'error');
+    }
+};
+
+/**
+ * Escalate ticket
+ */
+window.escalateTicket = async function(ticketId) {
+    const workflowUserId = resolveWorkflowUserId();
+    if (!workflowUserId) return;
+
+    openEscalationModal({
+        title: `Escalate Ticket ${ticketId}`,
+        onSubmit: async (reason) => {
+            const userRole = resolveUserRole('SUPERVISOR');
+
+            await escalateTicket(ticketId, {
+                reason: reason.trim(),
+                escalatedBy: workflowUserId,
+                userRole
+            });
+
+            UI.showToast('Ticket escalated successfully!', 'success');
+            await loadDashboardData();
+        }
+    });
+};
+
+/**
  * View ticket details (placeholder)
  */
-window.viewTicket = function(ticketId) {
-    console.log('View ticket:', ticketId);
-    UI.showToast('Ticket detail view not yet implemented', 'info');
+window.viewTicketDetails = async function(ticketId) {
+    const workflowUserId = resolveWorkflowUserId();
+    if (!workflowUserId) return;
+
+    const modalHandle = openTicketDetailsModal({ title: `Ticket ${ticketId}` });
+    modalHandle.setLoading('Loading ticket details...');
+
+    try {
+        const response = await getSupervisorTicketDetails(workflowUserId, ticketId);
+        if (!response?.success || !response?.data?.ticket) {
+            console.error('Unexpected ticket details response:', response);
+            throw new Error(response?.message || 'Ticket details unavailable');
+        }
+
+        modalHandle.setContent(response.data);
+    } catch (error) {
+        console.error('Failed to load ticket details:', error);
+        if (error?.status === 403) {
+            modalHandle.setError('You do not have access to this dashboard.');
+        } else {
+            modalHandle.setError(error.message || 'Failed to load ticket details');
+        }
+    }
 };
+
+function resolveWorkflowUserId() {
+    if (state.workflowUserId) return state.workflowUserId;
+    if (!state.dashboardContext?.workflowUserId) {
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return null;
+    }
+    state.workflowUserId = state.dashboardContext.workflowUserId;
+    return state.workflowUserId;
+}
+
+function resolveUserRole(defaultRole) {
+    return String(
+        state.currentUser?.technicianLevel ||
+        state.currentUser?.level ||
+        AuthService.getTechnicianLevel() ||
+        defaultRole
+    ).toUpperCase();
+}
+
+function redirectToDashboard(context) {
+    const targetPath = context?.dashboardPath || '';
+    if (targetPath && window.location.pathname !== targetPath) {
+        window.location.href = targetPath;
+        return true;
+    }
+    return false;
+}
+
+function buildJuniorSummary() {
+    const juniorMap = new Map();
+
+    state.tickets.forEach((ticket) => {
+        const junior = ticket.hierarchy?.junior;
+        if (!junior?.userId) return;
+
+        const current = juniorMap.get(junior.userId) || {
+            userId: junior.userId,
+            name: junior.name || 'Unknown',
+            seniorName: ticket.hierarchy?.senior?.name || 'Unassigned',
+            ticketCount: 0
+        };
+
+        current.ticketCount += 1;
+        juniorMap.set(junior.userId, current);
+    });
+
+    return Array.from(juniorMap.values());
+}
 
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {

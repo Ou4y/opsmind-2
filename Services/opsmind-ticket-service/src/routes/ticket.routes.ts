@@ -16,7 +16,7 @@ import { logger } from "../config/logger";
 import { config } from "../config";
 import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from "../utils/ticketEnrichment";
 import { fetchUserDetails } from "../utils/userServiceClient";
-import { fetchSupervisor } from "../utils/workflowServiceClient";
+import { fetchSupervisor, syncWorkflowTicket } from "../utils/workflowServiceClient";
 import { updateSlaStatus, SlaStatusPayload } from "../utils/slaServiceClient";
 
 const router = Router();
@@ -511,6 +511,20 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
       ) {
         return res.status(400).json({ error: "Invalid state transition" });
       }
+
+      if (ticketUpdates.status === "RESOLVED") {
+        const incomingSummary = (ticketUpdates.resolution_summary || "").trim();
+        const existingSummary = (existing.resolution_summary || "").trim();
+
+        if (!incomingSummary && !existingSummary) {
+          ticketUpdates.resolution_summary = "Resolution summary not provided";
+        } else if (!incomingSummary) {
+          ticketUpdates.resolution_summary = existingSummary;
+        }
+
+        (ticketUpdates as any).resolved_at = new Date();
+      }
+
       // Closed timestamp
       if (ticketUpdates.status === "CLOSED") {
         // Prisma expects closed_at in the update object
@@ -569,6 +583,20 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
     // Publish notification event if ticket was resolved
     if (ticketUpdates.status === "RESOLVED") {
       await publishResolvedNotification(ticket);
+    }
+
+    try {
+      await syncWorkflowTicket(ticket, "ticket-service.patch");
+    } catch (syncError: any) {
+      logger.error("Workflow ticket sync failed after update", {
+        ticketId: ticket.id,
+        error: syncError?.message || String(syncError),
+      });
+      return res.status(502).json({
+        error: "Ticket updated but workflow sync failed",
+        ticketId: ticket.id,
+        syncPending: true,
+      });
     }
 
     const enrichedTicket = await enrichTicketWithTechnicianName(ticket);
@@ -638,6 +666,20 @@ router.post("/:id/escalate", validate(escalateTicketSchema), async (req, res, ne
         assigned_to_level: to_level,
       },
     });
+    await publishTicketUpdated(updated);
+    try {
+      await syncWorkflowTicket(updated, "ticket-service.escalate");
+    } catch (syncError: any) {
+      logger.error("Workflow ticket sync failed after escalation", {
+        ticketId: updated.id,
+        error: syncError?.message || String(syncError),
+      });
+      return res.status(502).json({
+        error: "Ticket escalated but workflow sync failed",
+        ticketId: updated.id,
+        syncPending: true,
+      });
+    }
     return res.json(updated);
   } catch (err) {
     next(err);

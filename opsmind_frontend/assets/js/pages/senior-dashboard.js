@@ -9,15 +9,21 @@
  */
 
 import UI from '/assets/js/ui.js';
-import { getSeniorDashboard, resolveWorkflowUserId } from '/services/workflowService.js';
+import { getSeniorOverview, getSeniorTickets, getSeniorTicketDetails, escalateTicket } from '/services/workflowService.js';
+import TicketService from '/services/ticketService.js';
+import { openTicketDetailsModal, getTicketLocationDisplay } from '/assets/js/components/ticketDetailsModal.js';
+import { openEscalationModal } from '/assets/js/components/escalationModal.js';
 import AuthService from '/services/authService.js';
 
 /**
  * Page state
  */
 const state = {
-    dashboardData: null,
+    overview: null,
+    tickets: [],
     currentUser: null,
+    workflowUserId: null,
+    dashboardContext: null,
     isLoading: false,
     refreshInterval: null
 };
@@ -36,10 +42,32 @@ export async function initSeniorDashboard() {
         return;
     }
 
+    state.dashboardContext = AuthService.resolveUserDashboardContext(state.currentUser);
+    if (state.dashboardContext.dashboardType !== 'senior') {
+        if (redirectToDashboard(state.dashboardContext)) return;
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    if (!state.dashboardContext.workflowUserId) {
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return;
+    }
+
+    state.workflowUserId = state.dashboardContext.workflowUserId;
+
     // Display user name
     const userNameEl = document.getElementById('userName');
     if (userNameEl && state.currentUser.name) {
         userNameEl.textContent = state.currentUser.name;
+    }
+
+    const refreshButton = document.getElementById('refreshDashboard');
+    if (refreshButton) {
+        refreshButton.addEventListener('click', async () => {
+            UI.showToast('Refreshing dashboard...', 'info');
+            await loadDashboardData();
+        });
     }
     
     // Load initial data
@@ -74,43 +102,42 @@ function waitForApp() {
  */
 async function loadDashboardData() {
     if (state.isLoading) return;
-    
+
     state.isLoading = true;
     showLoading();
-    
+
     try {
-        // Resolve numeric workflow user_id from the auth UUID via email lookup
-        const workflowUserId = await resolveWorkflowUserId(state.currentUser.email, 'SENIOR');
-        if (!workflowUserId) {
-            throw new Error(
-                `Your account (${state.currentUser.email}) was not found in the technician system. ` +
-                `Please contact your administrator to ensure your senior profile is set up.`
-            );
+        const workflowUserId = resolveWorkflowUserId();
+        if (!workflowUserId) return;
+
+        const [overviewResponse, ticketsResponse] = await Promise.all([
+            getSeniorOverview(workflowUserId),
+            getSeniorTickets(workflowUserId, { limit: 50, offset: 0 })
+        ]);
+
+        if (!overviewResponse?.success || !overviewResponse?.data) {
+            throw new Error(overviewResponse?.message || 'Failed to load overview data');
         }
 
-        console.log('Loading senior dashboard for workflow user_id:', workflowUserId);
-        
-        const response = await getSeniorDashboard(workflowUserId);
-        
-        if (!response.success || !response.data) {
-            throw new Error(response.message || 'Failed to load dashboard data');
+        if (!ticketsResponse?.success || !ticketsResponse?.data) {
+            throw new Error(ticketsResponse?.message || 'Failed to load tickets');
         }
-        
-        state.dashboardData = response.data;
-        console.log('Dashboard data loaded:', state.dashboardData);
-        
-        // Hide loading, show content
+
+        state.overview = overviewResponse.data;
+        state.tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
+
         hideLoading();
-        
-        // Update all sections
         updateSummaryCards();
         renderJuniorsList();
         renderTicketsTable();
         renderWorkloadCharts();
-        
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        showError(error.message || 'Failed to load dashboard data');
+        if (error?.status === 403) {
+            showError('You do not have access to this dashboard.');
+        } else {
+            showError(error.message || 'Failed to load dashboard data');
+        }
     } finally {
         state.isLoading = false;
     }
@@ -120,9 +147,9 @@ async function loadDashboardData() {
  * Show loading state
  */
 function showLoading() {
-    const loadingEl = document.getElementById('dashboardLoading');
+    const loadingEl = document.getElementById('loadingState');
     const contentEl = document.getElementById('dashboardContent');
-    const errorEl = document.getElementById('dashboardError');
+    const errorEl = document.getElementById('errorState');
     
     if (loadingEl) loadingEl.classList.remove('d-none');
     if (contentEl) contentEl.classList.add('d-none');
@@ -133,7 +160,7 @@ function showLoading() {
  * Hide loading, show content
  */
 function hideLoading() {
-    const loadingEl = document.getElementById('dashboardLoading');
+    const loadingEl = document.getElementById('loadingState');
     const contentEl = document.getElementById('dashboardContent');
     
     if (loadingEl) loadingEl.classList.add('d-none');
@@ -144,9 +171,9 @@ function hideLoading() {
  * Show error state
  */
 function showError(message) {
-    const loadingEl = document.getElementById('dashboardLoading');
+    const loadingEl = document.getElementById('loadingState');
     const contentEl = document.getElementById('dashboardContent');
-    const errorEl = document.getElementById('dashboardError');
+    const errorEl = document.getElementById('errorState');
     const errorMsgEl = document.getElementById('errorMessage');
     
     if (loadingEl) loadingEl.classList.add('d-none');
@@ -166,55 +193,55 @@ window.retryLoadDashboard = async function() {
  * Update summary cards
  */
 function updateSummaryCards() {
-    if (!state.dashboardData) return;
-    
-    const { juniors, tickets, workload } = state.dashboardData;
-    
-    // Juniors count
-    document.getElementById('totalJuniors').textContent = juniors?.length || 0;
-    
-    // Total tickets
-    document.getElementById('totalTickets').textContent = tickets?.length || 0;
-    
-    // Active tickets (OPEN + IN_PROGRESS)
-    const activeCount = (workload?.byStatus?.OPEN || 0) + (workload?.byStatus?.IN_PROGRESS || 0);
-    document.getElementById('inProgressTickets').textContent = activeCount;
-    
-    // Resolved tickets
-    const resolvedCount = workload?.byStatus?.RESOLVED || 0;
-    document.getElementById('resolvedTickets').textContent = resolvedCount;
+    if (!state.overview) return;
+
+    const overview = state.overview;
+    const juniorCount = overview?.ticketsPerSeniorTeam?.[0]?.juniorCount ?? Math.max((overview?.ticketsPerTechnician?.length || 0) - 1, 0);
+    const totalTickets = overview?.totalTickets || 0;
+    const openTickets = overview?.openTickets || 0;
+    const inProgressTickets = overview?.inProgressTickets || 0;
+    const resolvedTickets = overview?.resolvedTickets || 0;
+
+    document.getElementById('totalJuniors').textContent = juniorCount;
+    document.getElementById('totalTickets').textContent = totalTickets;
+    document.getElementById('inProgressTickets').textContent = openTickets + inProgressTickets;
+    document.getElementById('resolvedTickets').textContent = resolvedTickets;
 }
 
 /**
  * Render juniors list
  */
 function renderJuniorsList() {
-    if (!state.dashboardData) return;
-    
-    const { juniors } = state.dashboardData;
+    if (!state.overview) return;
+
+    const technicians = Array.isArray(state.overview.ticketsPerTechnician)
+        ? state.overview.ticketsPerTechnician
+        : [];
+    const juniors = technicians.filter((tech) => tech.level === 'JUNIOR');
+    const displayMembers = juniors.length > 0 ? juniors : technicians;
     const listEl = document.getElementById('juniorsList');
     const emptyEl = document.getElementById('juniorsEmpty');
     const countEl = document.getElementById('juniorCount');
-    
-    if (!juniors || juniors.length === 0) {
+
+    if (!displayMembers || displayMembers.length === 0) {
         if (listEl) listEl.innerHTML = '';
         if (emptyEl) emptyEl.classList.remove('d-none');
         if (countEl) countEl.textContent = '0';
         return;
     }
-    
+
     if (emptyEl) emptyEl.classList.add('d-none');
-    if (countEl) countEl.textContent = juniors.length;
+    if (countEl) countEl.textContent = juniors.length ? juniors.length : displayMembers.length;
     
     if (!listEl) return;
     
     listEl.innerHTML = '';
     
-    juniors.forEach(junior => {
+    displayMembers.forEach(junior => {
         const col = document.createElement('div');
         col.className = 'col-md-6 col-lg-4';
         
-        const ticketCount = junior.assignedTickets ?? junior.assignedTicketsCount ?? 0;
+        const ticketCount = junior.ticketCount ?? junior.assignedTickets ?? junior.assignedTicketsCount ?? 0;
         const statusClass = ticketCount > 5 ? 'danger' : ticketCount > 2 ? 'warning' : 'success';
         const statusIcon = ticketCount > 5 ? 'exclamation-triangle' : ticketCount > 2 ? 'hourglass-split' : 'check-circle';
         const statusText = ticketCount > 5 ? 'Overloaded' : ticketCount > 2 ? 'Active' : 'Available';
@@ -232,6 +259,7 @@ function renderJuniorsList() {
                                 <i class="bi bi-envelope me-1"></i>
                                 ${UI.escapeHTML(junior.email || 'No email')}
                             </small>
+                            <div class="text-muted small">${UI.escapeHTML(junior.level || '')}</div>
                         </div>
                     </div>
                     <div class="d-flex justify-content-between align-items-center gap-2">
@@ -256,9 +284,9 @@ function renderJuniorsList() {
  * Render tickets table
  */
 function renderTicketsTable() {
-    if (!state.dashboardData) return;
+    if (!state.tickets) return;
     
-    const { tickets } = state.dashboardData;
+    const tickets = state.tickets;
     const tableBodyEl = document.getElementById('ticketsTableBody');
     const emptyEl = document.getElementById('ticketsEmpty');
     const countEl = document.getElementById('ticketCount');
@@ -279,15 +307,24 @@ function renderTicketsTable() {
     
     tickets.forEach(ticket => {
         const row = document.createElement('tr');
-        
-        const assignedToLabel = ticket.assignedToName || ticket.assigned_to_name || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+
+        const ticketId = ticket.ticketId || ticket.id || 'N/A';
+        const title = ticket.title || 'No title';
+        const assignedToLabel = ticket.assignedToName
+            || ticket.assigned_to_name
+            || ticket.assignedToEmail
+            || (ticket.assignedTo != null ? `User ${ticket.assignedTo}` : 'Unassigned');
+        const assigneeLevel = ticket.assignedToLevel || ticket.assignedToLevelCode || 'UNASSIGNED';
         const avatarInitial = String(assignedToLabel || 'U').charAt(0).toUpperCase();
-        const location = ticket.location?.latitude && ticket.location?.longitude
-            ? `${ticket.location.latitude.toFixed(4)}, ${ticket.location.longitude.toFixed(4)}`
-            : 'N/A';
-        const hasLocation = ticket.location?.latitude && ticket.location?.longitude;
+        const juniorOwner = ticket.hierarchy?.junior?.name || 'Unassigned';
+        const seniorOwner = ticket.hierarchy?.senior?.name || 'Unassigned';
+        const supervisorOwner = ticket.hierarchy?.supervisor?.name || 'Unassigned';
         const status = ticket.status || 'UNKNOWN';
         const priority = ticket.priority || 'UNKNOWN';
+        const createdAt = ticket.createdAt || ticket.created_at;
+        const escalationCount = ticket.escalationCount ?? ticket.escalation_count ?? 0;
+        const allowedActions = ticket.allowedActions || ticket.allowed_actions || {};
+        const location = getTicketLocationDisplay(ticket);
         
         // Status icons
         const statusIcons = {
@@ -308,19 +345,28 @@ function renderTicketsTable() {
         
         row.innerHTML = `
             <td>
-                <a href="#" onclick="window.viewTicket('${UI.escapeHTML(ticket.ticketId)}'); return false;" class="text-decoration-none fw-semibold">
+                <a href="#" onclick="window.viewTicketDetails('${UI.escapeHTML(String(ticketId))}'); return false;" class="text-decoration-none fw-semibold">
                     <i class="bi bi-ticket-detailed me-1"></i>
-                    ${UI.escapeHTML(ticket.ticketId).substring(0, 8)}...
+                    ${UI.escapeHTML(String(ticketId)).substring(0, 8)}...
                 </a>
             </td>
             <td>
-                <div class="d-flex align-items-center">
-                    <div class="avatar-circle bg-secondary text-white me-2" style="width: 28px; height: 28px; font-size: 0.75rem;">
-                        ${UI.escapeHTML(avatarInitial)}
-                    </div>
-                    <span>${UI.escapeHTML(String(assignedToLabel))}</span>
+                <div class="text-truncate" style="max-width: 200px;" title="${UI.escapeHTML(title)}">
+                    ${UI.escapeHTML(title)}
                 </div>
             </td>
+            <td>
+                <div class="d-flex align-items-center">
+                    <div class="avatar-circle bg-secondary text-white me-2" style="width: 24px; height: 24px; font-size: 0.7rem;">
+                        ${UI.escapeHTML(avatarInitial)}
+                    </div>
+                    <small>${UI.escapeHTML(String(assignedToLabel))}</small>
+                </div>
+            </td>
+            <td><small class="text-muted">${UI.escapeHTML(String(assigneeLevel))}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(juniorOwner)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(seniorOwner)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(supervisorOwner)}</small></td>
             <td>
                 <span class="badge ${getStatusBadgeClass(status)} px-2 py-1">
                     <i class="bi bi-${statusIcons[status.toUpperCase()] || 'circle'} me-1"></i>
@@ -333,12 +379,13 @@ function renderTicketsTable() {
                     ${UI.escapeHTML(priority)}
                 </span>
             </td>
-            <td><small class="text-muted">${UI.formatDate(ticket.createdAt)}</small></td>
+            <td><small class="text-muted">${UI.formatDate(createdAt)}</small></td>
+            <td><small class="text-muted">${UI.escapeHTML(location)}</small></td>
             <td>
-                ${location}
-                ${hasLocation ? `<br><a href="https://www.google.com/maps?q=${ticket.location.latitude},${ticket.location.longitude}" target="_blank" class="text-decoration-none small">
-                    <i class="bi bi-geo-alt"></i> View Map
-                </a>` : ''}
+                <span class="badge bg-warning-subtle text-warning">${UI.escapeHTML(String(escalationCount))}</span>
+            </td>
+            <td>
+                ${buildActionButtons(ticketId, allowedActions)}
             </td>
         `;
         
@@ -346,22 +393,45 @@ function renderTicketsTable() {
     });
 }
 
+function buildActionButtons(ticketId, allowedActions) {
+    const actions = [];
+
+    if (allowedActions?.canStart) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-purple" onclick="window.updateTicketStatus('${UI.escapeHTML(String(ticketId))}', 'IN_PROGRESS')">Start</button>`
+        );
+    }
+
+    if (allowedActions?.canResolve) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-success" onclick="window.updateTicketStatus('${UI.escapeHTML(String(ticketId))}', 'RESOLVED')">Resolve</button>`
+        );
+    }
+
+    if (allowedActions?.canEscalate) {
+        actions.push(
+            `<button type="button" class="btn btn-sm btn-warning" onclick="window.escalateTicket('${UI.escapeHTML(String(ticketId))}')">Escalate</button>`
+        );
+    }
+
+    actions.push(
+        `<button type="button" class="btn btn-sm btn-outline-primary" onclick="window.viewTicketDetails('${UI.escapeHTML(String(ticketId))}')">View Details</button>`
+    );
+
+    return `<div class="d-flex flex-wrap gap-2">${actions.join('')}</div>`;
+}
+
 /**
  * Render workload charts
  */
 function renderWorkloadCharts() {
-    if (!state.dashboardData || !state.dashboardData.workload) return;
+    if (!state.overview) return;
     
-    const { workload } = state.dashboardData;
+    const overview = state.overview;
     
-    // Render by Status
-    renderWorkloadByStatus(workload.byStatus || {});
-    
-    // Render by Priority
-    renderWorkloadByPriority(workload.byPriority || {});
-    
-    // Render by Junior
-    renderWorkloadByJunior(workload.byJunior || []);
+    renderWorkloadByStatus(overview.ticketsByStatus || {});
+    renderWorkloadByPriority(overview.ticketsByPriority || {});
+    renderWorkloadByJunior(overview.ticketsPerTechnician || []);
 }
 
 /**
@@ -452,19 +522,20 @@ function renderWorkloadByJunior(byJunior) {
         return;
     }
     
-    const maxCount = Math.max(...byJunior.map(j => j.count), 1);
+    const maxCount = Math.max(...byJunior.map(j => j.ticketCount ?? j.count ?? 0), 1);
     
     let html = '<div class="workload-bars">';
     
     byJunior.slice(0, 5).forEach(junior => {
-        const percentage = (junior.count / maxCount) * 100;
-        const juniorName = junior.name || `Junior #${junior.juniorId}`;
+        const count = junior.ticketCount ?? junior.count ?? 0;
+        const percentage = (count / maxCount) * 100;
+        const juniorName = junior.name || `Technician #${junior.userId || junior.juniorId}`;
         
         html += `
             <div class="workload-bar-item mb-2">
                 <div class="d-flex justify-content-between mb-1">
                     <span class="small">${UI.escapeHTML(juniorName)}</span>
-                    <span class="small fw-bold">${junior.count}</span>
+                    <span class="small fw-bold">${count}</span>
                 </div>
                 <div class="progress" style="height: 8px;">
                     <div class="progress-bar bg-primary" style="width: ${percentage}%"></div>
@@ -509,12 +580,100 @@ function getPriorityBadgeClass(priority) {
 }
 
 /**
+ * Update ticket status
+ */
+window.updateTicketStatus = async function(ticketId, newStatus) {
+    UI.showToast('Updating ticket status...', 'info');
+
+    try {
+        await TicketService.updateStatus(ticketId, newStatus);
+        UI.showToast('Ticket status updated!', 'success');
+        await loadDashboardData();
+    } catch (error) {
+        console.error('Error updating ticket status:', error);
+        UI.showToast(error.message || 'Failed to update ticket status', 'error');
+    }
+};
+
+/**
+ * Escalate ticket
+ */
+window.escalateTicket = async function(ticketId) {
+    const workflowUserId = resolveWorkflowUserId();
+    if (!workflowUserId) return;
+
+    openEscalationModal({
+        title: `Escalate Ticket ${ticketId}`,
+        onSubmit: async (reason) => {
+            const userRole = resolveUserRole('SENIOR');
+
+            await escalateTicket(ticketId, {
+                reason: reason.trim(),
+                escalatedBy: workflowUserId,
+                userRole
+            });
+
+            UI.showToast('Ticket escalated successfully!', 'success');
+            await loadDashboardData();
+        }
+    });
+};
+
+/**
  * View ticket details (placeholder)
  */
-window.viewTicket = function(ticketId) {
-    console.log('View ticket:', ticketId);
-    UI.showToast('Ticket detail view not yet implemented', 'info');
+window.viewTicketDetails = async function(ticketId) {
+    const workflowUserId = resolveWorkflowUserId();
+    if (!workflowUserId) return;
+
+    const modalHandle = openTicketDetailsModal({ title: `Ticket ${ticketId}` });
+    modalHandle.setLoading('Loading ticket details...');
+
+    try {
+        const response = await getSeniorTicketDetails(workflowUserId, ticketId);
+        if (!response?.success || !response?.data?.ticket) {
+            console.error('Unexpected ticket details response:', response);
+            throw new Error(response?.message || 'Ticket details unavailable');
+        }
+
+        modalHandle.setContent(response.data);
+    } catch (error) {
+        console.error('Failed to load ticket details:', error);
+        if (error?.status === 403) {
+            modalHandle.setError('You do not have access to this dashboard.');
+        } else {
+            modalHandle.setError(error.message || 'Failed to load ticket details');
+        }
+    }
 };
+
+function resolveWorkflowUserId() {
+    if (state.workflowUserId) return state.workflowUserId;
+    if (!state.dashboardContext?.workflowUserId) {
+        showError('Workflow profile not found or incomplete. Please logout and login again.');
+        return null;
+    }
+    state.workflowUserId = state.dashboardContext.workflowUserId;
+    return state.workflowUserId;
+}
+
+function resolveUserRole(defaultRole) {
+    return String(
+        state.currentUser?.technicianLevel ||
+        state.currentUser?.level ||
+        AuthService.getTechnicianLevel() ||
+        defaultRole
+    ).toUpperCase();
+}
+
+function redirectToDashboard(context) {
+    const targetPath = context?.dashboardPath || '';
+    if (targetPath && window.location.pathname !== targetPath) {
+        window.location.href = targetPath;
+        return true;
+    }
+    return false;
+}
 
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {

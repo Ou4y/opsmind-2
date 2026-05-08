@@ -5,6 +5,7 @@ import { createApp } from './app';
 import { pool, waitForDatabase } from './config/database';
 import { startSlaMonitor } from './jobs/slaMonitor';
 import { startAssignmentConsumer, stopAssignmentConsumer } from './jobs/assignmentConsumer';
+import { startTicketSyncConsumer, stopTicketSyncConsumer } from './jobs/ticketSyncConsumer';
 
 const PORT: number = parseInt(process.env.PORT || '3003', 10);
 
@@ -26,11 +27,13 @@ async function main(): Promise<void> {
     // ── Start background jobs ──
     startSlaMonitor();
     await startAssignmentConsumer();
+    await startTicketSyncConsumer();
 
     // ── Graceful shutdown ──
     const shutdown = async (signal: string) => {
       console.log(`\n${signal} received. Shutting down gracefully...`);
       await stopAssignmentConsumer();
+      await stopTicketSyncConsumer();
       await pool.end();
       console.log('MySQL pool closed.');
       process.exit(0);

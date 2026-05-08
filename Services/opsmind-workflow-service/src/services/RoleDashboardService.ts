@@ -130,6 +130,9 @@ export class RoleDashboardService {
     const assignedUserId = this.toNumericUserId(ticket.assigned_to);
     const hierarchy = await this.resolveHierarchyContext(assignedUserId);
     const assignedTechnician = hierarchy.junior || hierarchy.senior || hierarchy.supervisor;
+    const assignedToLevel = this.resolveOwnerRole(assignedTechnician?.level || ticket.assigned_to_level || null);
+    const ownershipType = this.resolveOwnershipType(scope, assignedUserId, assignedToLevel, ticket.escalation_count ?? 0);
+    const allowedActions = this.buildAllowedActions(scope, assignedUserId, assignedToLevel, ticket.status);
     const requesterDetails = ticket.requester_id
       ? await this.safeFetchUser(ticket.requester_id)
       : null;
@@ -191,11 +194,17 @@ export class RoleDashboardService {
         assignedTo: ticket.assigned_to ?? null,
         assignedToName: assignedTechnician?.name ?? null,
         assignedToEmail: assignedTechnician?.email ?? null,
-        assignedToLevel: assignedTechnician?.level || this.resolveSupportLevel(ticket.assigned_to_level),
+        assignedToLevel: assignedToLevel,
+        assignedToLevelCode: ticket.assigned_to_level ?? null,
+        currentOwnerRole: assignedToLevel,
+        ownershipType,
         requester: requesterDetails?.name || ticket.requester_id || null,
         requesterId: ticket.requester_id ?? null,
         building: ticket.building ?? null,
         room: ticket.room ?? null,
+        latitude: ticket.latitude ?? null,
+        longitude: ticket.longitude ?? null,
+        location: this.buildLocationPayload(ticket),
         createdAt: ticket.created_at ?? null,
         updatedAt: ticket.updated_at ?? null,
         closedAt: ticket.closed_at ?? null,
@@ -212,6 +221,7 @@ export class RoleDashboardService {
       workflowLogs: workflowLogPayload,
       slaEvents,
       timeline,
+      allowedActions,
     };
   }
 
@@ -237,6 +247,9 @@ export class RoleDashboardService {
         const hierarchy = await this.resolveHierarchyContext(assignedUserId, hierarchyCache);
         const requester = ticket.requester_id ? requesterMap.get(String(ticket.requester_id)) : null;
         const sla = slaMap.get(String(ticket.id));
+        const assignedToLevel = this.resolveOwnerRole(technician?.level || ticket.assigned_to_level || null);
+        const ownershipType = this.resolveOwnershipType(scope, assignedUserId, assignedToLevel, ticket.escalation_count ?? 0);
+        const allowedActions = this.buildAllowedActions(scope, assignedUserId, assignedToLevel, ticket.status);
 
         return {
           ticketId: String(ticket.id),
@@ -247,11 +260,17 @@ export class RoleDashboardService {
           assignedTo: ticket.assigned_to ?? null,
           assignedToName: technician?.name ?? null,
           assignedToEmail: technician?.email ?? null,
-          assignedToLevel: technician?.level || this.resolveSupportLevel(ticket.assigned_to_level),
+          assignedToLevel: assignedToLevel,
+          assignedToLevelCode: ticket.assigned_to_level ?? null,
+          currentOwnerRole: assignedToLevel,
+          ownershipType,
           requesterId: ticket.requester_id ?? null,
           requesterName: requester?.name ?? null,
           building: ticket.building ?? null,
           room: ticket.room ?? null,
+          latitude: ticket.latitude ?? null,
+          longitude: ticket.longitude ?? null,
+          location: this.buildLocationPayload(ticket),
           escalationCount: ticket.escalation_count ?? 0,
           createdAt: ticket.created_at ?? null,
           updatedAt: ticket.updated_at ?? null,
@@ -260,6 +279,7 @@ export class RoleDashboardService {
             senior: hierarchy.senior ? this.formatTechnician(hierarchy.senior) : null,
             supervisor: hierarchy.supervisor ? this.formatTechnician(hierarchy.supervisor) : null,
           },
+          allowedActions,
           flags: {
             isEscalated: (ticket.escalation_count ?? 0) > 0,
             isOverdue: sla?.sla_breached ?? false,
@@ -442,6 +462,25 @@ export class RoleDashboardService {
     return `${trimmed.slice(0, 137)}...`;
   }
 
+  private buildLocationPayload(ticket: ExternalTicket) {
+    const building = ticket.building ?? null;
+    const room = ticket.room ?? null;
+    const latitude = ticket.latitude ?? null;
+    const longitude = ticket.longitude ?? null;
+
+    if (building || room) {
+      return { building, room };
+    }
+
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      return { latitude: lat, longitude: lon };
+    }
+
+    return null;
+  }
+
   private extractAssignedUserIds(tickets: ExternalTicket[]) {
     const ids = new Set<number>();
     tickets.forEach((ticket) => {
@@ -465,6 +504,74 @@ export class RoleDashboardService {
   private resolveSupportLevel(level?: string | null) {
     if (!level) return null;
     return SUPPORT_LEVEL_TO_ROLE[level] || null;
+  }
+
+  private resolveOwnerRole(level?: string | null) {
+    if (!level) return null;
+    const normalized = String(level || '').toUpperCase();
+    if (!normalized) return null;
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(normalized)) {
+      return normalized as 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN';
+    }
+    return SUPPORT_LEVEL_TO_ROLE[normalized] || null;
+  }
+
+  private resolveOwnershipType(
+    scope: ScopeContext,
+    assignedUserId: number | null,
+    assignedRole: string | null,
+    escalationCount: number,
+  ) {
+    if (!assignedRole) return 'UNASSIGNED';
+    const isEscalated = escalationCount > 0;
+
+    if (scope.role === 'SENIOR') {
+      if (assignedRole === 'JUNIOR') return 'TEAM_JUNIOR_TICKET';
+      if (assignedRole === 'SENIOR') {
+        if (scope.viewerUserId != null && assignedUserId === scope.viewerUserId) {
+          return isEscalated ? 'ESCALATED_TO_SENIOR' : 'DIRECT_SENIOR_TICKET';
+        }
+        return 'TEAM_SENIOR_TICKET';
+      }
+    }
+
+    if (scope.role === 'SUPERVISOR') {
+      if (assignedRole === 'JUNIOR') return 'TEAM_JUNIOR_TICKET';
+      if (assignedRole === 'SENIOR') return 'TEAM_SENIOR_TICKET';
+      if (assignedRole === 'SUPERVISOR') {
+        if (scope.viewerUserId != null && assignedUserId === scope.viewerUserId) {
+          return isEscalated ? 'ESCALATED_TO_SUPERVISOR' : 'DIRECT_SUPERVISOR_TICKET';
+        }
+        return 'TEAM_SUPERVISOR_TICKET';
+      }
+    }
+
+    return 'TEAM_TICKET';
+  }
+
+  private buildAllowedActions(
+    scope: ScopeContext,
+    assignedUserId: number | null,
+    assignedRole: string | null,
+    status: string | null,
+  ) {
+    const normalizedStatus = String(status || '').toUpperCase();
+    const isClosed = normalizedStatus === 'RESOLVED' || normalizedStatus === 'CLOSED';
+    const isOwner = scope.viewerUserId != null
+      && assignedUserId != null
+      && scope.viewerUserId === assignedUserId;
+    const canStart = isOwner && (normalizedStatus === 'OPEN' || normalizedStatus === 'ESCALATED');
+    const canResolve = isOwner && normalizedStatus === 'IN_PROGRESS';
+    const canEscalate = isOwner && !isClosed
+      && ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(String(assignedRole || ''));
+
+    return {
+      canStart,
+      canResolve,
+      canEscalate,
+      canReassign: false,
+      canViewDetails: true,
+    };
   }
 
   private parseTicketDate(ticket: ExternalTicket) {
