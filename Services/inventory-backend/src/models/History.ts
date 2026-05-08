@@ -1,17 +1,57 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import { prisma } from '../lib/prisma';
+import { AssetHistory } from '@prisma/client';
 
-export interface IHistory extends Document {
+export interface IHistory {
+  id: string;
   assetId: string;
-  action: string; 
+  action: string;
   details: string;
   timestamp: Date;
 }
 
-const HistorySchema: Schema = new Schema({
-  assetId: { type: String, required: true },
-  action: { type: String, required: true },
-  details: { type: String, required: true },
-  timestamp: { type: Date, default: Date.now }
-});
+// History service functions
+export class HistoryService {
+  // Create a new history record
+  static async createHistory(data: {
+    assetId: string;
+    action: string;
+    details: string;
+  }): Promise<AssetHistory> {
+    return await prisma.assetHistory.create({
+      data: {
+        assetId: data.assetId,
+        event: data.action, // Map action to event
+        details: data.details,
+      },
+    });
+  }
 
-export default mongoose.model<IHistory>('History', HistorySchema);
+  // Get history records for an asset
+  static async getHistoryForAsset(assetId: string): Promise<AssetHistory[]> {
+    return await prisma.assetHistory.findMany({
+      where: { assetId },
+      orderBy: { date: 'desc' },
+    });
+  }
+
+  // Get all history records with optional filters
+  static async getAllHistory(filters?: {
+    assetId?: string;
+    event?: string;
+  }): Promise<AssetHistory[]> {
+    return await prisma.assetHistory.findMany({
+      where: filters,
+      orderBy: { date: 'desc' },
+    });
+  }
+
+  // Delete history record
+  static async deleteHistory(id: string): Promise<AssetHistory> {
+    return await prisma.assetHistory.delete({
+      where: { id },
+    });
+  }
+}
+
+// Export the service class as default
+export default HistoryService;
