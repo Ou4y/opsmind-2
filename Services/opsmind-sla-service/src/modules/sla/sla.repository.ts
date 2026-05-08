@@ -47,6 +47,24 @@ export const slaRepository = {
     });
   },
 
+  findByTicketIds(ticketIds: string[]) {
+    return prisma.ticketSLA.findMany({
+      where: { ticketId: { in: ticketIds } },
+      include: {
+        policy: true,
+        events: {
+          where: {
+            eventType: {
+              in: [SlaActionType.RESPONSE_BREACHED, SlaActionType.RESOLUTION_BREACHED],
+            },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+  },
+
   async listTicketSlas(filters: {
     q?: string;
     status?: TicketSLAStatus;
@@ -108,6 +126,34 @@ export const slaRepository = {
       },
       include: { policy: true },
       orderBy: [{ resolutionDueAt: "asc" }, { responseDueAt: "asc" }],
+    });
+  },
+
+  findTicketSlasForCompliance(filters?: { startDate?: string; endDate?: string }) {
+    const createdAtFilter: Prisma.DateTimeFilter | undefined =
+      filters?.startDate || filters?.endDate
+        ? {
+            ...(filters?.startDate ? { gte: new Date(filters.startDate) } : {}),
+            ...(filters?.endDate ? { lte: new Date(filters.endDate) } : {}),
+          }
+        : undefined;
+
+    return prisma.ticketSLA.findMany({
+      where: {
+        ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+      },
+      select: {
+        ticketId: true,
+        priority: true,
+        createdAt: true,
+        firstResponseAt: true,
+        responseDueAt: true,
+        resolutionDueAt: true,
+        responseBreachSent: true,
+        resolutionBreachSent: true,
+        status: true,
+        ticketStatus: true,
+      },
     });
   },
 
