@@ -1,112 +1,176 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import { prisma } from '../lib/prisma';
+import { Asset, AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
 
-// 1. Define Valid Locations & Departments
+// TypeScript interfaces for API compatibility
 export type Location = 'Central Warehouse' | 'Main Building' | 'K Building' | 'N Building' | 'S Building' | 'R Building' | 'Pharmacy Building';
-// ✅ ADDED 'General' here so the server doesn't crash on default values
 export type Department = 'Computer Science' | 'Engineering' | 'Architecture' | 'Business' | 'Mass Comm' | 'Alsun' | 'Pharmacy' | 'Dentistry' | 'Unassigned' | 'General';
 
-/**
- * 2. Define Valid Asset Types
- * ✅ UPDATED: Added 'furniture' to match the frontend dropdown.
- * ✅ CLEANUP: Removed duplicate 'electronics' entries.
- */
-const ASSET_TYPES = [
-  // IT & Computing
-  'laptop', 'desktop', 'tablet', 'server', 'monitor', 'peripheral',
-  'Laptop', 'Desktop', 'Tablet', 'Server', 'Monitor', 'Peripheral',
-  'keyboard', 'Keyboard',
-  'electronics', 'Electronics',
-  
-  // AV & Classroom
-  'projector', 'smartboard', 'camera', 'speaker', 'microphone',
-  'Projector', 'Smartboard', 'Camera', 'Speaker', 'Microphone',
-  
-  // Networking
-  'router', 'switch', 'access_point', 'firewall',
-  'Router', 'Switch', 'Access_Point', 'Firewall',
-  
-  // Office & Furniture
-  // ✅ ADDED 'furniture' here because your frontend sends it!
-  'printer', 'scanner', 'desk', 'chair', 'whiteboard', 'filing_cabinet', 'furniture',
-  'Printer', 'Scanner', 'Desk', 'Chair', 'Whiteboard', 'Filing_Cabinet', 'Furniture',
-  
-  // Lab & Research
-  'microscope', 'centrifuge', 'oscilloscope', '3d_printer', 'lab_bench',
-  'Microscope', 'Centrifuge', 'Oscilloscope', '3D_Printer', 'Lab_Bench',
-  
-  // Facilities
-  'vehicle', 'generator', 'hvac', 'maintenance_tool',
-  'Vehicle', 'Generator', 'HVAC', 'Maintenance_Tool'
-];
-
-// 3. The TypeScript Interface
-export interface IAsset extends Document {
+export interface IAsset {
+  id: string;
   customId: string;
   name: string;
-  type: string; 
-  status: 'active' | 'repair' | 'retired' | 'assigned' | 'maintenance';
+  type: AssetType;
+  status: AssetStatus;
   value: number;
   quantity: number;
-  assignedUser?: string | null; 
-  tickets: string[];
-  location: Location;
-  department: Department;
-  // ✅ Specifications field to store technical details (RAM, Storage, etc.)
+  assignedUser?: string | null;
+  location: AssetLocation;
+  department: AssetDepartment;
   specifications: Record<string, any>;
-  history: { 
-    // ✅ ADDED: 'Details Updated' to match server.ts logic
-    event: 'AssetAssigned' | 'AssetFaultReported' | 'Created' | 'StatusChange' | 'Transfer' | 'InfoUpdate' | 'Distributed' | 'Received_Distribution' | 'Details Updated'; 
-    details: string;
-    date: Date;
-  }[];
   createdAt: Date;
   updatedAt: Date;
+  histories?: Array<{
+    id: string;
+    event: string;
+    details: string;
+    date: Date;
+  }>;
+  tickets?: Array<{
+    id: string;
+    title: string;
+    status: string;
+  }>;
 }
 
-// 4. The Mongoose Schema
-const assetSchema = new Schema<IAsset>({
-  customId: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  
-  type: { 
-    type: String, 
-    required: true,
-    enum: ASSET_TYPES 
-  },
-  
-  status: { type: String, default: 'active' },
-  value: { type: Number, default: 0 },
-  // Default quantity is 1 because we are now tracking individual items
-  quantity: { type: Number, default: 1, min: 0 },
-  assignedUser: { type: String, default: null },
-  tickets: [{ type: String }],
+// Asset service functions
+export class AssetService {
+  // Create a new asset
+  static async createAsset(data: {
+    customId: string;
+    name: string;
+    type: AssetType;
+    status?: AssetStatus;
+    value?: number;
+    quantity?: number;
+    assignedUser?: string;
+    location: AssetLocation;
+    department: AssetDepartment;
+    specifications?: Record<string, any>;
+  }): Promise<Asset> {
+    return await prisma.asset.create({
+      data: {
+        customId: data.customId,
+        name: data.name,
+        type: data.type,
+        status: data.status || 'ACTIVE',
+        value: data.value || 0,
+        quantity: data.quantity || 1,
+        assignedUser: data.assignedUser,
+        location: data.location,
+        department: data.department,
+        specifications: data.specifications || {},
+      },
+    });
+  }
 
-  location: { 
-    type: String, 
-    required: true, 
-    enum: ['Central Warehouse', 'Main Building', 'K Building', 'N Building', 'S Building', 'R Building', 'Pharmacy Building'],
-    default: 'Central Warehouse' 
-  },
+  // Get asset by customId
+  static async getAssetByCustomId(customId: string): Promise<Asset | null> {
+    return await prisma.asset.findUnique({
+      where: { customId },
+    });
+  }
 
-  department: { 
-    type: String, 
-    required: true,
-    // ✅ ADDED 'General' here to match the TypeScript Interface
-    enum: ['Computer Science', 'Engineering', 'Architecture', 'Business', 'Mass Comm', 'Alsun', 'Pharmacy', 'Dentistry', 'Unassigned', 'General'],
-    default: 'Unassigned'
-  },
+  // Get asset with full details (histories and tickets)
+  static async getAssetWithDetails(customId: string): Promise<IAsset | null> {
+    const asset = await prisma.asset.findUnique({
+      where: { customId },
+      include: {
+        histories: {
+          orderBy: { date: 'desc' },
+        },
+        assetTickets: {
+          include: {
+            ticket: true,
+          },
+        },
+      },
+    });
 
-  // ✅ specifications as a flexible Object (Mixed type)
-  specifications: { 
-    type: Schema.Types.Mixed, 
-    default: {} 
-  },
-  
-  history: [{
-    event: { type: String, required: true },
-    details: { type: String, required: true },
-    date: { type: Date, default: Date.now }
-  }]
-}, { timestamps: true });
+    if (!asset) return null;
 
-export default mongoose.model<IAsset>('Asset', assetSchema);
+    return {
+      ...asset,
+      value: Number(asset.value),
+      specifications: (asset.specifications as Record<string, any>) || {},
+      tickets: asset.assetTickets.map(at => ({
+        id: at.ticket.id,
+        title: at.ticket.title,
+        status: at.ticket.status,
+      })),
+    };
+  }
+
+  // Get all assets with optional filters
+  static async getAssets(filters?: {
+    department?: AssetDepartment;
+    status?: AssetStatus;
+    location?: AssetLocation;
+    assignedUser?: string;
+  }): Promise<Asset[]> {
+    return await prisma.asset.findMany({
+      where: filters,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // Update asset
+  static async updateAsset(customId: string, data: Partial<{
+    name: string;
+    type: AssetType;
+    status: AssetStatus;
+    value: number;
+    quantity: number;
+    assignedUser: string | null;
+    location: AssetLocation;
+    department: AssetDepartment;
+    specifications: Record<string, any>;
+  }>): Promise<Asset> {
+    return await prisma.asset.update({
+      where: { customId },
+      data,
+    });
+  }
+
+  // Delete asset
+  static async deleteAsset(customId: string): Promise<Asset> {
+    return await prisma.asset.delete({
+      where: { customId },
+    });
+  }
+
+  // Add history record to asset
+  static async addHistoryToAsset(customId: string, event: string, details: string): Promise<void> {
+    await prisma.assetHistory.create({
+      data: {
+        assetId: customId,
+        event,
+        details,
+      },
+    });
+  }
+
+  // Assign ticket to asset
+  static async assignTicketToAsset(assetCustomId: string, ticketId: string): Promise<void> {
+    await prisma.assetTicket.create({
+      data: {
+        assetId: assetCustomId,
+        ticketId,
+      },
+    });
+  }
+
+  // Remove ticket from asset
+  static async removeTicketFromAsset(assetCustomId: string, ticketId: string): Promise<void> {
+    await prisma.assetTicket.delete({
+      where: {
+        assetId_ticketId: {
+          assetId: assetCustomId,
+          ticketId,
+        },
+      },
+    });
+  }
+}
+
+// Export the service class as default
+export default AssetService;
