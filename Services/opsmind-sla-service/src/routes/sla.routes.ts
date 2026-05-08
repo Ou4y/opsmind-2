@@ -2,6 +2,8 @@ import { Router } from "express";
 import { validate } from "../middleware/validate.middleware";
 import { slaController } from "../modules/sla/sla.controller";
 import {
+  bulkTicketStatusSchema,
+  complianceReportQuerySchema,
   pauseTicketSlaSchema,
   startSlaSchema,
   ticketIdParamsSchema,
@@ -20,6 +22,8 @@ slaRoutes.post("/sla/calculate", validate(startSlaSchema), slaController.start);
 
 slaRoutes.get("/sla/tickets", slaController.listTickets);
 slaRoutes.get("/sla/tickets/:ticketId", validate(ticketIdParamsSchema), slaController.getByTicketId);
+slaRoutes.post("/sla/tickets/status", validate(bulkTicketStatusSchema), slaController.getBulkTicketStatus);
+slaRoutes.get("/sla/reports/compliance", validate(complianceReportQuerySchema), slaController.getComplianceReport);
 
 slaRoutes.get("/sla/policies", slaController.getPolicies);
 slaRoutes.post("/sla/policies", validate(upsertPolicySchema), slaController.upsertPolicy);
