@@ -1,8 +1,7 @@
-import { ticketServiceClient, getTicket, getTicketAssignmentHistory, getTicketStatusHistory, getTicketEscalations, getUserDetails } from '../config/externalServices';
+import { ticketServiceClient, getTicket, getTicketAssignmentHistory, getTicketStatusHistory, getTicketEscalations, getUserDetails, getSlaStatusForTickets, getSlaTicket } from '../config/externalServices';
 import { ReportingRelationshipRepository } from '../repositories/ReportingRelationshipRepository';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { WorkflowLogRepository } from '../repositories/WorkflowLogRepository';
-import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { ExternalTicket, TechnicianRow } from '../interfaces/types';
 
 const SUPPORT_LEVEL_TO_ROLE: Record<string, 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN'> = {
@@ -53,7 +52,6 @@ export class RoleDashboardService {
   private technicianRepo = new TechnicianRepository();
   private relationshipRepo = new ReportingRelationshipRepository();
   private logRepo = new WorkflowLogRepository();
-  private slaRepo = new SlaTrackingRepository();
 
   async getAdminOverview(filters: DashboardFilters) {
     const scope: ScopeContext = { role: 'ADMIN', scopeUserIds: null };
@@ -142,7 +140,7 @@ export class RoleDashboardService {
       this.safeTicketHistory(getTicketStatusHistory, ticketId),
       this.safeTicketHistory(getTicketEscalations, ticketId),
       this.logRepo.getTicketLogs(ticketId),
-      this.slaRepo.getByTicketId(ticketId),
+      this.fetchWorkflowSlaDetail(ticketId),
     ]);
 
     const assignmentItems = assignmentHistory?.items || [];
@@ -585,7 +583,7 @@ export class RoleDashboardService {
   }
 
   private async buildSlaMap(ticketIds: string[]) {
-    const records = await this.slaRepo.getByTicketIds(ticketIds);
+    const records = Object.values(await getSlaStatusForTickets(ticketIds)).filter(Boolean) as any[];
     const map = new Map<string, any>();
     records.forEach((record) => {
       map.set(record.ticket_id, record);
@@ -654,6 +652,27 @@ export class RoleDashboardService {
       });
     }
     return events;
+  }
+
+  private async fetchWorkflowSlaDetail(ticketId: string) {
+    const sla = await getSlaTicket(ticketId);
+    if (!sla) return null;
+
+    const breachedEvent = Array.isArray(sla.events)
+      ? sla.events.find((event: any) =>
+          event.eventType === 'RESPONSE_BREACHED' || event.eventType === 'RESOLUTION_BREACHED')
+      : null;
+
+    const deadline = sla.firstResponseAt ? sla.resolutionDueAt : sla.responseDueAt;
+    const breached =
+      sla.status === 'BREACHED' || sla.responseBreachSent || sla.resolutionBreachSent;
+
+    return {
+      ticket_id: sla.ticketId,
+      sla_deadline: deadline,
+      sla_breached: breached,
+      breached_at: breachedEvent?.createdAt ?? null,
+    };
   }
 
   private buildTimelineEvents(
@@ -843,16 +862,11 @@ export class RoleDashboardService {
 
     const ticketsPerSeniorTeam = await this.buildSeniorTeamCounts(tickets, scope);
 
-    const slaRecords = await this.slaRepo.getByTicketIds(tickets.map((ticket) => String(ticket.id)));
+    const slaRecords = Object.values(
+      await getSlaStatusForTickets(tickets.map((ticket) => String(ticket.id)))
+    ).filter(Boolean) as any[];
     const slaBreached = slaRecords.filter((record) => record.sla_breached).length;
-    const slaAtRisk = slaRecords.filter((record) => {
-      if (record.sla_breached) return false;
-      if (!record.sla_deadline) return false;
-      const now = new Date();
-      const deadline = new Date(record.sla_deadline);
-      const minutes = (deadline.getTime() - now.getTime()) / 1000 / 60;
-      return minutes > 0 && minutes <= 30;
-    }).length;
+    const slaAtRisk = slaRecords.filter((record) => record.at_risk).length;
 
     return {
       totalTickets: tickets.length,
