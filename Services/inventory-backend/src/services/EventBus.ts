@@ -20,8 +20,7 @@ export class EventBusService {
     } catch (error) {
       console.error('❌ RabbitMQ Connection Failed.');
       console.error('Error Details:', error);
-      // In production, you might want to retry rather than exit
-      process.exit(1); 
+      throw error; // Let server.ts handle the error
     }
   }
 
