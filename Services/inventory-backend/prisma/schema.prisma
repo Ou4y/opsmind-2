@@ -1,0 +1,167 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AssetType {
+  LAPTOP @map("laptop")
+  DESKTOP @map("desktop")
+  TABLET @map("tablet")
+  SERVER @map("server")
+  MONITOR @map("monitor")
+  PERIPHERAL @map("peripheral")
+  KEYBOARD @map("keyboard")
+  ELECTRONICS @map("electronics")
+  PROJECTOR @map("projector")
+  SMARTBOARD @map("smartboard")
+  CAMERA @map("camera")
+  SPEAKER @map("speaker")
+  MICROPHONE @map("microphone")
+  ROUTER @map("router")
+  SWITCH @map("switch")
+  ACCESS_POINT @map("access_point")
+  FIREWALL @map("firewall")
+  PRINTER @map("printer")
+  SCANNER @map("scanner")
+  DESK @map("desk")
+  CHAIR @map("chair")
+  WHITEBOARD @map("whiteboard")
+  FILING_CABINET @map("filing_cabinet")
+  FURNITURE @map("furniture")
+  MICROSCOPE @map("microscope")
+  CENTRIFUGE @map("centrifuge")
+  OSCILLOSCOPE @map("oscilloscope")
+  THREE_D_PRINTER @map("3d_printer")
+  LAB_BENCH @map("lab_bench")
+  VEHICLE @map("vehicle")
+  GENERATOR @map("generator")
+  HVAC @map("hvac")
+  MAINTENANCE_TOOL @map("maintenance_tool")
+}
+
+enum AssetStatus {
+  ACTIVE @map("active")
+  REPAIR @map("repair")
+  RETIRED @map("retired")
+  ASSIGNED @map("assigned")
+  MAINTENANCE @map("maintenance")
+}
+
+enum AssetLocation {
+  CENTRAL_WAREHOUSE @map("Central Warehouse")
+  MAIN_BUILDING @map("Main Building")
+  K_BUILDING @map("K Building")
+  N_BUILDING @map("N Building")
+  S_BUILDING @map("S Building")
+  R_BUILDING @map("R Building")
+  PHARMACY_BUILDING @map("Pharmacy Building")
+}
+
+enum AssetDepartment {
+  COMPUTER_SCIENCE @map("Computer Science")
+  ENGINEERING @map("Engineering")
+  ARCHITECTURE @map("Architecture")
+  BUSINESS @map("Business")
+  MASS_COMM @map("Mass Comm")
+  ALSUN @map("Alsun")
+  PHARMACY @map("Pharmacy")
+  DENTISTRY @map("Dentistry")
+  UNASSIGNED @map("Unassigned")
+  GENERAL @map("General")
+}
+
+enum TicketStatus {
+  OPEN @map("Open")
+  IN_PROGRESS @map("In Progress")
+  RESOLVED @map("Resolved")
+  CLOSED @map("Closed")
+}
+
+enum TicketPriority {
+  LOW @map("Low")
+  MEDIUM @map("Medium")
+  HIGH @map("High")
+  CRITICAL @map("Critical")
+}
+
+enum TicketType {
+  HARDWARE @map("Hardware")
+  SOFTWARE @map("Software")
+  NETWORK @map("Network")
+  ACCESS @map("Access")
+  OTHER @map("Other")
+}
+
+model Asset {
+  id             String        @id @default(uuid())
+  customId       String        @unique
+  name           String
+  type           AssetType
+  status         AssetStatus   @default(ACTIVE)
+  value          Decimal       @default(0)
+  quantity       Int           @default(1)
+  assignedUser   String?
+  location       AssetLocation
+  department     AssetDepartment
+  specifications Json          @default("{}")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relations
+  histories      AssetHistory[]
+  assetTickets   AssetTicket[]
+  relatedTickets Ticket[]
+
+  @@map("assets")
+}
+
+model AssetHistory {
+  id      String   @id @default(uuid())
+  assetId String
+  event   String
+  details String
+  date    DateTime @default(now())
+
+  // Relation
+  asset Asset @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@map("asset_embedded_history")
+}
+
+model Ticket {
+  id           String        @id @default(uuid())
+  title        String
+  description  String
+  status       TicketStatus  @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  type         TicketType    @default(OTHER)
+  assignedTo   String?
+  relatedAsset String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  // Relations
+  asset        Asset?        @relation(fields: [relatedAsset], references: [customId])
+  assetTickets AssetTicket[]
+
+  @@map("tickets")
+}
+
+model AssetTicket {
+  assetId  String
+  ticketId String
+
+  // Relations
+  asset  Asset  @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@id([assetId, ticketId])
+  @@map("asset_tickets")
+}
