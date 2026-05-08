@@ -58,6 +58,26 @@ function minutesRemaining(dueAt: Date, paused: boolean): number {
   return Math.ceil((dueAt.getTime() - Date.now()) / 60000);
 }
 
+function isBreachedRecord(record: {
+  status: TicketSLAStatus;
+  responseBreachSent: boolean;
+  resolutionBreachSent: boolean;
+}) {
+  return (
+    record.status === TicketSLAStatus.BREACHED ||
+    record.responseBreachSent ||
+    record.resolutionBreachSent
+  );
+}
+
+function workflowDeadline(record: {
+  firstResponseAt: Date | null;
+  responseDueAt: Date;
+  resolutionDueAt: Date;
+}) {
+  return record.firstResponseAt ? record.resolutionDueAt : record.responseDueAt;
+}
+
 function normalizeStatus(status: string): string {
   return status.trim().toUpperCase();
 }
@@ -240,6 +260,35 @@ export const slaService = {
     return entity;
   },
 
+  async getBulkTicketStatus(ticketIds: string[]) {
+    const uniqueTicketIds = Array.from(new Set(ticketIds.map((id) => id.trim()).filter(Boolean)));
+    const records = await slaRepository.findByTicketIds(uniqueTicketIds);
+    const now = Date.now();
+    const data: Record<string, any | null> = Object.fromEntries(
+      uniqueTicketIds.map((id) => [id, null])
+    );
+
+    for (const record of records) {
+      const deadline = workflowDeadline(record);
+      const breached = isBreachedRecord(record);
+      const breachedAt = record.events[0]?.createdAt ?? null;
+      const timeRemainingMinutes = Math.max(0, Math.round((deadline.getTime() - now) / 60000));
+
+      data[record.ticketId] = {
+        ticket_id: record.ticketId,
+        priority: record.priority,
+        sla_deadline: deadline.toISOString(),
+        sla_breached: breached,
+        breached_at: breachedAt ? breachedAt.toISOString() : null,
+        at_risk: !breached && timeRemainingMinutes <= 30 && timeRemainingMinutes > 0,
+        time_remaining: timeRemainingMinutes,
+        assigned_at: record.createdAt.toISOString(),
+      };
+    }
+
+    return data;
+  },
+
   listTickets(filters: {
     q?: string;
     status?: string;
@@ -276,6 +325,81 @@ export const slaService = {
   }) {
     const policy = await slaRepository.upsertPolicy(body);
     return policy;
+  },
+
+  async getComplianceReport(filters?: { startDate?: string; endDate?: string }) {
+    const rows = await slaRepository.findTicketSlasForCompliance(filters);
+    const now = Date.now();
+    const buckets = new Map<
+      TicketPriority,
+      {
+        priority: TicketPriority;
+        total: number;
+        breached: number;
+        on_track: number;
+        at_risk: number;
+        responseMinutes: number[];
+      }
+    >();
+
+    for (const row of rows) {
+      const bucket = buckets.get(row.priority) ?? {
+        priority: row.priority,
+        total: 0,
+        breached: 0,
+        on_track: 0,
+        at_risk: 0,
+        responseMinutes: [],
+      };
+
+      bucket.total += 1;
+
+      const breached = isBreachedRecord(row);
+      const deadline = workflowDeadline(row);
+      const remainingMinutes = Math.round((deadline.getTime() - now) / 60000);
+      const closedLike = ["RESOLVED", "CLOSED"].includes(row.ticketStatus);
+
+      if (breached) {
+        bucket.breached += 1;
+      } else if (!closedLike && remainingMinutes <= 30 && remainingMinutes > 0) {
+        bucket.at_risk += 1;
+      } else {
+        bucket.on_track += 1;
+      }
+
+      if (row.firstResponseAt) {
+        bucket.responseMinutes.push(
+          Math.max(0, Math.round((row.firstResponseAt.getTime() - row.createdAt.getTime()) / 60000))
+        );
+      }
+
+      buckets.set(row.priority, bucket);
+    }
+
+    const byPriority = Array.from(buckets.values()).map((bucket) => ({
+      priority: bucket.priority,
+      total: bucket.total,
+      breached: bucket.breached,
+      on_track: bucket.on_track,
+      at_risk: bucket.at_risk,
+      avg_response_minutes:
+        bucket.responseMinutes.length > 0
+          ? Math.round(
+              bucket.responseMinutes.reduce((sum, value) => sum + value, 0) /
+                bucket.responseMinutes.length
+            )
+          : 0,
+    }));
+
+    const totalTracked = byPriority.reduce((sum, item) => sum + item.total, 0);
+    const breached = byPriority.reduce((sum, item) => sum + item.breached, 0);
+
+    return {
+      total_tracked: totalTracked,
+      breached,
+      compliance_rate: totalTracked > 0 ? ((totalTracked - breached) / totalTracked) * 100 : 100,
+      by_priority: byPriority,
+    };
   },
 
   async updateStatus(ticketId: string, body: StatusPayload) {
