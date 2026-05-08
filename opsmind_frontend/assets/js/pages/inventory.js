@@ -1,9 +1,5 @@
 // Config is set as globals in config.js (loaded in HTML head)
-const API_URL = (
-  (typeof window !== 'undefined' && window.OPSMIND_INVENTORY_API_URL)
-    ? window.OPSMIND_INVENTORY_API_URL
-    : 'http://localhost:5000/api'
-).replace(/\/+$/, '');
+const API_URL = 'http://localhost:5000/api';
 
 // Define configuration variables globally so the rest of the script can use them
 let BUILDINGS = [];
@@ -41,10 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initializePage() {
-  await loadConfig(); 
-  await loadAssets(); 
+  await loadConfig(); // 1. Fetch config from backend first!
+  await loadAssets(); // 2. Then load assets and render
 }
 
+// 🚀 Fetches the single source of truth from your new backend route
 async function loadConfig() {
   try {
     const response = await fetch(`${API_URL}/config`);
@@ -52,6 +49,7 @@ async function loadConfig() {
     
     const configData = await response.json();
     
+    // Assign the fetched data to our global variables
     BUILDINGS = configData.BUILDINGS || [];
     DEPARTMENTS = configData.DEPARTMENTS || [];
     ASSET_TYPES = configData.ASSET_TYPES || [];
@@ -59,12 +57,7 @@ async function loadConfig() {
     
   } catch (error) {
     console.error('Error loading config:', error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Connection Error',
-      text: 'Could not load system configurations. Is the backend running?',
-      confirmButtonColor: '#4361ee'
-    });
+    alert("Could not load system configurations. Is the backend running?");
   }
 }
 
@@ -89,34 +82,19 @@ async function loadAssets() {
   }
 }
 
-// 🤖 AI Prediction Math Helper (UPDATED to handle sequential YYYYMMDD IDs and old timestamps)
+// 🤖 AI Prediction Math Helper
 function getEOLDetails(asset) {
   const now = new Date();
   let purchaseDate;
   
   if (asset.customId && asset.customId.includes('ASSET-')) {
-      const datePart = asset.customId.split('-')[1];
-      
-      // If using the new 8-digit sequential date prefix (YYYYMMDD)
-      if (datePart && datePart.length === 8) {
-          const year = parseInt(datePart.substring(0, 4));
-          const month = parseInt(datePart.substring(4, 6)) - 1; // JS months are 0-11
-          const day = parseInt(datePart.substring(6, 8));
-          purchaseDate = new Date(year, month, day);
-      } else {
-          // Fallback to the old Unix millisecond timestamp
-          purchaseDate = new Date(parseInt(datePart));
-      }
+      const timestamp = parseInt(asset.customId.split('-')[1]);
+      purchaseDate = new Date(timestamp);
   } else {
-      // Fallback if there is no ASSET- format
-      purchaseDate = new Date(); 
+      purchaseDate = new Date(now.getFullYear() - 3, now.getMonth() - 6, 1);
   }
 
-  // Safety check: if date is somehow invalid, default to today
-  if (isNaN(purchaseDate.getTime())) {
-      purchaseDate = new Date();
-  }
-
+  // Fallback to a default if metrics aren't loaded yet
   const defaultMetrics = { years: 5, cost: 500 };
   const metrics = EOL_METRICS[asset.type] || EOL_METRICS.default || defaultMetrics;
   
@@ -160,7 +138,7 @@ function checkGlobalEOLAlerts() {
   
   if (banner && (expiringCount > 0 || expiredCount > 0)) {
       let html = `
-      <div class="alert alert-danger d-flex justify-content-between align-items-center shadow-sm mb-4 eol-alert-banner">
+      <div class="alert alert-danger d-flex justify-content-between align-items-center shadow-sm mb-4" style="border-left: 5px solid #dc3545;">
           <div>
             <h5 class="mb-1 fw-bold"><i class="bi bi-exclamation-triangle-fill me-2"></i> EOL Action Required</h5>
             <span class="text-dark">OpsMind detected <b>${expiringCount}</b> asset(s) expiring within 6 months, and <b>${expiredCount}</b> expired asset(s) active in the field.</span>
@@ -243,7 +221,7 @@ function renderTable() {
     groupedByName[asset.name].push(asset);
   });
 
-  tableBody.innerHTML = Object.entries(groupedByName).map(([assetName, assetGroup], index) => {
+  tableBody.innerHTML = Object.entries(groupedByName).map(([assetName, assetGroup]) => {
     const totalQty = assetGroup.length;
     const firstAsset = assetGroup[0];
     const typeObj = ASSET_TYPES.find(t => t.value === firstAsset.type);
@@ -254,9 +232,8 @@ function renderTable() {
     const locationsFound = Array.from(locationsSet).join(', ') || 'Unknown';
     const departmentsFound = Array.from(departmentsSet).join(', ') || 'Unassigned';
 
-    // CASCADING ANIMATION DELAY
     return `
-      <tr style="animation-delay: ${index * 0.05}s">
+      <tr>
         <td>
           <div class="d-flex align-items-center">
             <div class="avatar-initial rounded bg-light text-primary me-3">
@@ -272,7 +249,7 @@ function renderTable() {
         <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
         <td><small class="text-muted">${locationsFound}</small></td>
         <td class="text-end">
-          <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetails('${assetName.replace(/'/g, "\\'")}')" title="View & Manage Items">
+          <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetails('${assetName}')" title="View & Manage Items">
             <i class="bi bi-eye me-1"></i> View (${totalQty})
           </button>
         </td>
@@ -284,9 +261,8 @@ function renderTable() {
 async function handleAddAsset(e) {
   e.preventDefault();
 
-  // The submit button lives outside the <form> (in modal-footer) so querySelector on the form won't find it
-  const submitBtn = document.querySelector('button[form="addAssetForm"][type="submit"]');
-  const originalText = submitBtn ? submitBtn.innerHTML : '';
+  const submitBtn = e.target.querySelector('button[type="submit"]');
+  const originalText = submitBtn.innerHTML;
   
   const name = document.getElementById('assetName').value;
   const quantity = parseInt(document.getElementById('assetQuantity').value, 10);
@@ -299,7 +275,7 @@ async function handleAddAsset(e) {
   if (idleAssets.length > 0 && location !== 'Central Warehouse') {
       const aiMessage = `
         You are requesting <strong class="text-dark">${quantity}</strong> new <strong class="text-dark">${formatType(type)}</strong>(s) for <strong>${department}</strong>.<br><br>
-        Wait! OpsMind found <span class="badge rounded-pill fs-6 text-white ai-badge-idle">${idleAssets.length} idle</span> ${formatType(type)}(s) currently sitting in the Central Warehouse.<br><br>
+        Wait! OpsMind found <span class="badge rounded-pill fs-6" style="background-color: #8a2be2;">${idleAssets.length} idle</span> ${formatType(type)}(s) currently sitting in the Central Warehouse.<br><br>
         Would you like to cancel this new purchase and transfer the existing assets instead?
       `;
 
@@ -319,13 +295,11 @@ async function handleAddAsset(e) {
   submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
   submitBtn.disabled = true;
 
-  // SEQUENTIAL ID LOGIC
-  const baseSequence = Math.floor(Math.random() * 90000) + 10000;
-  const datePrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  function generateCustomId() { return `ASSET-${Date.now()}-${Math.floor(Math.random() * 10000)}`; }
 
   try {
     for (let i = 0; i < quantity; i++) {
-      const customId = `ASSET-${datePrefix}-${baseSequence + i}`;
+      const customId = generateCustomId();
       const assetData = { name, customId, type, location, department, status: 'active', quantity: 1 };
 
       const response = await fetch(`${API_URL}/assets`, {
@@ -344,27 +318,12 @@ async function handleAddAsset(e) {
 
     await loadAssets();
 
-    Swal.fire({
-      icon: 'success',
-      title: 'Created!',
-      text: 'Assets have been generated successfully with sequential IDs.',
-      showConfirmButton: false,
-      timer: 1500
-    });
-
   } catch (error) {
     console.error('Error:', error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Error',
-      text: error.message,
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Error: ' + error.message);
   } finally {
-    if (submitBtn) {
-      submitBtn.innerHTML = originalText;
-      submitBtn.disabled = false;
-    }
+    submitBtn.innerHTML = originalText;
+    submitBtn.disabled = false;
   }
 }
 
@@ -401,12 +360,7 @@ window.viewAssetDetails = (assetName) => {
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   
   if (!groupAssets.length) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Not Found',
-      text: 'Asset group not found.',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Asset group not found');
     return;
   }
 
@@ -424,26 +378,26 @@ window.viewAssetDetails = (assetName) => {
 
     const aiBanner = document.createElement('div');
     aiBanner.id = 'aiSummaryBanner';
-    aiBanner.className = 'alert w-100 d-flex align-items-center mb-3 mt-2 ai-summary-banner';
+    aiBanner.className = 'alert w-100 d-flex align-items-center mb-3 mt-2';
+    aiBanner.style = "background: #f3e8ff; border: 1px solid #d8b4fe; border-left: 4px solid #8a2be2;";
     
     const failingCount = groupAssets.filter(a => getEOLDetails(a).daysRemaining <= 180).length;
-    let aiText = `<strong><i class="bi bi-robot ai-robot-icon"></i> AI Prediction:</strong> The industry average lifespan for a <strong>${formatType(sampleAsset.type)}</strong> is <strong>${eolData.metrics.years} years</strong>. `;
+    let aiText = `<strong>🤖 AI Prediction:</strong> The industry average lifespan for a <strong>${formatType(sampleAsset.type)}</strong> is <strong>${eolData.metrics.years} years</strong>. `;
     
     if (failingCount > 0) {
-        aiText += `<span class="text-danger ms-1">Based on usage, <b>${failingCount} item(s)</b> in this group need replacement soon.</span>`;
+        aiText += `<span class="text-danger">Based on usage, <b>${failingCount} item(s)</b> in this group need replacement soon.</span>`;
     } else {
-        aiText += `<span class="text-success ms-1">All items in this group currently have a healthy lifespan.</span>`;
+        aiText += `<span class="text-success">All items in this group currently have a healthy lifespan.</span>`;
     }
 
     aiBanner.innerHTML = aiText;
     headerDiv.insertBefore(aiBanner, headerDiv.firstChild);
   }
 
-  // CASCADING ANIMATION DELAY
-  detailsBody.innerHTML = groupAssets.map((asset, index) => {
+  detailsBody.innerHTML = groupAssets.map(asset => {
     const eol = getEOLDetails(asset);
     return `
-    <tr style="animation-delay: ${index * 0.05}s">
+    <tr>
       <td class="ps-4">
         <span class="font-monospace fw-bold">${asset.customId}</span>
       </td>
@@ -453,13 +407,13 @@ window.viewAssetDetails = (assetName) => {
         </span>
       </td>
       <td>${asset.location || '-'}</td>
-      <td class="fw-semibold text-dark">${asset.department || 'Unassigned'}</td>
+      <td>${asset.department || '-'}</td>
       <td>
         <div class="mb-1">
           <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
         </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-robot ai-robot-icon"></i> Pred. Lifespan: ${eol.metrics.years}y
+        <div class="text-muted" style="font-size: 0.75rem;">
+          <i class="bi bi-robot" style="color: #8a2be2;"></i> Pred. Lifespan: ${eol.metrics.years}y
         </div>
       </td>
       <td class="text-end pe-4">
@@ -488,22 +442,14 @@ window.viewAssetDetails = (assetName) => {
   if (bulkTransferBtn) bulkTransferBtn.onclick = () => window.bulkTransferGroup(assetName);
   if (bulkDeleteBtn) bulkDeleteBtn.onclick = () => window.bulkDeleteGroup(assetName);
 
-  const safeAssetName = assetName.replace(/'/g, "\\'"); 
-  
-  // Keep the in-modal print button printing only this group
-  const staticPrintBtn = document.getElementById('printLabelsBtn');
-  if (staticPrintBtn && !staticPrintBtn.hasAttribute("onclick")) {
-      staticPrintBtn.onclick = () => window.printQRLabels(assetName, true);
-  }
-
   if (headerDiv) {
     const groupActionsDiv = document.createElement('div');
     groupActionsDiv.className = 'd-flex gap-2 ms-auto';
     groupActionsDiv.innerHTML = `
-      <button class="btn btn-sm btn-dark" onclick="window.printQRLabels('${safeAssetName}', true)" title="Print QR Labels">
+      <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels('${assetName}', true)" title="Print QR Labels">
         <i class="bi bi-printer"></i> Print Labels
       </button>
-      <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${safeAssetName}', true)" title="Edit Group Specs">
+      <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${assetName}', true)" title="Edit Group Specs">
         <i class="bi bi-pencil"></i> Edit Specs
       </button>
     `;
@@ -554,33 +500,11 @@ window.transferIndividual = (customId) => {
 };
 
 window.deleteIndividual = async (id) => {
-  const result = await Swal.fire({
-    title: 'Are you sure?',
-    text: "You won't be able to undo this!",
-    icon: 'warning',
-    showCancelButton: true,
-    confirmButtonColor: '#ef4444',
-    cancelButtonColor: '#6b7280',
-    confirmButtonText: 'Yes, delete it!'
-  });
-
-  if (!result.isConfirmed) return;
-
+  if (!confirm('Delete this individual asset?')) return;
   try {
     const response = await fetch(`${API_URL}/assets/${id}`, { method: 'DELETE' });
     if (response.ok) {
-      
-      Swal.fire({
-        title: 'Deleted!',
-        text: 'The asset has been removed.',
-        icon: 'success',
-        confirmButtonColor: '#10b981',
-        timer: 1500,
-        showConfirmButton: false
-      });
-
       await loadAssets();
-      
       const asset = currentAssets.find(a => a._id === id);
       if (asset) {
         window.viewAssetDetails(asset.name);
@@ -591,12 +515,7 @@ window.deleteIndividual = async (id) => {
     }
   } catch (error) {
     console.error(error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Failed',
-      text: 'Failed to delete asset',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Failed to delete asset');
   }
 };
 
@@ -625,17 +544,7 @@ window.bulkDeleteGroup = async (assetName) => {
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
 
-  const bulkResult = await Swal.fire({
-    title: 'Are you sure?',
-    text: `Delete ALL ${groupAssets.length} items of "${assetName}"? This cannot be undone.`,
-    icon: 'warning',
-    showCancelButton: true,
-    confirmButtonColor: '#ef4444',
-    cancelButtonColor: '#6b7280',
-    confirmButtonText: 'Yes, delete all!'
-  });
-
-  if (!bulkResult.isConfirmed) return;
+  if (!confirm(`Delete ALL ${groupAssets.length} items of "${assetName}"? This cannot be undone.`)) return;
 
   try {
     for (const asset of groupAssets) {
@@ -647,22 +556,10 @@ window.bulkDeleteGroup = async (assetName) => {
     if (detailsModal) detailsModal.hide();
 
     await loadAssets();
-
-    Swal.fire({
-      title: 'Deleted!',
-      text: `Successfully deleted all ${groupAssets.length} items of "${assetName}"`,
-      icon: 'success',
-      confirmButtonColor: '#10b981'
-    });
-
+    alert(`Successfully deleted all ${groupAssets.length} items of "${assetName}"`);
   } catch (error) {
     console.error(error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Error',
-      text: error.message,
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Error: ' + error.message);
   }
 };
 
@@ -719,30 +616,15 @@ window.submitTransfer = async () => {
   const originalBtnText = confirmBtn.innerHTML;
 
   if (!buildingChecked && !deptChecked) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Missing Info',
-      text: 'Please select at least one destination type',
-      confirmButtonColor: '#f59e0b'
-    });
+    alert('Please select at least one destination type');
     return;
   }
   if (buildingChecked && !buildingValue) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Missing Info',
-      text: 'Please select a building',
-      confirmButtonColor: '#f59e0b'
-    });
+    alert('Please select a building');
     return;
   }
   if (deptChecked && !deptValue) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Missing Info',
-      text: 'Please select a department',
-      confirmButtonColor: '#f59e0b'
-    });
+    alert('Please select a department');
     return;
   }
 
@@ -798,22 +680,10 @@ window.submitTransfer = async () => {
     if (detailsModal) detailsModal.hide();
 
     await loadAssets();
-
-    Swal.fire({
-      icon: 'success',
-      title: 'Transferred!',
-      text: 'Transfer completed successfully!',
-      confirmButtonColor: '#10b981'
-    });
-
+    alert('Transfer completed successfully!');
   } catch (error) {
     console.error(error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Error',
-      text: error.message,
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Error: ' + error.message);
   } finally {
     confirmBtn.disabled = false;
     confirmBtn.innerHTML = originalBtnText;
@@ -835,12 +705,7 @@ window.editSpecs = (assetNameOrId, isGroupEdit = false) => {
   }
 
   if (!targetAssets.length) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Not Found',
-      text: 'Asset not found',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Asset not found');
     return;
   }
 
@@ -893,24 +758,10 @@ window.saveUpdatedSpecs = async () => {
     if (editModal) editModal.hide();
 
     await loadAssets();
-
-    Swal.fire({
-      icon: 'success',
-      title: 'Updated!',
-      text: 'Specs updated successfully!',
-      confirmButtonColor: '#10b981',
-      timer: 1500,
-      showConfirmButton: false
-    });
-
+    alert('Specs updated successfully!');
   } catch (error) {
     console.error(error);
-    Swal.fire({
-      icon: 'error',
-      title: 'Error',
-      text: error.message,
-      confirmButtonColor: '#4361ee'
-    });
+    alert('Error: ' + error.message);
   } finally {
     saveBtn.disabled = false;
     saveBtn.innerHTML = originalText;
@@ -949,13 +800,10 @@ window.viewQRCode = (customId) => {
   specModal.show();
 };
 
-// === UPDATED: Supports printing ALL items ===
 window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
   let assetsToPrint = [];
 
-  if (assetNameOrIdList === 'ALL') {
-    assetsToPrint = currentAssets; // Grab everything
-  } else if (isGroup) {
+  if (isGroup) {
     assetsToPrint = currentAssets.filter(a => a.name === assetNameOrIdList);
   } else {
     const asset = currentAssets.find(a => a.customId === assetNameOrIdList);
@@ -963,12 +811,13 @@ window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
   }
 
   if (!assetsToPrint.length) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Oops',
-      text: 'No assets to print',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('No assets to print');
+    return;
+  }
+
+  const printWindow = window.open('', '', 'width=900,height=700');
+  if (!printWindow) {
+    alert('Please allow popups to print labels');
     return;
   }
 
@@ -977,27 +826,26 @@ window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
     <html>
       <head>
         <meta charset="UTF-8">
-        <title>Print QR Labels</title>
+        <title>QR Code Labels</title>
         <style>
           * { box-sizing: border-box; }
-          body { font-family: Arial, sans-serif; padding: 20px; background: white; margin: 0; }
-          .labels-grid { display: flex; flex-wrap: wrap; gap: 15px; }
+          body { font-family: Arial, sans-serif; padding: 10px; background: white; }
+          .labels-grid { display: flex; flex-wrap: wrap; gap: 12px; }
           .label { 
             width: 200px; 
             min-height: 260px; 
             border: 2px solid #333; 
-            padding: 15px; 
+            padding: 10px; 
             text-align: center;
             background: white;
             page-break-inside: avoid;
           }
           .qr-container { margin: 10px auto; width: 120px; height: 120px; }
-          .label-info { font-size: 11px; font-weight: bold; word-break: break-all; margin-top: 10px; }
-          .label-title { font-size: 14px; margin-bottom: 10px; font-weight: bold; }
+          .label-info { font-size: 10px; font-weight: bold; word-break: break-word; margin-top: 8px; }
+          .label-title { font-size: 12px; margin-bottom: 8px; font-weight: 700; }
           @media print {
-            @page { margin: 10mm; }
             body { padding: 0; }
-            .label { border: 1px solid #000; }
+            .label { border-width: 1px; }
           }
         </style>
       </head>
@@ -1011,52 +859,28 @@ window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
             </div>
           `).join('')}
         </div>
+        <script>
+          window.onload = () => setTimeout(() => window.print(), 200);
+        <\/script>
       </body>
     </html>
   `;
 
-  let printFrame = document.getElementById('hiddenPrintFrame');
-  if (!printFrame) {
-      printFrame = document.createElement('iframe');
-      printFrame.id = 'hiddenPrintFrame';
-      printFrame.style.position = 'absolute';
-      printFrame.style.top = '-9999px';
-      printFrame.style.left = '-9999px';
-      document.body.appendChild(printFrame);
-  }
-
-  const doc = printFrame.contentWindow.document;
-  doc.open();
-  doc.write(html);
-  doc.close();
-
-  // Allow extra time if printing a massive database of codes so the external APIs load
-  setTimeout(() => {
-      printFrame.contentWindow.focus();
-      printFrame.contentWindow.print();
-  }, 1000); 
+  printWindow.document.write(html);
+  printWindow.document.close();
 };
 
 window.exportAssetsToDetailedPDF = function() {
   if (currentAssets.length === 0) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Empty',
-      text: 'No assets to export',
-      confirmButtonColor: '#f59e0b'
-    });
+    alert('No assets to export');
     return;
   }
 
+  // 🐛 FIX: Dynamically maps the global jsPDF regardless of ES6 module restrictions
   const jsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
 
   if (!jsPDF) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Library Missing',
-      text: 'jsPDF library is not loaded. Please check your network or adblocker.',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('jsPDF library is not loaded. Please check your network or adblocker.');
     return;
   }
 
@@ -1133,47 +957,27 @@ window.exportAssetsToDetailedPDF = function() {
   });
 
   doc.save('asset_inventory_with_specs.pdf');
-  
-  Swal.fire({
-    icon: 'success',
-    title: 'Exported!',
-    text: 'PDF exported successfully!',
-    confirmButtonColor: '#10b981'
-  });
+  alert('PDF exported successfully!');
 };
 
 window.generateEOLReport = function() {
   if (currentAssets.length === 0) {
-    Swal.fire({
-      icon: 'warning',
-      title: 'Empty',
-      text: 'No assets available to analyze.',
-      confirmButtonColor: '#f59e0b'
-    });
+    alert('No assets available to analyze.');
     return;
   }
 
+  // 🐛 FIX: Dynamically maps the global jsPDF regardless of ES6 module restrictions
   const jsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
 
   if (!jsPDF) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Library Missing',
-      text: 'jsPDF library is not loaded. Please check your network or adblocker.',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('jsPDF library is not loaded. Please check your network or adblocker.');
     return;
   }
 
   const doc = new jsPDF();
   
   if (typeof doc.autoTable !== 'function') {
-    Swal.fire({
-      icon: 'error',
-      title: 'Plugin Missing',
-      text: 'jsPDF autoTable library failed to attach. Ensure it is loaded correctly in HTML.',
-      confirmButtonColor: '#4361ee'
-    });
+    alert('jsPDF autoTable library failed to attach. Ensure it is loaded correctly in HTML.');
     return;
   }
 
@@ -1198,12 +1002,7 @@ window.generateEOLReport = function() {
   });
 
   if (reportData.length === 0) {
-    Swal.fire({
-      icon: 'success',
-      title: 'Great news!',
-      text: 'No assets are reaching End-of-Life within the next 12 months.',
-      confirmButtonColor: '#10b981'
-    });
+    alert('Great news! No assets are reaching End-of-Life within the next 12 months.');
     return;
   }
 
@@ -1273,78 +1072,3 @@ window.resetFilters = resetFilters;
 window.filterGroupTable = filterGroupTable;
 window.handleSearchKeyPress = handleSearchKeyPress;
 window.filterDetailsTable = filterDetailsTable;
-
-// === View Transfer History ===
-window.viewTransferHistory = async (customId) => {
-  const asset = currentAssets.find(a => a.customId === customId);
-  if (!asset) {
-    Swal.fire({
-      icon: 'error',
-      title: 'Error',
-      text: 'Asset not found',
-      confirmButtonColor: '#4361ee'
-    });
-    return;
-  }
-
-  // Show the modal immediately with a loading state
-  const historyContent = document.getElementById('historyContent');
-  historyContent.innerHTML = `
-    <div class="d-flex justify-content-center align-items-center py-5">
-        <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
-        </div>
-    </div>`;
-
-  const historyModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('historyModal'));
-  historyModal.show();
-
-  try {
-    // Attempt to fetch history from the backend using the asset's MongoDB _id
-    const response = await fetch(`${API_URL}/assets/${asset._id}/history`);
-    
-    let historyData = [];
-    
-    if (response.ok) {
-        historyData = await response.json();
-    } else if (asset.history && Array.isArray(asset.history)) {
-        // Fallback: If your backend embeds the history array directly inside the asset object
-        historyData = asset.history;
-    } else {
-        throw new Error('No history endpoint found and no embedded history available.');
-    }
-
-    if (!historyData || historyData.length === 0) {
-      historyContent.innerHTML = `
-        <div class="text-center text-muted py-5">
-            <i class="bi bi-inbox fs-1 mb-2 d-block"></i>
-            No history records found for this asset.
-        </div>`;
-      return;
-    }
-
-    // Render the timeline/list
-    historyContent.innerHTML = `
-      <div class="list-group list-group-flush mt-3">
-        ${historyData.map(record => `
-          <div class="list-group-item bg-transparent px-0 py-3 border-bottom border-light timeline-item">
-            <div class="d-flex justify-content-between align-items-start mb-1">
-              <span class="fw-bold text-dark"><i class="bi bi-check-circle-fill text-success me-2"></i>${record.action || 'Update'}</span>
-              <small class="text-muted font-monospace bg-light px-2 rounded">${new Date(record.date || record.timestamp).toLocaleString()}</small>
-            </div>
-            <div class="small text-secondary ms-4">
-               ${record.details || `Moved to <strong>${record.location || 'Unknown'}</strong> / <strong>${record.department || 'Unknown'}</strong>`}
-            </div>
-            ${record.user ? `<div class="small text-muted mt-2 ms-4"><i class="bi bi-person-badge me-1"></i>Performed by: ${record.user}</div>` : ''}
-          </div>
-        `).join('')}
-      </div>`;
-
-  } catch (error) {
-    console.error('Error fetching history:', error);
-    historyContent.innerHTML = `
-        <div class="alert alert-danger shadow-sm border-0 mt-3" role="alert">
-            <i class="bi bi-exclamation-triangle-fill me-2"></i>Failed to load history data. Check console for details.
-        </div>`;
-  }
-};
