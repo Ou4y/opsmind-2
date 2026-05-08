@@ -2,7 +2,7 @@ import { TicketRoutingStateRepository } from '../repositories/TicketRoutingState
 import { SupportGroupRepository } from '../repositories/SupportGroupRepository';
 import { GroupMemberRepository } from '../repositories/GroupMemberRepository';
 import { WorkflowLogRepository } from '../repositories/WorkflowLogRepository';
-import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
+import { getSlaComplianceReport } from '../config/externalServices';
 
 /**
  * Metrics & Reports Service
@@ -15,7 +15,6 @@ export class MetricsService {
   private groupRepo = new SupportGroupRepository();
   private memberRepo = new GroupMemberRepository();
   private logRepo = new WorkflowLogRepository();
-  private slaRepo = new SlaTrackingRepository();
 
   /**
    * GET /workflow/metrics — Comprehensive metrics for supervisor dashboard
@@ -159,23 +158,7 @@ export class MetricsService {
    * GET /workflow/reports/sla — SLA compliance report
    */
   async getSLAReport(startDate?: string, endDate?: string): Promise<any> {
-    const slaData = await this.slaRepo.getSLAReport(startDate, endDate);
-    const totalTracked = await this.slaRepo.getTotalCount(startDate, endDate);
-    const breachedCount = await this.slaRepo.getBreachedCount(startDate, endDate);
-
-    return {
-      total_tracked: totalTracked,
-      breached: breachedCount,
-      compliance_rate: totalTracked > 0 ? ((totalTracked - breachedCount) / totalTracked) * 100 : 100,
-      by_priority: slaData.map((row: any) => ({
-        priority: row.priority,
-        total: Number(row.total_tickets),
-        breached: Number(row.breached),
-        on_track: Number(row.on_track),
-        at_risk: Number(row.at_risk),
-        avg_response_minutes: Math.round(Number(row.avg_response_minutes) || 0),
-      })),
-    };
+    return getSlaComplianceReport(startDate, endDate);
   }
 
   /**
