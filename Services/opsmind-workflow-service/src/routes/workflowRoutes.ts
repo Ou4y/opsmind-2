@@ -9,12 +9,11 @@ import { RoleDashboardController } from '../controllers/RoleDashboardController'
 import { TicketSyncController } from '../controllers/TicketSyncController';
 import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
-import { SlaTrackingRepository } from '../repositories/SlaTrackingRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { optionalAuth, requireAuth, requireAuthOrInternal, requireInternalToken } from '../middlewares/auth';
 import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, escalateTicketSchema, syncTicketSchema } from '../middlewares/validation';
-import { getUserDetails } from '../config/externalServices';
+import { getSlaStatusForTickets, getUserDetails } from '../config/externalServices';
 
 const router = Router();
 
@@ -31,7 +30,6 @@ const ticketSyncCtrl = new TicketSyncController();
 // ── Service / Repo instances for new endpoints ──
 const loggingService = new LoggingService();
 const routingRepo = new TicketRoutingStateRepository();
-const slaRepo = new SlaTrackingRepository();
 const metricsService = new MetricsService();
 const technicianRepo = new TechnicianRepository();
 
@@ -287,7 +285,11 @@ router.post('/sla/status', async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    const slaRecords = await slaRepo.getByTicketIds(ticket_ids);
+    const result = await getSlaStatusForTickets(ticket_ids);
+    res.status(200).json({ success: true, data: result });
+    return;
+
+    const slaRecords: any[] = [];
 
     // Build a map of ticket_id → SLA status
     const slaMap: Record<string, any> = {};
@@ -310,12 +312,12 @@ router.post('/sla/status', async (req: Request, res: Response): Promise<void> =>
     }
 
     // For tickets not in sla_tracking, return null
-    const result: Record<string, any> = {};
+    const legacyResult: Record<string, any> = {};
     for (const id of ticket_ids) {
-      result[id] = slaMap[id] || null;
+      legacyResult[id] = slaMap[id] || null;
     }
 
-    res.status(200).json({ success: true, data: result });
+    res.status(200).json({ success: true, data: legacyResult });
   } catch (error: any) {
     console.error('Error fetching SLA status:', error);
     res.status(500).json({ success: false, message: error.message });
