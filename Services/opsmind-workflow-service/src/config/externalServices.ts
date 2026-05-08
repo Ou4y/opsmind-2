@@ -202,6 +202,38 @@ export async function startSlaTracking(
   return data;
 }
 
+export async function getSlaStatusForTickets(ticketIds: string[]): Promise<Record<string, any>> {
+  const { data } = await slaServiceClient.post('/sla/tickets/status', {
+    ticket_ids: ticketIds,
+  });
+  return data?.data || {};
+}
+
+export async function getSlaComplianceReport(
+  startDate?: string,
+  endDate?: string,
+): Promise<any> {
+  const { data } = await slaServiceClient.get('/sla/reports/compliance', {
+    params: {
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
+    },
+  });
+  return data?.data;
+}
+
+export async function getSlaTicket(ticketId: string): Promise<any | null> {
+  try {
+    const { data } = await slaServiceClient.get(`/sla/tickets/${ticketId}`);
+    return data?.data || null;
+  } catch (error: any) {
+    if (error?.response?.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
  * Get tickets assigned to specific users
  * Query: GET /tickets?assigned_to=userId1,userId2,...
