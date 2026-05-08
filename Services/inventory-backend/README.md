@@ -5,7 +5,7 @@ Minimal README for the inventory backend service used in the OpsMind project.
 ## Features
 - REST API for managing assets, tickets and configuration
 - Publishes domain events to RabbitMQ for background processing
-- Stores data in MongoDB
+- Stores data in PostgreSQL with Prisma ORM
 
 ## Quick start (Docker Compose)
 Requirements: Docker, Docker Compose
@@ -30,14 +30,13 @@ docker logs --tail 200 -f opsmind-inventory-backend
 
 ## Development (local)
 - The API server runs on port `5000` inside the container and is proxied by nginx on `3002`.
-- The backend connects to MongoDB using `MONGO_URI` env var (default `mongodb://opsmind-mongodb:27017/opsmind_assets`).
+- The backend connects to PostgreSQL using `DATABASE_URL` env var (default `postgresql://postgres:IS1234567@postgres:5432/opsmind_assets`).
 
-To run queries against Mongo from the host (example):
+To run queries against PostgreSQL from the host (example):
 
 ```bash
-docker exec -it opsmind-mongodb mongosh
-use opsmind_assets
-db.assets.find().limit(20).pretty()
+docker exec -it opsmind-postgres-inv psql -U postgres -d opsmind_assets
+SELECT * FROM "Asset" LIMIT 20;
 ```
 
 ## Important files
@@ -47,7 +46,7 @@ db.assets.find().limit(20).pretty()
 - `src/routes/configRoutes.ts` — Static config endpoints
 - `src/services/EventBus.ts` — RabbitMQ publisher/subscriber
 - `src/services/history-service` — Background consumer storing history
-- `src/models` — Mongoose models (`Asset`, `History`, `Tickets`)
+- `src/models` — Prisma services (`AssetService`, `HistoryService`, `TicketService`)
 
 ## API summary (top-level)
 - `GET /api/assets` — list assets
@@ -66,10 +65,10 @@ When you add an asset from the frontend, the API logs the created `customId`. Ex
 
 1. Add asset in frontend
 2. Check backend logs for `POST /api/assets` and `Created assets (customIds)`
-3. Query Mongo for the `customId`:
+3. Query PostgreSQL for the `customId`:
 
 ```bash
-docker exec opsmind-mongodb mongosh --quiet --eval "const d=db.getSiblingDB('opsmind_assets'); printjson(d.getCollection('assets').find({ customId: 'ASSET-1771172184216-1' }).toArray());"
+docker exec -it opsmind-postgres-inv psql -U postgres -d opsmind_assets -c "SELECT * FROM \"Asset\" WHERE \"customId\" = 'ASSET-1771172184216-1';"
 ```
 
 ## Event bus
