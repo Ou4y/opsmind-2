@@ -1,36 +1,96 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import { prisma } from '../lib/prisma';
+import { Ticket, TicketStatus, TicketPriority, TicketType } from '@prisma/client';
 
-export interface ITicket extends Document {
+export interface ITicket {
+  id: string;
   title: string;
   description: string;
-  status: 'Open' | 'In Progress' | 'Resolved' | 'Closed';
-  priority: 'Low' | 'Medium' | 'High' | 'Critical';
-  type: 'Hardware' | 'Software' | 'Network' | 'Access' | 'Other';
-  assignedTo?: string; // User name or ID
-  relatedAsset?: string; // e.g., Asset Custom ID
+  status: TicketStatus;
+  priority: TicketPriority;
+  type: TicketType;
+  assignedTo?: string;
+  relatedAsset?: string;
   createdAt: Date;
+  updatedAt: Date;
 }
 
-const TicketSchema: Schema = new Schema({
-  title: { type: String, required: true },
-  description: { type: String, required: true },
-  status: { 
-    type: String, 
-    enum: ['Open', 'In Progress', 'Resolved', 'Closed'], 
-    default: 'Open' 
-  },
-  priority: { 
-    type: String, 
-    enum: ['Low', 'Medium', 'High', 'Critical'], 
-    default: 'Medium' 
-  },
-  type: { 
-    type: String, 
-    enum: ['Hardware', 'Software', 'Network', 'Access', 'Other'], 
-    default: 'Other' 
-  },
-  assignedTo: { type: String },
-  relatedAsset: { type: String },
-}, { timestamps: true });
+// Ticket service functions
+export class TicketService {
+  // Create a new ticket
+  static async createTicket(data: {
+    title: string;
+    description: string;
+    status?: TicketStatus;
+    priority?: TicketPriority;
+    type?: TicketType;
+    assignedTo?: string;
+    relatedAsset?: string;
+  }): Promise<Ticket> {
+    return await prisma.ticket.create({
+      data: {
+        title: data.title,
+        description: data.description,
+        status: data.status || 'OPEN',
+        priority: data.priority || 'MEDIUM',
+        type: data.type || 'OTHER',
+        assignedTo: data.assignedTo,
+        relatedAsset: data.relatedAsset,
+      },
+    });
+  }
 
-export default mongoose.model<ITicket>('Ticket', TicketSchema);
+  // Get ticket by ID
+  static async getTicketById(id: string): Promise<Ticket | null> {
+    return await prisma.ticket.findUnique({
+      where: { id },
+    });
+  }
+
+  // Get all tickets with optional filters
+  static async getTickets(filters?: {
+    status?: TicketStatus;
+    priority?: TicketPriority;
+    type?: TicketType;
+    assignedTo?: string;
+    relatedAsset?: string;
+  }): Promise<Ticket[]> {
+    return await prisma.ticket.findMany({
+      where: filters,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // Update ticket
+  static async updateTicket(id: string, data: Partial<{
+    title: string;
+    description: string;
+    status: TicketStatus;
+    priority: TicketPriority;
+    type: TicketType;
+    assignedTo: string;
+    relatedAsset: string;
+  }>): Promise<Ticket> {
+    return await prisma.ticket.update({
+      where: { id },
+      data,
+    });
+  }
+
+  // Delete ticket
+  static async deleteTicket(id: string): Promise<Ticket> {
+    return await prisma.ticket.delete({
+      where: { id },
+    });
+  }
+
+  // Get tickets for a specific asset
+  static async getTicketsForAsset(assetCustomId: string): Promise<Ticket[]> {
+    return await prisma.ticket.findMany({
+      where: { relatedAsset: assetCustomId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+}
+
+// Export the service class as default
+export default TicketService;
