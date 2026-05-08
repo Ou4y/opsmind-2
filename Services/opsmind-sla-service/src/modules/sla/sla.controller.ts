@@ -71,6 +71,15 @@ export const slaController = {
     }
   },
 
+  async getBulkTicketStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await slaService.getBulkTicketStatus(req.body.ticket_ids);
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async listTickets(req: Request, res: Response, next: NextFunction) {
     try {
       const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
@@ -95,6 +104,18 @@ export const slaController = {
   async getPolicies(_req: Request, res: Response, next: NextFunction) {
     try {
       const result = await slaService.getPolicies();
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getComplianceReport(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await slaService.getComplianceReport({
+        startDate: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+        endDate: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+      });
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);
