@@ -149,7 +149,7 @@ async function consumeTicketNotifications(channel, exchange) {
       // 4 Ticket Resolved
       
       if (routingKey === "ticket.notification.resolved") {
-        const { ticket, technician, endUser, supervisor } = event;
+        const { ticket, technician, endUser, supervisor } = event.data;
 
         await sendInAppNotification(
           endUser.id,
