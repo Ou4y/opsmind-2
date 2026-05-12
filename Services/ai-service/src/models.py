@@ -78,6 +78,7 @@ def load_models(model_dir: Optional[str] = None) -> ModelStore:
     store.split_config = metadata.get("split_config", {})
 
     logger.info("All models loaded successfully.")
+
     return store
 
 

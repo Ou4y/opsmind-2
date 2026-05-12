@@ -102,7 +102,13 @@ async function loadReports() {
     console.log('Loading reports...');
 
     const currentUser = AuthService.getCurrentUser();
-    const technicianId = currentUser?.id || currentUser?.userId || currentUser?.user_id || currentUser?.technicianId;
+    const dashboardContext = AuthService.resolveUserDashboardContext(currentUser);
+    const technicianId =
+        dashboardContext?.workflowUserId ||
+        currentUser?.workflowUserId ||
+        currentUser?.workflow_user_id ||
+        currentUser?.user_id ||
+        currentUser?.technicianId;
     const isAdmin = AuthService.isAdmin();
 
     if (!isAdmin && !technicianId) {

@@ -149,7 +149,7 @@ async function consumeTicketNotifications(channel, exchange) {
       // 4 Ticket Resolved
       
       if (routingKey === "ticket.notification.resolved") {
-        const { ticket, technician, endUser, supervisor } = event;
+        const { ticket, technician, endUser, supervisor } = event.data;
 
         await sendInAppNotification(
           endUser.id,
@@ -194,25 +194,25 @@ async function consumeTicketNotifications(channel, exchange) {
       // 5 Low stock
 
       if (routingKey === "ticket.notification.lowStock") {
-        const { item, supervisor } = event;
+        const { item, admin } = event;
 
         await sendInAppNotification(
-          supervisor.id,
+          admin.id,
           `Low stock for Item ID: ${item.id}, Name: ${item.name}.`
         );
 
-        if (supervisor.email) {
+        if (admin.email) {
           await sendEmail(
-            supervisor.email,
+            admin.email,
             "Low Stock Alert",
-            `Hello ${supervisor.name},\n\n` +
+            `Hello ${admin.name},\n\n` +
               `Low stock has been detected.\n\n` +
               `Item ID: ${item.id}\nName: ${item.name}`
           );
         }
 
         await logSystemMessage(
-          `Low stock detected for Item ${item.id} Name: ${item.name}( Supervisor: ${supervisor.name} [ID: ${supervisor.id}])`
+          `Low stock detected for Item ${item.id} Name: ${item.name}( Admin: ${admin.name} [ID: ${admin.id}])`
         );
       }
 

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import AssetService from '../models/Asset';
+import AssetService from '../models/Assets';
 import HistoryService from '../models/History';
 import { AssetType, AssetLocation, AssetDepartment } from '@prisma/client';
 
