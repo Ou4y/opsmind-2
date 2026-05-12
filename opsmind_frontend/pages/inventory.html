@@ -10,15 +10,6 @@
     <link href="/assets/css/main.css" rel="stylesheet">
     
     <script src="/assets/js/config.js?v=2"></script>
-    <style>
-        .timeline-item { border-left: 2px solid #e9ecef; padding-left: 20px; position: relative; padding-bottom: 20px; }
-        .timeline-item::before { content: ""; position: absolute; width: 12px; height: 12px; background: #0d6efd; border-radius: 50%; left: -7px; top: 5px; }
-        .qty-badge { font-size: 0.9rem; min-width: 40px; }
-        .cursor-pointer { cursor: pointer; }
-        .bulk-header { background: #f8f9fa; border-bottom: 2px solid #dee2e6; padding: 12px 20px; }
-        .spec-label { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #6c757d; }
-        .spec-value { font-weight: 600; color: #212529; }
-    </style>
 </head>
 <body class="app-body">
     <nav class="navbar-main" id="navbar-container"></nav>
@@ -28,16 +19,16 @@
 
         <main class="main-content"> 
             
-            <div id="eolAlertBanner" style="display: none;"></div>
+            <div id="eolAlertBanner" class="d-none"></div>
 
-            <div class="d-flex justify-content-between align-items-center mb-4">
+            <div class="inventory-toolbar d-flex justify-content-between align-items-center mb-4">
                 <div>
                     <h2 class="h3 fw-bold mb-1">University Inventory</h2>
                     <p class="text-muted small mb-0">Grouped View</p>
                 </div>
                 
-                <div class="d-flex gap-2 align-items-start">
-                    <div class="input-group input-group-sm" style="width: 250px;">
+                <div class="inventory-toolbar-actions d-flex gap-2 align-items-start">
+                    <div class="input-group input-group-sm inventory-search-group">
                         <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
                         <input type="text" id="searchInput" class="form-control border-start-0" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
                     </div>
@@ -54,13 +45,13 @@
                         <i class="bi bi-graph-up-arrow"></i> Predictive EOL Budget
                     </button>
 
-                    <button class="btn btn-primary btn-sm d-flex align-items-center gap-2" data-bs-toggle="modal" data-bs-target="#receiveOrderModal" style="height: 38px;">
+                    <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
                         <i class="bi bi-plus-lg"></i> Create Asset
                     </button>
                 </div>
             </div>
 
-            <div class="card border-0 bg-light mb-4">
+            <div class="card border-0 bg-light mb-4 inventory-filter-card">
                 <div class="card-body py-3">
                     <div class="row g-3 align-items-center">
                         <div class="col-auto">
@@ -119,6 +110,17 @@
                     <form id="addAssetForm">
                         <input type="text" id="assetName" placeholder="Asset Name (e.g. Dell Latitude 5420)" class="form-control mb-2" required />
                         <input type="number" id="assetQuantity" placeholder="Quantity" class="form-control mb-2" min="1" required />
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-6">
+                                <input type="text" id="assetBrand" placeholder="Brand (e.g. Dell)" class="form-control" />
+                            </div>
+                            <div class="col-md-6">
+                                <input type="text" id="assetVersion" placeholder="Model / Version" class="form-control" />
+                            </div>
+                        </div>
+                        <div id="assetQualityPreview" class="inventory-ai-quality-preview mb-2">
+                            AI quality tier will be inferred from brand, model/version, and specs.
+                        </div>
                         
                         <select id="assetType" class="form-select mb-2" required>
                             <option value="">Select Asset Type</option>
@@ -197,6 +199,13 @@
                             <textarea id="assetSpecs" class="form-control" rows="3" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen&#10;Storage: 512GB SSD"></textarea>
                             <div class="form-text small">Enter one spec per line (Key: Value)</div>
                         </div>
+
+                        <div class="inventory-usage-box mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="assetTrackHours" onchange="toggleWorkingHoursInput()">
+                                <label class="form-check-label fw-bold small" for="assetTrackHours">Enable automatic telemetry for lifespan prediction</label>
+                            </div>
+                        </div>
                         
                         <button type="submit" class="btn btn-primary w-100">Create Assets</button>
                     </form>
@@ -205,7 +214,7 @@
         </div>
     </div>
 
-    <div class="modal fade" id="editSpecsModal" tabindex="-1" aria-hidden="true" style="z-index: 1080;">
+    <div class="modal fade inventory-modal-stack-mid" id="editSpecsModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-warning text-dark">
@@ -233,7 +242,7 @@
         </div>
     </div>
 
-    <div class="modal fade" id="specModal" tabindex="-1" aria-hidden="true" style="z-index: 1200;">
+    <div class="modal fade inventory-modal-stack-high" id="specModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-dark text-white">
@@ -260,7 +269,7 @@
                 </div>
                 
                 <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3">
-                    <div class="input-group input-group-sm" style="max-width: 300px;">
+                    <div class="input-group input-group-sm inventory-inner-search-group">
                         <span class="input-group-text bg-white"><i class="bi bi-filter"></i></span>
                         <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter IDs in this group..." onkeyup="filterDetailsTable()">
                     </div>
@@ -272,7 +281,7 @@
                 </div>
 
                 <div class="modal-body p-0">
-                    <div class="table-responsive" style="max-height: 60vh; overflow-y: auto;">
+                    <div class="table-responsive inventory-details-scroll">
                         <table class="table table-striped table-hover mb-0">
                             <thead class="table-light sticky-top">
                                 <tr>
@@ -292,7 +301,7 @@
         </div>
     </div>
 
-    <div class="modal fade" id="transferModal" tabindex="-1" aria-hidden="true" style="z-index: 1070;">
+    <div class="modal fade inventory-modal-stack-low" id="transferModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content border-0 shadow">
                 <div class="modal-header">
@@ -312,7 +321,7 @@
                                     Transfer to Different Building
                                 </label>
                             </div>
-                            <select class="form-select mt-2" id="buildingSelect" style="display:none;">
+                            <select class="form-select mt-2 d-none" id="buildingSelect">
                                 <option value="">Select Building</option>
                             </select>
 
@@ -322,7 +331,7 @@
                                     Transfer to Different Department
                                 </label>
                             </div>
-                            <select class="form-select mt-2" id="deptSelect" style="display:none;">
+                            <select class="form-select mt-2 d-none" id="deptSelect">
                                 <option value="">Select Department</option>
                             </select>
                         </div>
@@ -342,22 +351,22 @@
         </div>
     </div>
 
-    <div class="modal fade" id="aiTechExchangeModal" tabindex="-1" aria-hidden="true" style="z-index: 1090;">
+    <div class="modal fade inventory-modal-stack-ai" id="aiTechExchangeModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="background: linear-gradient(145deg, #ffffff, #f8f9fa); border-top: 5px solid #8a2be2 !important; border-radius: 12px;">
+            <div class="modal-content border-0 shadow-lg inventory-ai-modal-content">
                 <div class="modal-body p-5 text-center">
-                    <div class="mb-3 shadow-sm rounded-circle d-inline-block p-3" style="background: #f3e8ff;">
-                        <span class="display-3">🤖</span>
+                    <div class="mb-3 shadow-sm rounded-circle d-inline-block p-3 inventory-ai-icon">
+                        <i class="bi bi-stars display-3"></i>
                     </div>
-                    <h4 class="fw-bold mb-3" style="color: #8a2be2; letter-spacing: 1px;">OPSMIND AI INSIGHT</h4>
+                    <h4 class="fw-bold mb-3 inventory-ai-title">OPSMIND AI INSIGHT</h4>
                     
-                    <p class="lead text-secondary mb-4" id="aiModalMessage" style="font-size: 1.1rem; line-height: 1.6;"></p>
+                    <p class="lead text-secondary mb-4 inventory-ai-message" id="aiModalMessage"></p>
                     
                     <div class="d-flex justify-content-center gap-3 mt-4">
-                        <button type="button" class="btn btn-light border px-4 py-2" id="aiBtnIgnore" style="font-weight: 600;">
+                        <button type="button" class="btn btn-light border px-4 py-2 inventory-ai-ignore" id="aiBtnIgnore">
                             Ignore & Buy New
                         </button>
-                        <button type="button" class="btn text-white px-4 py-2 shadow" id="aiBtnAccept" style="background: linear-gradient(45deg, #8a2be2, #6a5acd); font-weight: 600; border: none;">
+                        <button type="button" class="btn text-white px-4 py-2 shadow inventory-ai-accept" id="aiBtnAccept">
                             <i class="bi bi-magic me-2"></i>Use Existing Stock
                         </button>
                     </div>
@@ -373,10 +382,12 @@
                     <h5 class="modal-title fw-bold">Audit Trail</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body" id="historyContent" style="max-height: 400px; overflow-y: auto;"></div>
+                <div class="modal-body history-scrollable" id="historyContent"></div>
             </div>
         </div>
     </div>
+
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     

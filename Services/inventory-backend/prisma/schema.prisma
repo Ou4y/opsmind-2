@@ -118,8 +118,30 @@ model Asset {
   histories      AssetHistory[]
   assetTickets   AssetTicket[]
   relatedTickets Ticket[]
+  lifecycleOutcome AssetLifecycleOutcome?
 
   @@map("assets")
+}
+
+model AssetLifecycleOutcome {
+  id                  String   @id @default(uuid())
+  assetId             String   @unique
+  purchaseDate        DateTime?
+  commissionedAt      DateTime?
+  failureDate         DateTime?
+  replacementDate     DateTime?
+  retiredAt           DateTime?
+  failureType         String?
+  replacementCost     Decimal?
+  actualLifespanYears Float?
+  finalOutcome        String?
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  asset Asset @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@map("asset_lifecycle_outcomes")
 }
 
 model AssetHistory {
