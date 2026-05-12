@@ -36,6 +36,7 @@ At a high level, the platform follows a microservice architecture:
 - Notification service consumes events and stores/sends notifications.
 - Inventory service manages assets and inventory tickets.
 - AI service provides priority and resolution-time predictions.
+- Inventory AI service provides inventory-focused asset lifespan predictions.
 
 Shared infrastructure includes MySQL, MongoDB, RabbitMQ, MailHog, and phpMyAdmin.
 
@@ -73,6 +74,8 @@ opsmind/
 | Notification | `Services/notification-service` | Node.js + MongoDB + RabbitMQ | 3005 | Notification storage + delivery |
 | Inventory | `Services/inventory-backend` | Node.js + TypeScript + MongoDB + RabbitMQ | 5000 | Asset/inventory APIs |
 | AI | `Services/ai-service` | Python + FastAPI | 8000 | Priority and ETA predictions |
+| Inventory AI | `Services/inventory-ai-service` | Python + FastAPI | 8002 | Asset lifespan predictions for inventory |
+| Inventory AI Scheduler | `Services/inventory-ai-service` | Python worker | - | Daily spec-learning jobs + monthly lifespan recalibration |
 | Reporting (optional) | `Services/reportandanalysis-service` | Node.js + MongoDB | 3004* | Standalone compose, not in root stack |
 
 Infrastructure in root compose:
@@ -150,6 +153,7 @@ docker compose down -v
 | Notification Service | http://localhost:3005 |
 | Inventory Backend | http://localhost:5000 |
 | AI Service | http://localhost:8000 |
+| Inventory AI Service | http://localhost:8002 |
 | RabbitMQ Management | http://localhost:15672 |
 | phpMyAdmin | http://localhost:8080 |
 | MailHog UI | http://localhost:8025 |
@@ -167,6 +171,23 @@ Root env values are mainly used to inject runtime API URLs and AI config into th
 
 Start from:
 - `.env.example`
+
+### Inventory AI accuracy controls
+
+For authoritative spec detection + governance:
+- `SERPAPI_API_KEY`
+- `SERPAPI_ENDPOINT`
+- `SPEC_LOOKUP_TIMEOUT_SECONDS`
+- `SPEC_RULE_VERSION_CONTROL`
+- `SPEC_RULE_VERSION_CANDIDATE`
+- `SPEC_AB_ROLLOUT_PERCENT`
+- `SPEC_FORCE_VARIANT`
+- `SPEC_VERIFICATION_CONFIDENCE_THRESHOLD`
+
+Operational behavior:
+- `inventory-backend` requests AI spec inference during asset creation.
+- Low-confidence/low-trust detections are marked for human review.
+- Review actions feed back into golden dataset and active-learning cache.
 
 ### Service-specific env files
 
@@ -230,6 +251,11 @@ npm run dev
 cd ../ai-service
 pip install -r requirements.txt
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Inventory AI service
+cd ../inventory-ai-service
+pip install -r requirements.txt
+uvicorn src.main:app --host 0.0.0.0 --port 8002 --reload
 ```
 
 ## Running Tests
@@ -318,6 +344,8 @@ Service docs:
 - `Services/opsmind-sla-service/README.md`
 - `Services/inventory-backend/README.md`
 - `Services/ai-service/README.md`
+- `Services/inventory-ai-service/README.md`
+- `Services/inventory-ai-service/TRAINING_PLAYBOOK.md`
 - `Services/opsmind-workflow-service/QUICK_START.md`
 
 ---

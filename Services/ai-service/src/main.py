@@ -50,7 +50,6 @@ SLA_RESOLUTION_TARGET_HOURS = {
     "LOW": 72.0,
 }
 
-
 def _normalise_priority_label(value: str | None) -> str | None:
     if value is None:
         return None

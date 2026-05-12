@@ -91,6 +91,7 @@ def load_models(model_dir: Optional[str] = None) -> ModelStore:
     store.feature_names = metadata["feature_names"]
 
     logger.info("All models loaded successfully.")
+
     return store
 
 
