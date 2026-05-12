@@ -1,177 +1,204 @@
 # OpsMind AI Service
 
-Production-ready AI microservice for the OpsMind ITSM platform.  
-Predicts **ticket priority** (`LOW` / `MEDIUM` / `HIGH`) and **estimated resolution time** using trained Histogram Gradient Boosting models.
+AI microservice for OpsMind ITSM.
+Predicts ticket priority (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) and estimated resolution time.
 
----
+## Workflow Assumption (Important)
+
+New OpsMind tickets always start at **L1**. Escalation to L2/L3/L4 happens later.
+
+Because of that, `support_level` is **not** a valid initial-prediction feature and is removed from model training/inference features.
 
 ## Project Structure
 
-```
+```text
 ai-service/
 ├── src/
-│   ├── main.py                  # FastAPI application & endpoints
-│   ├── train.py                 # Model training script
-│   ├── preprocess.py            # Feature engineering (shared)
-│   ├── models.py                # Model loading & management
-│   ├── schemas.py               # Pydantic request/response schemas
-│   └── generate_sample_data.py  # Synthetic data generator (optional)
-├── models/                      # Trained model artefacts (.pkl)
-│   ├── priority_model.pkl
-│   ├── est_model.pkl
-│   └── model_metadata.pkl
-├── ITSM_Dataset.csv             # Training data
+│   ├── main.py
+│   ├── train.py
+│   ├── preprocess.py
+│   ├── models.py
+│   ├── schemas.py
+│   └── __init__.py
+├── models/
+│   ├── priority_pipeline.pkl
+│   ├── est_pipeline.pkl
+│   ├── model_metadata.pkl
+│   └── metrics.json
+├── ITSM_Dataset.csv
 ├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
 └── README.md
 ```
 
-## Schema Alignment
+## Feature Policy
 
-The training dataset (`ITSM_Dataset.csv`) has different column names than the
-production Ticket schema.  The preprocessing module handles the mapping:
+### Priority target
 
-| CSV Column       | Internal Name      | Notes                                    |
-|------------------|--------------------|------------------------------------------|
-| `Topic`          | `type_of_request`  | Categorical feature                      |
-| `Support Level`  | `support_level`    | L1 / L2 / L3                             |
-| `Source`         | `source`           | Chat / Email / Phone / Portal            |
-| `Product group`  | `product_group`    | Cloud / Hardware / Network / Software    |
-| `Country`        | `country`          | GCC countries                            |
-| `Created time`   | `created_at`       | → `created_hour` + `created_weekday`     |
-| `Close time`     | `closed_at`        | Used only to compute resolution target   |
-| `Priority`       | `priority`         | Critical merged → HIGH (schema has 3)    |
+Priority remains a 4-class target:
+- `LOW`
+- `MEDIUM`
+- `HIGH`
+- `CRITICAL`
 
-The API accepts the exact fields the Ticket Service sends at creation time:
-`title`, `description`, `type_of_request`, `support_level`, `created_at` (plus optional `requester_id`, `latitude`, `longitude`).
+CSV mapping:
+- `Low -> LOW`
+- `Medium -> MEDIUM`
+- `High -> HIGH`
+- `Critical -> CRITICAL`
 
-Text/location fields (`title`, `description`, `building`, `room`, GPS) are currently
-dropped during inference. The trained models rely on:
-- `type_of_request`
-- `support_level`
+Priority target encoding:
+- label encoding only (`PRIORITY_TO_INT`, `INT_TO_PRIORITY`)
+- no one-hot encoding for `y_priority`
+
+### Production-safe input features used for training and inference
+
+- `topic`
+- `source`
+- `product_group`
+- `country`
 - `created_hour`
 - `created_weekday`
+- `is_weekend`
+- `is_out_of_hours`
 
-Note: although the CSV includes additional categorical columns (e.g. `Source`,
-`Product group`, `Country`), the training pipeline intentionally drops them to
-stay aligned with the production ticket-creation payload.
+### Explicitly removed features
 
-## Quick Start
+- `Support Level`
+- `Latitude`, `Longitude`
+- `Agent Group`, `Agent Name`
+- `Status`, `Ticket ID`
+- `Expected SLA to resolve`
+- `Expected SLA to first response`
+- `First response time`
+- `SLA For first response`
+- `SLA For Resolution`
+- `Resolution time`
+- `Survey results`
+- `Agent interactions`
+- `Close time` as a feature
 
-### 1. Install dependencies
+`Close time` is used only to compute the regression target:
+`resolution_time_hours = close_time - created_time`
+
+## Why These Features
+
+- `support_level` is removed to avoid training/inference mismatch (historical escalation state vs new-ticket state).
+- `latitude/longitude` are removed because they are sparse/noisy and not reliable for initial triage quality in this dataset.
+- SLA columns are removed because they are lifecycle outcomes and leakage-prone.
+- `CRITICAL` is kept separate because merging it into `HIGH` damages class signal.
+
+## Model Training Strategy
+
+### Split
+
+- train: `70%`
+- validation: `15%`
+- test: `15%`
+
+Implementation:
+1. `train_valid/test = 85/15`
+2. `train/validation = 70/15` via relative split of `train_valid`
+
+Stratification is attempted on priority labels for both splits and falls back safely if class counts are too small.
+
+### Priority models compared
+
+- `DummyClassifier` baseline
+- `LogisticRegression(max_iter=2000)`
+- `RandomForestClassifier`
+- `HistGradientBoostingClassifier`
+
+Selection rule:
+1. highest validation macro F1
+2. tie-breaker: highest validation accuracy
+
+### Resolution-time models compared
+
+- `DummyRegressor` baseline
+- `RandomForestRegressor`
+- `HistGradientBoostingRegressor`
+
+Selection rule:
+1. lowest validation RMSE
+2. tie-breaker: lowest validation MAE
+
+## Metrics and Artifacts
+
+Saved artifacts:
+- `models/priority_pipeline.pkl`
+- `models/est_pipeline.pkl`
+- `models/model_metadata.pkl`
+- `models/metrics.json`
+
+`metrics.json` includes:
+- selected model names
+- feature list and removed feature list
+- train/validation/test metrics
+- class distributions
+- baseline comparison
+- warning entries when selected model is close to baseline
+
+## Run Locally
+
+### 1) Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Train models
+### 2) Train pipelines
 
 ```bash
 python -m src.train --data ITSM_Dataset.csv --model-dir models
 ```
 
-### 3. Run the service
+### 3) Run API
 
 ```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 4. Open Swagger UI
+### 4) Open Swagger
 
-Navigate to [http://localhost:8000/docs](http://localhost:8000/docs)
+[http://localhost:8000/docs](http://localhost:8000/docs)
 
----
+## Core Endpoints
 
-## Docker
+- `GET /health`
+- `POST /predict`
+- `POST /ai/recommendations`
+- `GET /ai/insights`
+- `POST /ai/suggest-category`
+- `POST /ai/suggest-priority`
+- `GET /ai/similar-tickets/{ticket_id}`
+- `GET /ai/activity-summary/{ticket_id}`
+- `POST /ai/predict-resolution`
+- `GET /ai/suggested-responses/{ticket_id}`
 
-### Build & run with Docker Compose
-
-```bash
-# Create the network if it doesn't exist
-docker network create opsmind-net
-
-# Build and start
-docker compose up --build -d
-```
-
-### Build & run manually
-
-```bash
-docker build -t opsmind-ai-service .
-docker run -d -p 8000:8000 --network opsmind-net --name opsmind-ai-service opsmind-ai-service
-```
-
----
-
-## API Reference
-
-### `POST /predict`
-
-**Request:**
+## Example `/predict` Request
 
 ```json
 {
-  "title": "VPN not connecting",
-  "description": "User reports VPN client fails after update.",
-  "support_level": "L1",
-  "building": "Main",
-  "room": "101",
+  "title": "Major outage: all users cannot access VPN",
+  "description": "Users across two branches cannot connect.",
   "type_of_request": "INCIDENT",
-  "created_at": "2026-02-18T10:00:00"
+  "topic": "Network Issue",
+  "source": "Portal",
+  "product_group": "Network",
+  "country": "UAE",
+  "support_level": "L1",
+  "latitude": 25.2048,
+  "longitude": 55.2708,
+  "created_at": "2026-05-11T09:30:00Z"
 }
 ```
 
-**Response:**
+## Accuracy Note
 
-```json
-{
-  "suggested_priority": "HIGH",
-  "priority_confidence": 0.39,
-  "estimated_resolution_hours": 2.36
-}
-```
+Current accuracy can remain modest because this dataset does not include strong triage predictors like:
+- title/description embeddings
+- structured impact and urgency
+- affected users count
+- service criticality context
 
-### `GET /health`
-
-Returns service status and whether models are loaded.
-
----
-
-## Frontend Compatibility Endpoints
-
-The OpsMind frontend includes an `AIService` wrapper that expects additional
-endpoints. This service exposes them so the UI works out-of-the-box when the
-AI container is running.
-
-### `GET /ai/recommendations/count`
-Returns recommendation counters.
-
-### `GET /ai/recommendations/{ticket_id}`
-Returns a small list of actionable recommendations.
-
-### `POST /ai/recommendations`
-Accepts a ticket payload and returns model-informed recommendations.
-
-### `GET /ai/insights`
-Returns basic service/model metadata.
-
-### `POST /ai/predict-resolution`
-Returns `{ estimated_resolution_hours }` for a ticket payload.
-
-### `POST /predict-sla`
-Returns SLA breach probability (0–100) plus optional model-derived estimates.
-
-### `POST /feedback/sla`
-Accepts feedback payload and returns `{ status: "ok" }`.
-
----
-
-## Models
-
-| Model    | Algorithm                | Target                                          |
-|----------|--------------------------|--------------------------------------------------|
-| Priority | HistGradientBoostingClassifier | `priority` (LOW, MEDIUM, HIGH)             |
-| EST      | HistGradientBoostingRegressor  | `resolution_time_hours` (closed_at − created_at) |
-
-Only ticket-creation-time fields are used as features to prevent data leakage.
+So the current model is intentionally leakage-safe, but signal-limited.

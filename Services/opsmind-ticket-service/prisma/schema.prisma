@@ -19,6 +19,7 @@ enum TicketPriority {
   LOW
   MEDIUM
   HIGH
+  CRITICAL
 }
 
 enum TicketStatus {

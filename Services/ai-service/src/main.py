@@ -1,9 +1,11 @@
 """
 OpsMind AI Service — FastAPI application.
 
-Exposes prediction endpoints and health checks.
+Exposes model prediction and AI helper endpoints.
 Swagger UI is available at ``/docs``.
 """
+
+from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
@@ -23,11 +25,7 @@ from src.schemas import (
     PredictionResponse,
     RecommendationItem,
     RecommendationsCountResponse,
-    SLAFeedbackRequest,
-    SLAPredictRequest,
-    SLAPredictResponse,
     SimilarTicketsResponse,
-    StatusResponse,
     SuggestCategoryRequest,
     SuggestCategoryResponse,
     SuggestPriorityRequest,
@@ -44,105 +42,17 @@ logger = logging.getLogger(__name__)
 APP_VERSION = "1.0.0"
 
 
-SLA_RESOLUTION_TARGET_HOURS = {
-    "HIGH": 4.0,
-    "MEDIUM": 24.0,
-    "LOW": 72.0,
-}
-
-
-def _normalise_priority_label(value: str | None) -> str | None:
-    if value is None:
-        return None
-    cleaned = str(value).strip().upper()
-    if cleaned == "CRITICAL":
-        return "HIGH"
-    if cleaned in {"LOW", "MEDIUM", "HIGH"}:
-        return cleaned
-    return None
-
-
-def _ticket_dict_from_ticket_input(ticket: TicketInput) -> dict:
-    ticket_data = ticket.model_dump()
-    created_at = ticket_data.get("created_at")
-    if isinstance(created_at, datetime):
-        created_at_dt = created_at
-    else:
-        created_at_dt = datetime.now(timezone.utc)
-
-    # Preprocessor expects an ISO string.
-    ticket_data["created_at"] = created_at_dt.isoformat()
-    return ticket_data
-
-
-def _build_features(ticket_data: dict) -> "np.ndarray | object":
-    store = get_store()
-    return preprocess_for_inference(
-        data=ticket_data,
-        ohe_columns=store.ohe_columns,
-        feature_names=store.feature_names,
-    )
-
-
-def _predict_priority(features) -> tuple[str, float]:
-    store = get_store()
-
-    predicted_priority = int(store.priority_model.predict(features)[0])
-    priority_label = INT_TO_PRIORITY.get(predicted_priority, "Unknown")
-
-    priority_confidence = 0.0
-    if hasattr(store.priority_model, "predict_proba"):
-        priority_proba = store.priority_model.predict_proba(features)[0]
-        if hasattr(store.priority_model, "classes_"):
-            classes = list(store.priority_model.classes_)
-            if predicted_priority in classes:
-                class_index = classes.index(predicted_priority)
-            else:
-                class_index = int(np.argmax(priority_proba))
-        else:
-            class_index = int(np.argmax(priority_proba))
-        priority_confidence = round(float(priority_proba[class_index]), 4)
-
-    return priority_label, priority_confidence
-
-
-def _predict_estimated_resolution_hours(features) -> float:
-    store = get_store()
-    est_hours = float(store.est_model.predict(features)[0])
-    return round(max(est_hours, 0.0), 2)
-
-
-def _sla_probability_from_ratio(ratio: float) -> float:
-    # Coarse, interpretable mapping tuned to frontend thresholds.
-    if ratio >= 1.5:
-        return 95.0
-    if ratio >= 1.2:
-        return 85.0
-    if ratio >= 1.0:
-        return 70.0
-    if ratio >= 0.8:
-        return 55.0
-    if ratio >= 0.6:
-        return 35.0
-    return 15.0
-
-
-# ── Lifespan ─────────────────────────────────────────────────────────────────
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Load ML models into memory on startup."""
+    """Load ML pipelines into memory on startup."""
     try:
         load_models()
-        logger.info("Models loaded — service is ready.")
+        logger.info("Pipelines loaded — service is ready.")
     except FileNotFoundError as exc:
         logger.error("Model loading failed: %s", exc)
         logger.warning("Service starting WITHOUT models. /predict will return 503.")
     yield
 
-
-# ── App ──────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="OpsMind AI Service",
@@ -165,7 +75,55 @@ app.add_middleware(
 )
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────────
+def _ticket_dict_from_ticket_input(ticket: TicketInput) -> dict:
+    ticket_data = ticket.model_dump()
+    created_at = ticket_data.get("created_at")
+    if isinstance(created_at, datetime):
+        created_at_dt = created_at
+    else:
+        created_at_dt = datetime.now(timezone.utc)
+
+    ticket_data["created_at"] = created_at_dt.isoformat()
+    return ticket_data
+
+
+def _build_features(ticket_data: dict):
+    return preprocess_for_inference(data=ticket_data)
+
+
+def _predict_priority(features) -> tuple[str, float]:
+    store = get_store()
+
+    predicted_priority = int(store.priority_pipeline.predict(features)[0])
+    priority_label = INT_TO_PRIORITY.get(predicted_priority, "LOW")
+
+    priority_confidence = 0.0
+    if hasattr(store.priority_pipeline, "predict_proba"):
+        priority_proba = store.priority_pipeline.predict_proba(features)[0]
+
+        classes = getattr(store.priority_pipeline, "classes_", None)
+        if classes is None and hasattr(store.priority_pipeline, "named_steps"):
+            model = store.priority_pipeline.named_steps.get("model")
+            classes = getattr(model, "classes_", None)
+
+        if classes is not None:
+            classes_list = [int(c) for c in list(classes)]
+            if predicted_priority in classes_list:
+                class_index = classes_list.index(predicted_priority)
+            else:
+                class_index = int(np.argmax(priority_proba))
+        else:
+            class_index = int(np.argmax(priority_proba))
+
+        priority_confidence = round(float(priority_proba[class_index]), 4)
+
+    return priority_label, priority_confidence
+
+
+def _predict_estimated_resolution_hours(features) -> float:
+    store = get_store()
+    est_hours = float(store.est_pipeline.predict(features)[0])
+    return round(max(est_hours, 0.0), 2)
 
 
 @app.get(
@@ -191,10 +149,7 @@ async def health() -> HealthResponse:
     summary="Predict ticket priority and estimated resolution time",
 )
 async def predict(ticket: TicketInput) -> PredictionResponse:
-    """Predict priority and estimated resolution time for a new ticket.
-
-    Only fields available at ticket creation time are used.
-    """
+    """Predict priority and estimated resolution time for a new ticket."""
     store = get_store()
 
     if not store.is_loaded:
@@ -221,9 +176,6 @@ async def predict(ticket: TicketInput) -> PredictionResponse:
         raise HTTPException(status_code=500, detail=f"Prediction error: {exc}") from exc
 
 
-# ── Frontend-facing /ai/* endpoints ─────────────────────────────────────────
-
-
 @app.get(
     "/ai/recommendations/count",
     response_model=RecommendationsCountResponse,
@@ -231,7 +183,6 @@ async def predict(ticket: TicketInput) -> PredictionResponse:
     summary="Count pending AI recommendations",
 )
 async def recommendations_count() -> RecommendationsCountResponse:
-    # This service does not persist a recommendations queue yet.
     return RecommendationsCountResponse(count=0, pending=0)
 
 
@@ -242,11 +193,14 @@ async def recommendations_count() -> RecommendationsCountResponse:
     summary="Get AI recommendations for a ticket (by id)",
 )
 async def get_recommendations(ticket_id: str) -> list[RecommendationItem]:
-    # Lightweight, always-available recommendations (no ticket fetch here).
     return [
-        RecommendationItem(text=f"Review ticket {ticket_id} details and ensure reproduction steps are captured."),
+        RecommendationItem(
+            text=f"Review ticket {ticket_id} details and ensure reproduction steps are captured."
+        ),
         RecommendationItem(text="If blocked at L1, consider escalating to L2 for faster triage."),
-        RecommendationItem(text="Attach logs/screenshots and recent change history to reduce back-and-forth."),
+        RecommendationItem(
+            text="Attach logs/screenshots and recent change history to reduce back-and-forth."
+        ),
     ]
 
 
@@ -264,23 +218,22 @@ async def get_recommendations_for_payload(ticket: TicketInput) -> list[Recommend
     ticket_data = _ticket_dict_from_ticket_input(ticket)
     features = _build_features(ticket_data)
     predicted_priority, _ = _predict_priority(features)
-    est_hours = _predict_estimated_resolution_hours(features)
 
     recs: list[str] = []
-    if predicted_priority == "HIGH":
+    if predicted_priority == "CRITICAL":
+        recs.append("Critical urgency detected: page on-call owner and escalate immediately.")
+    elif predicted_priority == "HIGH":
         recs.append("High urgency detected: assign a senior technician or escalate early.")
-    if predicted_priority in {"MEDIUM", "HIGH"}:
+
+    if predicted_priority in {"MEDIUM", "HIGH", "CRITICAL"}:
         recs.append("Start triage now: confirm impact, scope, and a reliable reproduction path.")
+
     if str(ticket.type_of_request).upper() == "INCIDENT":
         recs.append("Follow incident checklist: recent changes, auth/network status, and service health.")
 
-    sla_target = SLA_RESOLUTION_TARGET_HOURS.get(predicted_priority, 24.0)
-    if est_hours >= sla_target:
-        recs.append("SLA breach risk: allocate resources or reroute to the right team immediately.")
-
     recs.append("Add clear next steps and request missing details (device/OS/app version, timestamps).")
 
-    return [RecommendationItem(text=t) for t in recs]
+    return [RecommendationItem(text=text) for text in recs]
 
 
 @app.get(
@@ -294,6 +247,12 @@ async def insights() -> dict:
         "models_loaded": store.is_loaded,
         "feature_count": len(store.feature_names),
         "feature_names": store.feature_names,
+        "transformed_feature_count": len(store.transformed_feature_names),
+        "transformed_feature_names": store.transformed_feature_names,
+        "removed_feature_names": store.removed_feature_names,
+        "priority_labels": store.priority_labels,
+        "selected_priority_model": store.selected_priority_model_name,
+        "selected_est_model": store.selected_est_model_name,
     }
 
 
@@ -305,13 +264,13 @@ async def insights() -> dict:
 )
 async def suggest_category(payload: SuggestCategoryRequest) -> SuggestCategoryResponse:
     text = payload.description.lower()
-    if any(k in text for k in ["vpn", "wifi", "network", "internet"]):
+    if any(keyword in text for keyword in ["vpn", "wifi", "network", "internet"]):
         return SuggestCategoryResponse(category="NETWORK", confidence=0.65)
-    if any(k in text for k in ["password", "login", "auth", "mfa"]):
-        return SuggestCategoryResponse(category="ACCESS", confidence=0.6)
-    if any(k in text for k in ["email", "outlook", "smtp", "imap"]):
-        return SuggestCategoryResponse(category="EMAIL", confidence=0.6)
-    return SuggestCategoryResponse(category="GENERAL", confidence=0.4)
+    if any(keyword in text for keyword in ["password", "login", "auth", "mfa"]):
+        return SuggestCategoryResponse(category="ACCESS", confidence=0.60)
+    if any(keyword in text for keyword in ["email", "outlook", "smtp", "imap"]):
+        return SuggestCategoryResponse(category="EMAIL", confidence=0.60)
+    return SuggestCategoryResponse(category="GENERAL", confidence=0.40)
 
 
 @app.post(
@@ -322,18 +281,39 @@ async def suggest_category(payload: SuggestCategoryRequest) -> SuggestCategoryRe
 )
 async def suggest_priority(payload: SuggestPriorityRequest) -> SuggestPriorityResponse:
     text = f"{payload.subject} {payload.description}".lower()
-    if any(k in text for k in ["outage", "down", "production", "critical", "sev1"]):
+
+    critical_keywords = [
+        "critical",
+        "sev1",
+        "system down",
+        "major outage",
+        "all users",
+        "security breach",
+    ]
+    high_keywords = ["outage", "down", "production"]
+    medium_keywords = ["cannot", "unable", "fails", "error"]
+
+    if any(keyword in text for keyword in critical_keywords):
+        return SuggestPriorityResponse(
+            suggested_priority="CRITICAL",
+            confidence=0.80,
+            reasoning="Detected critical-impact keywords.",
+        )
+
+    if any(keyword in text for keyword in high_keywords):
         return SuggestPriorityResponse(
             suggested_priority="HIGH",
-            confidence=0.7,
-            reasoning="Detected outage/production-impact keywords.",
+            confidence=0.70,
+            reasoning="Detected outage or production-impact keywords.",
         )
-    if any(k in text for k in ["cannot", "unable", "fails", "error"]):
+
+    if any(keyword in text for keyword in medium_keywords):
         return SuggestPriorityResponse(
             suggested_priority="MEDIUM",
             confidence=0.55,
             reasoning="Detected failure keywords with unclear scope.",
         )
+
     return SuggestPriorityResponse(
         suggested_priority="LOW",
         confidence=0.45,
@@ -389,88 +369,3 @@ async def suggested_responses(ticket_id: str) -> list[str]:
         "Can you confirm whether this happens on multiple devices or users?",
         "We are investigating. We'll update you with next steps shortly.",
     ]
-
-
-# ── SLA risk + feedback endpoints (used by AI Insights page) ───────────────
-
-
-@app.post(
-    "/predict-sla",
-    response_model=SLAPredictResponse,
-    tags=["SLA"],
-    summary="Predict SLA breach probability",
-)
-async def predict_sla(payload: SLAPredictRequest) -> SLAPredictResponse:
-    store = get_store()
-
-    # If models are unavailable, fall back to a simple priority-based estimate.
-    if not store.is_loaded:
-        pr = _normalise_priority_label(payload.priority) or "MEDIUM"
-        base = {"HIGH": 75.0, "MEDIUM": 45.0, "LOW": 20.0}.get(pr, 45.0)
-        return SLAPredictResponse(
-            sla_breach_probability=base,
-            estimated_resolution_hours=None,
-            sla_target_hours=SLA_RESOLUTION_TARGET_HOURS.get(pr, 24.0),
-            used_priority=pr,
-        )
-
-    created_at = payload.created_at or datetime.now(timezone.utc)
-    type_of_request = payload.type_of_request or "INCIDENT"
-    support_level = payload.support_level or "L1"
-
-    # Build a ticket-like payload for the shared feature pipeline.
-    ticket_data = {
-        "title": payload.title or "(no title)",
-        "description": payload.description or "(no description)",
-        "building": None,
-        "room": None,
-        "type_of_request": type_of_request,
-        "support_level": support_level,
-        "created_at": created_at.isoformat(),
-    }
-
-    features = _build_features(ticket_data)
-    predicted_priority, _ = _predict_priority(features)
-    est_hours = _predict_estimated_resolution_hours(features)
-
-    requested_priority = _normalise_priority_label(payload.priority)
-    used_priority = requested_priority or predicted_priority
-
-    sla_target = SLA_RESOLUTION_TARGET_HOURS.get(used_priority, 24.0)
-    ratio = (est_hours / sla_target) if sla_target > 0 else 0.0
-
-    prob = _sla_probability_from_ratio(ratio)
-
-    # Mild adjustments for weekends / out-of-hours.
-    if created_at.weekday() >= 5:
-        prob += 5.0
-    if created_at.hour < 8 or created_at.hour >= 18:
-        prob += 5.0
-
-    prob = max(0.0, min(100.0, prob))
-
-    return SLAPredictResponse(
-        sla_breach_probability=round(prob, 2),
-        estimated_resolution_hours=est_hours,
-        sla_target_hours=sla_target,
-        used_priority=used_priority,
-    )
-
-
-@app.post(
-    "/feedback/sla",
-    response_model=StatusResponse,
-    tags=["SLA"],
-    summary="Submit SLA prediction feedback",
-)
-async def submit_sla_feedback(payload: SLAFeedbackRequest) -> StatusResponse:
-    logger.info(
-        "Received SLA feedback",
-        extra={
-            "ticket_id": payload.ticket_id,
-            "ai_probability": payload.ai_probability,
-            "admin_decision": payload.admin_decision,
-            "final_outcome": payload.final_outcome,
-        },
-    )
-    return StatusResponse(status="ok")
