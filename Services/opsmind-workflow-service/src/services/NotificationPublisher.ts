@@ -18,12 +18,12 @@ export interface TicketAssignedNotificationPayload {
   technician: {
     id: string;
     name: string;
-    email: string;
+    email?: string;
   };
-  supervisor: {
+  supervisor?: {
     id: string;
     name: string;
-    email: string;
+    email?: string;
   };
 }
 
@@ -80,7 +80,7 @@ export class NotificationPublisher {
         console.log(
           `[NotificationPublisher] ✔ Published ticket.notification.assigned | ` +
             `ticket=${payload.ticket.id} | technician=${payload.technician.id} | ` +
-            `supervisor=${payload.supervisor.id}`,
+            `supervisor=${payload.supervisor?.id ?? 'none'}`,
         );
       } else {
         console.warn(

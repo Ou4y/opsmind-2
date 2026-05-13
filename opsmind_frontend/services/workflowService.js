@@ -16,6 +16,15 @@
 import AuthService from './authService.js';
 
 const WORKFLOW_API = window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003';
+const DEFAULT_WORKFLOW_TIMEOUT_MS = 15000;
+
+function resolveWorkflowRequestTimeoutMs() {
+    const configuredTimeout = Number(window.OPSMIND_WORKFLOW_REQUEST_TIMEOUT_MS);
+    if (Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+        return configuredTimeout;
+    }
+    return DEFAULT_WORKFLOW_TIMEOUT_MS;
+}
 
 /**
  * Get authentication headers with Bearer token
@@ -36,28 +45,81 @@ function getAuthHeaders() {
  * @returns {Promise<Object>} Response data
  */
 async function workflowRequest(path, options = {}) {
-    const response = await fetch(`${WORKFLOW_API}${path}`, {
-        headers: getAuthHeaders(),
-        ...options
-    });
-    
-    const json = await response.json();
-    
-    // Handle 401 Unauthorized
-    if (response.status === 401) {
-        AuthService.clearAuth();
-        window.location.href = '/index.html';
-        throw new Error('Session expired');
+    const timeoutMs = resolveWorkflowRequestTimeoutMs();
+    const externalSignal = options.signal;
+    const controller = new AbortController();
+    let timedOut = false;
+    let timeoutId = null;
+
+    const abortFromExternalSignal = () => {
+        controller.abort();
+    };
+
+    if (externalSignal) {
+        if (externalSignal.aborted) {
+            controller.abort();
+        } else {
+            externalSignal.addEventListener('abort', abortFromExternalSignal, { once: true });
+        }
     }
-    
-    // Check success field instead of HTTP status alone
-    if (!json.success && response.status >= 400) {
-        const error = new Error(json.message || `Request failed with status ${response.status}`);
-        error.status = response.status;
+
+    if (timeoutMs > 0) {
+        timeoutId = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, timeoutMs);
+    }
+
+    try {
+        const response = await fetch(`${WORKFLOW_API}${path}`, {
+            headers: getAuthHeaders(),
+            ...options,
+            signal: controller.signal
+        });
+
+        const json = await response.json();
+
+        // Handle 401 Unauthorized
+        if (response.status === 401) {
+            AuthService.clearAuth();
+            window.location.href = '/index.html';
+            throw new Error('Session expired');
+        }
+
+        // Check success field instead of HTTP status alone
+        if (!json.success && response.status >= 400) {
+            const error = new Error(json.message || `Request failed with status ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+
+        return json;
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            if (timedOut) {
+                const timeoutError = new Error(`Workflow request timed out after ${Math.round(timeoutMs / 1000)}s`);
+                timeoutError.status = 408;
+                throw timeoutError;
+            }
+
+            const abortedError = new Error('Workflow request was cancelled');
+            abortedError.status = 499;
+            throw abortedError;
+        }
+
+        if (error?.message === 'Failed to fetch') {
+            const networkError = new Error('Unable to reach workflow service. Please check connectivity.');
+            networkError.status = 503;
+            throw networkError;
+        }
+
         throw error;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (externalSignal) {
+            externalSignal.removeEventListener('abort', abortFromExternalSignal);
+        }
     }
-    
-    return json;
 }
 
 // ===================================

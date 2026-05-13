@@ -101,6 +101,15 @@ const App = {
                 item.className = `notification-item ${!notification.read ? 'unread' : ''}`;
                 item.dataset.id = notification._id || '';
 
+                const ticketId = this.getNotificationTicketId(notification);
+                if (ticketId) {
+                    item.dataset.ticketId = ticketId;
+                    item.style.cursor = 'pointer';
+                    item.title = `Open ticket ${ticketId}`;
+                    item.tabIndex = 0;
+                    item.setAttribute('role', 'button');
+                }
+
                 const message = document.createElement('div');
                 message.className = 'notification-message';
                 message.textContent = notification.message || 'Notification';
@@ -125,6 +134,43 @@ const App = {
         console.error('Failed to load notifications:', error);
     }
    },
+
+    getNotificationTicketId(notification) {
+        if (!notification || typeof notification !== 'object') return null;
+
+        const directId = notification.ticketId || notification.ticket_id || notification?.ticket?.id;
+        if (directId) {
+            return String(directId).trim();
+        }
+
+        const message = String(notification.message || '');
+        const patterns = [
+            /\bTicket ID:\s*([A-Za-z0-9-]+)/i,
+            /\bTicket\s*#\s*([A-Za-z0-9-]+)/i,
+            /\b\(ID:\s*([A-Za-z0-9-]+)\)/i
+        ];
+
+        for (const pattern of patterns) {
+            const match = message.match(pattern);
+            if (match?.[1]) {
+                return match[1];
+            }
+        }
+
+        return null;
+    },
+
+    openTicketFromNotification(ticketId) {
+        if (!ticketId) return;
+
+        if (!Router.canAccessPage('tickets.html')) {
+            UI.warning('Ticket details are not available for your role.');
+            return;
+        }
+
+        const encodedTicketId = encodeURIComponent(String(ticketId).trim());
+        window.location.href = `/pages/tickets.html?id=${encodedTicketId}`;
+    },
 
 
 
@@ -294,6 +340,37 @@ const App = {
               });
 
               this._notificationOutsideClickBound = true;
+          }
+
+          if (!this._notificationItemClickBound) {
+              const notificationList = document.getElementById('notificationDropdownList');
+              if (notificationList) {
+                  notificationList.addEventListener('click', (event) => {
+                      const target = event.target instanceof Element ? event.target : null;
+                      if (!target) return;
+                      const item = target.closest('.notification-item');
+                      if (!item || !item.dataset.ticketId) return;
+
+                      event.preventDefault();
+                      document.getElementById('notificationDropdown')?.classList.remove('show');
+                      this.openTicketFromNotification(item.dataset.ticketId);
+                  });
+
+                  notificationList.addEventListener('keydown', (event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+
+                      const target = event.target instanceof Element ? event.target : null;
+                      if (!target) return;
+                      const item = target.closest('.notification-item');
+                      if (!item || !item.dataset.ticketId) return;
+
+                      event.preventDefault();
+                      document.getElementById('notificationDropdown')?.classList.remove('show');
+                      this.openTicketFromNotification(item.dataset.ticketId);
+                  });
+
+                  this._notificationItemClickBound = true;
+              }
           }
 
         // Global search (placeholder)

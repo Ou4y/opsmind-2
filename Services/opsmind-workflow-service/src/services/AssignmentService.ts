@@ -293,28 +293,37 @@ export class AssignmentService {
   private async enrichUserData(
     workflowUserId: number,
     userType: 'technician' | 'supervisor',
-  ): Promise<{ id: string; name: string; email: string } | null> {
+  ): Promise<{ id: string; name: string; email?: string } | null> {
     try {
       // Step 1: Resolve by workflow user_id first, fallback to internal row id for compatibility.
       const technicianData =
         (await this.technicianRepo.getByUserId(workflowUserId)) ||
         (await this.technicianRepo.getById(workflowUserId));
       
-      // Step 2: Fetch email from Auth Service
-      const authUser = await getUserDetails(workflowUserId);
+      // Step 2: Fetch email from Auth Service (best-effort).
+      let authUser: Awaited<ReturnType<typeof getUserDetails>> | null = null;
+      try {
+        authUser = await getUserDetails(workflowUserId);
+      } catch (error) {
+        console.warn(
+          `[AssignmentService] ⚠ Failed to fetch auth profile for ${userType} ${workflowUserId}; continuing with local data.`,
+          error instanceof Error ? error.message : error,
+        );
+      }
 
       // Step 3: Build enriched data object
+      const fallbackNameFromEmail = authUser?.email?.split('@')[0] || '';
       const enrichedData = {
         id: String(workflowUserId),
-        name: technicianData?.name || authUser?.email?.split('@')[0] || '',
-        email: authUser?.email || '',
+        name: technicianData?.name || fallbackNameFromEmail || `${userType}-${workflowUserId}`,
+        email: authUser?.email || technicianData?.email || undefined,
       };
 
-      // Step 4: Validate required fields
-      if (!enrichedData.name || !enrichedData.email) {
+      // Step 4: Validate required fields.
+      // Email is optional for in-app notifications; keep the event publishable without it.
+      if (!enrichedData.name) {
         const missing: string[] = [];
         if (!enrichedData.name) missing.push('name');
-        if (!enrichedData.email) missing.push('email');
         
         console.error(
           `[AssignmentService] ✘ Validation failed for ${userType} ${workflowUserId}: ` +
@@ -325,7 +334,7 @@ export class AssignmentService {
 
       console.log(
         `[AssignmentService] ✔ Enriched ${userType} data: ` +
-        `id=${enrichedData.id}, name=${enrichedData.name}, email=${enrichedData.email}`
+        `id=${enrichedData.id}, name=${enrichedData.name}, email=${enrichedData.email ?? 'n/a'}`
       );
 
       return enrichedData;
@@ -364,8 +373,16 @@ export class AssignmentService {
       console.log(`[AssignmentService] Publishing notification for ticket ${ticketId}...`);
 
       // Step 1: Fetch ticket details from ticket-service
-      const ticketDetails = await getTicketDetails(ticketId);
-      const ticketTitle = ticketDetails?.title || 'Untitled Ticket';
+      let ticketTitle = 'Untitled Ticket';
+      try {
+        const ticketDetails = await getTicketDetails(ticketId);
+        ticketTitle = ticketDetails?.title || ticketTitle;
+      } catch (error) {
+        console.warn(
+          `[AssignmentService] ⚠ Could not fetch ticket title for ${ticketId}; using fallback title.`,
+          error instanceof Error ? error.message : error,
+        );
+      }
 
       // Step 2: Enrich and validate technician data
       const technicianData = await this.enrichUserData(technicianUserId, 'technician');
@@ -377,39 +394,35 @@ export class AssignmentService {
         return;
       }
 
-      // Step 3: Fetch supervisor from local database
+      // Step 3: Fetch supervisor data (optional; do not block technician notification).
+      let supervisorData: { id: string; name: string; email?: string } | undefined;
       const supervisor = await this.technicianRepo.getSupervisor();
       if (!supervisor) {
         console.warn(
-          `[AssignmentService] ✘ Skipping notification publish: ` +
-          `no supervisor found for ticket ${ticketId}`
+          `[AssignmentService] ⚠ No supervisor found; publishing technician-only assignment notification for ticket ${ticketId}.`,
         );
-        return;
+      } else {
+        supervisorData = await this.enrichUserData(supervisor.user_id, 'supervisor') ?? undefined;
+        if (!supervisorData) {
+          console.warn(
+            `[AssignmentService] ⚠ Supervisor enrichment failed; publishing technician-only assignment notification for ticket ${ticketId}.`,
+          );
+        }
       }
 
-      // Step 4: Enrich and validate supervisor data
-      const supervisorData = await this.enrichUserData(supervisor.user_id, 'supervisor');
-      if (!supervisorData) {
-        console.warn(
-          `[AssignmentService] ✘ Skipping notification publish: ` +
-          `supervisor data validation failed for ticket ${ticketId}`
-        );
-        return;
-      }
-
-      // Step 5: Build and publish notification payload
+      // Step 4: Build and publish notification payload.
       await this.notificationPublisher.publishTicketAssigned({
         ticket: {
           id: ticketId,
           title: ticketTitle,
         },
         technician: technicianData,
-        supervisor: supervisorData,
+        ...(supervisorData ? { supervisor: supervisorData } : {}),
       });
 
       console.log(
         `[AssignmentService] ✔ Notification published successfully | ` +
-        `ticket=${ticketId} | technician=${technicianData.email} | supervisor=${supervisorData.email}`
+        `ticket=${ticketId} | technician=${technicianData.id} | supervisor=${supervisorData?.id ?? 'none'}`
       );
     } catch (error) {
       console.error(
@@ -535,6 +548,17 @@ export class AssignmentService {
       }
 
       // Step 5: Build SLA payload
+      const technicianForSla = {
+        id: technicianData.id,
+        name: technicianData.name,
+        email: technicianData.email || '',
+      };
+      const supervisorForSla = {
+        id: supervisorData.id,
+        name: supervisorData.name,
+        email: supervisorData.email || '',
+      };
+
       const slaPayload = {
         ticketId: event.ticket_id,
         title: ticketDetails.title,
@@ -542,8 +566,8 @@ export class AssignmentService {
         ticketStatus: ticketDetails.status,
         requesterId: ticketDetails.requester_id || ticketDetails.created_by,
         assignedTo: String(technicianUserId),
-        technician: technicianData,
-        supervisor: supervisorData,
+        technician: technicianForSla,
+        supervisor: supervisorForSla,
       };
 
       // Step 6: Comprehensive validation before sending

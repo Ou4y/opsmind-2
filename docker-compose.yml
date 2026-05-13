@@ -163,6 +163,10 @@ services:
         condition: service_healthy
       auth-service:
         condition: service_started
+      ticket-service:
+        condition: service_healthy
+      sla-service:
+        condition: service_started
     environment:
       NODE_ENV: "production"
       PORT: "3003"
@@ -219,7 +223,7 @@ services:
       # For the HTTP notification client (if enabled)
       NOTIFICATION_URL: http://notification-service:3000/api/notifications
       NOTIFICATION_INTERNAL_SECRET: "supersecret"
-    command: ["sh", "-c", "npm run db:migrate:prod && node dist/server.js"]
+    command: ["node", "dist/server.js"]
     ports:
       - "3001:3000"
     networks:

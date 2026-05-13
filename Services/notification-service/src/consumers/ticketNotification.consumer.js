@@ -27,7 +27,11 @@ async function consumeTicketNotifications(channel, exchange) {
       // 1️ Ticket Assigned
       // ===============================
       if (routingKey === "ticket.notification.assigned") {
-        const { ticket, technician, supervisor } = event;
+        const { ticket, technician, supervisor } = event || {};
+
+        if (!ticket?.id || !technician?.id) {
+          throw new Error("Invalid ticket.notification.assigned payload: missing ticket.id or technician.id");
+        }
 
         await sendInAppNotification(
           technician.id,
@@ -38,31 +42,89 @@ async function consumeTicketNotifications(channel, exchange) {
           await sendEmail(
             technician.email,
             "New Ticket Assigned",
-            `Hello ${technician.name},\n\n` +
+            `Hello ${technician.name || "technician"},\n\n` +
               `You have been assigned a new ticket.\n\n` +
               `Ticket ID: ${ticket.id}\nTitle: ${ticket.title}`
           );
         }
 
-        await sendInAppNotification(
-          supervisor.id,
-          `Ticket "${ticket.title}" (ID: ${ticket.id}) assigned to ${technician.name}`
-        );
+        if (supervisor?.id) {
+          await sendInAppNotification(
+            supervisor.id,
+            `Ticket "${ticket.title}" (ID: ${ticket.id}) assigned to ${technician.name || technician.id}`
+          );
+        }
 
-        if (supervisor.email) {
+        if (supervisor?.email) {
           await sendEmail(
             supervisor.email,
             "Ticket Assignment Notification",
-            `Hello ${supervisor.name},\n\n` +
+            `Hello ${supervisor.name || "supervisor"},\n\n` +
               `The following ticket has been assigned:\n\n` +
               `Ticket ID: ${ticket.id}\nTitle: ${ticket.title}\n` +
-              `Assigned Technician: ${technician.name}`
+              `Assigned Technician: ${technician.name || technician.id}`
           );
         }
 
         await logSystemMessage(
-          `Ticket ${ticket.id} assigned to Technician ${technician.name} [ID: ${technician.id}] - Supervisor: ${supervisor.name} [ID: ${supervisor.id}]`
+          `Ticket ${ticket.id} assigned to Technician ${technician.name || "unknown"} [ID: ${technician.id}]` +
+          `${supervisor?.id ? ` - Supervisor: ${supervisor.name || "unknown"} [ID: ${supervisor.id}]` : " - Supervisor: none"}`
         );
+      }
+
+      // 1.b Ticket Opened (legacy safety-net)
+      if (routingKey === "ticket.notification.opened") {
+        const { ticket, technician, admin, endUser } = event;
+
+        // notify end user
+        if (endUser && endUser.id) {
+          await sendInAppNotification(
+            endUser.id,
+            `Your ticket #${ticket.id} - ${ticket.title} has been created.`
+          );
+
+          if (endUser.email) {
+            await sendEmail(
+              endUser.email,
+              "Ticket Created",
+              `Hello ${endUser.name || "user"},\n\nYour ticket has been created.\n\nTicket ID: ${ticket.id}\nTitle: ${ticket.title}`
+            );
+          }
+        }
+
+        // notify technician
+        if (technician && technician.id) {
+          await sendInAppNotification(
+            technician.id,
+            `A new ticket has been opened: ${ticket.title} (ID: ${ticket.id}).`
+          );
+
+          if (technician.email) {
+            await sendEmail(
+              technician.email,
+              "New Ticket Opened",
+              `Hello ${technician.name || "technician"},\n\nA new ticket has been opened.\n\nTicket ID: ${ticket.id}\nTitle: ${ticket.title}`
+            );
+          }
+        }
+
+        // notify admin
+        if (admin && admin.id) {
+          await sendInAppNotification(
+            admin.id,
+            `Ticket opened: ${ticket.title} (ID: ${ticket.id}).`
+          );
+
+          if (admin.email) {
+            await sendEmail(
+              admin.email,
+              "Ticket Opened",
+              `Hello ${admin.name || "admin"},\n\nA new ticket has been opened.\n\nTicket ID: ${ticket.id}\nTitle: ${ticket.title}`
+            );
+          }
+        }
+
+        await logSystemMessage(`Ticket ${ticket.id} opened (notified endUser:${endUser?.id} admin:${admin?.id} tech:${technician?.id})`);
       }
 
       // 2 SLA Warning (before breach)

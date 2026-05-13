@@ -13,6 +13,8 @@
 /**
  * UI Namespace - Contains all UI utility functions
  */
+let loadingModalCounter = 0;
+
 const UI = {
     /**
      * Show a toast notification
@@ -152,9 +154,11 @@ const UI = {
      * @returns {Object} Object with hide() method
      */
     showLoading(message = 'Please wait...') {
-        const modalId = 'loadingModal-' + Date.now();
+        this.clearLoadingModals();
+
+        const modalId = `loadingModal-${Date.now()}-${++loadingModalCounter}`;
         const modalHTML = `
-            <div class="modal fade" id="${modalId}" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false" aria-hidden="true">
+            <div class="modal fade" id="${modalId}" tabindex="-1" data-loading-modal="true" data-bs-backdrop="static" data-bs-keyboard="false" aria-hidden="true">
                 <div class="modal-dialog modal-dialog-centered modal-sm">
                     <div class="modal-content">
                         <div class="modal-body text-center py-4">
@@ -172,20 +176,83 @@ const UI = {
         
         const modalElement = document.getElementById(modalId);
         const modal = new bootstrap.Modal(modalElement);
+        let closed = false;
+
+        const cleanupElement = () => {
+            if (closed) return;
+            closed = true;
+
+            try {
+                modalElement?.remove();
+            } catch (error) {
+                console.warn('Failed to remove loading modal element:', error);
+            }
+
+            const hasVisibleNonLoadingModal = document.querySelector('.modal.show:not([data-loading-modal="true"])');
+            if (!hasVisibleNonLoadingModal) {
+                document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.remove());
+                document.body.classList.remove('modal-open');
+                document.body.style.removeProperty('padding-right');
+                document.body.style.removeProperty('overflow');
+            }
+        };
+
+        modalElement.addEventListener('hidden.bs.modal', cleanupElement, { once: true });
         modal.show();
 
         return {
             hide: () => {
-                modal.hide();
-                modalElement.addEventListener('hidden.bs.modal', () => {
-                    modalElement.remove();
-                }, { once: true });
+                if (closed) return;
+                try {
+                    modal.hide();
+                } catch (error) {
+                    console.warn('Error while hiding loading modal, forcing cleanup:', error);
+                    cleanupElement();
+                    return;
+                }
+
+                // Defensive fallback: if bootstrap hidden event does not fire for any reason,
+                // force cleanup after transition window.
+                setTimeout(cleanupElement, 500);
             },
             updateMessage: (newMessage) => {
+                if (closed) return;
                 const msgEl = modalElement.querySelector('.modal-body p');
                 if (msgEl) msgEl.textContent = newMessage;
             }
         };
+    },
+
+    /**
+     * Clear all loading modals and orphaned backdrops.
+     * Safe to call defensively before/after long-running actions.
+     */
+    clearLoadingModals() {
+        const loadingModals = Array.from(document.querySelectorAll('.modal[data-loading-modal="true"]'));
+        loadingModals.forEach((modalEl) => {
+            try {
+                const instance = bootstrap.Modal.getInstance(modalEl);
+                if (instance) {
+                    instance.hide();
+                }
+            } catch (error) {
+                console.warn('Failed to hide existing loading modal instance:', error);
+            }
+
+            modalEl.classList.remove('show');
+            modalEl.style.display = 'none';
+            modalEl.setAttribute('aria-hidden', 'true');
+            modalEl.removeAttribute('aria-modal');
+            modalEl.remove();
+        });
+
+        const hasVisibleNonLoadingModal = document.querySelector('.modal.show:not([data-loading-modal="true"])');
+        if (!hasVisibleNonLoadingModal) {
+            document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.remove());
+            document.body.classList.remove('modal-open');
+            document.body.style.removeProperty('padding-right');
+            document.body.style.removeProperty('overflow');
+        }
     },
 
     /**

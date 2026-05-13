@@ -1,8 +1,9 @@
 import { logger } from "../config/logger";
 import { Ticket } from "@prisma/client";
 
-const NOTIFICATION_URL = "http://localhost:3000/api/notifications";
-const INTERNAL_SECRET = "supersecret";
+const NOTIFICATION_URL = process.env.NOTIFICATION_URL || "http://localhost:3000/api/notifications";
+// Accept either INTERNAL_SECRET or legacy NOTIFICATION_INTERNAL_SECRET
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || process.env.NOTIFICATION_INTERNAL_SECRET || "supersecret";
 
 // Static defaults as per requirements
 const STATIC_END_USER_EMAIL = "janah2202047@miuegypt.edu.eg";

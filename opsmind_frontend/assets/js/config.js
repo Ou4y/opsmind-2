@@ -13,7 +13,7 @@
 // They can be overridden via a <script> tag before app scripts load.
 
 // Backend API Configuration
-window.OPSMIND_API_URL = window.OPSMIND_API_URL || 'http://localhost:3002';        // Auth Service
+window.OPSMIND_API_URL = window.OPSMIND_API_URL || 'http://localhost:3012';        // Auth Service
 window.OPSMIND_TICKET_URL = window.OPSMIND_TICKET_URL || 'http://localhost:3001';  // Ticket Service  
 window.OPSMIND_WORKFLOW_API_URL = window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003'; // Workflow Service
 window.OPSMIND_AI_API_URL = window.OPSMIND_AI_API_URL || 'http://localhost:8001';  // AI/ML Service

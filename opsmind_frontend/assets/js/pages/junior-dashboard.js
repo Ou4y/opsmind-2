@@ -29,10 +29,22 @@ const state = {
     dashboardContext: null,
     isLoading: false,
     refreshInterval: null,
-    locationWatchId: null
+    locationWatchId: null,
+    detailsRequestToken: 0,
+    activeTicketDetailsLoader: null
 };
 
 const geoOptions = { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 };
+
+const TRANSIENT_WORKFLOW_ERROR_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_WORKFLOW_ERROR_PATTERNS = [
+    'ECONNREFUSED',
+    'ETIMEDOUT',
+    'EHOSTUNREACH',
+    'workflow request timed out',
+    'unable to reach workflow service',
+    'failed to fetch'
+];
 
 /**
  * Initialize the junior dashboard page
@@ -223,20 +235,38 @@ async function loadMyTickets() {
             return;
         }
 
-        const [overviewResponse, ticketsResponse] = await Promise.all([
-            getJuniorOverview(currentTechnicianId),
-            getJuniorTickets(currentTechnicianId, { limit: 50, offset: 0 })
+        const [overviewResult, ticketsResult] = await Promise.allSettled([
+            withWorkflowRetry(
+                () => getJuniorOverview(currentTechnicianId),
+                { label: 'junior overview' }
+            ),
+            withWorkflowRetry(
+                () => getJuniorTickets(currentTechnicianId, { limit: 50, offset: 0 }),
+                { label: 'junior tickets' }
+            )
         ]);
 
-        if (!overviewResponse?.success || !overviewResponse?.data) {
-            throw new Error(overviewResponse?.message || 'Failed to load overview data');
+        if (overviewResult.status === 'fulfilled' && overviewResult.value?.success && overviewResult.value?.data) {
+            state.overview = overviewResult.value.data;
+        } else {
+            state.overview = null;
+            const overviewError = overviewResult.status === 'rejected'
+                ? overviewResult.reason
+                : new Error(overviewResult.value?.message || 'Failed to load overview data');
+            console.warn('[Junior Dashboard] Overview unavailable:', overviewError);
         }
 
+        if (ticketsResult.status !== 'fulfilled' || !ticketsResult.value?.success || !ticketsResult.value?.data) {
+            const ticketsError = ticketsResult.status === 'rejected'
+                ? ticketsResult.reason
+                : new Error(ticketsResult.value?.message || 'Failed to load tickets');
+            throw ticketsError;
+        }
+
+        const ticketsResponse = ticketsResult.value;
         if (!ticketsResponse?.success || !ticketsResponse?.data) {
             throw new Error(ticketsResponse?.message || 'Failed to load tickets');
         }
-
-        state.overview = overviewResponse.data;
 
         const tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
         console.log('[Junior Dashboard] Raw tickets from API:', tickets);
@@ -277,6 +307,51 @@ async function loadMyTickets() {
         // Do NOT re-throw: optional metrics (SLA, etc.) must not block showing the page.
         // loadDashboardData() will only show its toast if something else throws after this.
     }
+}
+
+function isTransientWorkflowError(error) {
+    if (!error) return false;
+
+    if (TRANSIENT_WORKFLOW_ERROR_CODES.has(Number(error.status))) {
+        return true;
+    }
+
+    const message = String(error.message || '');
+    return TRANSIENT_WORKFLOW_ERROR_PATTERNS.some((pattern) =>
+        message.toLowerCase().includes(pattern.toLowerCase())
+    );
+}
+
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withWorkflowRetry(requestFn, options = {}) {
+    const retries = Number.isFinite(options.retries) ? Number(options.retries) : 2;
+    const retryDelayMs = Number.isFinite(options.retryDelayMs) ? Number(options.retryDelayMs) : 700;
+    const label = options.label || 'workflow request';
+
+    let attempt = 0;
+
+    while (attempt <= retries) {
+        try {
+            return await requestFn();
+        } catch (error) {
+            const isRetryable = isTransientWorkflowError(error);
+            const hasNextAttempt = attempt < retries;
+
+            if (!isRetryable || !hasNextAttempt) {
+                throw error;
+            }
+
+            const waitMs = retryDelayMs * Math.pow(2, attempt);
+            console.warn(`[Junior Dashboard] Retrying ${label} after transient error (${attempt + 1}/${retries + 1}):`, error);
+            await delay(waitMs);
+            attempt += 1;
+        }
+    }
+
+    throw new Error(`Failed to complete ${label}`);
 }
 
 function normalizeJuniorTicket(ticket) {
@@ -546,7 +621,7 @@ window.updateTicketStatus = async function(ticketId, newStatus) {
         
         // If viewing details, refresh the details
         if (state.selectedTicket?.id === ticketId) {
-            await viewTicketDetails(ticketId);
+            await window.viewTicketDetails(ticketId);
         }
     } catch (error) {
         console.error('Error updating ticket status:', error);
@@ -618,8 +693,11 @@ window.viewTicketDetails = async function(ticketId) {
     }
 
     state.selectedTicket = ticket;
+    const requestToken = ++state.detailsRequestToken;
 
+    UI.clearLoadingModals();
     const loading = UI.showLoading('Loading ticket details...');
+    state.activeTicketDetailsLoader = loading;
 
     try {
         const detailsResponse = await getJuniorTicketDetails(workflowUserId, ticketId);
@@ -637,7 +715,16 @@ window.viewTicketDetails = async function(ticketId) {
         }
         state.selectedTicketDetails = null;
     } finally {
+        if (state.activeTicketDetailsLoader === loading) {
+            state.activeTicketDetailsLoader = null;
+        }
+
         loading.hide();
+
+        // Defensive cleanup for stale overlays from racing requests.
+        if (requestToken === state.detailsRequestToken) {
+            setTimeout(() => UI.clearLoadingModals(), 0);
+        }
     }
 
     // Show details tab
@@ -799,13 +886,20 @@ async function sendLocationUpdate(technicianId, coords) {
         });
 
         if (!response.ok) {
-            // If endpoint doesn't exist (404), log but don't show error to user
+            const detail = await response.text().catch(() => '');
+
+            // 404 can mean endpoint missing or technician not present in workflow DB.
             if (response.status === 404) {
-                console.warn('Location tracking endpoint not available (404). Location tracking disabled.');
+                const normalizedDetail = String(detail || '').toLowerCase();
+                if (normalizedDetail.includes('technician') && normalizedDetail.includes('not found')) {
+                    console.warn('Location tracking disabled: technician record was not found in workflow service.');
+                } else {
+                    console.warn('Location tracking endpoint not available (404). Location tracking disabled.');
+                }
                 stopLocationTracking();
                 return;
             }
-            const detail = await response.text().catch(() => '');
+
             throw new Error(detail || `HTTP ${response.status}`);
         }
         console.log('Location updated successfully');

@@ -21,8 +21,12 @@ const createNotificationAPI = require("./api/notification.api");
     app.use(cors());
     app.use(express.json());
 
-    //  MongoDB
-    await connectMongoDB();
+    //  MongoDB (skip when running in NO_DB test mode)
+    if (process.env.NO_DB !== "true") {
+      await connectMongoDB();
+    } else {
+      console.log("NO_DB=true -> skipping MongoDB connection (using in-memory store for tests)");
+    }
 
     const { channel, EXCHANGE_NAME } = await connectRabbitMQ();
     await consumeTicketNotifications(channel, EXCHANGE_NAME);
