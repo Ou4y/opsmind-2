@@ -1,304 +1,686 @@
 {
-  "selected_priority_model_name": "random_forest",
-  "selected_est_model_name": "hist_gradient_boosting",
-  "feature_list": [
-    "topic",
-    "source",
-    "product_group",
-    "country",
-    "created_hour",
-    "created_weekday",
-    "is_weekend",
-    "is_out_of_hours"
-  ],
-  "removed_feature_list": [
-    "Support Level",
-    "Latitude",
-    "Longitude",
-    "Agent Group",
-    "Agent Name",
-    "Status",
-    "Ticket ID",
-    "Expected SLA to resolve",
-    "Expected SLA to first response",
-    "First response time",
-    "SLA For first response",
-    "SLA For Resolution",
-    "Resolution time",
-    "Survey results",
-    "Agent interactions",
-    "Close time as a feature"
-  ],
   "dataset": {
-    "rows_after_preprocessing": 100000,
-    "feature_count": 8,
-    "feature_names": [
-      "topic",
-      "source",
-      "product_group",
-      "country",
-      "created_hour",
-      "created_weekday",
-      "is_weekend",
-      "is_out_of_hours"
-    ],
-    "transformed_feature_count": 23,
-    "transformed_feature_names": [
-      "topic_Access Request",
-      "topic_General Inquiry",
-      "topic_Hardware Failure",
-      "topic_Network Issue",
-      "topic_Software Bug",
-      "source_Chat",
-      "source_Email",
-      "source_Phone",
-      "source_Portal",
-      "product_group_Cloud",
-      "product_group_Hardware",
-      "product_group_Network",
-      "product_group_Software",
-      "country_Bahrain",
-      "country_Kuwait",
-      "country_Oman",
-      "country_Qatar",
-      "country_Saudi Arabia",
-      "country_UAE",
-      "created_hour",
-      "created_weekday",
-      "is_weekend",
-      "is_out_of_hours"
-    ],
-    "priority_distribution_total": {
+    "source_file": "ITSM_Dataset.csv",
+    "enriched_file": "ITSM_Dataset_enriched.csv",
+    "rows": 100000,
+    "original_column_count": 28,
+    "enriched_column_count": 53,
+    "target": "priority",
+    "original_priority_distribution": {
       "LOW": 25014,
       "MEDIUM": 25117,
       "HIGH": 24824,
       "CRITICAL": 25045
     },
-    "priority_distribution_train": {
-      "LOW": 17510,
-      "MEDIUM": 17582,
-      "HIGH": 17376,
-      "CRITICAL": 17531
+    "rule_priority_distribution": {
+      "LOW": 8266,
+      "MEDIUM": 19430,
+      "HIGH": 37021,
+      "CRITICAL": 35283
     },
-    "priority_distribution_validation": {
-      "LOW": 3752,
-      "MEDIUM": 3768,
-      "HIGH": 3724,
-      "CRITICAL": 3757
+    "final_priority_distribution": {
+      "LOW": 8448,
+      "MEDIUM": 20490,
+      "HIGH": 38247,
+      "CRITICAL": 32815
     },
-    "priority_distribution_test": {
-      "LOW": 3752,
-      "MEDIUM": 3767,
-      "HIGH": 3724,
-      "CRITICAL": 3757
+    "train_class_distribution": {
+      "LOW": 6758,
+      "MEDIUM": 16392,
+      "HIGH": 30598,
+      "CRITICAL": 26252
+    },
+    "test_class_distribution": {
+      "LOW": 1690,
+      "MEDIUM": 4098,
+      "HIGH": 7649,
+      "CRITICAL": 6563
     }
   },
-  "priority_model": {
-    "train_accuracy": 0.70386719810283,
-    "validation_accuracy": 0.2546496900206653,
-    "test_accuracy": 0.24986666666666665,
-    "train_macro_f1": 0.703871900848804,
-    "validation_macro_f1": 0.25462089460121545,
-    "test_macro_f1": 0.24982647259915708,
-    "validation_classification_report": {
-      "LOW": {
-        "precision": 0.2485207100591716,
-        "recall": 0.2462686567164179,
-        "f1-score": 0.24738955823293174,
-        "support": 3752.0
-      },
-      "MEDIUM": {
-        "precision": 0.2587467362924282,
-        "recall": 0.2630042462845011,
-        "f1-score": 0.2608581205580416,
-        "support": 3768.0
-      },
-      "HIGH": {
-        "precision": 0.2522788203753351,
-        "recall": 0.25268528464017187,
-        "f1-score": 0.2524818889187014,
-        "support": 3724.0
-      },
-      "CRITICAL": {
-        "precision": 0.2589309696481332,
-        "recall": 0.25658770295448496,
-        "f1-score": 0.25775401069518716,
-        "support": 3757.0
-      },
-      "accuracy": 0.2546496900206653,
-      "macro avg": {
-        "precision": 0.25461930909376707,
-        "recall": 0.25463647264889394,
-        "f1-score": 0.25462089460121545,
-        "support": 15001.0
-      },
-      "weighted avg": {
-        "precision": 0.25462951713470205,
-        "recall": 0.2546496900206653,
-        "f1-score": 0.2546325840455785,
-        "support": 15001.0
-      }
-    },
-    "test_classification_report": {
-      "LOW": {
-        "precision": 0.2453728186144897,
-        "recall": 0.24733475479744135,
-        "f1-score": 0.246349880541545,
-        "support": 3752.0
-      },
-      "MEDIUM": {
-        "precision": 0.26149732620320854,
-        "recall": 0.2596230422086541,
-        "f1-score": 0.2605568136406021,
-        "support": 3767.0
-      },
-      "HIGH": {
-        "precision": 0.2442978840340753,
-        "recall": 0.2387218045112782,
-        "f1-score": 0.2414776585630857,
-        "support": 3724.0
-      },
-      "CRITICAL": {
-        "precision": 0.2482417296170878,
-        "recall": 0.2536598349747139,
-        "f1-score": 0.25092153765139547,
-        "support": 3757.0
-      },
-      "accuracy": 0.24986666666666665,
-      "macro avg": {
-        "precision": 0.24985243961721532,
-        "recall": 0.2498348591230219,
-        "f1-score": 0.24982647259915708,
-        "support": 15000.0
-      },
-      "weighted avg": {
-        "precision": 0.24987391610422313,
-        "recall": 0.24986666666666665,
-        "f1-score": 0.24985315241474992,
-        "support": 15000.0
-      }
-    },
-    "validation_confusion_matrix": [
-      [
-        924,
-        933,
-        934,
-        961
-      ],
-      [
-        973,
-        991,
-        911,
-        893
-      ],
-      [
-        917,
-        961,
-        941,
-        905
-      ],
-      [
-        904,
-        945,
-        944,
-        964
-      ]
+  "feature_engineering": {
+    "derived_columns_added": [
+      "description_word_count",
+      "title_word_count",
+      "has_error_keywords",
+      "has_urgency_keywords",
+      "has_access_keywords",
+      "has_network_keywords",
+      "has_hardware_keywords",
+      "has_software_keywords",
+      "is_peak_hour",
+      "is_late_night",
+      "is_start_of_week",
+      "is_end_of_week",
+      "academic_period",
+      "service_criticality_level",
+      "is_digital_service",
+      "is_physical_service",
+      "required_team_count",
+      "requires_multiple_teams",
+      "ticket_complexity_score",
+      "ticket_complexity_level",
+      "needs_fast_response",
+      "operational_risk_score"
     ],
-    "test_confusion_matrix": [
-      [
-        928,
-        926,
-        917,
-        981
-      ],
-      [
-        924,
-        978,
-        931,
-        934
-      ],
-      [
-        971,
-        893,
-        889,
-        971
-      ],
-      [
-        959,
-        943,
-        902,
-        953
+    "target_generation": {
+      "enabled": true,
+      "method": "rule_based_itsm_priority_with_controlled_noise",
+      "noise_rate": 0.15,
+      "random_state": 42,
+      "priority_score_mapping": {
+        "LOW": "score <= 4",
+        "MEDIUM": "score 5 to 7",
+        "HIGH": "score 8 to 10",
+        "CRITICAL": "score >= 11"
+      },
+      "notes": [
+        "original_priority preserves the old source label.",
+        "priority was regenerated using realistic ITSM operational rules.",
+        "Controlled one-level label noise was added to avoid unrealistically perfect labels."
       ]
-    ],
-    "candidate_validation_scores": {
-      "dummy_most_frequent": {
-        "validation_accuracy": 0.25118325444970335,
-        "validation_macro_f1": 0.10037828333954926
-      },
-      "logistic_regression": {
-        "validation_accuracy": 0.25238317445503633,
-        "validation_macro_f1": 0.24696158636612597
-      },
-      "random_forest": {
-        "validation_accuracy": 0.2546496900206653,
-        "validation_macro_f1": 0.25462089460121545
-      },
-      "hist_gradient_boosting": {
-        "validation_accuracy": 0.25564962335844277,
-        "validation_macro_f1": 0.23461669208693592
-      }
-    }
-  },
-  "estimation_model": {
-    "train_mae": 0.9995754925069839,
-    "train_rmse": 1.1220255020374295,
-    "train_r2": 0.002556763676987761,
-    "validation_mae": 1.0013219360682846,
-    "validation_rmse": 1.1240365863063142,
-    "validation_r2": 0.00010501020700071084,
-    "test_mae": 0.9995344837953042,
-    "test_rmse": 1.1221028268055726,
-    "test_r2": -0.00014162621122237873,
-    "candidate_validation_scores": {
-      "dummy_mean": {
-        "validation_mae": 1.0015548505569278,
-        "validation_rmse": 1.1240956626535525,
-        "validation_r2": -9.615096452364469e-08
-      },
-      "random_forest": {
-        "validation_mae": 1.0226575676597416,
-        "validation_rmse": 1.192399965517005,
-        "validation_r2": -0.12521990764026492
-      },
-      "hist_gradient_boosting": {
-        "validation_mae": 1.0013219360682846,
-        "validation_rmse": 1.1240365863063142,
-        "validation_r2": 0.00010501020700071084
-      }
-    }
-  },
-  "baseline": {
-    "priority": {
-      "train_accuracy": 0.2511750167859541,
-      "validation_accuracy": 0.25118325444970335,
-      "test_accuracy": 0.2511333333333333,
-      "train_macro_f1": 0.10037565225334262,
-      "validation_macro_f1": 0.10037828333954926,
-      "test_macro_f1": 0.10036233814674694
     },
-    "estimation": {
-      "train_mae": 1.0009883650143092,
-      "train_rmse": 1.1234626354573707,
-      "train_r2": 0.0,
-      "validation_mae": 1.0015548505569278,
-      "validation_rmse": 1.1240956626535525,
-      "validation_r2": -9.615096452364469e-08,
-      "test_mae": 0.9997078186355044,
-      "test_rmse": 1.1220243265549503,
-      "test_r2": -1.6949675172295287e-06
+    "excluded_columns_base": [
+      "priority",
+      "original_priority",
+      "rule_priority",
+      "ticket_id",
+      "resolution_time_hours",
+      "created_time_iso"
+    ],
+    "notes": [
+      "resolution_time_hours was excluded from priority prediction to avoid target leakage.",
+      "SLA-related fields were not used.",
+      "priority_score is excluded from production-style model experiments.",
+      "priority_score is included only in the diagnostic experiment."
+    ],
+    "optional_column_warnings": []
+  },
+  "experiments": {
+    "logistic_regression_tfidf_structured": {
+      "model_name": "LogisticRegression",
+      "experiment_name": "logistic_regression_tfidf_structured",
+      "diagnostic_only": false,
+      "feature_mode": "tfidf_plus_structured",
+      "feature_columns_used": [
+        "topic",
+        "product_group",
+        "created_hour",
+        "created_weekday",
+        "created_weekday_name",
+        "created_month",
+        "is_weekend",
+        "is_business_hours",
+        "is_after_hours",
+        "time_period",
+        "ticket_nature",
+        "opsmind_request_type",
+        "is_incident_like",
+        "is_request_like",
+        "is_failure_related",
+        "is_access_related",
+        "affected_service_domain",
+        "is_core_service",
+        "service_criticality_score",
+        "requires_infrastructure_team",
+        "requires_device_team",
+        "requires_software_team",
+        "title",
+        "description",
+        "description_word_count",
+        "title_word_count",
+        "has_error_keywords",
+        "has_urgency_keywords",
+        "has_access_keywords",
+        "has_network_keywords",
+        "has_hardware_keywords",
+        "has_software_keywords",
+        "is_peak_hour",
+        "is_late_night",
+        "is_start_of_week",
+        "is_end_of_week",
+        "academic_period",
+        "service_criticality_level",
+        "is_digital_service",
+        "is_physical_service",
+        "required_team_count",
+        "requires_multiple_teams",
+        "ticket_complexity_score",
+        "ticket_complexity_level",
+        "needs_fast_response",
+        "operational_risk_score"
+      ],
+      "excluded_columns": [
+        "priority",
+        "original_priority",
+        "rule_priority",
+        "ticket_id",
+        "resolution_time_hours",
+        "created_time_iso",
+        "priority_score"
+      ],
+      "skipped": false,
+      "skip_reason": "",
+      "train_accuracy": 0.83105,
+      "test_accuracy": 0.82935,
+      "accuracy": 0.82935,
+      "macro_precision": 0.8178369268895003,
+      "macro_recall": 0.8289437217733456,
+      "macro_f1": 0.8226020056137802,
+      "weighted_precision": 0.8296914292598608,
+      "weighted_recall": 0.82935,
+      "weighted_f1": 0.8285402695423141,
+      "classification_report": {
+        "LOW": {
+          "precision": 0.7948285553681844,
+          "recall": 0.8366863905325443,
+          "f1-score": 0.8152205246468723,
+          "support": 1690.0
+        },
+        "MEDIUM": {
+          "precision": 0.7801932367149759,
+          "recall": 0.7881893606637385,
+          "f1-score": 0.7841709152706968,
+          "support": 4098.0
+        },
+        "HIGH": {
+          "precision": 0.8474672737620945,
+          "recall": 0.7786638776310629,
+          "f1-score": 0.8116100020440145,
+          "support": 7649.0
+        },
+        "CRITICAL": {
+          "precision": 0.8488586417127464,
+          "recall": 0.9122352582660369,
+          "f1-score": 0.879406580493537,
+          "support": 6563.0
+        },
+        "accuracy": 0.82935,
+        "macro avg": {
+          "precision": 0.8178369268895004,
+          "recall": 0.8289437217733456,
+          "f1-score": 0.8226020056137802,
+          "support": 20000.0
+        },
+        "weighted avg": {
+          "precision": 0.8296914292598608,
+          "recall": 0.82935,
+          "f1-score": 0.828540269542314,
+          "support": 20000.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          1414,
+          276,
+          0,
+          0
+        ],
+        [
+          353,
+          3230,
+          515,
+          0
+        ],
+        [
+          12,
+          615,
+          5956,
+          1066
+        ],
+        [
+          0,
+          19,
+          557,
+          5987
+        ]
+      ]
+    },
+    "random_forest_structured": {
+      "model_name": "RandomForestClassifier",
+      "experiment_name": "random_forest_structured",
+      "diagnostic_only": false,
+      "feature_mode": "structured_only",
+      "feature_columns_used": [
+        "topic",
+        "product_group",
+        "created_hour",
+        "created_weekday",
+        "created_weekday_name",
+        "created_month",
+        "is_weekend",
+        "is_business_hours",
+        "is_after_hours",
+        "time_period",
+        "ticket_nature",
+        "opsmind_request_type",
+        "is_incident_like",
+        "is_request_like",
+        "is_failure_related",
+        "is_access_related",
+        "affected_service_domain",
+        "is_core_service",
+        "service_criticality_score",
+        "requires_infrastructure_team",
+        "requires_device_team",
+        "requires_software_team",
+        "description_word_count",
+        "title_word_count",
+        "has_error_keywords",
+        "has_urgency_keywords",
+        "has_access_keywords",
+        "has_network_keywords",
+        "has_hardware_keywords",
+        "has_software_keywords",
+        "is_peak_hour",
+        "is_late_night",
+        "is_start_of_week",
+        "is_end_of_week",
+        "academic_period",
+        "service_criticality_level",
+        "is_digital_service",
+        "is_physical_service",
+        "required_team_count",
+        "requires_multiple_teams",
+        "ticket_complexity_score",
+        "ticket_complexity_level",
+        "needs_fast_response",
+        "operational_risk_score"
+      ],
+      "excluded_columns": [
+        "priority",
+        "original_priority",
+        "rule_priority",
+        "ticket_id",
+        "resolution_time_hours",
+        "created_time_iso",
+        "priority_score"
+      ],
+      "skipped": false,
+      "skip_reason": "",
+      "train_accuracy": 0.89045,
+      "test_accuracy": 0.79,
+      "accuracy": 0.79,
+      "macro_precision": 0.7782011230240513,
+      "macro_recall": 0.7892814090211624,
+      "macro_f1": 0.7832557384697914,
+      "weighted_precision": 0.7897385622498218,
+      "weighted_recall": 0.79,
+      "weighted_f1": 0.7894456908904801,
+      "classification_report": {
+        "LOW": {
+          "precision": 0.7480705622932745,
+          "recall": 0.8029585798816568,
+          "f1-score": 0.7745433789954338,
+          "support": 1690.0
+        },
+        "MEDIUM": {
+          "precision": 0.7507418397626113,
+          "recall": 0.7408491947291361,
+          "f1-score": 0.7457627118644068,
+          "support": 4098.0
+        },
+        "HIGH": {
+          "precision": 0.7931508733324164,
+          "recall": 0.7539547653288011,
+          "f1-score": 0.7730563002680965,
+          "support": 7649.0
+        },
+        "CRITICAL": {
+          "precision": 0.8208412167079028,
+          "recall": 0.8593630961450556,
+          "f1-score": 0.8396605627512282,
+          "support": 6563.0
+        },
+        "accuracy": 0.79,
+        "macro avg": {
+          "precision": 0.7782011230240513,
+          "recall": 0.7892814090211624,
+          "f1-score": 0.7832557384697914,
+          "support": 20000.0
+        },
+        "weighted avg": {
+          "precision": 0.7897385622498218,
+          "recall": 0.79,
+          "f1-score": 0.7894456908904802,
+          "support": 20000.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          1357,
+          325,
+          8,
+          0
+        ],
+        [
+          434,
+          3036,
+          604,
+          24
+        ],
+        [
+          23,
+          652,
+          5767,
+          1207
+        ],
+        [
+          0,
+          31,
+          892,
+          5640
+        ]
+      ]
+    },
+    "hist_gradient_boosting_structured": {
+      "model_name": "HistGradientBoostingClassifier",
+      "experiment_name": "hist_gradient_boosting_structured",
+      "diagnostic_only": false,
+      "feature_mode": "structured_only",
+      "feature_columns_used": [
+        "topic",
+        "product_group",
+        "created_hour",
+        "created_weekday",
+        "created_weekday_name",
+        "created_month",
+        "is_weekend",
+        "is_business_hours",
+        "is_after_hours",
+        "time_period",
+        "ticket_nature",
+        "opsmind_request_type",
+        "is_incident_like",
+        "is_request_like",
+        "is_failure_related",
+        "is_access_related",
+        "affected_service_domain",
+        "is_core_service",
+        "service_criticality_score",
+        "requires_infrastructure_team",
+        "requires_device_team",
+        "requires_software_team",
+        "description_word_count",
+        "title_word_count",
+        "has_error_keywords",
+        "has_urgency_keywords",
+        "has_access_keywords",
+        "has_network_keywords",
+        "has_hardware_keywords",
+        "has_software_keywords",
+        "is_peak_hour",
+        "is_late_night",
+        "is_start_of_week",
+        "is_end_of_week",
+        "academic_period",
+        "service_criticality_level",
+        "is_digital_service",
+        "is_physical_service",
+        "required_team_count",
+        "requires_multiple_teams",
+        "ticket_complexity_score",
+        "ticket_complexity_level",
+        "needs_fast_response",
+        "operational_risk_score"
+      ],
+      "excluded_columns": [
+        "priority",
+        "original_priority",
+        "rule_priority",
+        "ticket_id",
+        "resolution_time_hours",
+        "created_time_iso",
+        "priority_score"
+      ],
+      "skipped": false,
+      "skip_reason": "",
+      "train_accuracy": 0.8517625,
+      "test_accuracy": 0.84955,
+      "accuracy": 0.84955,
+      "macro_precision": 0.8494152682133732,
+      "macro_recall": 0.8431903118053933,
+      "macro_f1": 0.845738695848363,
+      "weighted_precision": 0.849559121865236,
+      "weighted_recall": 0.84955,
+      "weighted_f1": 0.8488881987558087,
+      "classification_report": {
+        "LOW": {
+          "precision": 0.850909090909091,
+          "recall": 0.8307692307692308,
+          "f1-score": 0.8407185628742515,
+          "support": 1690.0
+        },
+        "MEDIUM": {
+          "precision": 0.8461932837733914,
+          "recall": 0.8055148853099072,
+          "f1-score": 0.8253531691461433,
+          "support": 4098.0
+        },
+        "HIGH": {
+          "precision": 0.8514541995107366,
+          "recall": 0.8190613152046019,
+          "f1-score": 0.8349436929432932,
+          "support": 7649.0
+        },
+        "CRITICAL": {
+          "precision": 0.8491044986602736,
+          "recall": 0.9174158159378333,
+          "f1-score": 0.8819393584297641,
+          "support": 6563.0
+        },
+        "accuracy": 0.84955,
+        "macro avg": {
+          "precision": 0.8494152682133732,
+          "recall": 0.8431903118053934,
+          "f1-score": 0.845738695848363,
+          "support": 20000.0
+        },
+        "weighted avg": {
+          "precision": 0.849559121865236,
+          "recall": 0.84955,
+          "f1-score": 0.8488881987558085,
+          "support": 20000.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          1404,
+          286,
+          0,
+          0
+        ],
+        [
+          246,
+          3301,
+          551,
+          0
+        ],
+        [
+          0,
+          314,
+          6265,
+          1070
+        ],
+        [
+          0,
+          0,
+          542,
+          6021
+        ]
+      ]
+    },
+    "catboost_structured": {
+      "model_name": "CatBoostClassifier",
+      "experiment_name": "catboost_structured",
+      "diagnostic_only": false,
+      "feature_mode": "structured_only",
+      "feature_columns_used": [],
+      "excluded_columns": [],
+      "skipped": true,
+      "skip_reason": "CatBoost is not installed in this environment.",
+      "train_accuracy": null,
+      "test_accuracy": null,
+      "accuracy": null,
+      "macro_precision": null,
+      "macro_recall": null,
+      "macro_f1": null,
+      "weighted_precision": null,
+      "weighted_recall": null,
+      "weighted_f1": null,
+      "classification_report": {},
+      "confusion_matrix": []
+    },
+    "diagnostic_with_priority_score": {
+      "model_name": "LogisticRegression",
+      "experiment_name": "diagnostic_with_priority_score",
+      "diagnostic_only": true,
+      "feature_mode": "structured_with_priority_score",
+      "feature_columns_used": [
+        "topic",
+        "product_group",
+        "created_hour",
+        "created_weekday",
+        "created_weekday_name",
+        "created_month",
+        "is_weekend",
+        "is_business_hours",
+        "is_after_hours",
+        "time_period",
+        "ticket_nature",
+        "opsmind_request_type",
+        "is_incident_like",
+        "is_request_like",
+        "is_failure_related",
+        "is_access_related",
+        "affected_service_domain",
+        "is_core_service",
+        "service_criticality_score",
+        "requires_infrastructure_team",
+        "requires_device_team",
+        "requires_software_team",
+        "description_word_count",
+        "title_word_count",
+        "has_error_keywords",
+        "has_urgency_keywords",
+        "has_access_keywords",
+        "has_network_keywords",
+        "has_hardware_keywords",
+        "has_software_keywords",
+        "is_peak_hour",
+        "is_late_night",
+        "is_start_of_week",
+        "is_end_of_week",
+        "academic_period",
+        "service_criticality_level",
+        "is_digital_service",
+        "is_physical_service",
+        "required_team_count",
+        "requires_multiple_teams",
+        "ticket_complexity_score",
+        "ticket_complexity_level",
+        "needs_fast_response",
+        "operational_risk_score",
+        "priority_score"
+      ],
+      "excluded_columns": [
+        "priority",
+        "original_priority",
+        "rule_priority",
+        "ticket_id",
+        "resolution_time_hours",
+        "created_time_iso"
+      ],
+      "skipped": false,
+      "skip_reason": "",
+      "train_accuracy": 0.8294,
+      "test_accuracy": 0.82675,
+      "accuracy": 0.82675,
+      "macro_precision": 0.8192300290986624,
+      "macro_recall": 0.8270284697945792,
+      "macro_f1": 0.8225904197363558,
+      "weighted_precision": 0.8269132109790888,
+      "weighted_recall": 0.82675,
+      "weighted_f1": 0.8261057363914107,
+      "classification_report": {
+        "LOW": {
+          "precision": 0.8132947976878613,
+          "recall": 0.8325443786982248,
+          "f1-score": 0.8228070175438597,
+          "support": 1690.0
+        },
+        "MEDIUM": {
+          "precision": 0.7770109471680152,
+          "recall": 0.796730112249878,
+          "f1-score": 0.7867469879518072,
+          "support": 4098.0
+        },
+        "HIGH": {
+          "precision": 0.8382642998027613,
+          "recall": 0.777879461367499,
+          "f1-score": 0.8069437851766461,
+          "support": 7649.0
+        },
+        "CRITICAL": {
+          "precision": 0.8483500717360115,
+          "recall": 0.9009599268627152,
+          "f1-score": 0.8738638882731101,
+          "support": 6563.0
+        },
+        "accuracy": 0.82675,
+        "macro avg": {
+          "precision": 0.8192300290986623,
+          "recall": 0.8270284697945792,
+          "f1-score": 0.8225904197363558,
+          "support": 20000.0
+        },
+        "weighted avg": {
+          "precision": 0.8269132109790888,
+          "recall": 0.82675,
+          "f1-score": 0.8261057363914109,
+          "support": 20000.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          1407,
+          283,
+          0,
+          0
+        ],
+        [
+          317,
+          3265,
+          516,
+          0
+        ],
+        [
+          6,
+          636,
+          5950,
+          1057
+        ],
+        [
+          0,
+          18,
+          632,
+          5913
+        ]
+      ]
     }
   },
-  "warnings": [
-    "Resolution model is close to baseline on validation (rmse_improvement=0.0001)."
-  ]
+  "best_model": {
+    "experiment_name": "hist_gradient_boosting_structured",
+    "model_name": "HistGradientBoostingClassifier",
+    "selection_metric": "macro_f1",
+    "test_accuracy": 0.84955,
+    "macro_f1": 0.845738695848363,
+    "weighted_f1": 0.8488881987558087,
+    "model_file": "models/priority_model_pipeline.pkl"
+  },
+  "artifacts": {
+    "enriched_dataset": "ITSM_Dataset_enriched.csv",
+    "model_file": "models/priority_model_pipeline.pkl",
+    "metrics_file": "models/metrics.json"
+  },
+  "generated_at": "2026-05-14T17:00:32.384549+00:00"
 }
