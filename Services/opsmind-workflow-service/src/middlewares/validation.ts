@@ -65,6 +65,11 @@ export const updateTechnicianLocationSchema = Joi.object({
   longitude: Joi.number().min(-180).max(180).required(),
 }).unknown(false);
 
+export const patchTechnicianLocationSchema = Joi.object({
+  latitude: Joi.number().min(-90).max(90).required(),
+  longitude: Joi.number().min(-180).max(180).required(),
+}).unknown(false);
+
 const syncTicketDateField = Joi.alternatives().try(Joi.date(), Joi.string()).allow(null);
 
 const syncTicketPayloadSchema = Joi.object({

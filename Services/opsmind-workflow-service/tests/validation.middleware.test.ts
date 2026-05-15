@@ -3,6 +3,7 @@ import {
   claimTicketSchema,
   createRelationshipSchema,
   escalateTicketSchema,
+  patchTechnicianLocationSchema,
   routeTicketSchema,
   syncTechnicianFromAuthSchema,
   validateBody,
@@ -129,6 +130,43 @@ describe("routeTicketSchema", () => {
     const result = routeTicketSchema.validate({
       ticketId: "T-102",
       latitude: 120,
+    });
+
+    expect(result.error).toBeDefined();
+  });
+});
+
+describe("patchTechnicianLocationSchema", () => {
+  it("accepts valid latitude and longitude", () => {
+    const result = patchTechnicianLocationSchema.validate({
+      latitude: 30.12345,
+      longitude: 31.54321,
+    });
+
+    expect(result.error).toBeUndefined();
+  });
+
+  it("rejects missing latitude or longitude", () => {
+    const result = patchTechnicianLocationSchema.validate({
+      latitude: 30.12345,
+    });
+
+    expect(result.error).toBeDefined();
+  });
+
+  it("rejects out-of-range latitude", () => {
+    const result = patchTechnicianLocationSchema.validate({
+      latitude: 100,
+      longitude: 31.5,
+    });
+
+    expect(result.error).toBeDefined();
+  });
+
+  it("rejects out-of-range longitude", () => {
+    const result = patchTechnicianLocationSchema.validate({
+      latitude: 30.1,
+      longitude: 200,
     });
 
     expect(result.error).toBeDefined();

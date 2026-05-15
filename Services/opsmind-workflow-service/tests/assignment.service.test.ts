@@ -7,6 +7,7 @@ const mockIsAlreadyAssigned = jest.fn();
 const mockGetWorkloadMap = jest.fn();
 const mockAssignTicketLocal = jest.fn();
 const mockAssignTicketExternal = jest.fn();
+const mockLogAction = jest.fn();
 
 jest.mock("../src/repositories/TechnicianRepository", () => ({
   TechnicianRepository: jest.fn().mockImplementation(() => ({
@@ -25,6 +26,12 @@ jest.mock("../src/repositories/TicketRepository", () => ({
   })),
 }));
 
+jest.mock("../src/repositories/WorkflowLogRepository", () => ({
+  WorkflowLogRepository: jest.fn().mockImplementation(() => ({
+    logAction: mockLogAction,
+  })),
+}));
+
 jest.mock("../src/config/externalServices", () => ({
   assignTicket: (...args: any[]) => mockAssignTicketExternal(...args),
   getTicketDetails: jest.fn(),
@@ -32,7 +39,12 @@ jest.mock("../src/config/externalServices", () => ({
   startSlaTracking: jest.fn(),
 }));
 
-function makeJunior(userId: number, latitude: number | null, longitude: number | null): TechnicianRow {
+function makeJunior(
+  userId: number,
+  latitude: number | null,
+  longitude: number | null,
+  overrides: Partial<TechnicianRow> = {},
+): TechnicianRow {
   return {
     id: userId,
     user_id: userId,
@@ -47,6 +59,7 @@ function makeJunior(userId: number, latitude: number | null, longitude: number |
     last_location_update: null,
     created_at: new Date(),
     updated_at: new Date(),
+    ...overrides,
   };
 }
 
@@ -68,6 +81,7 @@ describe("AssignmentService strategy behavior", () => {
     mockGetWorkloadMap.mockResolvedValue({});
     mockAssignTicketLocal.mockResolvedValue(undefined);
     mockAssignTicketExternal.mockResolvedValue({ success: true });
+    mockLogAction.mockResolvedValue(undefined);
 
     jest.spyOn(console, "log").mockImplementation(() => undefined);
     jest.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -95,6 +109,7 @@ describe("AssignmentService strategy behavior", () => {
     expect(result?.assignment_strategy).toBe("distance_workload");
     expect(result?.assignment_path).toBe("route-ticket");
     expect(result?.technician_id).toBe(101);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("source=location_and_workload"));
   });
 
   it("uses workload_only and still assigns when juniors have no location", async () => {
@@ -114,6 +129,7 @@ describe("AssignmentService strategy behavior", () => {
     expect(result?.assignment_strategy).toBe("workload_only");
     expect(result?.assignment_path).toBe("queue");
     expect(result?.technician_id).toBe(202);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("source=workload_fallback_no_ticket_location"));
   });
 
   it("keeps mixed-location juniors eligible when ticket coordinates are missing", async () => {
@@ -132,6 +148,47 @@ describe("AssignmentService strategy behavior", () => {
     expect(result).not.toBeNull();
     expect(result?.assignment_strategy).toBe("workload_only");
     expect(result?.technician_id).toBe(302);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("source=workload_fallback_no_ticket_location"));
+  });
+
+  it("falls back to workload when ticket has location but no technician has valid location", async () => {
+    mockGetAvailableTechnicians.mockResolvedValue([
+      makeJunior(351, null, null),
+      makeJunior(352, null, null),
+    ]);
+    mockGetWorkloadMap.mockResolvedValue({ 351: 3, 352: 1 });
+
+    const service = new AssignmentService();
+    jest.spyOn(service as any, "startSlaTracking").mockResolvedValue(undefined);
+    jest.spyOn(service as any, "publishAssignmentNotification").mockResolvedValue(undefined);
+
+    const result = await service.assignForTicket(makeEvent("T-3B", 30.11, 31.22), { source: "route-ticket" });
+
+    expect(result).not.toBeNull();
+    expect(result?.assignment_strategy).toBe("workload_only");
+    expect(result?.technician_id).toBe(352);
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("source=workload_fallback_no_technician_locations"),
+    );
+  });
+
+  it("skips stale technician location in distance mode", async () => {
+    const staleDate = new Date(Date.now() - 45 * 60 * 1000);
+    mockGetAvailableTechnicians.mockResolvedValue([
+      makeJunior(361, 30.0, 31.0, { last_location_update: staleDate }),
+      makeJunior(362, 30.101, 31.101, { last_location_update: new Date() }),
+    ]);
+    mockGetWorkloadMap.mockResolvedValue({ 361: 0, 362: 1 });
+
+    const service = new AssignmentService();
+    jest.spyOn(service as any, "startSlaTracking").mockResolvedValue(undefined);
+    jest.spyOn(service as any, "publishAssignmentNotification").mockResolvedValue(undefined);
+
+    const result = await service.assignForTicket(makeEvent("T-3C", 30.1, 31.1), { source: "route-ticket" });
+
+    expect(result).not.toBeNull();
+    expect(result?.assignment_strategy).toBe("distance_workload");
+    expect(result?.technician_id).toBe(362);
   });
 
   it("returns pending error with clear reason when no active juniors exist", async () => {

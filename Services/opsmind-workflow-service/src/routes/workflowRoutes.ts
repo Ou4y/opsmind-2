@@ -12,7 +12,7 @@ import { TicketRoutingStateRepository } from '../repositories/TicketRoutingState
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { optionalAuth, requireAuth, requireAuthOrInternal, requireInternalToken } from '../middlewares/auth';
-import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, escalateTicketSchema, syncTicketSchema } from '../middlewares/validation';
+import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, patchTechnicianLocationSchema, escalateTicketSchema, syncTicketSchema } from '../middlewares/validation';
 import { getSlaStatusForTickets, getUserDetails } from '../config/externalServices';
 
 const router = Router();
@@ -265,11 +265,19 @@ router.get('/technician/:technicianId/tickets', async (req: Request, res: Respon
 // ══════════════════════════════════════
 // ------------------------------
 //  Technician Location Update (NEW)
-//  PUT /workflow/technicians/location
+//  PATCH /workflow/technicians/:technicianId/location
+//  PUT /workflow/technicians/location (legacy compatibility)
 // ------------------------------
 router.get('/technicians/me', requireAuth, technicianCtrl.getCurrentTechnician);
+router.patch(
+  '/technicians/:technicianId/location',
+  requireAuth,
+  validateBody(patchTechnicianLocationSchema),
+  technicianCtrl.updateLocationByPath,
+);
 router.put(
   '/technicians/location',
+  requireAuth,
   validateBody(updateTechnicianLocationSchema),
   technicianCtrl.updateLocation,
 );

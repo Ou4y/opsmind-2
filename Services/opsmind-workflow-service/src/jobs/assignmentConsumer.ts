@@ -13,6 +13,21 @@ let channel: Channel | null = null;
 
 const assignmentService = new AssignmentService();
 
+function parseCoordinate(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return Number.NaN;
+}
+
 export async function startAssignmentConsumer(): Promise<void> {
   try {
     const conn = await amqplib.connect(RABBITMQ_URL);
@@ -51,8 +66,8 @@ export async function startAssignmentConsumer(): Promise<void> {
           console.log('[AssignmentConsumer] Extracted payload:', payload);
 
           const ticketId: string | undefined = payload.ticket_id ?? payload.id;
-          const latitude: number = Number.isFinite(payload.latitude) ? payload.latitude : Number.NaN;
-          const longitude: number = Number.isFinite(payload.longitude) ? payload.longitude : Number.NaN;
+          const latitude: number = parseCoordinate(payload.latitude);
+          const longitude: number = parseCoordinate(payload.longitude);
           const priority: string | undefined = payload.priority;
 
           if (!ticketId) {

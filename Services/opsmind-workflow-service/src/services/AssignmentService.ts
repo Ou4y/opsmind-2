@@ -15,6 +15,18 @@ const NO_ACTIVE_JUNIOR_TECHNICIAN_ERROR = 'No active junior technicians availabl
 const LEGACY_NO_AVAILABLE_TECHNICIAN_ERROR = 'NO_AVAILABLE_TECHNICIAN';
 const LEGACY_NO_ELIGIBLE_TECHNICIAN_ERROR = 'NO_ELIGIBLE_TECHNICIAN';
 const WORKLOAD_ONLY_DISTANCE_KM = 0;
+const DEFAULT_TECHNICIAN_LOCATION_STALE_MINUTES = 30;
+const TECHNICIAN_LOCATION_STALE_MINUTES = (() => {
+  const raw =
+    process.env.TECHNICIAN_LOCATION_STALE_MINUTES ??
+    process.env.LOCATION_STALE_MINUTES ??
+    String(DEFAULT_TECHNICIAN_LOCATION_STALE_MINUTES);
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_TECHNICIAN_LOCATION_STALE_MINUTES;
+  }
+  return parsed;
+})();
 
 export function isAssignmentPendingError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
@@ -57,20 +69,29 @@ interface ScoredTechnician extends TechnicianWithWorkload {
 
 type AssignmentSource = 'queue' | 'route-ticket' | 'unknown';
 type AssignmentStrategy = 'distance_workload' | 'workload_only' | 'overload_fallback';
+type AssignmentModeSource =
+  | 'location_and_workload'
+  | 'workload_fallback_no_ticket_location'
+  | 'workload_fallback_no_technician_locations'
+  | 'workload_fallback_over_capacity';
 
 interface AssignmentOptions {
   source?: AssignmentSource;
 }
 
-function hasFiniteCoordinate(value: number | null | undefined): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
+function parseCoordinate(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
 
-function hasTechnicianLocation(technician: TechnicianRow): technician is TechnicianRow & {
-  latitude: number;
-  longitude: number;
-} {
-  return hasFiniteCoordinate(technician.latitude) && hasFiniteCoordinate(technician.longitude);
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -100,21 +121,13 @@ export class AssignmentService {
     const assignmentCheck = await this.ticketRepo.isAlreadyAssigned(event.ticket_id);
     if (assignmentCheck) {
       console.log(
-        `[AssignmentService] ⚠ Skipping assignment | source=${source} | ticket=${event.ticket_id} | ` +
+        `[AssignmentService] Skipping assignment | source=${source} | ticket=${event.ticket_id} | ` +
           `assigned_to=${assignmentCheck.assigned_to ?? 'null'} | status=${assignmentCheck.status}`,
       );
       return null;
     }
 
     const activeJuniors = await this.technicianRepo.getAvailableTechnicians();
-    const activeWithLocationCount = activeJuniors.filter((tech) => hasTechnicianLocation(tech)).length;
-
-    console.log(
-      `[AssignmentService] Ticket received | source=${source} | ticket=${event.ticket_id} | ` +
-        `active_juniors=${activeJuniors.length} | juniors_with_location=${activeWithLocationCount} | ` +
-        `ticket_location=(${event.latitude}, ${event.longitude})`,
-    );
-
     if (!activeJuniors.length) {
       console.warn(
         `[AssignmentService] Assignment pending | source=${source} | ticket=${event.ticket_id} | ` +
@@ -126,30 +139,38 @@ export class AssignmentService {
     const workloadMap = await this.ticketRepo.getWorkloadMap();
     const withWorkload: TechnicianWithWorkload[] = activeJuniors.map((tech) => ({
       ...tech,
-      workload: workloadMap[tech.user_id] ?? 0,
+      workload: this.getTechnicianActiveWorkload(tech.user_id, workloadMap),
     }));
 
-    // Prefer technicians below the overload threshold.
+    // Prefer technicians below the overload threshold to preserve existing flow.
     const underCapacity = withWorkload.filter((tech) => tech.workload < MAX_WORKLOAD);
-
-    const priority: TicketPriority = event.priority ?? 'MEDIUM';
-    const weights = PRIORITY_WEIGHTS[priority];
-    const ticketHasLocation = hasFiniteCoordinate(event.latitude) && hasFiniteCoordinate(event.longitude);
     const isOverloadFallback = underCapacity.length === 0;
     const candidatePool = isOverloadFallback ? withWorkload : underCapacity;
-    const locationCandidates = candidatePool.filter((tech) => hasTechnicianLocation(tech));
+
+    const ticketHasLocation = this.hasValidCoordinates(event.latitude, event.longitude);
+    const locationCandidates = candidatePool.filter((tech) => this.isTechnicianLocationAvailable(tech));
+    const activeWithLocationCount = withWorkload.filter((tech) => this.isTechnicianLocationAvailable(tech)).length;
+    const priority: TicketPriority = event.priority ?? 'MEDIUM';
+
+    console.log(
+      `[AssignmentService] Ticket received | source=${source} | ticket=${event.ticket_id} | ` +
+        `active_juniors=${activeJuniors.length} | juniors_with_location=${activeWithLocationCount} | ` +
+        `ticket_location=(${event.latitude}, ${event.longitude}) | location_stale_minutes=${TECHNICIAN_LOCATION_STALE_MINUTES}`,
+    );
+
     let strategy: AssignmentStrategy = 'workload_only';
+    let modeSource: AssignmentModeSource = 'workload_fallback_no_technician_locations';
     if (isOverloadFallback) {
       strategy = 'overload_fallback';
+      modeSource = 'workload_fallback_over_capacity';
     } else if (ticketHasLocation && locationCandidates.length > 0) {
       strategy = 'distance_workload';
+      modeSource = 'location_and_workload';
+    } else if (!ticketHasLocation) {
+      modeSource = 'workload_fallback_no_ticket_location';
     }
 
-    const assignmentReason = isOverloadFallback
-      ? `all_active_juniors_over_capacity_threshold_${MAX_WORKLOAD}`
-      : strategy === 'distance_workload'
-      ? 'location_and_workload_scoring'
-      : 'location_missing_or_unusable_workload_only';
+    let assignmentReason = this.resolveAssignmentReason(strategy, modeSource);
 
     if (isOverloadFallback) {
       console.warn(
@@ -159,57 +180,34 @@ export class AssignmentService {
     }
 
     console.log(
-      `[AssignmentService] Strategy selected | source=${source} | ticket=${event.ticket_id} | strategy=${strategy} | ` +
-        `priority=${priority} | candidates=${candidatePool.length} | ` +
+      `[AssignmentService] Assignment mode | source=${modeSource} | request_source=${source} | ticket=${event.ticket_id} | ` +
+        `strategy=${strategy} | priority=${priority} | candidates=${candidatePool.length} | ` +
         `location_candidates=${locationCandidates.length} | ticket_has_location=${ticketHasLocation}`,
     );
 
     let best: ScoredTechnician;
-
     if (strategy === 'distance_workload') {
-      const withMetrics = locationCandidates.map((tech) => {
-        const distance_km = haversineDistanceKm(
-          event.latitude,
-          event.longitude,
-          tech.latitude,
-          tech.longitude,
+      const selected = this.selectByLocationAndWorkload(event, locationCandidates, priority);
+      if (!selected) {
+        strategy = 'workload_only';
+        modeSource = ticketHasLocation
+          ? 'workload_fallback_no_technician_locations'
+          : 'workload_fallback_no_ticket_location';
+        assignmentReason = this.resolveAssignmentReason(strategy, modeSource);
+        best = this.selectByWorkloadOnly(candidatePool);
+        console.warn(
+          `[AssignmentService] Location scoring unavailable at runtime; fallback to workload | ` +
+            `source=${modeSource} | request_source=${source} | ticket=${event.ticket_id}`,
         );
-        return { ...tech, distance_km };
-      });
-
-      const maxDistance = Math.max(...withMetrics.map((tech) => tech.distance_km), 1);
-      const maxWorkload = Math.max(...withMetrics.map((tech) => tech.workload), 1);
-
-      const scored = withMetrics.map((tech) => {
-        const normDist = tech.distance_km / maxDistance;
-        const normWork = tech.workload / maxWorkload;
-        const score = weights.distance * normDist + weights.workload * normWork;
-        return { ...tech, score };
-      });
-
-      scored.sort(
-        (a, b) =>
-          a.score - b.score ||
-          a.workload - b.workload ||
-          a.user_id - b.user_id ||
-          a.id - b.id,
-      );
-      best = scored[0];
+      } else {
+        best = selected;
+      }
     } else {
-      const sorted = [...candidatePool].sort(
-        (a, b) => a.workload - b.workload || a.user_id - b.user_id || a.id - b.id,
-      );
-      const selected = sorted[0];
-      const maxWorkload = Math.max(...candidatePool.map((tech) => tech.workload), 1);
-      best = {
-        ...selected,
-        distance_km: WORKLOAD_ONLY_DISTANCE_KM,
-        score: selected.workload / maxWorkload,
-      };
+      best = this.selectByWorkloadOnly(candidatePool);
     }
 
     console.log(
-      `[AssignmentService] ✔ Technician selected | source=${source} | ticket=${event.ticket_id} | ` +
+      `[AssignmentService] Technician selected | source=${modeSource} | request_source=${source} | ticket=${event.ticket_id} | ` +
         `strategy=${strategy} | user_id=${best.user_id} | workload=${best.workload} | ` +
         `distance_km=${best.distance_km.toFixed(3)} | score=${best.score.toFixed(4)}`,
     );
@@ -218,9 +216,9 @@ export class AssignmentService {
     const finalCheck = await this.ticketRepo.isAlreadyAssigned(event.ticket_id);
     if (finalCheck) {
       console.log(
-        `[AssignmentService] ⚠ Race condition detected | source=${source} | ticket=${event.ticket_id} | ` +
-          `strategy=${strategy} | ` +
-          `during processing | assigned_to=${finalCheck.assigned_to ?? 'null'} | status=${finalCheck.status}`,
+        `[AssignmentService] Race condition detected | source=${source} | ticket=${event.ticket_id} | ` +
+          `strategy=${strategy} | during processing | assigned_to=${finalCheck.assigned_to ?? 'null'} | ` +
+          `status=${finalCheck.status}`,
       );
       return null;
     }
@@ -232,7 +230,7 @@ export class AssignmentService {
     // Live technicians table has no level column; default all to L1.
     const supportLevel = 'L1';
     console.log(
-      `[AssignmentService] → PATCH ticket-service | source=${source} | ticket=${event.ticket_id} | ` +
+      `[AssignmentService] PATCH ticket-service | source=${source} | ticket=${event.ticket_id} | ` +
         `assigned_to=${best.user_id} | assigned_to_level=${supportLevel} | status_preserved=OPEN`,
     );
     try {
@@ -242,7 +240,7 @@ export class AssignmentService {
         performedByRole: 'SYSTEM',
       });
       console.log(
-        `[AssignmentService] ✔ ticket-service PATCH succeeded | source=${source} | ticket=${event.ticket_id} | response:`,
+        `[AssignmentService] ticket-service PATCH succeeded | source=${source} | ticket=${event.ticket_id} | response:`,
         JSON.stringify(result),
       );
 
@@ -260,7 +258,7 @@ export class AssignmentService {
       const status = extErr?.response?.status ?? 'NO_RESPONSE';
       const body = extErr?.response?.data ?? extErr?.message;
       console.error(
-        `[AssignmentService] ✘ ticket-service PATCH FAILED | source=${source} | ticket=${event.ticket_id} | ` +
+        `[AssignmentService] ticket-service PATCH FAILED | source=${source} | ticket=${event.ticket_id} | ` +
           `HTTP ${status} | body: ${JSON.stringify(body)}`,
       );
     }
@@ -277,6 +275,146 @@ export class AssignmentService {
     };
   }
 
+  private hasValidCoordinates(
+    latitude: number | string | null | undefined,
+    longitude: number | string | null | undefined,
+  ): boolean {
+    const lat = parseCoordinate(latitude);
+    const lon = parseCoordinate(longitude);
+    if (lat === null || lon === null) {
+      return false;
+    }
+
+    return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+  }
+
+  private calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    return haversineDistanceKm(lat1, lon1, lat2, lon2);
+  }
+
+  private getTechnicianActiveWorkload(technicianId: number, workloadMap: Record<number, number>): number {
+    return workloadMap[technicianId] ?? 0;
+  }
+
+  private selectByLocationAndWorkload(
+    ticket: TicketCreatedEvent,
+    technicians: TechnicianWithWorkload[],
+    priority: TicketPriority,
+  ): ScoredTechnician | null {
+    const ticketLat = parseCoordinate(ticket.latitude);
+    const ticketLon = parseCoordinate(ticket.longitude);
+    if (ticketLat === null || ticketLon === null) {
+      return null;
+    }
+
+    const weights = PRIORITY_WEIGHTS[priority];
+
+    const withMetrics = technicians
+      .map((tech) => {
+        const techLat = parseCoordinate(tech.latitude);
+        const techLon = parseCoordinate(tech.longitude);
+        if (techLat === null || techLon === null) {
+          return null;
+        }
+        return {
+          ...tech,
+          distance_km: this.calculateDistanceKm(ticketLat, ticketLon, techLat, techLon),
+        };
+      })
+      .filter((tech): tech is TechnicianWithWorkload & { distance_km: number } => tech !== null);
+
+    if (!withMetrics.length) {
+      return null;
+    }
+
+    const maxDistance = Math.max(...withMetrics.map((tech) => tech.distance_km), 1);
+    const maxWorkload = Math.max(...withMetrics.map((tech) => tech.workload), 1);
+
+    const scored = withMetrics.map((tech) => {
+      const normalizedDistance = tech.distance_km / maxDistance;
+      const normalizedWorkload = tech.workload / maxWorkload;
+      const score = weights.distance * normalizedDistance + weights.workload * normalizedWorkload;
+      return { ...tech, score };
+    });
+
+    scored.sort(
+      (a, b) =>
+        a.score - b.score ||
+        a.workload - b.workload ||
+        a.user_id - b.user_id ||
+        a.id - b.id,
+    );
+
+    return scored[0];
+  }
+
+  private selectByWorkloadOnly(technicians: TechnicianWithWorkload[]): ScoredTechnician {
+    const sorted = [...technicians].sort(
+      (a, b) => a.workload - b.workload || a.user_id - b.user_id || a.id - b.id,
+    );
+    const selected = sorted[0];
+    const maxWorkload = Math.max(...technicians.map((tech) => tech.workload), 1);
+    return {
+      ...selected,
+      distance_km: WORKLOAD_ONLY_DISTANCE_KM,
+      score: selected.workload / maxWorkload,
+    };
+  }
+
+  private isTechnicianLocationAvailable(technician: TechnicianWithWorkload): boolean {
+    if (!technician.is_active) {
+      return false;
+    }
+
+    const normalizedStatus = String(technician.status ?? '').toUpperCase();
+    if (normalizedStatus && normalizedStatus !== 'ACTIVE' && normalizedStatus !== 'ONLINE') {
+      return false;
+    }
+
+    if (!this.hasValidCoordinates(technician.latitude, technician.longitude)) {
+      return false;
+    }
+
+    return this.isLocationFresh(technician.last_location_update);
+  }
+
+  private isLocationFresh(lastLocationUpdate: Date | string | null): boolean {
+    if (!lastLocationUpdate) {
+      return true;
+    }
+
+    const updateTime = new Date(lastLocationUpdate);
+    if (Number.isNaN(updateTime.getTime())) {
+      return false;
+    }
+
+    const ageMs = Date.now() - updateTime.getTime();
+    const maxAgeMs = TECHNICIAN_LOCATION_STALE_MINUTES * 60 * 1000;
+    return ageMs <= maxAgeMs;
+  }
+
+  private resolveAssignmentReason(
+    strategy: AssignmentStrategy,
+    modeSource: AssignmentModeSource,
+  ): string {
+    if (strategy === 'overload_fallback') {
+      return `all_active_juniors_over_capacity_threshold_${MAX_WORKLOAD}`;
+    }
+
+    if (modeSource === 'location_and_workload') {
+      return 'location_and_workload_scoring';
+    }
+
+    if (modeSource === 'workload_fallback_no_ticket_location') {
+      return 'workload_fallback_no_ticket_location';
+    }
+
+    if (modeSource === 'workload_fallback_no_technician_locations') {
+      return 'workload_fallback_no_technician_locations';
+    }
+
+    return 'workload_fallback_over_capacity';
+  }
   /**
    * Enrich and validate user data for notification publishing
    * 
@@ -614,3 +752,4 @@ export class AssignmentService {
     }
   }
 }
+

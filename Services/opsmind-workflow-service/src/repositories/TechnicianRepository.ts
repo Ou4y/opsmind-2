@@ -20,11 +20,24 @@ export class TechnicianRepository {
   async getAvailableTechnicians(): Promise<TechnicianRow[]> {
     return query<TechnicianRowData[]>(
       `
-        SELECT id, user_id, auth_user_id, name, email, level, latitude, longitude, status, is_active, last_location_update, created_at, updated_at
+        SELECT
+          id,
+          user_id,
+          auth_user_id,
+          name,
+          email,
+          level,
+          CAST(latitude AS DOUBLE) AS latitude,
+          CAST(longitude AS DOUBLE) AS longitude,
+          status,
+          is_active,
+          last_location_update,
+          created_at,
+          updated_at
         FROM technicians
-        WHERE status = 'ACTIVE'
-          AND is_active = TRUE
+        WHERE is_active = TRUE
           AND level = 'JUNIOR'
+          AND status IN ('ACTIVE', 'ONLINE')
         ORDER BY id ASC
       `,
     );
@@ -50,7 +63,10 @@ export class TechnicianRepository {
     const result = await execute(
       `
         UPDATE technicians
-        SET latitude = ?, longitude = ?, last_location_update = CURRENT_TIMESTAMP
+        SET latitude = ?,
+            longitude = ?,
+            last_location_update = CURRENT_TIMESTAMP,
+            status = 'ACTIVE'
         WHERE id = ? AND is_active = TRUE
       `,
       [latitude, longitude, id],
@@ -58,6 +74,24 @@ export class TechnicianRepository {
 
     if (result.affectedRows === 0) {
       throw new Error(`Technician ${id} not found or inactive`);
+    }
+  }
+
+  async updateLocationByUserId(userId: number, latitude: number, longitude: number): Promise<void> {
+    const result = await execute(
+      `
+        UPDATE technicians
+        SET latitude = ?,
+            longitude = ?,
+            last_location_update = CURRENT_TIMESTAMP,
+            status = 'ACTIVE'
+        WHERE user_id = ? AND is_active = TRUE
+      `,
+      [latitude, longitude, userId],
+    );
+
+    if (result.affectedRows === 0) {
+      throw new Error(`Technician with workflow user_id ${userId} not found or inactive`);
     }
   }
 

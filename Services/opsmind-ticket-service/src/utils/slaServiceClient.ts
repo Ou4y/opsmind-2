@@ -12,12 +12,12 @@ export interface SlaStatusPayload {
   closedAt?: string;
   assignedTo: string;
   title: string;
-  technician: {
+  technician?: {
     id: string;
     name: string;
     email: string;
   };
-  supervisor: {
+  supervisor?: {
     id: string;
     name: string;
     email: string;

@@ -940,74 +940,67 @@ async function updateSlaOnStatusChange(ticket: any, oldStatus: string): Promise<
       newStatus: ticket.status,
     });
 
-    // Step 1: Validate required ticket fields
-    if (!ticket.assigned_to) {
-      logger.warn("Cannot update SLA status: ticket has no assigned technician", {
+    // Only update SLA for these statuses
+    if (!["IN_PROGRESS", "RESOLVED", "CLOSED"].includes(ticket.status)) {
+      return;
+    }
+
+    let technicianData = undefined;
+    if (ticket.assigned_to) {
+      try {
+        const technician = await fetchUserDetails(ticket.assigned_to);
+        if (technician) {
+          technicianData = {
+            id: technician.id,
+            name: technician.name || technician.email?.split("@")[0] || String(ticket.assigned_to),
+            email: technician.email,
+          };
+        } else {
+          logger.warn("Technician enrichment failed, proceeding without technician", {
+            ticketId: ticket.id,
+            technicianId: ticket.assigned_to,
+          });
+        }
+      } catch (err) {
+        logger.warn("Technician enrichment threw error, proceeding without technician", {
+          ticketId: ticket.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    let supervisorData = undefined;
+    try {
+      const supervisor = await fetchSupervisor();
+      if (supervisor && supervisor.id && supervisor.name && supervisor.email) {
+        supervisorData = {
+          id: supervisor.id,
+          name: supervisor.name,
+          email: supervisor.email,
+        };
+      } else {
+        logger.warn("Supervisor enrichment failed, proceeding without supervisor", {
+          ticketId: ticket.id,
+        });
+      }
+    } catch (err) {
+      logger.warn("Supervisor enrichment threw error, proceeding without supervisor", {
         ticketId: ticket.id,
-        status: ticket.status,
+        error: err instanceof Error ? err.message : String(err),
       });
-      return;
     }
 
-    // Step 2: Fetch technician details from Auth Service
-    const technician = await fetchUserDetails(ticket.assigned_to);
-    if (!technician) {
-      logger.warn("Cannot update SLA status: failed to fetch technician details", {
-        ticketId: ticket.id,
-        technicianId: ticket.assigned_to,
-      });
-      return;
-    }
-
-    // Step 3: Validate technician data
-    const technicianData = {
-      id: technician.id,
-      name: technician.name || technician.email?.split("@")[0] || String(ticket.assigned_to),
-      email: technician.email,
-    };
-
-    if (!technicianData.email) {
-      logger.warn("Cannot update SLA status: technician missing email", {
-        ticketId: ticket.id,
-        technicianId: ticket.assigned_to,
-      });
-      return;
-    }
-
-    // Step 4: Fetch supervisor details from Workflow Service
-    const supervisor = await fetchSupervisor();
-    if (!supervisor) {
-      logger.warn("Cannot update SLA status: failed to fetch supervisor details", {
-        ticketId: ticket.id,
-      });
-      return;
-    }
-
-    // Step 5: Validate supervisor data (all fields required)
-    if (!validateUserData(supervisor, "supervisor", ticket.id)) {
-      return;
-    }
-
-    // Step 6: Build SLA payload with appropriate timestamp fields
+    // Build SLA payload with optional technician/supervisor
     const payload: SlaStatusPayload = {
       ticketStatus: ticket.status,
       assignedTo: ticket.assigned_to,
       title: ticket.title || "Untitled Ticket",
-      technician: {
-        id: technicianData.id,
-        name: technicianData.name,
-        email: technicianData.email,
-      },
-      supervisor: {
-        id: supervisor.id,
-        name: supervisor.name,
-        email: supervisor.email,
-      },
+      ...(technicianData ? { technician: technicianData } : {}),
+      ...(supervisorData ? { supervisor: supervisorData } : {}),
     };
 
     // Add appropriate timestamp based on status
     if (ticket.status === "IN_PROGRESS" && oldStatus === "OPEN") {
-      // First response - technician started working
       payload.firstResponseAt = new Date().toISOString();
     } else if (ticket.status === "RESOLVED") {
       payload.resolvedAt = ticket.resolved_at?.toISOString() || new Date().toISOString();
@@ -1015,14 +1008,14 @@ async function updateSlaOnStatusChange(ticket: any, oldStatus: string): Promise<
       payload.closedAt = ticket.closed_at?.toISOString() || new Date().toISOString();
     }
 
-    // Step 7: Call SLA service to update status
+    // Call SLA service to update status
     await updateSlaStatus(ticket.id, payload);
 
     logger.info("SLA status update completed", {
       ticketId: ticket.id,
       status: ticket.status,
-      technicianEmail: technicianData.email,
-      supervisorEmail: supervisor.email,
+      technicianEmail: technicianData?.email,
+      supervisorEmail: supervisorData?.email,
     });
   } catch (error) {
     logger.error("Failed to update SLA status", {

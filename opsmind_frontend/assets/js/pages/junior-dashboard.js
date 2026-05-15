@@ -29,12 +29,15 @@ const state = {
     dashboardContext: null,
     isLoading: false,
     refreshInterval: null,
-    locationWatchId: null,
+    locationIntervalId: null,
     detailsRequestToken: 0,
     activeTicketDetailsLoader: null
 };
 
 const geoOptions = { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 };
+const LOCATION_UPDATE_INTERVAL_MS = 5 * 60 * 1000;
+const LOCATION_SUCCESS_MESSAGE = 'Location updated';
+const LOCATION_FALLBACK_MESSAGE = 'Location unavailable, workload-based assignment will be used';
 
 const TRANSIENT_WORKFLOW_ERROR_CODES = new Set([408, 429, 500, 502, 503, 504]);
 const TRANSIENT_WORKFLOW_ERROR_PATTERNS = [
@@ -74,7 +77,7 @@ export async function initJuniorDashboard() {
 
     state.currentWorkflowTechnicianId = String(state.dashboardContext.workflowUserId);
 
-    // Start continuous location tracking
+    // Start periodic location updates for technician live location.
     startLocationTracking();
     
     // Set up event listeners
@@ -128,6 +131,26 @@ function setupEventListeners() {
         }
         stopLocationTracking();
     });
+}
+
+function setLocationStatus(message, variant = 'muted') {
+    const statusEl = document.getElementById('technicianLocationStatus');
+    if (!statusEl) return;
+
+    statusEl.textContent = message;
+    statusEl.classList.remove('text-muted', 'text-success', 'text-warning');
+
+    if (variant === 'success') {
+        statusEl.classList.add('text-success');
+        return;
+    }
+
+    if (variant === 'warning') {
+        statusEl.classList.add('text-warning');
+        return;
+    }
+
+    statusEl.classList.add('text-muted');
 }
 
 /**
@@ -836,10 +859,12 @@ function getActionColor(action) {
 }
 
 /**
- * Start watching technician location
+ * Start technician location updates:
+ * - one immediate update on dashboard load
+ * - repeat every 5 minutes while dashboard is open
  */
 function startLocationTracking() {
-    if (state.locationWatchId !== null) return state.locationWatchId;
+    if (state.locationIntervalId !== null) return state.locationIntervalId;
 
     if (!state.currentUser || !state.currentUser.id) {
         console.warn('Cannot start location tracking: missing technician id');
@@ -847,17 +872,42 @@ function startLocationTracking() {
     }
 
     if (!('geolocation' in navigator)) {
-        UI.showToast('Geolocation is not supported by this browser.', 'error');
+        setLocationStatus(LOCATION_FALLBACK_MESSAGE, 'warning');
         return null;
     }
 
-    state.locationWatchId = navigator.geolocation.watchPosition(
-        position => sendLocationUpdate(state.currentWorkflowTechnicianId || state.currentUser.id, position.coords),
+    setLocationStatus('Updating location...', 'muted');
+    requestAndSendCurrentLocation();
+
+    state.locationIntervalId = window.setInterval(() => {
+        requestAndSendCurrentLocation();
+    }, LOCATION_UPDATE_INTERVAL_MS);
+
+    return state.locationIntervalId;
+}
+
+function requestAndSendCurrentLocation() {
+    if (!('geolocation' in navigator)) {
+        setLocationStatus(LOCATION_FALLBACK_MESSAGE, 'warning');
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            const ok = await sendLocationUpdate(
+                state.currentWorkflowTechnicianId || state.currentUser.id,
+                position.coords
+            );
+
+            if (ok) {
+                setLocationStatus(LOCATION_SUCCESS_MESSAGE, 'success');
+            } else {
+                setLocationStatus(LOCATION_FALLBACK_MESSAGE, 'warning');
+            }
+        },
         handleLocationError,
         geoOptions
     );
-
-    return state.locationWatchId;
 }
 
 /**
@@ -869,17 +919,25 @@ async function sendLocationUpdate(technicianId, coords) {
     try {
         const workflowApiBase = (window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003').replace(/\/+$/, '');
         const workflowTechnicianId = Number(technicianId);
+        const token = AuthService.getToken();
 
         if (!Number.isFinite(workflowTechnicianId)) {
             console.warn('Skipping location update: workflow technician ID is missing or invalid.', technicianId);
-            return;
+            return false;
         }
 
-        const response = await fetch(`${workflowApiBase}/workflow/technicians/location`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+        if (!token) {
+            console.warn('Skipping location update: missing authentication token.');
+            return false;
+        }
+
+        const response = await fetch(`${workflowApiBase}/workflow/technicians/${workflowTechnicianId}/location`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
             body: JSON.stringify({
-                technician_id: workflowTechnicianId,
                 latitude: coords.latitude,
                 longitude: coords.longitude
             })
@@ -897,26 +955,26 @@ async function sendLocationUpdate(technicianId, coords) {
                     console.warn('Location tracking endpoint not available (404). Location tracking disabled.');
                 }
                 stopLocationTracking();
-                return;
+                return false;
             }
 
             throw new Error(detail || `HTTP ${response.status}`);
         }
         console.log('Location updated successfully');
+        return true;
     } catch (error) {
         console.error('Error sending location update:', error);
-        // Don't show toast for network errors to avoid spamming user
-        // UI.showToast('Failed to update location.', 'error');
+        return false;
     }
 }
 
 /**
- * Stop watching technician location
+ * Stop periodic technician location updates
  */
 function stopLocationTracking() {
-    if (state.locationWatchId !== null) {
-        navigator.geolocation.clearWatch(state.locationWatchId);
-        state.locationWatchId = null;
+    if (state.locationIntervalId !== null) {
+        clearInterval(state.locationIntervalId);
+        state.locationIntervalId = null;
     }
 }
 
@@ -924,19 +982,18 @@ function stopLocationTracking() {
  * Handle geolocation errors
  */
 function handleLocationError(error) {
+    setLocationStatus(LOCATION_FALLBACK_MESSAGE, 'warning');
+
     switch (error.code) {
         case error.PERMISSION_DENIED:
-            UI.showToast('Location permission denied.', 'error');
             stopLocationTracking();
             break;
         case error.POSITION_UNAVAILABLE:
-            UI.showToast('Location unavailable.', 'warning');
             break;
         case error.TIMEOUT:
-            UI.showToast('Location request timed out.', 'warning');
             break;
         default:
-            UI.showToast('Unable to retrieve location.', 'error');
+            break;
     }
     console.error('Geolocation error:', error);
 }
