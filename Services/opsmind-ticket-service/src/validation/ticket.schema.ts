@@ -11,6 +11,12 @@ export const createTicketSchema = z.object({
   description: z.string().min(5, "Description must be at least 5 characters"),
   type_of_request: RequestTypeEnum,
   requester_id: z.string().uuid("requester_id must be a valid UUID"),
+  requester_role: z.string().max(100).optional(),
+  topic: z.string().max(191).optional(),
+  product_group: z.string().max(191).optional(),
+  category: z.string().max(191).optional(),
+  building: z.string().max(191).optional(),
+  room: z.string().max(191).optional(),
   latitude: z.number().min(-90, "latitude must be >= -90").max(90, "latitude must be <= 90"),
   longitude: z.number().min(-180, "longitude must be >= -180").max(180, "longitude must be <= 180"),
 });

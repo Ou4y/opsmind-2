@@ -100,7 +100,7 @@ export const upsertPolicySchema = z.object({
 
 export const bulkTicketStatusSchema = z.object({
   body: z.object({
-    ticket_ids: z.array(z.string().min(1)).min(1),
+    ticket_ids: z.array(z.string().min(1)).default([]),
   }),
   params: z.object({}),
   query: z.object({}),

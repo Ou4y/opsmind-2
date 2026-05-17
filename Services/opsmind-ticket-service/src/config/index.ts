@@ -25,6 +25,11 @@ export const config = {
     internalApiToken: process.env.INTERNAL_API_TOKEN ?? "",
   },
 
+  aiService: {
+    url: process.env.AI_SERVICE_URL ?? "http://localhost:8000",
+    timeoutMs: parseInt(process.env.AI_SERVICE_TIMEOUT_MS ?? "3000", 10),
+  },
+
   cors: {
     origins: (process.env.CORS_ORIGINS ?? "http://localhost:5173")
       .split(",")

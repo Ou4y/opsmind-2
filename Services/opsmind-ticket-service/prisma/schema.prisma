@@ -59,6 +59,16 @@ model Ticket {
   status             TicketStatus     // ENUM
   escalation_count   Int              @default(0)
   resolution_summary String?          @db.Text
+  ai_prediction_status String         @default("SKIPPED")
+  rule_priority      TicketPriority?
+  ai_priority        TicketPriority?
+  ai_confidence      Float?
+  ai_decision_source String?
+  ai_explanation     Json?
+  ai_model_name      String?
+  ai_model_version   String?
+  ai_predicted_at    DateTime?
+  ai_priority_score  Float?
   is_deleted         Boolean          @default(false)
   created_at         DateTime         @default(now())
   updated_at         DateTime         @updatedAt

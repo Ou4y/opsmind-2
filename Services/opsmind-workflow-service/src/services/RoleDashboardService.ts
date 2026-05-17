@@ -1,8 +1,8 @@
-import { ticketServiceClient, getTicket, getTicketAssignmentHistory, getTicketStatusHistory, getTicketEscalations, getUserDetails, getSlaStatusForTickets, getSlaTicket } from '../config/externalServices';
+import { ticketServiceClient, getTicket, getTicketAssignmentHistory, getTicketStatusHistory, getTicketEscalations, getUserDetails, getSlaStatusForTickets, getSlaTicket, ExternalCallContext } from '../config/externalServices';
 import { ReportingRelationshipRepository } from '../repositories/ReportingRelationshipRepository';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 import { WorkflowLogRepository } from '../repositories/WorkflowLogRepository';
-import { ExternalTicket, TechnicianRow } from '../interfaces/types';
+import { ExternalTicket, ReportingRelationshipRow, TechnicianRow } from '../interfaces/types';
 
 const SUPPORT_LEVEL_TO_ROLE: Record<string, 'JUNIOR' | 'SENIOR' | 'SUPERVISOR' | 'ADMIN'> = {
   L1: 'JUNIOR',
@@ -23,6 +23,38 @@ export interface DashboardFilters {
   dateFrom?: string;
   dateTo?: string;
   escalatedOnly?: boolean;
+}
+
+export interface DashboardRequestContext extends ExternalCallContext {
+  endpoint?: string;
+  scopeRole?: 'ADMIN' | 'SUPERVISOR' | 'SENIOR' | 'JUNIOR';
+}
+
+export type DashboardErrorCode =
+  | 'DASHBOARD_DEPENDENCY_FAILED'
+  | 'TICKET_SERVICE_UNAVAILABLE'
+  | 'SLA_SERVICE_UNAVAILABLE'
+  | 'WORKFLOW_DB_QUERY_FAILED';
+
+export class DashboardDependencyError extends Error {
+  public readonly code: DashboardErrorCode;
+  public readonly statusCode: number;
+  public readonly dependency: string;
+  public readonly causeMessage: string | null;
+
+  constructor(params: {
+    code: DashboardErrorCode;
+    statusCode: number;
+    dependency: string;
+    message: string;
+    cause?: unknown;
+  }) {
+    super(params.message);
+    this.code = params.code;
+    this.statusCode = params.statusCode;
+    this.dependency = params.dependency;
+    this.causeMessage = params.cause instanceof Error ? params.cause.message : (params.cause ? String(params.cause) : null);
+  }
 }
 
 interface ScopeContext {
@@ -53,71 +85,99 @@ export class RoleDashboardService {
   private relationshipRepo = new ReportingRelationshipRepository();
   private logRepo = new WorkflowLogRepository();
 
-  async getAdminOverview(filters: DashboardFilters) {
+  private log(level: 'info' | 'warn' | 'error', message: string, context: DashboardRequestContext, extra: Record<string, unknown> = {}) {
+    const payload = {
+      requestId: context.requestId || null,
+      endpoint: context.endpoint || null,
+      scopeRole: context.scopeRole || null,
+      ...extra,
+    };
+    const logger = level === 'info' ? console.info : level === 'warn' ? console.warn : console.error;
+    logger(`[RoleDashboardService] ${message}`, payload);
+  }
+
+  private asDashboardContext(context?: DashboardRequestContext): DashboardRequestContext {
+    return context || {};
+  }
+
+  async getAdminOverview(filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'ADMIN' });
     const scope: ScopeContext = { role: 'ADMIN', scopeUserIds: null };
-    const tickets = await this.fetchScopedTickets(scope, filters, true);
-    return this.buildOverviewMetrics(tickets, scope);
+    const tickets = await this.fetchScopedTickets(scope, filters, true, requestContext);
+    return this.buildOverviewMetrics(tickets, scope, requestContext);
   }
 
-  async getSupervisorOverview(supervisorUserId: number, filters: DashboardFilters) {
+  async getSupervisorOverview(supervisorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SUPERVISOR' });
     const scope = await this.buildSupervisorScope(supervisorUserId);
-    const tickets = await this.fetchScopedTickets(scope, filters, true);
-    return this.buildOverviewMetrics(tickets, scope);
+    const tickets = await this.fetchScopedTickets(scope, filters, true, requestContext);
+    return this.buildOverviewMetrics(tickets, scope, requestContext);
   }
 
-  async getSeniorOverview(seniorUserId: number, filters: DashboardFilters) {
+  async getSeniorOverview(seniorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SENIOR' });
     const scope = await this.buildSeniorScope(seniorUserId);
-    const tickets = await this.fetchScopedTickets(scope, filters, true);
-    return this.buildOverviewMetrics(tickets, scope);
+    const tickets = await this.fetchScopedTickets(scope, filters, true, requestContext);
+    return this.buildOverviewMetrics(tickets, scope, requestContext);
   }
 
-  async getJuniorOverview(juniorUserId: number, filters: DashboardFilters) {
+  async getJuniorOverview(juniorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'JUNIOR' });
     const scope = await this.buildJuniorScope(juniorUserId);
-    const tickets = await this.fetchScopedTickets(scope, filters, true);
-    return this.buildOverviewMetrics(tickets, scope);
+    const tickets = await this.fetchScopedTickets(scope, filters, true, requestContext);
+    return this.buildOverviewMetrics(tickets, scope, requestContext);
   }
 
-  async getAdminTickets(filters: DashboardFilters) {
+  async getAdminTickets(filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'ADMIN' });
     const scope: ScopeContext = { role: 'ADMIN', scopeUserIds: null };
-    return this.buildTicketListResponse(scope, filters);
+    return this.buildTicketListResponse(scope, filters, requestContext);
   }
 
-  async getAdminTicketDetails(ticketId: string) {
+  async getAdminTicketDetails(ticketId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'ADMIN' });
     const scope: ScopeContext = { role: 'ADMIN', scopeUserIds: null };
-    return this.getTicketDetails(ticketId, scope);
+    return this.getTicketDetails(ticketId, scope, requestContext);
   }
 
-  async getSupervisorTickets(supervisorUserId: number, filters: DashboardFilters) {
+  async getSupervisorTickets(supervisorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SUPERVISOR' });
     const scope = await this.buildSupervisorScope(supervisorUserId);
-    return this.buildTicketListResponse(scope, filters);
+    return this.buildTicketListResponse(scope, filters, requestContext);
   }
 
-  async getSupervisorTicketDetails(supervisorUserId: number, ticketId: string) {
+  async getSupervisorTicketDetails(supervisorUserId: number, ticketId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SUPERVISOR' });
     const scope = await this.buildSupervisorScope(supervisorUserId);
-    return this.getTicketDetails(ticketId, scope);
+    return this.getTicketDetails(ticketId, scope, requestContext);
   }
 
-  async getSeniorTickets(seniorUserId: number, filters: DashboardFilters) {
+  async getSeniorTickets(seniorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SENIOR' });
     const scope = await this.buildSeniorScope(seniorUserId);
-    return this.buildTicketListResponse(scope, filters);
+    return this.buildTicketListResponse(scope, filters, requestContext);
   }
 
-  async getSeniorTicketDetails(seniorUserId: number, ticketId: string) {
+  async getSeniorTicketDetails(seniorUserId: number, ticketId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'SENIOR' });
     const scope = await this.buildSeniorScope(seniorUserId);
-    return this.getTicketDetails(ticketId, scope);
+    return this.getTicketDetails(ticketId, scope, requestContext);
   }
 
-  async getJuniorTickets(juniorUserId: number, filters: DashboardFilters) {
+  async getJuniorTickets(juniorUserId: number, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'JUNIOR' });
     const scope = await this.buildJuniorScope(juniorUserId);
-    return this.buildTicketListResponse(scope, filters);
+    return this.buildTicketListResponse(scope, filters, requestContext);
   }
 
-  async getJuniorTicketDetails(juniorUserId: number, ticketId: string) {
+  async getJuniorTicketDetails(juniorUserId: number, ticketId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: 'JUNIOR' });
     const scope = await this.buildJuniorScope(juniorUserId);
-    return this.getTicketDetails(ticketId, scope);
+    return this.getTicketDetails(ticketId, scope, requestContext);
   }
 
-  async getTicketDetails(ticketId: string, scope: ScopeContext) {
+  async getTicketDetails(ticketId: string, scope: ScopeContext, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: scope.role });
     const ticket = await getTicket(ticketId);
     if (!ticket) {
       throw new Error(`Ticket ${ticketId} not found`);
@@ -126,22 +186,39 @@ export class RoleDashboardService {
     this.assertTicketInScope(ticket, scope);
 
     const assignedUserId = this.toNumericUserId(ticket.assigned_to);
-    const hierarchy = await this.resolveHierarchyContext(assignedUserId);
+    const hierarchy = await this.safeResolveHierarchyContext(assignedUserId, undefined, requestContext);
     const assignedTechnician = hierarchy.junior || hierarchy.senior || hierarchy.supervisor;
     const assignedToLevel = this.resolveOwnerRole(assignedTechnician?.level || ticket.assigned_to_level || null);
     const ownershipType = this.resolveOwnershipType(scope, assignedUserId, assignedToLevel, ticket.escalation_count ?? 0);
     const allowedActions = this.buildAllowedActions(scope, assignedUserId, assignedToLevel, ticket.status);
     const requesterDetails = ticket.requester_id
-      ? await this.safeFetchUser(ticket.requester_id)
+      ? await this.safeFetchUser(ticket.requester_id, requestContext)
       : null;
 
-    const [assignmentHistory, statusHistory, escalationHistory, workflowLogs, slaRecord] = await Promise.all([
-      this.safeTicketHistory(getTicketAssignmentHistory, ticketId),
-      this.safeTicketHistory(getTicketStatusHistory, ticketId),
-      this.safeTicketHistory(getTicketEscalations, ticketId),
+    const assignmentHistory = await this.safeTicketHistory(getTicketAssignmentHistory, ticketId, requestContext);
+    const statusHistory = await this.safeTicketHistory(getTicketStatusHistory, ticketId, requestContext);
+    const escalationHistory = await this.safeTicketHistory(getTicketEscalations, ticketId, requestContext);
+    const optionalDetails = await Promise.allSettled([
       this.logRepo.getTicketLogs(ticketId),
-      this.fetchWorkflowSlaDetail(ticketId),
+      this.fetchWorkflowSlaDetail(ticketId, requestContext),
     ]);
+    const workflowLogs = optionalDetails[0].status === 'fulfilled' ? optionalDetails[0].value : [];
+    const slaRecord = optionalDetails[1].status === 'fulfilled' ? optionalDetails[1].value : null;
+
+    if (optionalDetails[0].status === 'rejected') {
+      this.log('warn', 'Workflow logs lookup failed during ticket details', requestContext, {
+        dependency: 'workflow-db.workflow_logs',
+        ticketId,
+        error: optionalDetails[0].reason instanceof Error ? optionalDetails[0].reason.message : String(optionalDetails[0].reason),
+      });
+    }
+    if (optionalDetails[1].status === 'rejected') {
+      this.log('warn', 'SLA detail lookup failed during ticket details', requestContext, {
+        dependency: 'sla-service./sla/tickets/:ticketId',
+        ticketId,
+        error: optionalDetails[1].reason instanceof Error ? optionalDetails[1].reason.message : String(optionalDetails[1].reason),
+      });
+    }
 
     const assignmentItems = assignmentHistory?.items || [];
     const statusItems = statusHistory?.items || [];
@@ -223,26 +300,39 @@ export class RoleDashboardService {
     };
   }
 
-  private async buildTicketListResponse(scope: ScopeContext, filters: DashboardFilters) {
-    const tickets = await this.fetchScopedTickets(scope, filters, true);
+  private async buildTicketListResponse(scope: ScopeContext, filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: scope.role });
+    const tickets = await this.fetchScopedTickets(scope, filters, true, requestContext);
     const total = tickets.length;
     const offset = filters.offset ?? 0;
     const limit = filters.limit ?? 50;
     const paged = tickets.slice(offset, offset + limit);
 
     const assignedUserIds = this.extractAssignedUserIds(paged);
-    const technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+    let technicians: TechnicianRow[] = [];
+    try {
+      technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+    } catch (error: unknown) {
+      this.log('warn', 'Technician lookup failed for dashboard list; continuing without names', requestContext, {
+        dependency: 'workflow-db.technicians',
+        assignedUserCount: assignedUserIds.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const technicianMap = new Map(technicians.map((tech) => [tech.user_id, tech]));
     const hierarchyCache = new Map<number, HierarchyContext>();
 
-    const slaMap = await this.buildSlaMap(paged.map((ticket) => String(ticket.id)));
-    const requesterMap = await this.buildRequesterMap(paged.map((ticket) => ticket.requester_id).filter(Boolean) as string[]);
+    const slaMap = await this.buildSlaMap(paged.map((ticket) => String(ticket.id)), requestContext);
+    const requesterMap = await this.buildRequesterMap(
+      paged.map((ticket) => ticket.requester_id).filter(Boolean) as string[],
+      requestContext,
+    );
 
     const items = await Promise.all(
       paged.map(async (ticket) => {
         const assignedUserId = this.toNumericUserId(ticket.assigned_to);
         const technician = assignedUserId ? technicianMap.get(assignedUserId) || null : null;
-        const hierarchy = await this.resolveHierarchyContext(assignedUserId, hierarchyCache);
+        const hierarchy = await this.safeResolveHierarchyContext(assignedUserId, hierarchyCache, requestContext);
         const requester = ticket.requester_id ? requesterMap.get(String(ticket.requester_id)) : null;
         const sla = slaMap.get(String(ticket.id));
         const assignedToLevel = this.resolveOwnerRole(technician?.level || ticket.assigned_to_level || null);
@@ -295,9 +385,18 @@ export class RoleDashboardService {
     };
   }
 
-  private async fetchScopedTickets(scope: ScopeContext, filters: DashboardFilters, ignorePagination: boolean) {
+  private async fetchScopedTickets(
+    scope: ScopeContext,
+    filters: DashboardFilters,
+    ignorePagination: boolean,
+    context?: DashboardRequestContext,
+  ) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: scope.role });
     const assignedFilter = this.resolveAssignedFilter(scope, filters);
     if (assignedFilter && assignedFilter.length === 0) {
+      this.log('info', 'No scoped assignees resolved; returning empty ticket list', requestContext, {
+        dependency: 'workflow-scope',
+      });
       return [];
     }
 
@@ -312,16 +411,47 @@ export class RoleDashboardService {
       params.offset = String(filters.offset ?? 0);
     }
 
-    const { data } = await ticketServiceClient.get('/tickets', { params });
-    const rawTickets = Array.isArray(data) ? data : data?.tickets || [];
+    this.log('info', 'Fetching scoped tickets from ticket service', requestContext, {
+      dependency: 'ticket-service./tickets',
+      params,
+    });
+
+    let rawTickets: ExternalTicket[] = [];
+    try {
+      const { data } = await ticketServiceClient.get('/tickets', { params });
+      rawTickets = Array.isArray(data) ? data : data?.tickets || [];
+      this.log('info', 'Ticket service response received', requestContext, {
+        dependency: 'ticket-service./tickets',
+        ticketCount: rawTickets.length,
+      });
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const message = error?.message || 'Failed to fetch tickets from ticket service';
+
+      this.log('error', 'Ticket service fetch failed', requestContext, {
+        dependency: 'ticket-service./tickets',
+        statusCode: status ?? null,
+        params,
+        error: message,
+      });
+
+      throw new DashboardDependencyError({
+        code: 'TICKET_SERVICE_UNAVAILABLE',
+        statusCode: 502,
+        dependency: 'ticket-service./tickets',
+        message: 'Ticket service unavailable for dashboard query',
+        cause: error,
+      });
+    }
 
     const tickets = rawTickets.filter((ticket: ExternalTicket) => !ticket.is_deleted);
-    const filtered = await this.applyPostFilters(tickets, filters);
+    const filtered = await this.applyPostFilters(tickets, filters, requestContext);
 
     return filtered;
   }
 
-  private async applyPostFilters(tickets: ExternalTicket[], filters: DashboardFilters) {
+  private async applyPostFilters(tickets: ExternalTicket[], filters: DashboardFilters, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext(context);
     let filtered = tickets;
 
     if (filters.dateFrom || filters.dateTo) {
@@ -340,7 +470,16 @@ export class RoleDashboardService {
 
     if (filters.level || filters.seniorId || filters.supervisorId) {
       const assignedUserIds = this.extractAssignedUserIds(filtered);
-      const technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+      let technicians: TechnicianRow[] = [];
+      try {
+        technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+      } catch (error: unknown) {
+        this.log('warn', 'Technician lookup failed during post filters; skipping level-based refinement', requestContext, {
+          dependency: 'workflow-db.technicians',
+          assignedUserCount: assignedUserIds.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       const technicianMap = new Map(technicians.map((tech) => [tech.user_id, tech]));
 
       if (filters.level) {
@@ -451,6 +590,24 @@ export class RoleDashboardService {
     const result = { junior, senior, supervisor };
     cache?.set(userId, result);
     return result;
+  }
+
+  private async safeResolveHierarchyContext(
+    userId: number | null,
+    cache?: Map<number, HierarchyContext>,
+    context?: DashboardRequestContext,
+  ): Promise<HierarchyContext> {
+    const requestContext = this.asDashboardContext(context);
+    try {
+      return await this.resolveHierarchyContext(userId, cache);
+    } catch (error: unknown) {
+      this.log('warn', 'Hierarchy lookup failed; continuing without hierarchy enrichment', requestContext, {
+        dependency: 'workflow-db.reporting_relationships',
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { junior: null, senior: null, supervisor: null };
+    }
   }
 
   private buildDescriptionPreview(description?: string) {
@@ -582,8 +739,30 @@ export class RoleDashboardService {
     return null;
   }
 
-  private async buildSlaMap(ticketIds: string[]) {
-    const records = Object.values(await getSlaStatusForTickets(ticketIds)).filter(Boolean) as any[];
+  private async buildSlaMap(ticketIds: string[], context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext(context);
+    const normalizedTicketIds = Array.from(new Set(ticketIds.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (normalizedTicketIds.length === 0) {
+      return new Map<string, any>();
+    }
+
+    let records: any[] = [];
+    try {
+      records = Object.values(
+        await getSlaStatusForTickets(normalizedTicketIds, {
+          requestId: requestContext.requestId,
+          caller: requestContext.endpoint || 'RoleDashboardService.buildSlaMap',
+        }),
+      ).filter(Boolean) as any[];
+    } catch (error: unknown) {
+      this.log('warn', 'SLA bulk status lookup failed; continuing without SLA enrichment', requestContext, {
+        dependency: 'sla-service./sla/tickets/status',
+        ticketCount: normalizedTicketIds.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return new Map<string, any>();
+    }
+
     const map = new Map<string, any>();
     records.forEach((record) => {
       map.set(record.ticket_id, record);
@@ -591,9 +770,10 @@ export class RoleDashboardService {
     return map;
   }
 
-  private async buildRequesterMap(requesterIds: string[]) {
+  private async buildRequesterMap(requesterIds: string[], context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext(context);
     const unique = Array.from(new Set(requesterIds.filter(Boolean)));
-    const results = await Promise.allSettled(unique.map((id) => this.safeFetchUser(id)));
+    const results = await Promise.allSettled(unique.map((id) => this.safeFetchUser(id, requestContext)));
     const map = new Map<string, any>();
     results.forEach((result, index) => {
       if (result.status === 'fulfilled' && result.value) {
@@ -603,18 +783,34 @@ export class RoleDashboardService {
     return map;
   }
 
-  private async safeFetchUser(userId: string) {
+  private async safeFetchUser(userId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext(context);
     try {
       return await getUserDetails(userId as any);
-    } catch {
+    } catch (error: unknown) {
+      this.log('warn', 'Requester lookup failed; returning null', requestContext, {
+        dependency: 'auth-service./users/:id',
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
 
-  private async safeTicketHistory(fetcher: (ticketId: string) => Promise<any>, ticketId: string) {
+  private async safeTicketHistory(
+    fetcher: (ticketId: string) => Promise<any>,
+    ticketId: string,
+    context?: DashboardRequestContext,
+  ) {
+    const requestContext = this.asDashboardContext(context);
     try {
       return await fetcher(ticketId);
-    } catch {
+    } catch (error: unknown) {
+      this.log('warn', 'Ticket history lookup failed; continuing without history segment', requestContext, {
+        dependency: 'ticket-service.history',
+        ticketId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
@@ -654,8 +850,20 @@ export class RoleDashboardService {
     return events;
   }
 
-  private async fetchWorkflowSlaDetail(ticketId: string) {
-    const sla = await getSlaTicket(ticketId);
+  private async fetchWorkflowSlaDetail(ticketId: string, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext(context);
+    let sla: any | null = null;
+    try {
+      sla = await getSlaTicket(ticketId);
+    } catch (error: unknown) {
+      this.log('warn', 'SLA detail lookup failed; continuing without SLA timeline', requestContext, {
+        dependency: 'sla-service./sla/tickets/:id',
+        ticketId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+
     if (!sla) return null;
 
     const breachedEvent = Array.isArray(sla.events)
@@ -805,7 +1013,8 @@ export class RoleDashboardService {
     }));
   }
 
-  private async buildOverviewMetrics(tickets: ExternalTicket[], scope?: ScopeContext) {
+  private async buildOverviewMetrics(tickets: ExternalTicket[], scope?: ScopeContext, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: scope?.role || context?.scopeRole });
     const statusCounts: Record<string, number> = {};
     const priorityCounts: Record<string, number> = {};
     const technicianCounts: Record<string, number> = {};
@@ -844,7 +1053,16 @@ export class RoleDashboardService {
       : 0;
 
     const assignedUserIds = this.extractAssignedUserIds(tickets);
-    const technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+    let technicians: TechnicianRow[] = [];
+    try {
+      technicians = await this.technicianRepo.getByUserIds(assignedUserIds);
+    } catch (error: unknown) {
+      this.log('warn', 'Technician lookup failed during overview metrics; continuing with empty technician list', requestContext, {
+        dependency: 'workflow-db.technicians',
+        assignedUserCount: assignedUserIds.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const ticketCountsByUser = new Map<number, number>();
     tickets.forEach((ticket) => {
       const assignedId = this.toNumericUserId(ticket.assigned_to);
@@ -860,11 +1078,27 @@ export class RoleDashboardService {
       ticketCount: ticketCountsByUser.get(tech.user_id) || 0,
     }));
 
-    const ticketsPerSeniorTeam = await this.buildSeniorTeamCounts(tickets, scope);
+    const ticketsPerSeniorTeam = await this.buildSeniorTeamCounts(tickets, scope, requestContext);
 
-    const slaRecords = Object.values(
-      await getSlaStatusForTickets(tickets.map((ticket) => String(ticket.id)))
-    ).filter(Boolean) as any[];
+    let slaRecords: any[] = [];
+    try {
+      slaRecords = Object.values(
+        await getSlaStatusForTickets(
+          tickets.map((ticket) => String(ticket.id)),
+          {
+            requestId: requestContext.requestId,
+            caller: requestContext.endpoint || 'RoleDashboardService.buildOverviewMetrics',
+          },
+        ),
+      ).filter(Boolean) as any[];
+    } catch (error: unknown) {
+      this.log('warn', 'SLA bulk status lookup failed during overview metrics; using default zero values', requestContext, {
+        dependency: 'sla-service./sla/tickets/status',
+        ticketCount: tickets.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      slaRecords = [];
+    }
     const slaBreached = slaRecords.filter((record) => record.sla_breached).length;
     const slaAtRisk = slaRecords.filter((record) => record.at_risk).length;
 
@@ -886,12 +1120,41 @@ export class RoleDashboardService {
     };
   }
 
-  private async buildSeniorTeamCounts(tickets: ExternalTicket[], scope?: ScopeContext) {
+  private async buildSeniorTeamCounts(tickets: ExternalTicket[], scope?: ScopeContext, context?: DashboardRequestContext) {
+    const requestContext = this.asDashboardContext({ ...context, scopeRole: scope?.role || context?.scopeRole });
     if (!scope || scope.role === 'JUNIOR') {
       return [];
     }
 
-    const relationships = await this.relationshipRepo.getAllActive();
+    let relationships: ReportingRelationshipRow[] = [];
+    try {
+      relationships = await this.relationshipRepo.getAllActive();
+    } catch (error: any) {
+      const code = error?.code || error?.errno || null;
+      this.log('error', 'Failed to query reporting relationships for overview metrics', requestContext, {
+        dependency: 'workflow-db.reporting_relationships',
+        error: error instanceof Error ? error.message : String(error),
+        dbCode: code,
+      });
+
+      if (code === 'ER_NO_SUCH_TABLE') {
+        throw new DashboardDependencyError({
+          code: 'WORKFLOW_DB_QUERY_FAILED',
+          statusCode: 500,
+          dependency: 'workflow-db.reporting_relationships',
+          message: 'Workflow hierarchy tables are missing',
+          cause: error,
+        });
+      }
+
+      throw new DashboardDependencyError({
+        code: 'WORKFLOW_DB_QUERY_FAILED',
+        statusCode: 500,
+        dependency: 'workflow-db.reporting_relationships',
+        message: 'Workflow hierarchy query failed',
+        cause: error,
+      });
+    }
     const juniorToSenior = relationships.filter((rel) => rel.relationship_type === 'JUNIOR_TO_SENIOR');
     const seniorToSupervisor = relationships.filter((rel) => rel.relationship_type === 'SENIOR_TO_SUPERVISOR');
 
@@ -909,7 +1172,17 @@ export class RoleDashboardService {
     const uniqueSeniorIds = Array.from(new Set(seniorIds));
     if (uniqueSeniorIds.length === 0) return [];
 
-    const seniors = await this.technicianRepo.getByUserIds(uniqueSeniorIds);
+    let seniors: TechnicianRow[] = [];
+    try {
+      seniors = await this.technicianRepo.getByUserIds(uniqueSeniorIds);
+    } catch (error: unknown) {
+      this.log('warn', 'Senior technician lookup failed while computing team counts; returning empty senior team metrics', requestContext, {
+        dependency: 'workflow-db.technicians',
+        seniorCount: uniqueSeniorIds.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
     const juniorMap = new Map<number, number[]>();
     juniorToSenior.forEach((rel) => {
       if (!juniorMap.has(rel.parent_user_id)) {

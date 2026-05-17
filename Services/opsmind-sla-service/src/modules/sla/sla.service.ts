@@ -260,8 +260,11 @@ export const slaService = {
     return entity;
   },
 
-  async getBulkTicketStatus(ticketIds: string[]) {
-    const uniqueTicketIds = Array.from(new Set(ticketIds.map((id) => id.trim()).filter(Boolean)));
+  async getBulkTicketStatus(ticketIds: string[] = []) {
+    const uniqueTicketIds = Array.from(new Set((Array.isArray(ticketIds) ? ticketIds : []).map((id) => String(id).trim()).filter(Boolean)));
+    if (uniqueTicketIds.length === 0) {
+      return {};
+    }
     const records = await slaRepository.findByTicketIds(uniqueTicketIds);
     const now = Date.now();
     const data: Record<string, any | null> = Object.fromEntries(

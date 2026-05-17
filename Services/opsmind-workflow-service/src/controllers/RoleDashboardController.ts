@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { RoleDashboardService, DashboardFilters } from '../services/RoleDashboardService';
+import { RoleDashboardService, DashboardDependencyError, DashboardFilters, DashboardRequestContext } from '../services/RoleDashboardService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
 
 export class RoleDashboardController {
@@ -7,46 +7,102 @@ export class RoleDashboardController {
   private technicianRepo = new TechnicianRepository();
 
   getAdminOverview = async (req: Request, res: Response): Promise<void> => {
+    const context = this.buildContext(req, 'admin-overview');
     try {
       if (!this.isAdmin(req)) {
         res.status(403).json({ success: false, message: 'Admin access required' });
         return;
       }
       const filters = this.parseFilters(req);
-      const data = await this.service.getAdminOverview(filters);
+      const data = await this.service.getAdminOverview(filters, context);
       res.status(200).json({ success: true, data });
     } catch (error: any) {
-      res.status(500).json({ success: false, message: error.message });
+      this.handleDashboardError(res, error, context);
     }
   };
 
   getAdminTickets = async (req: Request, res: Response): Promise<void> => {
+    const context = this.buildContext(req, 'admin-tickets');
     try {
       if (!this.isAdmin(req)) {
         res.status(403).json({ success: false, message: 'Admin access required' });
         return;
       }
       const filters = this.parseFilters(req);
-      const data = await this.service.getAdminTickets(filters);
+      const data = await this.service.getAdminTickets(filters, context);
       res.status(200).json({ success: true, data });
     } catch (error: any) {
-      res.status(500).json({ success: false, message: error.message });
+      this.handleDashboardError(res, error, context);
     }
   };
 
   getAdminTicketDetails = async (req: Request, res: Response): Promise<void> => {
+    const context = this.buildContext(req, 'admin-ticket-details');
     try {
       if (!this.isAdmin(req)) {
         res.status(403).json({ success: false, message: 'Admin access required' });
         return;
       }
       const ticketId = req.params.ticketId;
-      const data = await this.service.getAdminTicketDetails(ticketId);
+      const data = await this.service.getAdminTicketDetails(ticketId, context);
       res.status(200).json({ success: true, data });
     } catch (error: any) {
       res.status(403).json({ success: false, message: error.message });
     }
   };
+
+  private buildContext(req: Request, endpoint: string): DashboardRequestContext {
+    const requestIdHeader = req.headers['x-request-id'];
+    const requestId = typeof requestIdHeader === 'string'
+      ? requestIdHeader
+      : Array.isArray(requestIdHeader)
+      ? requestIdHeader[0]
+      : undefined;
+
+    return {
+      requestId,
+      endpoint,
+    };
+  }
+
+  private handleDashboardError(res: Response, error: unknown, context: DashboardRequestContext): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+
+    if (error instanceof DashboardDependencyError) {
+      console.error('[RoleDashboardController] Dashboard dependency failure', {
+        requestId: context.requestId || null,
+        endpoint: context.endpoint || null,
+        dependency: error.dependency,
+        code: error.code,
+        statusCode: error.statusCode,
+        cause: error.causeMessage,
+        message: error.message,
+        stack,
+      });
+
+      res.status(error.statusCode).json({
+        success: false,
+        code: error.code,
+        message: 'Dashboard dependency unavailable',
+      });
+      return;
+    }
+
+    console.error('[RoleDashboardController] Dashboard handler failed', {
+      requestId: context.requestId || null,
+      endpoint: context.endpoint || null,
+      code: 'DASHBOARD_DEPENDENCY_FAILED',
+      message,
+      stack,
+    });
+
+    res.status(500).json({
+      success: false,
+      code: 'DASHBOARD_DEPENDENCY_FAILED',
+      message: 'Failed to load dashboard',
+    });
+  }
 
   getSupervisorOverview = async (req: Request, res: Response): Promise<void> => {
     try {

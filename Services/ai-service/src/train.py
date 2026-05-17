@@ -39,6 +39,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
+from src.feature_engineering import (
+    calculate_priority_score as shared_calculate_priority_score,
+    map_priority_score as shared_map_priority_score,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -560,58 +565,8 @@ def generate_rule_based_priority(
     nature_signal = _normalize_text_upper(frame["ticket_nature"])
     req_type_signal = _normalize_text_upper(frame["opsmind_request_type"])
 
-    high_critical_domains = [
-        "NETWORK",
-        "CLOUD",
-        "AUTHENTICATION",
-        "DATABASE",
-        "SYSTEM",
-        "APPLICATION",
-        "PORTAL",
-    ]
-    incident_nature_terms = [
-        "INCIDENT",
-        "FAILURE",
-        "OUTAGE",
-        "ACCESS_ISSUE",
-        "TECHNICAL_ISSUE",
-    ]
-
-    domain_critical_flag = domain_signal.map(
-        lambda value: int(any(term in value for term in high_critical_domains))
-    ).astype("int64")
-    incident_nature_flag = nature_signal.map(
-        lambda value: int(any(term in value for term in incident_nature_terms))
-    ).astype("int64")
-    incident_request_type_flag = req_type_signal.str.contains("INCIDENT", regex=False).astype("int64")
-
-    frame.loc[:, "priority_score"] = (
-        frame["service_criticality_score"]
-        + (2 * frame["is_core_service"])
-        + (2 * frame["is_failure_related"])
-        + frame["is_access_related"]
-        + frame["requires_multiple_teams"]
-        + (frame["required_team_count"] >= 2).astype("int64")
-        + frame["has_error_keywords"]
-        + (2 * frame["has_urgency_keywords"])
-        + frame["is_business_hours"]
-        + frame["is_peak_hour"]
-        + ((frame["is_after_hours"] == 1) & (frame["is_core_service"] == 1)).astype("int64")
-        + (2 * domain_critical_flag)
-        + incident_nature_flag
-        + incident_request_type_flag
-    ).astype("float64")
-
-    frame.loc[:, "rule_priority"] = np.select(
-        [
-            frame["priority_score"] <= 4,
-            frame["priority_score"].between(5, 7, inclusive="both"),
-            frame["priority_score"].between(8, 10, inclusive="both"),
-            frame["priority_score"] >= 11,
-        ],
-        PRIORITY_LEVELS,
-        default="MEDIUM",
-    )
+    frame.loc[:, "priority_score"] = shared_calculate_priority_score(frame)
+    frame.loc[:, "rule_priority"] = frame["priority_score"].map(shared_map_priority_score)
 
     rng = np.random.default_rng(seed=random_state)
     rule_priority = frame["rule_priority"].astype(str).tolist()

@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 PRIORITY_PIPELINE_FILE = "priority_pipeline.pkl"
+PRIORITY_MODEL_PIPELINE_FILE = "priority_model_pipeline.pkl"
 EST_PIPELINE_FILE = "est_pipeline.pkl"
 METADATA_FILE = "model_metadata.pkl"
 
@@ -48,34 +49,53 @@ def load_models(model_dir: Optional[str] = None) -> ModelStore:
 
     model_dir = model_dir or DEFAULT_MODEL_DIR
 
-    priority_path = os.path.join(model_dir, PRIORITY_PIPELINE_FILE)
+    compatibility_priority_path = os.path.join(model_dir, PRIORITY_PIPELINE_FILE)
+    primary_priority_path = os.path.join(model_dir, PRIORITY_MODEL_PIPELINE_FILE)
+    if os.path.isfile(primary_priority_path):
+        priority_path = primary_priority_path
+    else:
+        priority_path = compatibility_priority_path
+
     est_path = os.path.join(model_dir, EST_PIPELINE_FILE)
     meta_path = os.path.join(model_dir, METADATA_FILE)
 
-    for path, label in [
-        (priority_path, "Priority pipeline"),
-        (est_path, "EST pipeline"),
-        (meta_path, "Model metadata"),
-    ]:
+    for path, label in [(priority_path, "Priority pipeline")]:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"{label} not found at {path}. Run training first.")
+
+    for path, label in [(est_path, "EST pipeline"), (meta_path, "Model metadata")]:
+        if not os.path.isfile(path):
+            logger.warning("%s not found at %s. Related endpoints may degrade.", label, path)
 
     logger.info("Loading priority pipeline from %s", priority_path)
     store.priority_pipeline = joblib.load(priority_path)
 
-    logger.info("Loading EST pipeline from %s", est_path)
-    store.est_pipeline = joblib.load(est_path)
+    if os.path.isfile(est_path):
+        logger.info("Loading EST pipeline from %s", est_path)
+        store.est_pipeline = joblib.load(est_path)
+    else:
+        store.est_pipeline = None
 
-    logger.info("Loading model metadata from %s", meta_path)
-    metadata = joblib.load(meta_path)
-    store.feature_names = metadata.get("feature_names", [])
-    store.transformed_feature_names = metadata.get("transformed_feature_names", [])
-    store.removed_feature_names = metadata.get("removed_feature_names", [])
-    store.priority_labels = metadata.get("priority_labels", [])
-    store.selected_priority_model_name = metadata.get("selected_priority_model_name")
-    store.selected_est_model_name = metadata.get("selected_est_model_name")
-    store.training_summary = metadata.get("training_summary", {})
-    store.split_config = metadata.get("split_config", {})
+    if os.path.isfile(meta_path):
+        logger.info("Loading model metadata from %s", meta_path)
+        metadata = joblib.load(meta_path)
+        store.feature_names = metadata.get("feature_names", [])
+        store.transformed_feature_names = metadata.get("transformed_feature_names", [])
+        store.removed_feature_names = metadata.get("removed_feature_names", [])
+        store.priority_labels = metadata.get("priority_labels", [])
+        store.selected_priority_model_name = metadata.get("selected_priority_model_name")
+        store.selected_est_model_name = metadata.get("selected_est_model_name")
+        store.training_summary = metadata.get("training_summary", {})
+        store.split_config = metadata.get("split_config", {})
+    else:
+        store.feature_names = []
+        store.transformed_feature_names = []
+        store.removed_feature_names = []
+        store.priority_labels = []
+        store.selected_priority_model_name = None
+        store.selected_est_model_name = None
+        store.training_summary = {}
+        store.split_config = {}
 
     logger.info("All models loaded successfully.")
 

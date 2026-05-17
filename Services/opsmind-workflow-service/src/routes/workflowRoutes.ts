@@ -176,7 +176,7 @@ router.get('/dashboard/group/:groupId/metrics', monitorCtrl.getGroupMetrics);
 router.get('/dashboard/activity/recent', monitorCtrl.getRecentActivity);
 
 // ══════════════════════════════════════
-//  Role-based Dashboards (NEW)
+//  Role-based Dashboards
 // ══════════════════════════════════════
 router.get('/dashboard/admin/overview', requireAuth, roleDashboardCtrl.getAdminOverview);
 router.get('/dashboard/admin/tickets', requireAuth, roleDashboardCtrl.getAdminTickets);
@@ -195,13 +195,13 @@ router.get('/dashboard/junior/:workflowUserId/tickets', requireAuth, roleDashboa
 router.get('/dashboard/junior/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getJuniorTicketDetails);
 
 // ══════════════════════════════════════
-//  Hierarchy-Based Dashboards (NEW)
+//  Hierarchy-Based Dashboards
 // ══════════════════════════════════════
 router.get('/dashboard/senior/:userId', monitorCtrl.getSeniorDashboard);
 router.get('/dashboard/supervisor/:userId', monitorCtrl.getSupervisorDashboard);
 
 // ══════════════════════════════════════
-//  Workflow Logs (NEW — frontend calls this)
+//  Workflow Logs
 //  GET /workflow/logs/:ticketId
 // ══════════════════════════════════════
 router.get('/logs/:ticketId', async (req: Request, res: Response): Promise<void> => {
@@ -290,6 +290,11 @@ router.post('/sla/status', async (req: Request, res: Response): Promise<void> =>
     const { ticket_ids } = req.body;
     if (!ticket_ids || !Array.isArray(ticket_ids)) {
       res.status(400).json({ success: false, message: 'Missing required field: ticket_ids (array)' });
+      return;
+    }
+
+    if (ticket_ids.length === 0) {
+      res.status(200).json({ success: true, data: {} });
       return;
     }
 

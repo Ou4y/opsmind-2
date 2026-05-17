@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
 import { prisma } from "../lib/prisma";
 import {
   createTicketSchema,
@@ -18,6 +19,12 @@ import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from
 import { fetchUserDetails } from "../utils/userServiceClient";
 import { fetchSupervisor, syncWorkflowTicket } from "../utils/workflowServiceClient";
 import { updateSlaStatus, SlaStatusPayload } from "../utils/slaServiceClient";
+import {
+  getFallbackPriority,
+  predictTicketPriority,
+  Priority,
+  PriorityFallbackDecision,
+} from "../utils/aiServiceClient";
 
 const router = Router();
 
@@ -62,26 +69,135 @@ const router = Router();
  */
 router.post("/", validate(createTicketSchema), async (req, res, next) => {
   try {
-    const { title, description, type_of_request, requester_id, latitude, longitude } = req.body as CreateTicketInput;
-    // System-assigned fields — priority and support level are determined by the system, not the requester
-    const priority = "MEDIUM"; // Resolved by priority-classification rules in the Workflow Service
+    const {
+      title,
+      description,
+      type_of_request,
+      requester_id,
+      requester_role,
+      topic,
+      product_group,
+      category,
+      building,
+      room,
+      latitude,
+      longitude,
+    } = req.body as CreateTicketInput & {
+      requester_role?: string;
+      topic?: string;
+      product_group?: string;
+      category?: string;
+      building?: string;
+      room?: string;
+    };
+
+    const ticketId = randomUUID();
+    const createdAt = new Date();
+
+    let aiDecision: {
+      finalPriority: Priority;
+      rulePriority: Priority | null;
+      aiPriority: Priority | null;
+      confidence: number | null;
+      decisionSource: string | null;
+      priorityScore: number | null;
+      explanation: string[] | null;
+      modelName: string | null;
+      modelVersion: string | null;
+      aiPredictionStatus: "SUCCESS" | "FAILED" | "SKIPPED";
+    };
+
+    try {
+      const prediction = await predictTicketPriority({
+        ticketId,
+        requesterId: requester_id,
+        requesterRole: requester_role,
+        title,
+        description,
+        typeOfRequest: type_of_request,
+        topic,
+        productGroup: product_group,
+        category,
+        building,
+        room,
+        createdAt: createdAt.toISOString(),
+        latitude,
+        longitude,
+      });
+
+      aiDecision = {
+        finalPriority: prediction.finalPriority,
+        rulePriority: prediction.rulePriority,
+        aiPriority: prediction.aiPriority,
+        confidence: prediction.confidence,
+        decisionSource: prediction.decisionSource,
+        priorityScore: prediction.priorityScore,
+        explanation: prediction.explanation,
+        modelName: prediction.model?.name ?? null,
+        modelVersion: prediction.model?.version ?? null,
+        aiPredictionStatus: "SUCCESS",
+      };
+    } catch (aiError: any) {
+      logger.warn("AI prediction failed during ticket creation, applying fallback", {
+        ticketId,
+        requester_id,
+        type_of_request,
+        error: aiError?.message || String(aiError),
+        code: aiError?.code,
+      });
+
+      const fallback: PriorityFallbackDecision = getFallbackPriority({
+        ticketId,
+        title,
+        description,
+        type_of_request,
+      });
+
+      aiDecision = {
+        finalPriority: fallback.finalPriority,
+        rulePriority: fallback.rulePriority,
+        aiPriority: fallback.aiPriority,
+        confidence: fallback.confidence,
+        decisionSource: fallback.decisionSource,
+        priorityScore: fallback.priorityScore,
+        explanation: fallback.explanation,
+        modelName: null,
+        modelVersion: null,
+        aiPredictionStatus: "FAILED",
+      };
+    }
+
+    // System-assigned fields
+    const priority = aiDecision.finalPriority;
     const support_level = "L1";
     const assigned_to_level = "L1";
     const status = "OPEN";
     const escalation_count = 0;
     const ticket = await prisma.ticket.create({
       data: {
+        id: ticketId,
         title,
         description,
         type_of_request,
         requester_id,
         latitude,
         longitude,
-        priority,
+        priority: priority as any,
         support_level,
         assigned_to_level,
         status,
         escalation_count,
+        ai_prediction_status: aiDecision.aiPredictionStatus,
+        rule_priority: aiDecision.rulePriority,
+        ai_priority: aiDecision.aiPriority,
+        ai_confidence: aiDecision.confidence,
+        ai_decision_source: aiDecision.decisionSource,
+        ai_explanation: (aiDecision.explanation ?? undefined) as any,
+        ai_model_name: aiDecision.modelName,
+        ai_model_version: aiDecision.modelVersion,
+        ai_predicted_at: createdAt,
+        ai_priority_score: aiDecision.priorityScore,
+        created_at: createdAt,
         is_deleted: false,
       },
     });
@@ -92,6 +208,8 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
       longitude: ticket.longitude,
       priority: ticket.priority,
       requester_id: ticket.requester_id,
+      ai_prediction_status: (ticket as any).ai_prediction_status,
+      ai_decision_source: (ticket as any).ai_decision_source,
     });
     
     await publishTicketCreated(ticket);

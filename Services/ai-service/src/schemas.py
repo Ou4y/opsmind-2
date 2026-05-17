@@ -11,7 +11,7 @@ Compatibility note:
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -34,6 +34,13 @@ class TypeOfRequestEnum(str, Enum):
     INCIDENT = "INCIDENT"
     SERVICE_REQUEST = "SERVICE_REQUEST"
     MAINTENANCE = "MAINTENANCE"
+
+
+class DecisionSourceEnum(str, Enum):
+    AI_CONFIDENT = "AI_CONFIDENT"
+    RULE_FALLBACK = "RULE_FALLBACK"
+    RULE_AI_AGREEMENT = "RULE_AI_AGREEMENT"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
 
 
 class TicketInput(BaseModel):
@@ -175,3 +182,59 @@ class ActivitySummaryResponse(BaseModel):
 
 class PredictResolutionResponse(BaseModel):
     estimated_resolution_hours: float = Field(..., ge=0.0)
+
+
+class PriorityPredictionRequest(BaseModel):
+    title: str = Field(..., min_length=3)
+    description: str = Field(..., min_length=5)
+    typeOfRequest: str = Field(
+        ...,
+        validation_alias=AliasChoices("typeOfRequest", "type_of_request"),
+    )
+
+    ticketId: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("ticketId", "ticket_id"),
+    )
+    requesterId: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("requesterId", "requester_id"),
+    )
+    requesterRole: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("requesterRole", "requester_role"),
+    )
+    topic: Optional[str] = None
+    productGroup: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices("productGroup", "product_group"),
+    )
+    category: Optional[str] = None
+    building: Optional[str] = None
+    room: Optional[str] = None
+    createdAt: Optional[datetime] = Field(
+        None,
+        validation_alias=AliasChoices("createdAt", "created_at"),
+    )
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+
+    model_config = {"populate_by_name": True}
+
+
+class PriorityModelMetadata(BaseModel):
+    name: str
+    version: str
+    metrics: dict[str, Any]
+
+
+class PriorityPredictionResponse(BaseModel):
+    ticketId: Optional[str]
+    rulePriority: PriorityEnum
+    aiPriority: PriorityEnum
+    finalPriority: PriorityEnum
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    decisionSource: DecisionSourceEnum
+    priorityScore: float
+    explanation: list[str]
+    model: PriorityModelMetadata

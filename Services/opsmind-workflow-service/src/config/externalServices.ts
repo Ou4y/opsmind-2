@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance } from 'axios';
 import { ExternalTicket, ExternalUser } from '../interfaces/types';
 
 /**
@@ -32,6 +32,31 @@ export const slaServiceClient: AxiosInstance = axios.create({
   timeout: 5000,
   headers: { 'Content-Type': 'application/json' },
 });
+
+export interface ExternalCallContext {
+  requestId?: string;
+  caller?: string;
+}
+
+function normalizeTicketIds(ticketIds: string[]): string[] {
+  return Array.from(
+    new Set(
+      (Array.isArray(ticketIds) ? ticketIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function toErrorMeta(error: unknown) {
+  const axiosError = error as AxiosError;
+  return {
+    message: axiosError?.message || String(error),
+    status: axiosError?.response?.status,
+    url: axiosError?.config?.url,
+    method: axiosError?.config?.method,
+  };
+}
 
 // ---------- Auth Service Helpers ----------
 
@@ -202,11 +227,34 @@ export async function startSlaTracking(
   return data;
 }
 
-export async function getSlaStatusForTickets(ticketIds: string[]): Promise<Record<string, any>> {
-  const { data } = await slaServiceClient.post('/sla/tickets/status', {
-    ticket_ids: ticketIds,
-  });
-  return data?.data || {};
+export async function getSlaStatusForTickets(
+  ticketIds: string[],
+  context?: ExternalCallContext,
+): Promise<Record<string, any>> {
+  const normalizedTicketIds = normalizeTicketIds(ticketIds);
+
+  if (normalizedTicketIds.length === 0) {
+    console.info('[externalServices] SLA bulk status skipped (empty ticket_ids)', {
+      requestId: context?.requestId || null,
+      caller: context?.caller || null,
+    });
+    return {};
+  }
+
+  try {
+    const { data } = await slaServiceClient.post('/sla/tickets/status', {
+      ticket_ids: normalizedTicketIds,
+    });
+    return data?.data || {};
+  } catch (error: unknown) {
+    console.error('[externalServices] SLA bulk status request failed', {
+      requestId: context?.requestId || null,
+      caller: context?.caller || null,
+      ticketCount: normalizedTicketIds.length,
+      ...toErrorMeta(error),
+    });
+    throw error;
+  }
 }
 
 export async function getSlaComplianceReport(
