@@ -507,10 +507,12 @@ const AuthService = {
      */
     isAdmin() {
         const user = this.getUser();
+        const technicianLevel = this.getTechnicianLevel();
         // Check both 'role' (string) and 'roles' (array) for backward compatibility
         const isAdmin = user?.role === 'ADMIN' || 
-                       (Array.isArray(user?.roles) && user.roles.includes('ADMIN'));
-        console.log('[AuthService] isAdmin check - user:', user, 'role:', user?.role, 'roles:', user?.roles, 'isAdmin:', isAdmin);
+                       (Array.isArray(user?.roles) && user.roles.includes('ADMIN')) ||
+                       technicianLevel === 'ADMIN';
+        console.log('[AuthService] isAdmin check - user:', user, 'role:', user?.role, 'roles:', user?.roles, 'technicianLevel:', technicianLevel, 'isAdmin:', isAdmin);
         return isAdmin;
     },
 

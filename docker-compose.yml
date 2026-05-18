@@ -274,7 +274,7 @@ services:
     environment:
       PORT: "3004"
       NODE_ENV: "development"
-
+      JWT_SECRET: "opsmind-local-jwt"
       DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/sla_db
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
 

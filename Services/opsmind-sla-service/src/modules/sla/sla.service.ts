@@ -42,6 +42,11 @@ type StatusPayload = {
   supervisor?: ContactPayload | null;
 };
 
+type DeadlinePayload = {
+  responseDueAt?: string;
+  resolutionDueAt?: string;
+};
+
 function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
@@ -492,6 +497,51 @@ export const slaService = {
     }
 
     await slaPublisher.publishStatusUpdated(payload);
+    return updated;
+  },
+
+  async updateDeadlines(ticketId: string, body: DeadlinePayload) {
+    const entity = await slaRepository.findByTicketId(ticketId);
+    if (!entity) throw new AppError(`SLA not found for ticket ${ticketId}`, 404);
+
+    const nextResponseDueAt = body.responseDueAt ? new Date(body.responseDueAt) : entity.responseDueAt;
+    const nextResolutionDueAt = body.resolutionDueAt ? new Date(body.resolutionDueAt) : entity.resolutionDueAt;
+
+    if (Number.isNaN(nextResponseDueAt.getTime())) {
+      throw new AppError("Invalid responseDueAt value", 400);
+    }
+
+    if (Number.isNaN(nextResolutionDueAt.getTime())) {
+      throw new AppError("Invalid resolutionDueAt value", 400);
+    }
+
+    if (nextResolutionDueAt.getTime() < nextResponseDueAt.getTime()) {
+      throw new AppError("Resolution due time must be after response due time", 400);
+    }
+
+    const updated = await slaRepository.updateTicketSla(ticketId, {
+      responseDueAt: nextResponseDueAt,
+      resolutionDueAt: nextResolutionDueAt,
+      lastUpdatedAt: new Date(),
+    });
+
+    const payload = {
+      ticketId: updated.ticketId,
+      title: updated.ticketTitle,
+      responseDueAt: updated.responseDueAt.toISOString(),
+      resolutionDueAt: updated.resolutionDueAt.toISOString(),
+      updatedAt: updated.lastUpdatedAt.toISOString(),
+      status: updated.status,
+    };
+
+    await slaRepository.createEventLog(
+      updated.id,
+      updated.ticketId,
+      SlaActionType.STATUS_UPDATED,
+      "Ticket SLA deadlines updated by admin",
+      payload
+    );
+
     return updated;
   },
 

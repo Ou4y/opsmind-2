@@ -75,6 +75,24 @@ export const pauseTicketSlaSchema = z.object({
   query: z.object({}),
 });
 
+export const updateTicketSlaDeadlinesSchema = z.object({
+  body: z.object({
+    responseDueAt: z.string().datetime().optional(),
+    resolutionDueAt: z.string().datetime().optional(),
+  }).refine(
+    (body) =>
+      body.responseDueAt !== undefined ||
+      body.resolutionDueAt !== undefined,
+    {
+      message: "At least one SLA deadline must be provided",
+    }
+  ),
+  params: z.object({
+    ticketId: z.string().min(1),
+  }),
+  query: z.object({}),
+});
+
 export const ticketIdParamsSchema = z.object({
   body: z.any().optional(),
   params: z.object({

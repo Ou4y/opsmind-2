@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { requireAuth, requireRole } from "../middleware/auth.middleware";
 import { validate } from "../middleware/validate.middleware";
 import { slaController } from "../modules/sla/sla.controller";
 import {
@@ -7,6 +8,7 @@ import {
   pauseTicketSlaSchema,
   startSlaSchema,
   ticketIdParamsSchema,
+  updateTicketSlaDeadlinesSchema,
   updateTicketSlaStatusSchema,
   upsertPolicySchema,
 } from "../validation/sla.schema";
@@ -25,13 +27,26 @@ slaRoutes.get("/sla/tickets/:ticketId", validate(ticketIdParamsSchema), slaContr
 slaRoutes.post("/sla/tickets/status", validate(bulkTicketStatusSchema), slaController.getBulkTicketStatus);
 slaRoutes.get("/sla/reports/compliance", validate(complianceReportQuerySchema), slaController.getComplianceReport);
 
-slaRoutes.get("/sla/policies", slaController.getPolicies);
-slaRoutes.post("/sla/policies", validate(upsertPolicySchema), slaController.upsertPolicy);
+slaRoutes.get("/sla/policies", requireAuth, requireRole("ADMIN"), slaController.getPolicies);
+slaRoutes.post(
+  "/sla/policies",
+  requireAuth,
+  requireRole("ADMIN"),
+  validate(upsertPolicySchema),
+  slaController.upsertPolicy
+);
 
 slaRoutes.patch(
   "/sla/tickets/:ticketId/status",
   validate(updateTicketSlaStatusSchema),
   slaController.updateStatus
+);
+slaRoutes.patch(
+  "/sla/tickets/:ticketId/deadlines",
+  requireAuth,
+  requireRole("ADMIN"),
+  validate(updateTicketSlaDeadlinesSchema),
+  slaController.updateDeadlines
 );
 
 slaRoutes.post("/sla/tickets/:ticketId/pause", validate(pauseTicketSlaSchema), slaController.pause);

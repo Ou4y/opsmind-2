@@ -157,6 +157,19 @@ export const slaController = {
     }
   },
 
+  async updateDeadlines(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await slaService.updateDeadlines(getSingleParam(req.params.ticketId, "ticketId"), {
+        responseDueAt: req.body.responseDueAt,
+        resolutionDueAt: req.body.resolutionDueAt,
+      });
+
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async pause(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await slaService.pause(getSingleParam(req.params.ticketId, "ticketId"), req.body?.reason);
