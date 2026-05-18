@@ -77,7 +77,13 @@ async function workflowRequest(path, options = {}) {
             signal: controller.signal
         });
 
-        const json = await response.json();
+        const rawBody = await response.text();
+        let json = null;
+        try {
+            json = rawBody ? JSON.parse(rawBody) : null;
+        } catch {
+            json = null;
+        }
 
         // Handle 401 Unauthorized
         if (response.status === 401) {
@@ -86,14 +92,25 @@ async function workflowRequest(path, options = {}) {
             throw new Error('Session expired');
         }
 
-        // Check success field instead of HTTP status alone
-        if (!json.success && response.status >= 400) {
-            const error = new Error(json.message || `Request failed with status ${response.status}`);
+        const responseMessage =
+            json?.message ||
+            json?.error ||
+            `Request failed with status ${response.status}`;
+
+        // Check success field instead of HTTP status alone.
+        if (response.status >= 400 || (json && json.success === false)) {
+            const error = new Error(responseMessage);
             error.status = response.status;
+            error.code = json?.errorCode || json?.code || json?.error || null;
+            error.payload = json;
             throw error;
         }
 
-        return json;
+        if (json !== null) {
+            return json;
+        }
+
+        return { success: true, data: null };
     } catch (error) {
         if (error?.name === 'AbortError') {
             if (timedOut) {

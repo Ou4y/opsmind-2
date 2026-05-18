@@ -391,8 +391,8 @@ function renderTicketsTable() {
         const juniorOwner = ticket.hierarchy?.junior?.name || 'Unassigned';
         const seniorOwner = ticket.hierarchy?.senior?.name || 'Unassigned';
         const supervisorOwner = ticket.hierarchy?.supervisor?.name || 'Unassigned';
-        const status = ticket.status || 'UNKNOWN';
-        const priority = ticket.priority || 'UNKNOWN';
+        const status = String(ticket.status || 'UNKNOWN').toUpperCase();
+        const priority = String(ticket.priority || 'UNKNOWN').toUpperCase();
         const createdAt = ticket.createdAt || ticket.created_at;
         const escalationCount = ticket.escalationCount ?? ticket.escalation_count ?? 0;
         const allowedActions = ticket.allowedActions || ticket.allowed_actions || {};
@@ -653,7 +653,10 @@ window.viewTicketDetails = async function(ticketId) {
     const workflowUserId = resolveWorkflowUserId();
     if (!workflowUserId) return;
 
-    const modalHandle = openTicketDetailsModal({ title: `Ticket ${ticketId}` });
+    const modalHandle = openTicketDetailsModal({
+        title: `Ticket ${ticketId}`,
+        currentUserRole: resolveUserRole('SUPERVISOR')
+    });
     modalHandle.setLoading('Loading ticket details...');
 
     try {

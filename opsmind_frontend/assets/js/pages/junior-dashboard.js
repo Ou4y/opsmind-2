@@ -420,6 +420,8 @@ function createTicketCard(ticket, type) {
     const sla = state.slaData[ticket.id];
     const isEscalated = ticket.status === 'ESCALATED';
     const locationLabel = getTicketLocationDisplay(ticket);
+    const priority = String(ticket.priority || 'UNKNOWN').toUpperCase();
+    const status = String(ticket.status || 'UNKNOWN').toUpperCase();
     
     const card = document.createElement('div');
     card.className = `card mb-3 ${isEscalated ? 'border-danger' : ''}`;
@@ -430,8 +432,8 @@ function createTicketCard(ticket, type) {
                 <div class="col-lg-8">
                     <div class="d-flex align-items-center mb-2 flex-wrap gap-2">
                         <h5 class="card-title mb-0">#${UI.escapeHTML(ticket.id)}</h5>
-                        <span class="badge ${getPriorityBadgeClass(ticket.priority)}">${UI.escapeHTML(ticket.priority)}</span>
-                        <span class="badge ${getStatusBadgeClass(ticket.status)}">${UI.escapeHTML(ticket.status)}</span>
+                        <span class="badge ${getPriorityBadgeClass(priority)}">${UI.escapeHTML(priority)}</span>
+                        <span class="badge ${getStatusBadgeClass(status)}">${UI.escapeHTML(status)}</span>
                         ${sla ? renderSLABadge(sla) : ''}
                     </div>
                     <h6 class="card-subtitle mb-2">${UI.escapeHTML(ticket.title)}</h6>
@@ -772,7 +774,10 @@ function renderTicketDetails() {
         return;
     }
 
-    renderTicketDetailsInto(detailsEl, details);
+    renderTicketDetailsInto(detailsEl, {
+        ...details,
+        currentUserRole: resolveCurrentDashboardRole()
+    });
 
     if (state.selectedTicket) {
         const actionsWrapper = document.createElement('div');
@@ -780,6 +785,16 @@ function renderTicketDetails() {
         actionsWrapper.innerHTML = renderMyTicketActions(state.selectedTicket);
         detailsEl.appendChild(actionsWrapper);
     }
+}
+
+function resolveCurrentDashboardRole() {
+    return String(
+        state.currentUser?.technicianLevel ||
+        state.currentUser?.level ||
+        state.currentUser?.role ||
+        AuthService.getTechnicianLevel() ||
+        'JUNIOR'
+    ).toUpperCase();
 }
 
 /**

@@ -13,10 +13,10 @@
 import UI from '/assets/js/ui.js';
 import TicketService from '/services/ticketService.js';
 import WorkflowService from '/services/workflowService.js';
-import AIService from '/services/aiService.js';
 import GeminiService from '/services/geminiService.js';
 import Router from '/assets/js/router.js';
 import AuthService from '/services/authService.js';
+import { renderAiPriorityInsight } from '/assets/js/components/aiPriorityInsight.js';
 
 /**
  * Page state
@@ -40,9 +40,7 @@ const state = {
     isLoading: false,
     viewMode: 'table', // 'table' or 'card'
     map: null, // Leaflet map instance
-    mapMarker: null, // Map marker instance
-    predictionTimer: null,
-    predictionRequestSeq: 0
+    mapMarker: null // Map marker instance
 };
 
 /**
@@ -83,8 +81,8 @@ function waitForApp() {
  */
 function parseUrlParams() {
     const ticketId = Router.getQueryParam('id');
-    const priority = Router.getQueryParam('priority');
-    const status = Router.getQueryParam('status');
+    const priority = String(Router.getQueryParam('priority') || '').toUpperCase();
+    const status = String(Router.getQueryParam('status') || '').toUpperCase();
 
     if (priority) {
         state.filters.priority = priority;
@@ -218,10 +216,6 @@ function setupEventListeners() {
     document.getElementById('manualLatitude')?.addEventListener('input', handleManualCoordinates);
     document.getElementById('manualLongitude')?.addEventListener('input', handleManualCoordinates);
 
-    // AI model preview listeners for create form
-    document.getElementById('newTicketSubject')?.addEventListener('input', scheduleCreatePrediction);
-    document.getElementById('newTicketDescription')?.addEventListener('input', scheduleCreatePrediction);
-    document.getElementById('newTicketType')?.addEventListener('change', scheduleCreatePrediction);
 }
 
 /**
@@ -308,10 +302,14 @@ async function loadTickets() {
                 // Apply active filters client-side
                 let filtered = assigned;
                 if (state.filters.status) {
-                    filtered = filtered.filter(t => t.status === state.filters.status);
+                    filtered = filtered.filter((t) =>
+                        String(t.status || '').toUpperCase() === String(state.filters.status || '').toUpperCase()
+                    );
                 }
                 if (state.filters.priority) {
-                    filtered = filtered.filter(t => t.priority === state.filters.priority);
+                    filtered = filtered.filter((t) =>
+                        normalizePriorityValue(t.priority) === normalizePriorityValue(state.filters.priority)
+                    );
                 }
                 if (state.filters.search) {
                     const q = state.filters.search.toLowerCase();
@@ -324,23 +322,26 @@ async function loadTickets() {
             } else {
                 response = [];
             }
-        } else if (!isAdmin && currentUser?.id) {
-            // Regular users (students / doctors): see their own submitted tickets
-            response = await TicketService.getTicketsByRequester(currentUser.id, {
-                limit: state.pageSize,
-                offset,
-                status: state.filters.status,
-                priority: state.filters.priority
-            });
         } else {
-            // Admins see all tickets
-            response = await TicketService.getTickets({
-                limit: state.pageSize,
-                offset,
-                ...state.filters,
-                sortBy: state.sortBy,
-                sortOrder: state.sortOrder
-            });
+            const requesterId = String(currentUser?.id || currentUser?.userId || currentUser?.user_id || '');
+            if (!isAdmin && requesterId) {
+                // Regular users (students / doctors): see their own submitted tickets
+                response = await TicketService.getTicketsByRequester(requesterId, {
+                    limit: state.pageSize,
+                    offset,
+                    status: state.filters.status,
+                    priority: state.filters.priority
+                });
+            } else {
+                // Admins see all tickets
+                response = await TicketService.getTickets({
+                    limit: state.pageSize,
+                    offset,
+                    ...state.filters,
+                    sortBy: state.sortBy,
+                    sortOrder: state.sortOrder
+                });
+            }
         }
 
         // Handle response: support array or object
@@ -447,7 +448,7 @@ function renderTableView(tableBody) {
                     <span class="text-muted">-</span>
                 </td>
                 <td>
-                    <span class="badge ${UI.getPriorityBadgeClass(ticket.priority)}">
+                    <span class="badge ${getPriorityBadgeClass(ticket.priority)}">
                         ${formatPriority(ticket.priority)}
                     </span>
                 </td>
@@ -463,7 +464,7 @@ function renderTableView(tableBody) {
                     }
                 </td>
                 <td>
-                    <span class="text-muted">${UI.formatRelativeTime(ticket.createdAt)}</span>
+                    <span class="text-muted">${UI.formatRelativeTime(resolveTicketCreatedAt(ticket))}</span>
                 </td>
                 <td class="text-end">
                     <div class="btn-group btn-group-sm">
@@ -546,17 +547,17 @@ function renderCardView(cardGrid) {
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-2">
                             <code class="text-primary">${UI.escapeHTML(ticket.id)}</code>
-                            <span class="badge ${UI.getPriorityBadgeClass(ticket.priority)}">
+                            <span class="badge ${getPriorityBadgeClass(ticket.priority)}">
                                 ${formatPriority(ticket.priority)}
                             </span>
                         </div>
-                        <h6 class="card-title text-truncate-2">${UI.escapeHTML(ticket.subject)}</h6>
+                        <h6 class="card-title text-truncate-2">${UI.escapeHTML(ticket.title || ticket.subject || '')}</h6>
                         <p class="card-text small text-muted text-truncate-2">${UI.escapeHTML(ticket.description || '')}</p>
                         <div class="d-flex justify-content-between align-items-center mt-3">
                             <span class="badge ${UI.getStatusBadgeClass(ticket.status)}">
                                 ${formatStatus(ticket.status)}
                             </span>
-                            <small class="text-muted">${UI.formatRelativeTime(ticket.createdAt)}</small>
+                            <small class="text-muted">${UI.formatRelativeTime(resolveTicketCreatedAt(ticket))}</small>
                         </div>
                     </div>
                 </div>
@@ -678,7 +679,12 @@ async function openTicketDetail(ticketId) {
         let ticket = state.tickets.find(t => t.id === ticketId);
         
         if (!ticket) {
-            ticket = await TicketService.getTicket(ticketId);
+            const ticketResponse = await TicketService.getTicket(ticketId);
+            ticket = ticketResponse?.data?.ticket || ticketResponse?.data || ticketResponse?.ticket || ticketResponse;
+        }
+
+        if (!ticket || typeof ticket !== 'object') {
+            throw new Error('Ticket details unavailable');
         }
 
         // Store for later use
@@ -687,8 +693,8 @@ async function openTicketDetail(ticketId) {
         // Populate modal
         populateTicketModal(ticket);
 
-        // Load AI recommendations
-        loadAIRecommendations(ticketId);
+        // Render AI explanation notes when available.
+        loadAIRecommendations(ticket, resolveCurrentUserRole());
     } catch (error) {
         console.error('Failed to load ticket:', error);
         UI.error('Failed to load ticket details');
@@ -713,7 +719,7 @@ function populateTicketModal(ticket) {
 
     // Priority badge
     const priorityBadge = document.getElementById('ticketPriorityBadge');
-    priorityBadge.className = `badge ${UI.getPriorityBadgeClass(ticket.priority)}`;
+    priorityBadge.className = `badge ${getPriorityBadgeClass(ticket.priority)}`;
     priorityBadge.textContent = formatPriority(ticket.priority);
 
     // Type badge (replaces category)
@@ -755,6 +761,13 @@ function populateTicketModal(ticket) {
     document.getElementById('ticketCreatedAt').textContent = UI.formatDateTime(ticket.created_at || ticket.createdAt);
     document.getElementById('ticketUpdatedAt').textContent = UI.formatDateTime(ticket.updated_at || ticket.updatedAt);
     document.getElementById('ticketDescription').textContent = ticket.description || 'No description provided.';
+    const aiInsightContainer = document.getElementById('ticketAiPriorityInsight');
+    if (aiInsightContainer) {
+        aiInsightContainer.innerHTML = renderAiPriorityInsight({
+            ticket,
+            currentUserRole: resolveCurrentUserRole()
+        });
+    }
 
     // Set current status in dropdown
     document.getElementById('newStatusSelect').value = ticket.status;
@@ -784,38 +797,46 @@ function populateTicketModal(ticket) {
 /**
  * Load AI recommendations for ticket
  */
-async function loadAIRecommendations(ticketId) {
+async function loadAIRecommendations(ticketData, currentUserRole = 'REQUESTER') {
     const container = document.getElementById('aiRecommendationsList');
     const section = document.getElementById('aiRecommendationsSection');
     
     if (!container) return;
 
-    try {
-        const ticket = state.tickets.find(t => t.id === ticketId) || { id: ticketId };
-        const recommendations = await AIService.getRecommendations(ticket);
-        
-        if (!recommendations || recommendations.length === 0) {
-            UI.toggle(section, false);
-            return;
-        }
-
-        UI.toggle(section, true);
-        
-        let html = '';
-        recommendations.forEach(rec => {
-            html += `<li>${UI.escapeHTML(rec.text || rec.message || rec)}</li>`;
-        });
-        
-        container.innerHTML = html;
-    } catch (error) {
-        // Use mock recommendations for demo
-        UI.toggle(section, true);
-        container.innerHTML = `
-            <li>Consider escalating to network team based on similar resolved tickets</li>
-            <li>Similar issue resolved by restarting the VPN service</li>
-            <li>Knowledge base article KB-2341 may be relevant</li>
-        `;
+    const normalizedRole = String(currentUserRole || '').toUpperCase();
+    if (normalizedRole === 'REQUESTER' || normalizedRole === 'STUDENT' || normalizedRole === 'DOCTOR') {
+        UI.toggle(section, false);
+        return;
     }
+
+    const ticket = ticketData || {};
+    const rawExplanation = ticket.ai_explanation ?? ticket.explanation ?? null;
+
+    let explanations = [];
+    if (Array.isArray(rawExplanation)) {
+        explanations = rawExplanation.filter(Boolean).map((line) => String(line));
+    } else if (typeof rawExplanation === 'string' && rawExplanation.trim()) {
+        try {
+            const parsed = JSON.parse(rawExplanation);
+            if (Array.isArray(parsed)) {
+                explanations = parsed.filter(Boolean).map((line) => String(line));
+            } else {
+                explanations = [rawExplanation.trim()];
+            }
+        } catch {
+            explanations = [rawExplanation.trim()];
+        }
+    }
+
+    if (explanations.length === 0) {
+        UI.toggle(section, false);
+        return;
+    }
+
+    UI.toggle(section, true);
+    container.innerHTML = explanations
+        .map((line) => `<li>${UI.escapeHTML(line)}</li>`)
+        .join('');
 }
 
 /**
@@ -972,7 +993,6 @@ function openCreateModal() {
     
     // Reset form
     UI.resetFormValidation(form);
-    resetCreatePredictionFeedback();
     
     const modalInstance = new bootstrap.Modal(modal);
     modalInstance.show();
@@ -981,135 +1001,6 @@ function openCreateModal() {
     modal.addEventListener('shown.bs.modal', function() {
         initializeMap();
     }, { once: true });
-}
-
-function getCreatePayloadForPrediction() {
-    const title = document.getElementById('newTicketSubject')?.value?.trim() || '';
-    const description = document.getElementById('newTicketDescription')?.value?.trim() || '';
-    const type_of_request = document.getElementById('newTicketType')?.value || 'INCIDENT';
-
-    return {
-        title,
-        description,
-        type_of_request,
-        support_level: 'L1',
-        created_at: new Date().toISOString()
-    };
-}
-
-function setPredictionStateBadge(text, className) {
-    const badge = document.getElementById('aiPredictionStateBadge');
-    if (!badge) return;
-    badge.className = `badge ${className}`;
-    badge.textContent = text;
-}
-
-function resetCreatePredictionFeedback() {
-    const priorityInput = document.getElementById('newTicketPriority');
-    if (priorityInput) {
-        priorityInput.value = 'System Assigned';
-    }
-
-    const helper = document.getElementById('aiPredictionHelperText');
-    if (helper) {
-        helper.textContent = 'Enter title and description to see predicted priority and estimated resolution time.';
-    }
-
-    const priorityText = document.getElementById('aiPredPriorityText');
-    const estText = document.getElementById('aiPredEstTimeText');
-    const confText = document.getElementById('aiPredConfidenceText');
-    const confBar = document.getElementById('aiPredConfidenceBar');
-
-    if (priorityText) priorityText.textContent = '-';
-    if (estText) estText.textContent = '-';
-    if (confText) confText.textContent = '-';
-
-    if (confBar) {
-        confBar.style.width = '0%';
-        confBar.textContent = '0%';
-        confBar.className = 'progress-bar bg-info';
-    }
-
-    setPredictionStateBadge('Waiting for input', 'bg-light text-secondary');
-}
-
-function renderCreatePredictionFeedback(prediction) {
-    const priority = String(prediction?.suggested_priority || 'UNKNOWN').toUpperCase();
-    const confidenceRaw = Number(prediction?.priority_confidence ?? 0);
-    const confidencePct = Math.max(0, Math.min(100, Math.round(confidenceRaw * 100)));
-    const estHours = Number(prediction?.estimated_resolution_hours ?? 0);
-
-    const priorityInput = document.getElementById('newTicketPriority');
-    if (priorityInput) {
-        priorityInput.value = `${priority} (${confidencePct}% confidence)`;
-    }
-
-    const helper = document.getElementById('aiPredictionHelperText');
-    if (helper) {
-        helper.textContent = 'Prediction generated from the trained priority and resolution-time models.';
-    }
-
-    const priorityText = document.getElementById('aiPredPriorityText');
-    const estText = document.getElementById('aiPredEstTimeText');
-    const confText = document.getElementById('aiPredConfidenceText');
-    const confBar = document.getElementById('aiPredConfidenceBar');
-
-    if (priorityText) priorityText.textContent = priority;
-    if (estText) estText.textContent = `${estHours.toFixed(2)} hours`;
-    if (confText) confText.textContent = `${confidencePct}%`;
-
-    if (confBar) {
-        confBar.style.width = `${confidencePct}%`;
-        confBar.textContent = `${confidencePct}%`;
-
-        let barClass = 'progress-bar bg-success';
-        if (confidencePct < 60) barClass = 'progress-bar bg-warning';
-        if (confidencePct < 40) barClass = 'progress-bar bg-danger';
-        confBar.className = barClass;
-    }
-
-    setPredictionStateBadge('Model updated', 'bg-success-subtle text-success');
-}
-
-function scheduleCreatePrediction() {
-    if (state.predictionTimer) {
-        clearTimeout(state.predictionTimer);
-    }
-
-    state.predictionTimer = setTimeout(runCreatePrediction, 500);
-}
-
-async function runCreatePrediction() {
-    const payload = getCreatePayloadForPrediction();
-
-    if (!payload.title || !payload.description) {
-        resetCreatePredictionFeedback();
-        return;
-    }
-
-    const requestSeq = ++state.predictionRequestSeq;
-    setPredictionStateBadge('Predicting...', 'bg-info text-dark');
-
-    try {
-        const prediction = await AIService.predictPriorityAndResolution(payload);
-
-        // Ignore stale async responses.
-        if (requestSeq !== state.predictionRequestSeq) {
-            return;
-        }
-
-        renderCreatePredictionFeedback(prediction);
-    } catch (error) {
-        if (requestSeq !== state.predictionRequestSeq) {
-            return;
-        }
-
-        const helper = document.getElementById('aiPredictionHelperText');
-        if (helper) {
-            helper.textContent = `Prediction unavailable: ${error.message || 'please try again.'}`;
-        }
-        setPredictionStateBadge('Prediction failed', 'bg-danger-subtle text-danger');
-    }
 }
 
 /**
@@ -1307,6 +1198,7 @@ async function handleCreateTicket(e) {
     const title = document.getElementById('newTicketSubject').value.trim();
     const description = document.getElementById('newTicketDescription').value.trim();
     const type_of_request = document.getElementById('newTicketType')?.value || 'INCIDENT';
+    const product_group = document.getElementById('newTicketCategory')?.value || 'OTHER';
     
     // Location data (required)
     const lat = parseFloat(latitude);
@@ -1315,9 +1207,10 @@ async function handleCreateTicket(e) {
     // Get current user ID as requester_id — must be a UUID, never fall back to email
     const currentUser = AuthService.getUser?.();
     const requester_id = currentUser?.id || currentUser?.userId || currentUser?.user_id || '';
+    const requester_role = resolveRequesterRole(currentUser);
 
     // Guard: backend requires title, description, type_of_request, latitude, longitude, requester_id
-    if (!title || !description || !type_of_request || isNaN(lat) || isNaN(lng) || !requester_id) {
+    if (!title || !description || !type_of_request || !product_group || isNaN(lat) || isNaN(lng) || !requester_id) {
         UI.setButtonLoading(submitBtn, false);
         UI.error('All required fields must be filled. Make sure you are logged in and location is captured.');
         return;
@@ -1328,14 +1221,24 @@ async function handleCreateTicket(e) {
         title,
         description,
         type_of_request,
+        product_group,
         latitude: lat,
         longitude: lng,
         requester_id
     };
 
+    if (requester_role) {
+        ticketData.requester_role = requester_role;
+    } else {
+        console.info('[Tickets] requester_role unavailable in auth context; omitting requester_role from POST /tickets payload.');
+    }
+
     try {
-        await TicketService.createTicket(ticketData);
-        UI.success('Ticket created successfully');
+        const createResponse = await TicketService.createTicket(ticketData);
+        const createdTicket = createResponse?.data?.ticket || createResponse?.data || createResponse;
+        const finalPriority = String(createdTicket?.priority || 'MEDIUM').toUpperCase();
+
+        UI.success(`Ticket created successfully. Priority: ${finalPriority}.`);
         bootstrap.Modal.getInstance(document.getElementById('createTicketModal'))?.hide();
         form.reset();
         UI.resetFormValidation(form);
@@ -1352,6 +1255,36 @@ async function handleCreateTicket(e) {
     } finally {
         UI.setButtonLoading(submitBtn, false);
     }
+}
+
+function resolveRequesterRole(user) {
+    const roleCandidates = [
+        user?.role,
+        ...(Array.isArray(user?.roles) ? user.roles : []),
+        user?.technicianLevel,
+        user?.level
+    ];
+
+    const supportedRoles = new Set([
+        'REQUESTER',
+        'STUDENT',
+        'DOCTOR',
+        'ADMIN',
+        'HEAD_OF_IT',
+        'TECHNICIAN',
+        'JUNIOR',
+        'SENIOR',
+        'SUPERVISOR'
+    ]);
+
+    for (const candidate of roleCandidates) {
+        const normalized = String(candidate || '').trim().toUpperCase();
+        if (!normalized) continue;
+
+        if (supportedRoles.has(normalized)) return normalized;
+    }
+
+    return null;
 }
 
 /**
@@ -1720,6 +1653,17 @@ function showError(message) {
     UI.toggle(errorState, true);
 }
 
+function resolveCurrentUserRole() {
+    const currentUser = AuthService.getCurrentUser?.() || AuthService.getUser?.() || null;
+    return String(
+        currentUser?.technicianLevel ||
+        currentUser?.level ||
+        currentUser?.role ||
+        (Array.isArray(currentUser?.roles) ? currentUser.roles[0] : null) ||
+        'REQUESTER'
+    ).toUpperCase();
+}
+
 /**
  * Format status for display
  */
@@ -1732,8 +1676,24 @@ function formatStatus(status) {
  * Format priority for display
  */
 function formatPriority(priority) {
-    if (!priority) return 'Unknown';
-    return priority.charAt(0).toUpperCase() + priority.slice(1).toLowerCase();
+    const normalized = normalizePriorityValue(priority);
+    if (!normalized) return 'UNKNOWN';
+    return normalized;
+}
+
+function getPriorityBadgeClass(priority) {
+    const normalized = normalizePriorityValue(priority);
+    if (!normalized) return 'bg-secondary';
+    return UI.getPriorityBadgeClass(normalized);
+}
+
+function normalizePriorityValue(value) {
+    const normalized = String(value || '').trim().toUpperCase();
+    return ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(normalized) ? normalized : '';
+}
+
+function resolveTicketCreatedAt(ticket) {
+    return ticket?.createdAt || ticket?.created_at || ticket?.updatedAt || ticket?.updated_at || new Date().toISOString();
 }
 
 /**

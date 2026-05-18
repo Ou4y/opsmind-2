@@ -21,6 +21,45 @@ const API_BASE_URL = (
 );
 
 /**
+ * @typedef {Object} Ticket
+ * @property {string} [id]
+ * @property {string} [title]
+ * @property {string} [description]
+ * @property {string} [type_of_request]
+ * @property {string} [status]
+ * @property {string} [priority]
+ * @property {string} [requester_id]
+ * @property {string} [requester_role]
+ * @property {string} [product_group]
+ * @property {number} [latitude]
+ * @property {number} [longitude]
+ * @property {string} [created_at]
+ * @property {string} [updated_at]
+ * @property {string} [ai_prediction_status]
+ * @property {string} [rule_priority]
+ * @property {string} [ai_priority]
+ * @property {number|string} [ai_confidence]
+ * @property {string|string[]} [ai_explanation]
+ * @property {string} [ai_decision_source]
+ * @property {string} [ai_model_name]
+ * @property {string} [ai_model_version]
+ * @property {string} [ai_predicted_at]
+ * @property {number|string} [ai_priority_score]
+ */
+
+/**
+ * @typedef {Object} CreateTicketPayload
+ * @property {string} title
+ * @property {string} description
+ * @property {string} type_of_request
+ * @property {string} requester_id
+ * @property {string} [requester_role]
+ * @property {string} [product_group]
+ * @property {number} latitude
+ * @property {number} longitude
+ */
+
+/**
  * Handle API response and errors consistently
  * @param {Response} response - Fetch response object
  * @returns {Promise<Object>} Parsed response data
@@ -195,6 +234,82 @@ function parseTicketDate(ticket, ...candidateFields) {
     return null;
 }
 
+function normalizeTicket(ticket) {
+    if (!ticket || typeof ticket !== 'object') return ticket;
+
+    return {
+        ...ticket,
+        product_group: ticket.product_group ?? ticket.productGroup ?? ticket.category ?? null,
+        ai_prediction_status: ticket.ai_prediction_status ?? ticket.aiPredictionStatus ?? null,
+        rule_priority: ticket.rule_priority ?? ticket.rulePriority ?? null,
+        ai_priority: ticket.ai_priority ?? ticket.aiPriority ?? null,
+        ai_confidence: ticket.ai_confidence ?? ticket.aiConfidence ?? null,
+        ai_decision_source: ticket.ai_decision_source ?? ticket.aiDecisionSource ?? null,
+        ai_explanation: ticket.ai_explanation ?? ticket.aiExplanation ?? null,
+        ai_model_name: ticket.ai_model_name ?? ticket.aiModelName ?? null,
+        ai_model_version: ticket.ai_model_version ?? ticket.aiModelVersion ?? null,
+        ai_predicted_at: ticket.ai_predicted_at ?? ticket.aiPredictedAt ?? null,
+        ai_priority_score: ticket.ai_priority_score ?? ticket.aiPriorityScore ?? null
+    };
+}
+
+function normalizeTicketsPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload.map(normalizeTicket);
+    }
+
+    if (!payload || typeof payload !== 'object') {
+        return payload;
+    }
+
+    if (Array.isArray(payload.tickets)) {
+        return {
+            ...payload,
+            tickets: payload.tickets.map(normalizeTicket)
+        };
+    }
+
+    if (Array.isArray(payload.items)) {
+        return {
+            ...payload,
+            items: payload.items.map(normalizeTicket)
+        };
+    }
+
+    if (Array.isArray(payload.data)) {
+        return {
+            ...payload,
+            data: payload.data.map(normalizeTicket)
+        };
+    }
+
+    if (payload.data && typeof payload.data === 'object') {
+        if (payload.data.ticket && typeof payload.data.ticket === 'object') {
+            return {
+                ...payload,
+                data: {
+                    ...payload.data,
+                    ticket: normalizeTicket(payload.data.ticket)
+                }
+            };
+        }
+
+        return {
+            ...payload,
+            data: normalizeTicket(payload.data)
+        };
+    }
+
+    if (payload.ticket && typeof payload.ticket === 'object') {
+        return {
+            ...payload,
+            ticket: normalizeTicket(payload.ticket)
+        };
+    }
+
+    return normalizeTicket(payload);
+}
+
 /**
  * TicketService - Singleton service for ticket operations
  */
@@ -250,14 +365,14 @@ const TicketService = {
         );
 
         if (!requiresClientFiltering) {
-            return data;
+            return normalizeTicketsPayload(data);
         }
 
         const filteredTickets = applyTicketFilters(extractTicketsArray(data), options);
         const filteredPayload = withTicketsPayload(data, filteredTickets);
 
         console.log('[TicketService.getTickets] Response:', data);
-        return filteredPayload;
+        return normalizeTicketsPayload(filteredPayload);
     },
 
     /**
@@ -266,10 +381,11 @@ const TicketService = {
      * @returns {Promise<Object>} Ticket details
      */
     async getTicket(ticketId) {
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             path: ticketId,
             method: 'GET'
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -278,16 +394,19 @@ const TicketService = {
      * @param {string} ticketData.title - Ticket title
      * @param {string} ticketData.description - Ticket description
      * @param {string} ticketData.type_of_request - Type: INCIDENT, SERVICE_REQUEST, MAINTENANCE
+     * @param {string} [ticketData.product_group] - Category/product group for AI enrichment
      * @param {number} ticketData.latitude - Location latitude coordinate
      * @param {number} ticketData.longitude - Location longitude coordinate
      * @param {string} ticketData.requester_id - Requester user ID
+     * @param {string} [ticketData.requester_role] - Optional requester role from auth context
      * @returns {Promise<Object>} Created ticket
      */
     async createTicket(ticketData) {
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             method: 'POST',
             body: ticketData
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -327,11 +446,12 @@ const TicketService = {
             updateData.status_reason = resolution_summary;
         }
 
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             path: ticketId,
             method: 'PATCH',
             body: updateData
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -341,11 +461,12 @@ const TicketService = {
      * @returns {Promise<Object>} Updated ticket
      */
     async updateTicket(ticketId, updates) {
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             path: ticketId,
             method: 'PATCH',
             body: updates
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -371,11 +492,12 @@ const TicketService = {
      * @returns {Promise<Object>} Updated ticket
      */
     async escalateTicket(ticketId, escalationData) {
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             path: `${ticketId}/escalate`,
             method: 'POST',
             body: escalationData
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -418,7 +540,7 @@ const TicketService = {
                 path: `assigned/${technicianId}`,
                 method: 'GET'
             });
-            const tickets = extractTicketsArray(data);
+            const tickets = extractTicketsArray(normalizeTicketsPayload(data));
             console.log('[TicketService.getAssignedTickets] Dedicated endpoint returned', tickets.length, 'tickets');
             return tickets;
         } catch (err) {
@@ -426,7 +548,9 @@ const TicketService = {
         }
 
         // 2. Fallback: fetch all tickets and filter client-side
-        const data = await requestTicketsApi({ method: 'GET', params: new URLSearchParams({ limit: '500', offset: '0' }) });
+        const data = normalizeTicketsPayload(
+            await requestTicketsApi({ method: 'GET', params: new URLSearchParams({ limit: '500', offset: '0' }) })
+        );
         const all = extractTicketsArray(data);
         console.log('[TicketService.getAssignedTickets] Fallback: fetched', all.length, 'total tickets');
 
@@ -462,11 +586,12 @@ const TicketService = {
         if (options.limit) params.append('limit', options.limit);
         if (options.offset) params.append('offset', options.offset);
 
-        return requestTicketsApi({
+        const data = await requestTicketsApi({
             path: `requester/${requesterId}`,
             method: 'GET',
             params
         });
+        return normalizeTicketsPayload(data);
     },
 
     /**
@@ -497,15 +622,27 @@ const TicketService = {
      * @returns {Promise<Array>} High priority tickets
      */
     async getHighPriority(limit = 5) {
-        const response = await this.getTickets({
-            priority: 'HIGH',
-            limit: Math.max(limit, 20),
-            offset: 0
+        const cappedLimit = Math.max(limit, 20);
+        const [criticalResponse, highResponse] = await Promise.all([
+            this.getTickets({ priority: 'CRITICAL', limit: cappedLimit, offset: 0 }),
+            this.getTickets({ priority: 'HIGH', limit: cappedLimit, offset: 0 })
+        ]);
+
+        const merged = [
+            ...extractTicketsArray(criticalResponse),
+            ...extractTicketsArray(highResponse)
+        ];
+
+        const deduped = [];
+        const seen = new Set();
+        merged.forEach((ticket) => {
+            const ticketId = String(ticket?.id || ticket?.ticketId || '');
+            if (!ticketId || seen.has(ticketId)) return;
+            seen.add(ticketId);
+            deduped.push(ticket);
         });
-        const tickets = extractTicketsArray(response)
-            .filter((ticket) => normalizeStatus(ticket.priority) === 'HIGH')
-            .slice(0, limit);
-        return tickets;
+
+        return deduped.slice(0, limit);
     },
 
     /**

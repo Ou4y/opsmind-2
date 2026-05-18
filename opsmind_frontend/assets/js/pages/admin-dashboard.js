@@ -72,35 +72,78 @@ async function loadDashboardData() {
     showLoading();
 
     try {
-        const [overviewResponse, ticketsResponse] = await Promise.all([
+        const [overviewResult, ticketsResult] = await Promise.allSettled([
             getAdminOverview({}),
             getAdminTickets({ limit: 50, offset: 0 })
         ]);
 
-        if (!overviewResponse?.success || !overviewResponse?.data) {
-            throw new Error(overviewResponse?.message || 'Failed to load overview data');
+        const warnings = [];
+        const overviewResponse = overviewResult.status === 'fulfilled' ? overviewResult.value : null;
+        const ticketsResponse = ticketsResult.status === 'fulfilled' ? ticketsResult.value : null;
+        const overviewError = overviewResult.status === 'rejected' ? overviewResult.reason : null;
+        const ticketsError = ticketsResult.status === 'rejected' ? ticketsResult.reason : null;
+
+        const hasOverview = Boolean(overviewResponse?.success && overviewResponse?.data);
+        const hasTickets = Boolean(ticketsResponse?.success && ticketsResponse?.data);
+
+        if (!hasOverview && !hasTickets) {
+            throw overviewError || ticketsError || new Error('Failed to load dashboard data');
         }
 
-        if (!ticketsResponse?.success || !ticketsResponse?.data) {
-            throw new Error(ticketsResponse?.message || 'Failed to load tickets');
+        if (hasOverview) {
+            state.overview = overviewResponse.data;
+        } else {
+            warnings.push(`Overview metrics unavailable: ${resolveAdminDashboardErrorMessage(overviewError || new Error('Overview request failed'))}`);
+            if (!state.overview) {
+                state.overview = {
+                    totalTickets: 0,
+                    openTickets: 0,
+                    inProgressTickets: 0,
+                    resolvedTickets: 0,
+                    slaAtRiskTickets: 0,
+                    slaBreachedTickets: 0
+                };
+            }
         }
 
-        state.overview = overviewResponse.data;
-        state.tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
+        if (hasTickets) {
+            state.tickets = Array.isArray(ticketsResponse.data.items) ? ticketsResponse.data.items : [];
+        } else {
+            warnings.push(`Ticket list unavailable: ${resolveAdminDashboardErrorMessage(ticketsError || new Error('Tickets request failed'))}`);
+            state.tickets = [];
+        }
 
         hideLoading();
         updateSummaryCards();
         renderTicketsTable();
+
+        if (warnings.length > 0) {
+            showDashboardNotice(warnings.join(' '), 'warning');
+        } else {
+            hideDashboardNotice();
+        }
     } catch (error) {
         console.error('Error loading admin dashboard:', error);
+        hideDashboardNotice();
         if (error?.status === 403) {
             showError('You do not have access to this dashboard.');
         } else {
-            showError(error.message || 'Failed to load dashboard data');
+            showError(resolveAdminDashboardErrorMessage(error));
         }
     } finally {
         state.isLoading = false;
     }
+}
+
+function resolveAdminDashboardErrorMessage(error) {
+    const code = String(error?.code || error?.payload?.errorCode || error?.payload?.code || '').toUpperCase();
+    const message = String(error?.message || '');
+
+    if (Number(error?.status) === 502 || code === 'TICKET_SERVICE_UNAVAILABLE' || message.includes('TICKET_SERVICE_UNAVAILABLE')) {
+        return 'Ticket Service is currently unavailable. Admin dashboard data may be temporarily incomplete.';
+    }
+
+    return message || 'Failed to load dashboard data';
 }
 
 function redirectToDashboard(context) {
@@ -130,6 +173,43 @@ function hideLoading() {
     if (contentEl) contentEl.classList.remove('d-none');
 }
 
+function getDashboardNoticeElement() {
+    const contentEl = document.getElementById('dashboardContent');
+    if (!contentEl) return null;
+
+    let noticeEl = document.getElementById('dashboardNotice');
+    if (!noticeEl) {
+        noticeEl = document.createElement('div');
+        noticeEl.id = 'dashboardNotice';
+        noticeEl.className = 'alert d-none';
+        noticeEl.setAttribute('role', 'alert');
+        contentEl.prepend(noticeEl);
+    }
+
+    return noticeEl;
+}
+
+function showDashboardNotice(message, variant = 'warning') {
+    const noticeEl = getDashboardNoticeElement();
+    if (!noticeEl) return;
+
+    noticeEl.className = `alert alert-${variant}`;
+    noticeEl.innerHTML = `
+        <div class="d-flex align-items-start">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <div>${UI.escapeHTML(message)}</div>
+        </div>
+    `;
+}
+
+function hideDashboardNotice() {
+    const noticeEl = document.getElementById('dashboardNotice');
+    if (!noticeEl) return;
+
+    noticeEl.className = 'alert d-none';
+    noticeEl.textContent = '';
+}
+
 function showError(message) {
     const loadingEl = document.getElementById('loadingState');
     const contentEl = document.getElementById('dashboardContent');
@@ -143,9 +223,7 @@ function showError(message) {
 }
 
 function updateSummaryCards() {
-    if (!state.overview) return;
-
-    const overview = state.overview;
+    const overview = state.overview || {};
     const totalTickets = overview.totalTickets || 0;
     const activeTickets = (overview.openTickets || 0) + (overview.inProgressTickets || 0);
     const resolvedTickets = overview.resolvedTickets || 0;
@@ -157,7 +235,7 @@ function updateSummaryCards() {
     document.getElementById('slaRiskTickets').textContent = slaRiskTickets;
 
     const ticketCountEl = document.getElementById('ticketCount');
-    if (ticketCountEl) ticketCountEl.textContent = totalTickets;
+    if (ticketCountEl) ticketCountEl.textContent = state.tickets.length;
 }
 
 function renderTicketsTable() {
@@ -184,8 +262,9 @@ function renderTicketsTable() {
         const requester = ticket.requesterName || ticket.requester || ticket.requesterId || 'N/A';
         const location = getTicketLocationDisplay(ticket);
         const updatedAt = ticket.updatedAt || ticket.updated_at || ticket.createdAt || ticket.created_at;
-        const status = ticket.status || 'UNKNOWN';
-        const priority = ticket.priority || 'UNKNOWN';
+        const status = String(ticket.status || 'UNKNOWN').toUpperCase();
+        const priority = String(ticket.priority || 'UNKNOWN').toUpperCase();
+        const title = ticket.title || ticket.subject || 'No title';
 
         row.innerHTML = `
             <td>
@@ -195,8 +274,8 @@ function renderTicketsTable() {
                 </a>
             </td>
             <td>
-                <div class="text-truncate" style="max-width: 220px;" title="${UI.escapeHTML(ticket.title || 'No title')}">
-                    ${UI.escapeHTML(ticket.title || 'No title')}
+                <div class="text-truncate" style="max-width: 220px;" title="${UI.escapeHTML(title)}">
+                    ${UI.escapeHTML(title)}
                 </div>
             </td>
             <td>
@@ -247,7 +326,10 @@ function getPriorityBadgeClass(priority) {
 }
 
 window.viewTicketDetails = async function(ticketId) {
-    const modalHandle = openTicketDetailsModal({ title: `Ticket ${ticketId}` });
+    const modalHandle = openTicketDetailsModal({
+        title: `Ticket ${ticketId}`,
+        currentUserRole: 'ADMIN'
+    });
     modalHandle.setLoading('Loading ticket details...');
 
     try {
@@ -263,7 +345,7 @@ window.viewTicketDetails = async function(ticketId) {
         if (error?.status === 403) {
             modalHandle.setError('You do not have access to this dashboard.');
         } else {
-            modalHandle.setError(error.message || 'Failed to load ticket details');
+            modalHandle.setError(resolveAdminDashboardErrorMessage(error));
         }
     }
 };

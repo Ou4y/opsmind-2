@@ -12,7 +12,6 @@
 import UI from '/assets/js/ui.js';
 import TicketService from '/services/ticketService.js';
 import WorkflowService from '/services/workflowService.js';
-import AIService from '/services/aiService.js';
 import AuthService from '/services/authService.js';
 
 /**
@@ -24,6 +23,15 @@ const state = {
     userRole: null
 };
 
+function extractTickets(response) {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.tickets)) return response.tickets;
+    if (Array.isArray(response?.items)) return response.items;
+    if (Array.isArray(response?.data)) return response.data;
+    if (Array.isArray(response?.data?.items)) return response.data.items;
+    return [];
+}
+
 /**
  * Initialize the dashboard page
  */
@@ -33,7 +41,13 @@ export async function initDashboard() {
     
     // Get current user role
     const user = AuthService.getCurrentUser();
-    state.userRole = user?.role?.toUpperCase();
+    state.userRole = String(
+        user?.role ||
+        (Array.isArray(user?.roles) ? user.roles[0] : '') ||
+        user?.technicianLevel ||
+        user?.level ||
+        ''
+    ).toUpperCase();
     
     // Customize dashboard header based on role
     customizeDashboardHeader();
@@ -146,9 +160,8 @@ async function loadStatistics() {
         
         // For other roles: Show system-wide stats
         // Try to get real data from API
-        const [ticketStats, aiStats] = await Promise.allSettled([
-            TicketService.getStatistics(),
-            AIService.getRecommendationCount()
+        const [ticketStats] = await Promise.allSettled([
+            TicketService.getStatistics()
         ]);
 
         // Handle ticket stats
@@ -167,14 +180,9 @@ async function loadStatistics() {
             useMockStatistics();
         }
 
-        // Handle AI stats
-        if (aiStats.status === 'fulfilled') {
-            updateStatCard('aiRecommendationsCount', aiStats.value.count || 0);
-            updateChangeIndicator('aiRecommendationsChange', aiStats.value.pending || 0, false, true);
-        } else {
-            updateStatCard('aiRecommendationsCount', 12);
-            updateChangeIndicator('aiRecommendationsChange', 5, false, true);
-        }
+        // AI service is backend-only for ticket creation; do not call AI directly from frontend.
+        updateStatCard('aiRecommendationsCount', 0);
+        updateChangeIndicator('aiRecommendationsChange', 'Backend-only', false, true);
     } catch (error) {
         console.error('Failed to load statistics:', error);
         useMockStatistics();
@@ -187,16 +195,25 @@ async function loadStatistics() {
 async function loadUserTicketStatistics() {
     try {
         const user = AuthService.getCurrentUser();
+        const requesterId = user?.id || user?.userId || user?.user_id;
+
+        if (!requesterId) {
+            updateStatCard('openTicketsCount', 0);
+            updateStatCard('inProgressCount', 0);
+            updateStatCard('slaViolationsCount', 0);
+            updateStatCard('aiRecommendationsCount', 0);
+            return;
+        }
         
         // Fetch only user's tickets
         const response = await TicketService.getTickets({
-            requester: user.email,
+            requester: requesterId,
             page: 1,
             pageSize: 100  // Get more tickets to calculate stats
         });
         
-        if (response && response.tickets) {
-            const tickets = response.tickets;
+        const tickets = extractTickets(response);
+        if (tickets.length > 0) {
             
             // Calculate user's ticket stats
             const myOpen = tickets.filter(t => t.status === 'OPEN').length;
@@ -494,21 +511,28 @@ async function loadHighPriorityTickets() {
         // For STUDENT/DOCTOR: Show their own tickets (not just high priority)
         if (state.userRole === 'STUDENT' || state.userRole === 'DOCTOR') {
             const user = AuthService.getCurrentUser();
+            const requesterId = user?.id || user?.userId || user?.user_id;
+            if (!requesterId) {
+                renderPriorityTickets(tableBody, emptyState, []);
+                return;
+            }
             const response = await TicketService.getTickets({
-                requester: user.email,
+                requester: requesterId,
                 page: 1,
                 pageSize: 5
             });
-            tickets = response.tickets || response;
+            tickets = extractTickets(response);
             
             // Update card title
             if (cardHeader) {
                 cardHeader.innerHTML = '<i class="bi bi-ticket-detailed me-2 text-primary"></i>My Recent Tickets';
             }
+            const emptyText = emptyState?.querySelector('p');
+            if (emptyText) emptyText.textContent = 'No tickets created yet';
         } else {
             // For other roles: Show high priority tickets
             const response = await TicketService.getHighPriority(5);
-            tickets = response.tickets || response;
+            tickets = extractTickets(response);
         }
         
         renderPriorityTickets(tableBody, emptyState, tickets);
@@ -546,13 +570,20 @@ function renderPriorityTickets(tableBody, emptyState, tickets) {
     let html = '';
     
     tickets.forEach(ticket => {
-        const age = getTicketAge(ticket.createdAt);
+        const age = getTicketAge(ticket.createdAt || ticket.created_at || ticket.updatedAt || ticket.updated_at);
+        const subject = ticket.subject || ticket.title || 'Untitled ticket';
+        const priority = String(ticket.priority || 'UNKNOWN').toUpperCase();
+        const ticketId = ticket.id || ticket.ticketId || 'N/A';
+        const priorityBadgeClass = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(priority)
+            ? UI.getPriorityBadgeClass(priority)
+            : 'bg-secondary';
         
         html += `
-            <tr class="cursor-pointer" onclick="window.location.href='/pages/tickets.html?id=${ticket.id}'">
-                <td><code>${UI.escapeHTML(ticket.id)}</code></td>
-                <td class="text-truncate" style="max-width: 200px;">${UI.escapeHTML(ticket.subject)}</td>
+            <tr class="cursor-pointer" onclick="window.location.href='/pages/tickets.html?id=${encodeURIComponent(String(ticketId))}'">
+                <td><code>${UI.escapeHTML(String(ticketId))}</code></td>
+                <td class="text-truncate" style="max-width: 200px;">${UI.escapeHTML(subject)}</td>
                 <td><span class="badge ${UI.getStatusBadgeClass(ticket.status)}">${formatStatus(ticket.status)}</span></td>
+                <td><span class="badge ${priorityBadgeClass}">${UI.escapeHTML(priority)}</span></td>
                 <td><span class="text-muted">${age}</span></td>
             </tr>
         `;

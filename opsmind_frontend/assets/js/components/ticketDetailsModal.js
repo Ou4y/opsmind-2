@@ -1,4 +1,5 @@
 import UI from '/assets/js/ui.js';
+import { renderAiPriorityInsight } from '/assets/js/components/aiPriorityInsight.js';
 
 function normalizeArray(value) {
     return Array.isArray(value) ? value : [];
@@ -308,6 +309,7 @@ function renderAvailableActions(allowedActions) {
 export function buildTicketDetailsContent(details) {
     const payload = details || {};
     const ticket = payload.ticket || {};
+    const currentUserRole = payload.currentUserRole || payload.viewerRole || ticket.currentUserRole || null;
     const hierarchy = payload.hierarchy || {};
     const allowedActions = payload.allowedActions || ticket.allowedActions || null;
     const escalationHistory = sortByTimestamp(normalizeArray(payload.escalationHistory));
@@ -320,6 +322,7 @@ export function buildTicketDetailsContent(details) {
     return `
         <div class="ticket-details">
             ${renderTicketCore(ticket)}
+            ${renderAiPriorityInsight({ ticket, currentUserRole })}
             ${renderHierarchy(hierarchy)}
             ${renderAvailableActions(allowedActions)}
 
@@ -398,7 +401,11 @@ export function openTicketDetailsModal(options = {}) {
 
     const setContent = (details) => {
         if (!bodyEl) return;
-        bodyEl.innerHTML = buildTicketDetailsContent(details);
+        const mergedDetails = {
+            ...(details || {}),
+            currentUserRole: options.currentUserRole || details?.currentUserRole || null
+        };
+        bodyEl.innerHTML = buildTicketDetailsContent(mergedDetails);
     };
 
     const setError = (message) => {
@@ -421,7 +428,10 @@ export function openTicketDetailsModal(options = {}) {
 }
 
 export function showTicketDetailsModal(details, options = {}) {
-    const modalHandle = openTicketDetailsModal({ title: options.title });
+    const modalHandle = openTicketDetailsModal({
+        title: options.title,
+        currentUserRole: options.currentUserRole
+    });
     modalHandle.setContent(details);
     return modalHandle;
 }
