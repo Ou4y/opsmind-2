@@ -389,6 +389,15 @@ const TicketService = {
     },
 
     /**
+     * Get a single ticket by ID (full details alias)
+     * @param {string} ticketId - Ticket ID
+     * @returns {Promise<Object>} Full ticket payload
+     */
+    async getTicketById(ticketId) {
+        return this.getTicket(ticketId);
+    },
+
+    /**
      * Create a new ticket
      * @param {Object} ticketData - Ticket data
      * @param {string} ticketData.title - Ticket title

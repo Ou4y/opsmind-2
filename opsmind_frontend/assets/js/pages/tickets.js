@@ -16,7 +16,14 @@ import WorkflowService from '/services/workflowService.js';
 import GeminiService from '/services/geminiService.js';
 import Router from '/assets/js/router.js';
 import AuthService from '/services/authService.js';
-import { renderAiPriorityInsight } from '/assets/js/components/aiPriorityInsight.js';
+import {
+    renderAiPriorityInsight,
+    hasAiMetadata,
+    isRequesterRole,
+    isOperationalRole,
+    getAiButtonLabel,
+    normalizeRole
+} from '/assets/js/components/aiPriorityInsight.js';
 
 /**
  * Page state
@@ -42,6 +49,8 @@ const state = {
     map: null, // Leaflet map instance
     mapMarker: null // Map marker instance
 };
+
+const ticketAiDetailsCache = new Map();
 
 /**
  * Initialize the tickets page
@@ -692,9 +701,6 @@ async function openTicketDetail(ticketId) {
 
         // Populate modal
         populateTicketModal(ticket);
-
-        // Render AI explanation notes when available.
-        loadAIRecommendations(ticket, resolveCurrentUserRole());
     } catch (error) {
         console.error('Failed to load ticket:', error);
         UI.error('Failed to load ticket details');
@@ -761,12 +767,12 @@ function populateTicketModal(ticket) {
     document.getElementById('ticketCreatedAt').textContent = UI.formatDateTime(ticket.created_at || ticket.createdAt);
     document.getElementById('ticketUpdatedAt').textContent = UI.formatDateTime(ticket.updated_at || ticket.updatedAt);
     document.getElementById('ticketDescription').textContent = ticket.description || 'No description provided.';
-    const aiInsightContainer = document.getElementById('ticketAiPriorityInsight');
-    if (aiInsightContainer) {
-        aiInsightContainer.innerHTML = renderAiPriorityInsight({
-            ticket,
-            currentUserRole: resolveCurrentUserRole()
-        });
+    renderTicketAiInsightControls(ticket);
+
+    // Legacy AI explanation section is replaced by on-demand insight details.
+    const aiRecommendationsSection = document.getElementById('aiRecommendationsSection');
+    if (aiRecommendationsSection) {
+        UI.toggle(aiRecommendationsSection, false);
     }
 
     // Set current status in dropdown
@@ -790,6 +796,103 @@ function populateTicketModal(ticket) {
             resolutionContainer.style.display = 'block';
         } else {
             resolutionContainer.style.display = 'none';
+        }
+    });
+}
+
+function resolveTicketId(ticket) {
+    return String(ticket?.id || ticket?.ticketId || '').trim();
+}
+
+async function resolveFullTicketForAiDetails(ticket) {
+    const ticketId = resolveTicketId(ticket);
+    if (!ticketId) {
+        return ticket || {};
+    }
+
+    if (hasAiMetadata(ticket)) {
+        ticketAiDetailsCache.set(ticketId, ticket);
+        return ticket;
+    }
+
+    if (ticketAiDetailsCache.has(ticketId)) {
+        return {
+            ...(ticket || {}),
+            ...ticketAiDetailsCache.get(ticketId)
+        };
+    }
+
+    const response = await TicketService.getTicketById(ticketId);
+    const fetchedTicket = response?.data?.ticket || response?.data || response?.ticket || response;
+
+    if (!fetchedTicket || typeof fetchedTicket !== 'object') {
+        throw new Error('AI priority details could not be loaded right now.');
+    }
+
+    const mergedTicket = {
+        ...(ticket || {}),
+        ...fetchedTicket
+    };
+
+    ticketAiDetailsCache.set(ticketId, mergedTicket);
+    return mergedTicket;
+}
+
+function renderTicketAiInsightControls(ticket) {
+    const aiInsightContainer = document.getElementById('ticketAiPriorityInsight');
+    if (!aiInsightContainer) return;
+
+    const currentUserRole = normalizeRole(resolveCurrentUserRole());
+    const buttonLabel = getAiButtonLabel(currentUserRole);
+
+    if (isRequesterRole(currentUserRole) || !isOperationalRole(currentUserRole)) {
+        aiInsightContainer.innerHTML = '';
+        return;
+    }
+
+    aiInsightContainer.innerHTML = `
+        <div class="card mb-3 border-0 bg-light">
+            <div class="card-body">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="ticketAiInsightBtn">
+                    <i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}
+                </button>
+                <div class="mt-3 d-none" id="ticketAiInsightDetails"></div>
+            </div>
+        </div>
+    `;
+
+    const button = document.getElementById('ticketAiInsightBtn');
+    const detailsContainer = document.getElementById('ticketAiInsightDetails');
+    if (!button || !detailsContainer) return;
+
+    button.addEventListener('click', async () => {
+        if (detailsContainer.dataset.loaded === 'true') {
+            detailsContainer.classList.remove('d-none');
+            return;
+        }
+
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading...';
+
+        try {
+            const enrichedTicket = await resolveFullTicketForAiDetails(ticket);
+            detailsContainer.innerHTML = renderAiPriorityInsight({
+                ticket: enrichedTicket,
+                currentUserRole
+            });
+            detailsContainer.dataset.loaded = 'true';
+            detailsContainer.classList.remove('d-none');
+        } catch (error) {
+            console.error('[Tickets] Failed to load AI priority details:', error);
+            detailsContainer.innerHTML = `
+                <div class="alert alert-warning mb-0" role="alert">
+                    AI priority details could not be loaded right now.
+                </div>
+            `;
+            detailsContainer.classList.remove('d-none');
+        } finally {
+            button.disabled = false;
+            button.innerHTML = `<i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}`;
         }
     });
 }
