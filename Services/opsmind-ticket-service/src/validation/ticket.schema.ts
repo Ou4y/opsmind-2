@@ -5,6 +5,8 @@ const TicketPriorityEnum = z.enum(["LOW", "MEDIUM", "HIGH"]);
 const TicketStatusEnum = z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]);
 const RequestTypeEnum = z.enum(["INCIDENT", "SERVICE_REQUEST", "MAINTENANCE"]);
 const AssignmentMethodEnum = z.enum(["AUTOMATIC", "MANUAL", "ADMIN", "ESCALATION", "WORKFLOW", "SYSTEM"]);
+const OperatingSystemTypeEnum = z.enum(["WINDOWS", "MACOS", "LINUX", "UNKNOWN"]);
+const IssueScopeEnum = z.enum(["MY_DEVICE", "ROOM_DEVICE", "MULTIPLE_DEVICES", "BUILDING_WIDE", "UNKNOWN"]);
 
 export const createTicketSchema = z.object({
   title: z.string().min(3, "Title must be at least 3 characters"),
@@ -17,6 +19,11 @@ export const createTicketSchema = z.object({
   category: z.string().max(191).optional(),
   building: z.string().max(191).optional(),
   room: z.string().max(191).optional(),
+  affectedDeviceId: z.string().max(191).nullable().optional(),
+  affectedDeviceName: z.string().max(191).nullable().optional(),
+  osType: OperatingSystemTypeEnum.nullable().optional(),
+  issueScope: IssueScopeEnum.nullable().optional(),
+  remoteSupportConsent: z.boolean().nullable().optional(),
   latitude: z.number().min(-90, "latitude must be >= -90").max(90, "latitude must be <= 90"),
   longitude: z.number().min(-180, "longitude must be >= -180").max(180, "longitude must be <= 180"),
 });

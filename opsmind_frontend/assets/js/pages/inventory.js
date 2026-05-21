@@ -1,4 +1,5 @@
 ﻿import UI from '/assets/js/ui.js';
+import AuthService from '/services/authService.js';
 
 // Config is set as globals in config.js (loaded in HTML head)
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
@@ -12,6 +13,78 @@ let EOL_METRICS = {};
 let selectedAssetCustomId = null;
 let currentAssets = [];
 const lifespanPredictionCache = new Map();
+
+const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
+
+function resolveInventoryAccess() {
+  const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+  const technicianLevel = String(context.technicianLevel || '').toUpperCase();
+  const isAdmin = context.roleCategory === 'ADMIN' || technicianLevel === 'ADMIN';
+  const isSenior = technicianLevel === 'SENIOR';
+  const canAccess = isAdmin || INVENTORY_ALLOWED_TECHNICIAN_LEVELS.has(technicianLevel);
+
+  return {
+    context,
+    technicianLevel,
+    canAccess,
+    canCreateAsset: isAdmin,
+    canDeleteAsset: isAdmin,
+    canTransferAsset: isAdmin || isSenior,
+    canEditSpecs: isAdmin || isSenior,
+  };
+}
+
+const INVENTORY_ACCESS = resolveInventoryAccess();
+
+function getInventoryFallbackPath() {
+  return INVENTORY_ACCESS.context?.dashboardPath || '/pages/dashboard.html';
+}
+
+function ensureInventoryAccess() {
+  if (!AuthService.isAuthenticated() || !INVENTORY_ACCESS.canAccess) {
+    sessionStorage.setItem(
+      'opsmind_error',
+      'Access denied: Inventory is available only to Admin and Technician levels (Junior/Senior/Supervisor).'
+    );
+    window.location.href = getInventoryFallbackPath();
+    return false;
+  }
+  return true;
+}
+
+function getAuthHeaders(extraHeaders = {}) {
+  return {
+    ...AuthService.getAuthHeaders(),
+    ...extraHeaders,
+  };
+}
+
+async function inventoryRequest(path, options = {}) {
+  const requestOptions = { ...options };
+  const headers = getAuthHeaders(requestOptions.headers || {});
+  requestOptions.headers = headers;
+
+  const response = await fetch(`${API_URL}${path}`, requestOptions);
+
+  if (response.status === 401) {
+    AuthService.clearAuth();
+    window.location.href = '/index.html';
+    throw new Error('Session expired. Please sign in again.');
+  }
+
+  if (response.status === 403) {
+    throw new Error('You do not have permission to perform this inventory action.');
+  }
+
+  return response;
+}
+
+function applyInventoryRoleUI() {
+  const createButton = document.querySelector('.inventory-create-btn');
+  if (createButton) {
+    createButton.style.display = INVENTORY_ACCESS.canCreateAsset ? '' : 'none';
+  }
+}
 
 const TYPE_ALIASES = {
   LAPTOP: 'laptop',
@@ -313,7 +386,7 @@ async function loadAssetLifespanPredictions() {
   await Promise.all(currentAssets.map(async (asset) => {
     const baseMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || { years: 5, cost: 500 };
     try {
-      const response = await fetch(`${API_URL}/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction`, {
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseLifespanYears: baseMetrics.years || 5 })
@@ -457,6 +530,8 @@ function getLifecycleSnapshot(asset) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  if (!ensureInventoryAccess()) return;
+  applyInventoryRoleUI();
   initializePage();
 
   const form = document.getElementById('addAssetForm');
@@ -504,7 +579,7 @@ async function initializePage() {
 // ðŸš€ Fetches the single source of truth from your new backend route
 async function loadConfig() {
   try {
-    const response = await fetch(`${API_URL}/config`);
+    const response = await inventoryRequest('/config');
     if (!response.ok) throw new Error('Failed to fetch configuration');
     
     const configData = await response.json();
@@ -523,7 +598,7 @@ async function loadConfig() {
 
 async function loadAssets() {
   try {
-    const response = await fetch(`${API_URL}/assets`);
+    const response = await inventoryRequest('/assets');
     if (!response.ok) throw new Error('Failed to fetch assets');
 
     const assets = await response.json();
@@ -742,6 +817,11 @@ function renderTable() {
 async function handleAddAsset(e) {
   e.preventDefault();
 
+  if (!INVENTORY_ACCESS.canCreateAsset) {
+    showMessage('Only admins can create new assets.', 'error');
+    return;
+  }
+
   const submitBtn = e.target.querySelector('button[type="submit"]');
   const originalText = submitBtn.innerHTML;
   
@@ -806,8 +886,10 @@ async function handleAddAsset(e) {
       const customId = generateCustomId();
       const assetData = { name, customId, type, location, department, status: 'active', quantity: 1, specifications };
 
-      const response = await fetch(`${API_URL}/assets`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(assetData),
+      const response = await inventoryRequest('/assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(assetData),
       });
 
       if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
@@ -942,18 +1024,21 @@ window.viewAssetDetails = (assetName) => {
         <button class="btn btn-sm btn-outline-info" onclick="window.viewQRCode('${asset.customId}')" title="View QR">
           <i class="bi bi-qr-code"></i>
         </button>
-        <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${asset.customId}', false)" title="Edit Specs">
-          <i class="bi bi-pencil"></i>
-        </button>
         <button class="btn btn-sm btn-outline-primary" onclick="window.viewTransferHistory('${asset.customId}')" title="History">
           <i class="bi bi-clock-history"></i>
         </button>
+        ${INVENTORY_ACCESS.canEditSpecs ? `
+        <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${asset.customId}', false)" title="Edit Specs">
+          <i class="bi bi-pencil"></i>
+        </button>` : ''}
+        ${INVENTORY_ACCESS.canTransferAsset ? `
         <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer">
           <i class="bi bi-arrow-left-right"></i>
-        </button>
+        </button>` : ''}
+        ${INVENTORY_ACCESS.canDeleteAsset ? `
         <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete">
           <i class="bi bi-trash"></i>
-        </button>
+        </button>` : ''}
       </td>
     </tr>
   `}).join('');
@@ -961,8 +1046,14 @@ window.viewAssetDetails = (assetName) => {
   const bulkTransferBtn = document.getElementById('bulkTransferBtn');
   const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
 
-  if (bulkTransferBtn) bulkTransferBtn.onclick = () => window.bulkTransferGroup(assetName);
-  if (bulkDeleteBtn) bulkDeleteBtn.onclick = () => window.bulkDeleteGroup(assetName);
+  if (bulkTransferBtn) {
+    bulkTransferBtn.style.display = INVENTORY_ACCESS.canTransferAsset ? '' : 'none';
+    bulkTransferBtn.onclick = () => window.bulkTransferGroup(assetName);
+  }
+  if (bulkDeleteBtn) {
+    bulkDeleteBtn.style.display = INVENTORY_ACCESS.canDeleteAsset ? '' : 'none';
+    bulkDeleteBtn.onclick = () => window.bulkDeleteGroup(assetName);
+  }
 
   if (headerDiv) {
     const groupActionsDiv = document.createElement('div');
@@ -971,9 +1062,9 @@ window.viewAssetDetails = (assetName) => {
       <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels('${assetName}', true)" title="Print QR Labels">
         <i class="bi bi-printer"></i> Print Labels
       </button>
-      <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${assetName}', true)" title="Edit Group Specs">
+      ${INVENTORY_ACCESS.canEditSpecs ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${assetName}', true)" title="Edit Group Specs">
         <i class="bi bi-pencil"></i> Edit Specs
-      </button>
+      </button>` : ''}
     `;
     
     let groupActionsContainer = headerDiv.querySelector('.group-actions');
@@ -1001,6 +1092,11 @@ window.filterDetailsTable = () => {
 };
 
 window.transferIndividual = (customId) => {
+  if (!INVENTORY_ACCESS.canTransferAsset) {
+    showMessage('Only admins and senior technicians can transfer assets.', 'error');
+    return;
+  }
+
   const asset = currentAssets.find(a => a.customId === customId);
   if (!asset) return;
 
@@ -1022,6 +1118,11 @@ window.transferIndividual = (customId) => {
 };
 
 window.deleteIndividual = async (customId) => {
+  if (!INVENTORY_ACCESS.canDeleteAsset) {
+    showMessage('Only admins can delete assets.', 'error');
+    return;
+  }
+
   const assetToDelete = currentAssets.find(a => a.customId === customId);
   const confirmed = await confirmInventoryAction({
     title: 'Delete Asset',
@@ -1032,7 +1133,7 @@ window.deleteIndividual = async (customId) => {
   if (!confirmed) return;
 
   try {
-    const response = await fetch(`${API_URL}/assets/${encodeURIComponent(customId)}`, { method: 'DELETE' });
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(customId)}`, { method: 'DELETE' });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.message || 'Failed to delete asset');
@@ -1056,6 +1157,11 @@ window.deleteIndividual = async (customId) => {
 };
 
 window.bulkTransferGroup = (assetName) => {
+  if (!INVENTORY_ACCESS.canTransferAsset) {
+    showMessage('Only admins and senior technicians can transfer assets.', 'error');
+    return;
+  }
+
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
 
@@ -1077,6 +1183,11 @@ window.bulkTransferGroup = (assetName) => {
 };
 
 window.bulkDeleteGroup = async (assetName) => {
+  if (!INVENTORY_ACCESS.canDeleteAsset) {
+    showMessage('Only admins can delete assets.', 'error');
+    return;
+  }
+
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
 
@@ -1090,7 +1201,7 @@ window.bulkDeleteGroup = async (assetName) => {
 
   try {
     for (const asset of groupAssets) {
-      const response = await fetch(`${API_URL}/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(`Failed to delete ${asset.customId}`);
     }
 
@@ -1123,7 +1234,7 @@ window.viewTransferHistory = async (customId) => {
   historyModal.show();
 
   try {
-    const response = await fetch(`${API_URL}/assets/${encodeURIComponent(customId)}/history`);
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(customId)}/history`);
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.message || 'Failed to load asset history');
@@ -1237,6 +1348,11 @@ function updateInferredQualityPreview() {
 }
 
 window.submitTransfer = async () => {
+  if (!INVENTORY_ACCESS.canTransferAsset) {
+    showMessage('Only admins and senior technicians can transfer assets.', 'error');
+    return;
+  }
+
   const buildingChecked = document.getElementById('checkBuilding').checked;
   const deptChecked = document.getElementById('checkDept').checked;
   const buildingValue = document.getElementById('buildingSelect').value;
@@ -1267,7 +1383,7 @@ window.submitTransfer = async () => {
     if (!isBulk) {
       if (buildingChecked) {
         const transferData = { destType: 'building', destination: buildingValue, quantityToMove: quantity };
-        const response = await fetch(`${API_URL}/assets/${selectedAssetCustomId}/transfer`, {
+        const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
         });
         if (!response.ok) throw new Error((await response.json()).message || 'Building transfer failed');
@@ -1275,7 +1391,7 @@ window.submitTransfer = async () => {
 
       if (deptChecked) {
         const transferData = { destType: 'department', destination: deptValue, quantityToMove: quantity };
-        const response = await fetch(`${API_URL}/assets/${selectedAssetCustomId}/transfer`, {
+        const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
         });
         if (!response.ok) throw new Error((await response.json()).message || 'Department transfer failed');
@@ -1287,7 +1403,7 @@ window.submitTransfer = async () => {
       for (const asset of assetsToTransfer) {
         if (buildingChecked) {
           const transferData = { destType: 'building', destination: buildingValue, quantityToMove: 1 };
-          const response = await fetch(`${API_URL}/assets/${asset.customId}/transfer`, {
+          const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
           });
           if (!response.ok) throw new Error((await response.json()).message || `Building transfer failed for ${asset.customId}`);
@@ -1295,7 +1411,7 @@ window.submitTransfer = async () => {
 
         if (deptChecked) {
           const transferData = { destType: 'department', destination: deptValue, quantityToMove: 1 };
-          const response = await fetch(`${API_URL}/assets/${asset.customId}/transfer`, {
+          const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
           });
           if (!response.ok) throw new Error((await response.json()).message || `Department transfer failed for ${asset.customId}`);
@@ -1359,6 +1475,11 @@ window.viewOperationalTelemetry = async (customId) => {
 };
 
 window.editSpecs = (assetNameOrId, isGroupEdit = false) => {
+  if (!INVENTORY_ACCESS.canEditSpecs) {
+    showMessage('Only admins and senior technicians can edit specifications.', 'error');
+    return;
+  }
+
   let targetAssets = [];
 
   if (isGroupEdit) {
@@ -1392,6 +1513,11 @@ window.editSpecs = (assetNameOrId, isGroupEdit = false) => {
 };
 
 window.saveUpdatedSpecs = async () => {
+  if (!INVENTORY_ACCESS.canEditSpecs) {
+    showMessage('Only admins and senior technicians can edit specifications.', 'error');
+    return;
+  }
+
   const textArea = document.getElementById('editSpecTextArea');
   const specsText = textArea.value;
   const saveBtn = document.getElementById('saveSpecsBtn');
@@ -1405,7 +1531,7 @@ window.saveUpdatedSpecs = async () => {
 
     const assetsToUpdate = window._editingAssets || [];
     for (const asset of assetsToUpdate) {
-      const response = await fetch(`${API_URL}/assets/${asset.customId}/details`, {
+      const response = await inventoryRequest(`/assets/${asset.customId}/details`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ specifications: specs }),
@@ -1760,4 +1886,3 @@ window.syncFilters = syncFilters;
 window.filterGroupTable = filterGroupTable;
 window.handleSearchKeyPress = handleSearchKeyPress;
 window.filterDetailsTable = filterDetailsTable;
-

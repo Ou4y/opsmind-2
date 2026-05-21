@@ -22,7 +22,3 @@ window.OPSMIND_SLA_URL = window.OPSMIND_SLA_URL || 'http://localhost:3004'; // S
 window.OPSMIND_NOTIFICATION_URL = window.OPSMIND_NOTIFICATION_URL || 'http://localhost:3005/api/notifications'; // Notification Service
 window.OPSMIND_INVENTORY_API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api'; // Inventory Service
 window.OPSMIND_REPORT_API_URL = window.OPSMIND_REPORT_API_URL || 'http://localhost:3006/analytics'; // Reporting Service
-
-// Google Gemini AI Configuration
-window.GEMINI_API_KEY = window.GEMINI_API_KEY || '';
-window.GEMINI_API_URL = window.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent';

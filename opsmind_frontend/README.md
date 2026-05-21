@@ -91,7 +91,7 @@ opsmind_frontend/
     ├── workflowService.js  # Workflow API (extended with ticket routing)
     ├── aiService.js        # AI recommendations API
     ├── userService.js      # User management API
-    └── geminiService.js    # Gemini AI integration
+    └── ollamaService.js    # Ticket Service AI endpoint client
 ```
 
 ## Tech Stack

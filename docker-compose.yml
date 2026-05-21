@@ -218,6 +218,10 @@ services:
       WORKFLOW_SERVICE_URL: http://workflow-service:3003
       AI_SERVICE_URL: http://ai-service:8000
       AI_SERVICE_TIMEOUT_MS: "3000"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-45000}
+      AI_DEBUG_RAW_OUTPUT: ${AI_DEBUG_RAW_OUTPUT:-false}
       INTERNAL_API_TOKEN: "opsmind-internal-dev-token"
 
       CORS_ORIGINS: http://localhost:8085,http://localhost:8080
@@ -308,6 +312,7 @@ services:
     environment:
       PORT: "5000"
       NODE_ENV: "production"
+      JWT_SECRET: "opsmind-local-jwt"
 
       DATABASE_URL: postgresql://postgres:IS1234567@postgres-inventory:5432/opsmind_assets
       RABBITMQ_URI: amqp://opsmind:opsmind@rabbitmq:5672
@@ -446,8 +451,6 @@ services:
       OPSMIND_NOTIFICATION_URL: ${OPSMIND_NOTIFICATION_URL:-http://localhost:3005/api/notifications}
       OPSMIND_INVENTORY_API_URL: ${OPSMIND_INVENTORY_API_URL:-http://localhost:5000/api}
       OPSMIND_REPORT_API_URL: ${OPSMIND_REPORT_API_URL:-http://localhost:3006/analytics}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_API_URL: ${GEMINI_API_URL:-https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent}
       NODE_ENV: production
       PORT: 85
     ports:

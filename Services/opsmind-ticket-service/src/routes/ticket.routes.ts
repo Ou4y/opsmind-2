@@ -25,6 +25,8 @@ import {
   Priority,
   PriorityFallbackDecision,
 } from "../utils/aiServiceClient";
+import { evaluateAiAgentEligibility } from "../utils/aiAgentEligibility";
+import { IssueScope, OperatingSystemType } from "@prisma/client";
 
 const router = Router();
 
@@ -34,7 +36,7 @@ const router = Router();
  *   post:
  *     tags: [Tickets]
  *     summary: Create a ticket
- *     description: "User-provided fields: title, description, type_of_request, requester_id, latitude, longitude. Priority, support level, and initial status (OPEN) are system-assigned. GPS coordinates are used by the Workflow Service for location-aware technician assignment weighted by proximity, workload, and priority."
+ *     description: "User-provided fields: title, description, type_of_request, requester_id, latitude, longitude, plus optional endpoint context for future agentic AI routing. Priority, support level, and initial status (OPEN) are system-assigned. GPS coordinates are used by the Workflow Service for location-aware technician assignment weighted by proximity, workload, and priority."
  *     requestBody:
  *       required: true
  *       content:
@@ -63,6 +65,23 @@ const router = Router();
  *                 minimum: -180
  *                 maximum: 180
  *                 description: GPS longitude of the incident location — used for intelligent assignment
+ *               affectedDeviceId:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Soft reference to a future endpoint-device registry record (no FK yet)
+ *               affectedDeviceName:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Human-readable device name supplied by requester
+ *               osType:
+ *                 type: string
+ *                 enum: [WINDOWS, MACOS, LINUX, UNKNOWN]
+ *               issueScope:
+ *                 type: string
+ *                 enum: [MY_DEVICE, ROOM_DEVICE, MULTIPLE_DEVICES, BUILDING_WIDE, UNKNOWN]
+ *               remoteSupportConsent:
+ *                 type: boolean
+ *                 description: Whether requester consents to remote support actions
  *     responses:
  *       201:
  *         description: Created
@@ -80,19 +99,40 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
       category,
       building,
       room,
+      affectedDeviceId,
+      affectedDeviceName,
+      osType,
+      issueScope,
+      remoteSupportConsent,
       latitude,
       longitude,
-    } = req.body as CreateTicketInput & {
-      requester_role?: string;
-      topic?: string;
-      product_group?: string;
-      category?: string;
-      building?: string;
-      room?: string;
-    };
+    } = req.body as CreateTicketInput;
 
     const ticketId = randomUUID();
     const createdAt = new Date();
+    const normalizedAffectedDeviceId =
+      typeof affectedDeviceId === "string" && affectedDeviceId.trim().length > 0
+        ? affectedDeviceId.trim()
+        : null;
+    const normalizedAffectedDeviceName =
+      typeof affectedDeviceName === "string" && affectedDeviceName.trim().length > 0
+        ? affectedDeviceName.trim()
+        : null;
+    const normalizedOsType: OperatingSystemType = (osType ?? "UNKNOWN") as OperatingSystemType;
+    const normalizedIssueScope: IssueScope = (issueScope ?? "UNKNOWN") as IssueScope;
+    const hasRemoteSupportConsent = remoteSupportConsent === true;
+    const remoteSupportConsentAt = hasRemoteSupportConsent ? createdAt : null;
+    const remoteSupportConsentBy = hasRemoteSupportConsent ? requester_id : null;
+    const aiAgentEligibility = evaluateAiAgentEligibility({
+      title,
+      description,
+      typeOfRequest: type_of_request,
+      category,
+      issueScope: normalizedIssueScope,
+      remoteSupportConsent: hasRemoteSupportConsent,
+      osType: normalizedOsType,
+      affectedDeviceId: normalizedAffectedDeviceId,
+    });
 
     let aiDecision: {
       finalPriority: Priority;
@@ -180,6 +220,15 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
         description,
         type_of_request,
         requester_id,
+        affected_device_id: normalizedAffectedDeviceId,
+        affected_device_name: normalizedAffectedDeviceName,
+        os_type: normalizedOsType,
+        issue_scope: normalizedIssueScope,
+        remote_support_consent: hasRemoteSupportConsent,
+        remote_support_consent_at: remoteSupportConsentAt,
+        remote_support_consent_by: remoteSupportConsentBy,
+        ai_agent_eligible: aiAgentEligibility.aiAgentEligible,
+        ai_agent_eligibility_reason: aiAgentEligibility.aiAgentEligibilityReason,
         latitude,
         longitude,
         priority: priority as any,
@@ -210,6 +259,10 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
       requester_id: ticket.requester_id,
       ai_prediction_status: (ticket as any).ai_prediction_status,
       ai_decision_source: (ticket as any).ai_decision_source,
+      affected_device_id: (ticket as any).affected_device_id,
+      os_type: (ticket as any).os_type,
+      issue_scope: (ticket as any).issue_scope,
+      ai_agent_eligible: (ticket as any).ai_agent_eligible,
     });
     
     await publishTicketCreated(ticket);

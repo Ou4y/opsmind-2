@@ -27,37 +27,54 @@
             max-height: 400px;
             overflow-y: auto;
         }
+
+        .ai-stream-output {
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.55;
+            min-height: 120px;
+        }
+
+        .ai-stream-cursor {
+            display: inline-block;
+            width: 0.65ch;
+            border-left: 2px solid #334155;
+            margin-left: 1px;
+            animation: ai-cursor-blink 1s steps(1, end) infinite;
+            vertical-align: baseline;
+        }
+
+        @keyframes ai-cursor-blink {
+            50% {
+                opacity: 0;
+            }
+        }
+
+        .ai-stream-status {
+            font-size: 0.88rem;
+            color: #64748b;
+            margin-bottom: 0.6rem;
+        }
         
-        .ai-suggestions-content h6 {
-            color: #667eea;
+        .ai-step-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 0.75rem;
+            background: #ffffff;
+        }
+
+        .ai-step-order {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.82rem;
             font-weight: 600;
-            margin-top: 1rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .ai-suggestions-content h6:first-child {
-            margin-top: 0;
-        }
-        
-        .ai-suggestions-content ol,
-        .ai-suggestions-content ul {
-            margin-bottom: 0.5rem;
-        }
-        
-        .ai-suggestions-content li {
-            margin-bottom: 0.5rem;
-            line-height: 1.6;
-        }
-        
-        .ai-suggestions-content strong {
-            color: #1e293b;
-        }
-        
-        .ai-suggestions-content code {
-            background: #e9ecef;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.9em;
+            background: #0d6efd;
+            color: #fff;
+            flex-shrink: 0;
         }
         
         #aiHelpBtn {
@@ -68,6 +85,29 @@
         #aiHelpBtn:hover {
             background: #667eea;
             color: white;
+        }
+
+        #enhanceDescriptionBtn {
+            border-color: #22c55e;
+            color: #15803d;
+        }
+
+        #enhanceDescriptionBtn:hover {
+            background: #22c55e;
+            color: white;
+        }
+
+        #newTicketDescription.description-enhancing {
+            border-color: #22c55e;
+            box-shadow: 0 0 0 0.2rem rgba(34, 197, 94, 0.2);
+        }
+
+        .enhanced-preview-box {
+            background: #f8fafc;
+            border: 1px solid #dbeafe;
+            border-radius: 8px;
+            padding: 0.75rem;
+            min-height: 80px;
         }
         
         .flex-grow-1 {
@@ -540,15 +580,14 @@
                             <div class="col-12 col-md-4">
                                 <label for="newTicketCategory" class="form-label">Category <span class="text-danger">*</span></label>
                                 <select class="form-select" id="newTicketCategory" required>
-                                    <option value="NETWORK">Network</option>
+                                    <option value="NETWORK">Network / Internet</option>
+                                    <option value="PRINTER">Printer</option>
+                                    <option value="PERFORMANCE">Performance / Slow Device</option>
+                                    <option value="STORAGE">Storage / Disk Space</option>
+                                    <option value="SOFTWARE">Software / Application</option>
                                     <option value="HARDWARE">Hardware</option>
-                                    <option value="SOFTWARE">Software</option>
-                                    <option value="CLOUD">Cloud</option>
-                                    <option value="AUTHENTICATION">Authentication</option>
-                                    <option value="DATABASE">Database</option>
-                                    <option value="APPLICATION">Application</option>
-                                    <option value="PORTAL">Portal</option>
-                                    <option value="OTHER" selected>Other</option>
+                                    <option value="ACCESS">Account / Access</option>
+                                    <option value="OTHER">Other</option>
                                 </select>
                                 <div class="invalid-feedback">Please select a category.</div>
                             </div>
@@ -557,6 +596,54 @@
                                 <label for="newTicketPriority" class="form-label">Priority</label>
                                 <input type="text" class="form-control" id="newTicketPriority" value="System Assigned" disabled>
                                 <small class="text-muted">Priority is automatically assigned by backend rules and AI.</small>
+                            </div>
+
+                            <!-- Device & Remote Support -->
+                            <div class="col-12">
+                                <label class="form-label">Device &amp; Remote Support</label>
+                                <div class="card border-secondary">
+                                    <div class="card-body">
+                                        <div class="row g-3">
+                                            <div class="col-12 col-md-6">
+                                                <label for="newTicketAffectedDevice" class="form-label">Which device has the issue?</label>
+                                                <select class="form-select" id="newTicketAffectedDevice">
+                                                    <option value="MY_CURRENT_DEVICE" selected>My current device</option>
+                                                    <option value="OTHER_NOT_LISTED">Other / Not listed</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label for="newTicketOsType" class="form-label">What operating system is on this device?</label>
+                                                <select class="form-select" id="newTicketOsType">
+                                                    <option value="WINDOWS" selected>Windows</option>
+                                                    <option value="MACOS">macOS</option>
+                                                    <option value="LINUX">Linux</option>
+                                                    <option value="UNKNOWN">I am not sure</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-12">
+                                                <label for="newTicketIssueScope" class="form-label">Where is the problem happening?</label>
+                                                <select class="form-select" id="newTicketIssueScope">
+                                                    <option value="MY_DEVICE" selected>Only my device</option>
+                                                    <option value="ROOM_DEVICE">A room/lab device</option>
+                                                    <option value="MULTIPLE_DEVICES">Multiple devices around me</option>
+                                                    <option value="BUILDING_WIDE">Whole building/area</option>
+                                                    <option value="UNKNOWN">I am not sure</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" id="newTicketRemoteSupportConsent">
+                                                    <label class="form-check-label" for="newTicketRemoteSupportConsent">
+                                                        I allow IT support to run approved remote diagnostics or repair actions on the selected device for this ticket.
+                                                    </label>
+                                                </div>
+                                                <small class="text-muted d-block mt-2">
+                                                    A technician must approve any AI-generated plan before actions are performed.
+                                                </small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Location Section -->
@@ -607,6 +694,11 @@
                             <div class="col-12">
                                 <label for="newTicketDescription" class="form-label">Description <span class="text-danger">*</span></label>
                                 <textarea class="form-control" id="newTicketDescription" rows="5" required placeholder="Please describe the issue in detail..."></textarea>
+                                <div id="enhanceDescriptionStatus" class="form-text text-muted d-none"></div>
+                                <div id="enhancedDescriptionPreviewWrap" class="mt-2 d-none">
+                                    <div class="small text-muted mb-1">Enhanced preview</div>
+                                    <div id="enhancedDescriptionPreviewText" class="enhanced-preview-box ai-stream-output" aria-live="polite"></div>
+                                </div>
                                 <div class="invalid-feedback">Please provide a description.</div>
                             </div>
                         </div>
@@ -617,7 +709,15 @@
                             <span class="btn-text">AI Help</span>
                             <span class="btn-loader d-none">
                                 <span class="spinner-border spinner-border-sm me-1" role="status"></span>
-                                Getting suggestions...
+                                AI is writing steps...
+                            </span>
+                        </button>
+                        <button type="button" class="btn btn-outline-success" id="enhanceDescriptionBtn">
+                            <i class="bi bi-pencil-square me-1"></i>
+                            <span class="btn-text">Enhance Description</span>
+                            <span class="btn-loader d-none">
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                AI is improving...
                             </span>
                         </button>
                         <div class="flex-grow-1"></div>
@@ -646,25 +746,19 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <!-- Loading State -->
-                    <div id="aiHelpLoading" class="text-center py-5">
-                        <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
-                            <span class="visually-hidden">Loading...</span>
-                        </div>
-                        <p class="text-muted">AI is analyzing your ticket and generating troubleshooting steps...</p>
-                    </div>
-
                     <!-- AI Suggestions Content -->
-                    <div id="aiHelpContent" class="d-none">
+                    <div id="aiHelpContent">
                         <div class="alert alert-info d-flex align-items-start mb-3">
                             <i class="bi bi-info-circle-fill me-2 mt-1"></i>
                             <div>
-                                <strong>AI-Generated Suggestions</strong>
-                                <p class="mb-0 small">Based on your ticket details, here are some troubleshooting steps you can try before submitting.</p>
+                                <strong>AI Action Plan</strong>
+                                <p class="mb-0 small">Simple steps you can try safely before submitting.</p>
                             </div>
                         </div>
+
+                        <div id="aiHelpStreamStatus" class="ai-stream-status"></div>
                         
-                        <div id="aiSuggestionsText" class="ai-suggestions-content">
+                        <div id="aiSuggestionsText" class="ai-suggestions-content ai-stream-output" aria-live="polite">
                             <!-- AI suggestions will be inserted here -->
                         </div>
                     </div>

@@ -54,6 +54,7 @@ services:
     environment:
       - PORT=5000
       - NODE_ENV=production
+      - JWT_SECRET=opsmind-local-jwt
       - DATABASE_URL=postgresql://postgres:IS1234567@postgres:5432/opsmind_assets
       - RABBITMQ_URI=amqp://opsmind:opsmind@opsmind-rabbitmq:5672
     depends_on:

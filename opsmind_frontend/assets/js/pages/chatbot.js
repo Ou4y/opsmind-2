@@ -1,4 +1,4 @@
-import GeminiService from '/services/geminiService.js';
+import OllamaService from '/services/ollamaService.js';
 
 let conversationHistory = [];
 
@@ -18,8 +18,8 @@ async function sendMessage(messageText) {
     showTypingIndicator();
     
     try {
-        // IMPORTANT: Call the actual Gemini API, not quick response
-        const response = await GeminiService.generateResponse(messageText, conversationHistory);
+        // Call backend AI endpoint (Ollama is invoked server-side)
+        const response = await OllamaService.generateResponse(messageText, conversationHistory);
         
         // Hide typing indicator
         hideTypingIndicator();

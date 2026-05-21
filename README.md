@@ -109,7 +109,9 @@ Edit `.env` as needed. At minimum, review:
 - `OPSMIND_TICKET_URL`
 - `OPSMIND_WORKFLOW_API_URL`
 - `OPSMIND_AI_API_URL`
-- `GEMINI_API_KEY`
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- `OLLAMA_TIMEOUT_MS`
 
 ### 2. Build and start everything
 

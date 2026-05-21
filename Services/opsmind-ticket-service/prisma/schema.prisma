@@ -35,6 +35,21 @@ enum RequestType {
   MAINTENANCE
 }
 
+enum OperatingSystemType {
+  WINDOWS
+  MACOS
+  LINUX
+  UNKNOWN
+}
+
+enum IssueScope {
+  MY_DEVICE
+  ROOM_DEVICE
+  MULTIPLE_DEVICES
+  BUILDING_WIDE
+  UNKNOWN
+}
+
 enum AssignmentMethod {
   AUTOMATIC
   MANUAL
@@ -50,6 +65,15 @@ model Ticket {
   description        String           @db.Text
   type_of_request    RequestType      @default(INCIDENT) // ENUM
   requester_id       String           // UUID
+  affected_device_id String?
+  affected_device_name String?
+  os_type            OperatingSystemType @default(UNKNOWN)
+  issue_scope        IssueScope       @default(UNKNOWN)
+  remote_support_consent Boolean      @default(false)
+  remote_support_consent_at DateTime?
+  remote_support_consent_by String?
+  ai_agent_eligible  Boolean          @default(false)
+  ai_agent_eligibility_reason String?
   latitude           Float
   longitude          Float
   assigned_to        String?          // UUID, nullable
@@ -83,6 +107,9 @@ model Ticket {
   @@index([priority])
   @@index([assigned_to])
   @@index([created_at])
+  @@index([affected_device_id])
+  @@index([ai_agent_eligible])
+  @@index([issue_scope])
 }
 
 model TicketEscalation {

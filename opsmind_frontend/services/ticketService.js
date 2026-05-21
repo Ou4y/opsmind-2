@@ -31,8 +31,14 @@ const API_BASE_URL = (
  * @property {string} [requester_id]
  * @property {string} [requester_role]
  * @property {string} [product_group]
+ * @property {string} [category]
  * @property {number} [latitude]
  * @property {number} [longitude]
+ * @property {string|null} [affected_device_id]
+ * @property {string|null} [affected_device_name]
+ * @property {string} [os_type]
+ * @property {string} [issue_scope]
+ * @property {boolean} [remote_support_consent]
  * @property {string} [created_at]
  * @property {string} [updated_at]
  * @property {string} [ai_prediction_status]
@@ -55,8 +61,14 @@ const API_BASE_URL = (
  * @property {string} requester_id
  * @property {string} [requester_role]
  * @property {string} [product_group]
+ * @property {string} [category]
  * @property {number} latitude
  * @property {number} longitude
+ * @property {string|null} [affectedDeviceId]
+ * @property {string|null} [affectedDeviceName]
+ * @property {"WINDOWS"|"MACOS"|"LINUX"|"UNKNOWN"} [osType]
+ * @property {"MY_DEVICE"|"ROOM_DEVICE"|"MULTIPLE_DEVICES"|"BUILDING_WIDE"|"UNKNOWN"} [issueScope]
+ * @property {boolean} [remoteSupportConsent]
  */
 
 /**

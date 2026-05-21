@@ -9,10 +9,8 @@ set -eu
 : "${OPSMIND_NOTIFICATION_URL:=http://localhost:3005/api/notifications}"
 : "${OPSMIND_INVENTORY_API_URL:=http://localhost:5000/api}"
 : "${OPSMIND_REPORT_API_URL:=http://localhost:3006/analytics}"
-: "${GEMINI_API_KEY:=}"
-: "${GEMINI_API_URL:=https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent}"
 
-envsubst '${OPSMIND_API_URL} ${OPSMIND_TICKET_URL} ${OPSMIND_WORKFLOW_API_URL} ${OPSMIND_AI_API_URL} ${OPSMIND_SLA_URL} ${OPSMIND_NOTIFICATION_URL} ${OPSMIND_INVENTORY_API_URL} ${OPSMIND_REPORT_API_URL} ${GEMINI_API_KEY} ${GEMINI_API_URL}' \
+envsubst '${OPSMIND_API_URL} ${OPSMIND_TICKET_URL} ${OPSMIND_WORKFLOW_API_URL} ${OPSMIND_AI_API_URL} ${OPSMIND_SLA_URL} ${OPSMIND_NOTIFICATION_URL} ${OPSMIND_INVENTORY_API_URL} ${OPSMIND_REPORT_API_URL}' \
   < /app/assets/js/config.template.js \
   > /app/assets/js/config.js
 

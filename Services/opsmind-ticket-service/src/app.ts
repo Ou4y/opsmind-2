@@ -1,12 +1,14 @@
 import express from "express";
 import cors from "cors";
 import ticketRouter from "./routes/ticket.routes";
+import aiRouter from "./routes/ai.routes";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { requestIdMiddleware } from "./middleware/requestId.middleware";
 import { connectRabbitMQ, checkRabbitMQConnection } from "./lib/rabbitmq";
 import { checkDatabaseConnection } from "./lib/prisma";
 import { config } from "./config";
 import { logger } from "./config/logger";
+import { requesterAiOllamaService } from "./services/requesterAiOllama.service";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./docs/swagger";
 //import { setupGracefulShutdown } from "./utils/gracefulShutdown";
@@ -88,6 +90,7 @@ app.get("/health/ready", async (_req, res) => {
 
 // Routes
 app.use("/tickets", ticketRouter);
+app.use("/ai", aiRouter);
 
 // Error handler (must be last)
 app.use(errorMiddleware);
@@ -100,6 +103,16 @@ async function bootstrap() {
   } catch (error) {
     logger.warn("RabbitMQ not available at startup, will retry in background");
   }
+
+  requesterAiOllamaService
+    .warmup()
+    .then(() => {
+      logger.info("Requester AI model warm-up completed");
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown";
+      logger.warn("Requester AI model warm-up skipped or failed", { error: message });
+    });
 
   return app;
 }

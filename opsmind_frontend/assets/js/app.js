@@ -244,26 +244,40 @@ const App = {
      */
     applyRoleBasedVisibility() {
         const user = AuthService.getUser();
-        if (!user || !user.role) {
+        if (!user) {
             console.log('[App] No user role found, skipping role-based visibility');
             return;
         }
-        
-        const userRole = user.role.toUpperCase();
-        console.log('[App] Applying role-based visibility for role:', userRole);
+
+        const context = AuthService.resolveUserDashboardContext(user);
+        const roleSet = new Set();
+        const primaryRole = String(user.role || '').toUpperCase();
+        if (primaryRole) roleSet.add(primaryRole);
+        if (Array.isArray(user.roles)) {
+            user.roles.forEach((role) => roleSet.add(String(role || '').toUpperCase()));
+        }
+        if (context.technicianLevel) {
+            roleSet.add(String(context.technicianLevel).toUpperCase());
+        }
+        if (context.roleCategory === 'ADMIN') {
+            roleSet.add('ADMIN');
+        }
+
+        console.log('[App] Applying role-based visibility for roles:', Array.from(roleSet));
         
         // Find all elements with data-roles attribute
         const roleElements = document.querySelectorAll('[data-roles]');
         
         roleElements.forEach(element => {
             const allowedRoles = element.getAttribute('data-roles').split(',').map(r => r.trim().toUpperCase());
-            
-            if (allowedRoles.includes(userRole)) {
+
+            const canView = allowedRoles.some((role) => roleSet.has(role));
+            if (canView) {
                 element.style.display = '';
-                console.log('[App] Showing element for role:', userRole, element);
+                console.log('[App] Showing element for roles:', Array.from(roleSet), element);
             } else {
                 element.style.display = 'none';
-                console.log('[App] Hiding element for role:', userRole, element);
+                console.log('[App] Hiding element for roles:', Array.from(roleSet), element);
             }
         });
     },

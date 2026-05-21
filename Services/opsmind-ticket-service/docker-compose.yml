@@ -29,6 +29,10 @@ services:
       # AI Service
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
       AI_SERVICE_TIMEOUT_MS: ${AI_SERVICE_TIMEOUT_MS:-3000}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-45000}
+      AI_DEBUG_RAW_OUTPUT: ${AI_DEBUG_RAW_OUTPUT:-false}
 
       # SLA Service
       SLA_SERVICE_URL: http://opsmind-sla-service:3004

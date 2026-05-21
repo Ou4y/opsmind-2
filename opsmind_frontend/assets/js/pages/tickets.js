@@ -13,9 +13,10 @@
 import UI from '/assets/js/ui.js';
 import TicketService from '/services/ticketService.js';
 import WorkflowService from '/services/workflowService.js';
-import GeminiService from '/services/geminiService.js';
+import OllamaService from '/services/ollamaService.js';
 import Router from '/assets/js/router.js';
 import AuthService from '/services/authService.js';
+import createSmoothTextStreamer from '/assets/js/components/smoothTextStreamer.js';
 import {
     renderAiPriorityInsight,
     hasAiMetadata,
@@ -51,6 +52,23 @@ const state = {
 };
 
 const ticketAiDetailsCache = new Map();
+
+const DEVICE_NAME_BY_SELECTION = {
+    MY_CURRENT_DEVICE: 'My current device',
+    OTHER_NOT_LISTED: 'Other / Not listed'
+};
+
+const ALLOWED_OS_TYPES = new Set(['WINDOWS', 'MACOS', 'LINUX', 'UNKNOWN']);
+const ALLOWED_ISSUE_SCOPES = new Set([
+    'MY_DEVICE',
+    'ROOM_DEVICE',
+    'MULTIPLE_DEVICES',
+    'BUILDING_WIDE',
+    'UNKNOWN'
+]);
+
+let isAiHelpStreaming = false;
+let isEnhancementStreaming = false;
 
 /**
  * Initialize the tickets page
@@ -151,6 +169,7 @@ function setupEventListeners() {
 
     // AI Help button
     document.getElementById('aiHelpBtn')?.addEventListener('click', handleAIHelp);
+    document.getElementById('enhanceDescriptionBtn')?.addEventListener('click', handleEnhanceDescription);
     
     // Proceed with ticket creation from AI Help modal
     document.getElementById('proceedWithTicketBtn')?.addEventListener('click', () => {
@@ -1091,11 +1110,51 @@ async function triggerWorkflow(workflowId) {
  * Open create ticket modal
  */
 function openCreateModal() {
+    isAiHelpStreaming = false;
+    isEnhancementStreaming = false;
+
     const modal = document.getElementById('createTicketModal');
     const form = document.getElementById('createTicketForm');
     
     // Reset form
     UI.resetFormValidation(form);
+    form?.reset();
+    const affectedDeviceSelect = document.getElementById('newTicketAffectedDevice');
+    if (affectedDeviceSelect) affectedDeviceSelect.value = 'MY_CURRENT_DEVICE';
+    const osTypeSelect = document.getElementById('newTicketOsType');
+    if (osTypeSelect) osTypeSelect.value = 'WINDOWS';
+    const issueScopeSelect = document.getElementById('newTicketIssueScope');
+    if (issueScopeSelect) issueScopeSelect.value = 'MY_DEVICE';
+    const remoteConsentCheckbox = document.getElementById('newTicketRemoteSupportConsent');
+    if (remoteConsentCheckbox) remoteConsentCheckbox.checked = false;
+    const mapPicker = document.getElementById('mapPicker');
+    mapPicker?.classList.remove('d-none');
+    const locationStatus = document.getElementById('locationStatus');
+    locationStatus?.classList.add('d-none');
+    const locationError = document.getElementById('locationError');
+    if (locationError) locationError.style.display = 'none';
+    const aiHelpOutput = document.getElementById('aiSuggestionsText');
+    if (aiHelpOutput) {
+        aiHelpOutput.textContent = '';
+        aiHelpOutput.classList.add('ai-stream-output');
+    }
+    const aiHelpStatus = document.getElementById('aiHelpStreamStatus');
+    if (aiHelpStatus) {
+        aiHelpStatus.textContent = '';
+    }
+    document.getElementById('aiHelpError')?.classList.add('d-none');
+    document.getElementById('aiHelpContent')?.classList.remove('d-none');
+    const enhanceStatus = document.getElementById('enhanceDescriptionStatus');
+    if (enhanceStatus) {
+        enhanceStatus.textContent = '';
+        enhanceStatus.classList.add('d-none');
+        enhanceStatus.classList.remove('text-danger');
+    }
+    document.getElementById('enhancedDescriptionPreviewWrap')?.classList.add('d-none');
+    const enhancedPreviewText = document.getElementById('enhancedDescriptionPreviewText');
+    if (enhancedPreviewText) {
+        enhancedPreviewText.textContent = '';
+    }
     
     const modalInstance = new bootstrap.Modal(modal);
     modalInstance.show();
@@ -1301,7 +1360,15 @@ async function handleCreateTicket(e) {
     const title = document.getElementById('newTicketSubject').value.trim();
     const description = document.getElementById('newTicketDescription').value.trim();
     const type_of_request = document.getElementById('newTicketType')?.value || 'INCIDENT';
-    const product_group = document.getElementById('newTicketCategory')?.value || 'OTHER';
+    const category = document.getElementById('newTicketCategory')?.value || 'OTHER';
+    const deviceSelection = document.getElementById('newTicketAffectedDevice')?.value || 'MY_CURRENT_DEVICE';
+    const affectedDeviceId = null;
+    const affectedDeviceName = DEVICE_NAME_BY_SELECTION[deviceSelection] || null;
+    const osTypeRaw = String(document.getElementById('newTicketOsType')?.value || 'UNKNOWN').toUpperCase();
+    const issueScopeRaw = String(document.getElementById('newTicketIssueScope')?.value || 'UNKNOWN').toUpperCase();
+    const osType = ALLOWED_OS_TYPES.has(osTypeRaw) ? osTypeRaw : 'UNKNOWN';
+    const issueScope = ALLOWED_ISSUE_SCOPES.has(issueScopeRaw) ? issueScopeRaw : 'UNKNOWN';
+    const remoteSupportConsent = document.getElementById('newTicketRemoteSupportConsent')?.checked === true;
     
     // Location data (required)
     const lat = parseFloat(latitude);
@@ -1313,7 +1380,7 @@ async function handleCreateTicket(e) {
     const requester_role = resolveRequesterRole(currentUser);
 
     // Guard: backend requires title, description, type_of_request, latitude, longitude, requester_id
-    if (!title || !description || !type_of_request || !product_group || isNaN(lat) || isNaN(lng) || !requester_id) {
+    if (!title || !description || !type_of_request || !category || isNaN(lat) || isNaN(lng) || !requester_id) {
         UI.setButtonLoading(submitBtn, false);
         UI.error('All required fields must be filled. Make sure you are logged in and location is captured.');
         return;
@@ -1324,10 +1391,16 @@ async function handleCreateTicket(e) {
         title,
         description,
         type_of_request,
-        product_group,
+        product_group: category,
+        category,
         latitude: lat,
         longitude: lng,
-        requester_id
+        requester_id,
+        affectedDeviceId: affectedDeviceId,
+        affectedDeviceName: affectedDeviceName,
+        osType,
+        issueScope,
+        remoteSupportConsent
     };
 
     if (requester_role) {
@@ -1518,104 +1591,219 @@ function updateMapDisplay(lat, lng) {
  * Handle AI Help button click
  */
 async function handleAIHelp() {
+    if (isAiHelpStreaming) {
+        return;
+    }
+
     // Collect current form values
     const title = document.getElementById('newTicketSubject')?.value.trim() || '';
     const description = document.getElementById('newTicketDescription')?.value.trim() || '';
-    const type = document.getElementById('newTicketType')?.value || '';
-    const latitude = document.getElementById('newTicketLatitude')?.value || '';
-    const longitude = document.getElementById('newTicketLongitude')?.value || '';
+    const category = document.getElementById('newTicketCategory')?.value || '';
+    const osType = document.getElementById('newTicketOsType')?.value || '';
+    const deviceSelection = document.getElementById('newTicketAffectedDevice')?.value || '';
+    const deviceType = DEVICE_NAME_BY_SELECTION[deviceSelection] || 'Unknown';
     
-    // Check if user has filled in at least title and description
-    if (!title || !description) {
-        UI.warning('Please fill in at least the Title and Description fields to get AI suggestions.');
+    // Check if user has enough data for AI help
+    if (!title || !description || !category) {
+        UI.warning('Please fill in Title, Description, and Category to get AI help.');
         return;
     }
     
     // Show AI Help modal
     const aiHelpModal = new bootstrap.Modal(document.getElementById('aiHelpModal'));
     aiHelpModal.show();
-    
-    // Show loading state
-    document.getElementById('aiHelpLoading').classList.remove('d-none');
-    document.getElementById('aiHelpContent').classList.add('d-none');
-    document.getElementById('aiHelpError').classList.add('d-none');
-    
-    // Show loading on button
+
+    const aiHelpContent = document.getElementById('aiHelpContent');
+    const aiHelpError = document.getElementById('aiHelpError');
+    const aiHelpOutput = document.getElementById('aiSuggestionsText');
+    const aiHelpStatus = document.getElementById('aiHelpStreamStatus');
+
+    aiHelpContent?.classList.remove('d-none');
+    aiHelpError?.classList.add('d-none');
+
     const aiHelpBtn = document.getElementById('aiHelpBtn');
+    isAiHelpStreaming = true;
     UI.setButtonLoading(aiHelpBtn, true);
-    
+    setAiHelpButtonLoaderText('AI is writing steps...');
+
+    let streamer = null;
+    if (aiHelpOutput) {
+        streamer = createSmoothTextStreamer(aiHelpOutput, {
+            statusElement: aiHelpStatus,
+            scrollContainer: aiHelpOutput
+        });
+        streamer.reset('AI is writing steps...');
+    }
+
+    const payload = {
+        title,
+        description,
+        category,
+        osType,
+        deviceType
+    };
+
     try {
-        // Build detailed prompt for AI
-        const prompt = `I am creating an IT support ticket with the following details:
+        const streamedText = await OllamaService.streamUserAiHelp(payload, {
+            onChunk: (chunk) => streamer?.push(chunk)
+        });
 
-**Ticket Title:** ${title}
+        if (!String(streamedText || '').trim()) {
+            throw new Error('AI Help returned empty output.');
+        }
 
-**Description:** ${description}
-
-${type ? `**Type:** ${type}` : ''}
-${latitude && longitude ? `**Location:** Lat: ${latitude}, Lng: ${longitude}` : ''}
-
-As an IT support expert, please provide:
-1. A brief analysis of the issue
-2. Detailed troubleshooting steps the user can try before submitting the ticket
-3. What information they should gather if the issue persists
-4. Estimated urgency/priority of this issue
-
-Format your response with clear headings and numbered steps. Be specific and actionable.`;
-
-        // Call Gemini AI
-        const aiResponse = await GeminiService.generateResponse(prompt, []);
-        
-        // Hide loading, show content
-        document.getElementById('aiHelpLoading').classList.add('d-none');
-        document.getElementById('aiHelpContent').classList.remove('d-none');
-        
-        // Format and display the AI response
-        const formattedResponse = formatAIResponse(aiResponse);
-        document.getElementById('aiSuggestionsText').innerHTML = formattedResponse;
-        
+        streamer?.finish();
     } catch (error) {
         console.error('[AI Help] Error:', error);
-        
-        // Show error state
-        document.getElementById('aiHelpLoading').classList.add('d-none');
-        document.getElementById('aiHelpError').classList.remove('d-none');
-        document.getElementById('aiHelpErrorMessage').textContent = 
-            error.message || 'An error occurred while generating suggestions. Please try again.';
+        const fallbackMessage = 'AI Help could not generate steps right now. You can still submit the ticket normally.';
+        if (aiHelpOutput) {
+            aiHelpOutput.textContent = fallbackMessage;
+            aiHelpOutput.classList.add('ai-stream-output');
+        }
+        streamer?.error('');
+        if (aiHelpStatus) {
+            aiHelpStatus.textContent = '';
+        }
     } finally {
+        setAiHelpButtonLoaderText('AI is writing steps...');
         UI.setButtonLoading(aiHelpBtn, false);
+        isAiHelpStreaming = false;
     }
 }
 
-/**
- * Format AI response with proper HTML
- */
-function formatAIResponse(text) {
-    // Convert markdown-style formatting to HTML
-    let formatted = text
-        // Headers (##)
-        .replace(/##\s+(.+)/g, '<h6>$1</h6>')
-        // Bold (**text**)
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        // Italic (*text*)
-        .replace(/\*(.+?)\*/g, '<em>$1</em>')
-        // Code (`code`)
-        .replace(/`(.+?)`/g, '<code>$1</code>')
-        // Line breaks
-        .replace(/\n\n/g, '</p><p>')
-        .replace(/\n/g, '<br>');
-    
-    // Wrap in paragraph
-    formatted = '<p>' + formatted + '</p>';
-    
-    // Convert numbered lists (1. 2. 3.)
-    formatted = formatted.replace(/(\d+)\.\s+(.+?)(?=<br>|<\/p>)/g, '<li>$2</li>');
-    formatted = formatted.replace(/(<li>.*<\/li>)/s, '<ol>$1</ol>');
-    
-    // Convert bullet lists (- or *)
-    formatted = formatted.replace(/[-*]\s+(.+?)(?=<br>|<\/p>)/g, '<li>$1</li>');
-    
-    return formatted;
+function normalizeEnhancedDescription(rawText) {
+    if (!rawText) return '';
+
+    const cleaned = String(rawText)
+        .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ''))
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line) => !/^#{1,6}\s/.test(line))
+        .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, ''))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return cleaned;
+}
+
+function applyEnhancedDescription(textarea, text) {
+    return new Promise((resolve) => {
+        const targetText = String(text || '');
+        textarea.classList.add('description-enhancing');
+        textarea.value = targetText;
+        textarea.scrollTop = textarea.scrollHeight;
+
+        setTimeout(() => {
+            textarea.classList.remove('description-enhancing');
+            resolve();
+        }, 180);
+    });
+}
+
+async function handleEnhanceDescription() {
+    if (isEnhancementStreaming) {
+        return;
+    }
+
+    const descriptionInput = document.getElementById('newTicketDescription');
+    const title = document.getElementById('newTicketSubject')?.value.trim() || '';
+    const description = descriptionInput?.value || '';
+    const category = document.getElementById('newTicketCategory')?.value || '';
+    const statusEl = document.getElementById('enhanceDescriptionStatus');
+    const previewWrap = document.getElementById('enhancedDescriptionPreviewWrap');
+    const previewText = document.getElementById('enhancedDescriptionPreviewText');
+
+    if (!descriptionInput) return;
+
+    if (!description.trim()) {
+        UI.warning('Please enter a description before enhancing.');
+        return;
+    }
+
+    if (statusEl) {
+        statusEl.classList.remove('d-none', 'text-danger');
+        statusEl.classList.add('text-muted');
+        statusEl.textContent = 'AI is improving the description...';
+    }
+
+    const enhanceBtn = document.getElementById('enhanceDescriptionBtn');
+    const originalDescription = descriptionInput.value;
+    let streamer = null;
+
+    isEnhancementStreaming = true;
+    UI.setButtonLoading(enhanceBtn, true);
+    setEnhanceButtonLoaderText('AI is improving...');
+
+    if (previewWrap) {
+        previewWrap.classList.remove('d-none');
+    }
+
+    if (previewText) {
+        streamer = createSmoothTextStreamer(previewText, {
+            statusElement: statusEl,
+            scrollContainer: previewText
+        });
+        streamer.reset('AI is improving the description...');
+    }
+
+    try {
+        const enhancedByAi = await OllamaService.streamDescriptionEnhancement({
+            title,
+            description,
+            category
+        }, {
+            onChunk: (chunk) => streamer?.push(chunk)
+        });
+
+        const enhancedText = normalizeEnhancedDescription(enhancedByAi);
+        if (!enhancedText) {
+            throw new Error('Description enhancement returned empty output.');
+        }
+
+        await applyEnhancedDescription(descriptionInput, enhancedText);
+        streamer?.finish();
+        if (statusEl) {
+            statusEl.textContent = '';
+            statusEl.classList.add('d-none');
+            statusEl.classList.remove('text-danger');
+        }
+        UI.success('Description enhanced. Please review before creating the ticket.');
+    } catch (error) {
+        console.error('[Enhance Description] Error:', error);
+        descriptionInput.value = originalDescription;
+        streamer?.error('AI could not improve the description right now.');
+        if (statusEl) {
+            statusEl.textContent = 'AI could not improve the description right now.';
+            statusEl.classList.remove('d-none');
+            statusEl.classList.add('text-danger');
+        }
+    } finally {
+        setEnhanceButtonLoaderText('AI is improving...');
+        UI.setButtonLoading(enhanceBtn, false);
+        isEnhancementStreaming = false;
+    }
+}
+
+function setAiHelpButtonLoaderText(text) {
+    const aiHelpBtn = document.getElementById('aiHelpBtn');
+    const loader = aiHelpBtn?.querySelector('.btn-loader');
+    if (!loader) return;
+    loader.innerHTML = `
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        ${UI.escapeHTML(String(text || 'AI is writing steps...'))}
+    `;
+}
+
+function setEnhanceButtonLoaderText(text) {
+    const enhanceBtn = document.getElementById('enhanceDescriptionBtn');
+    const loader = enhanceBtn?.querySelector('.btn-loader');
+    if (!loader) return;
+    loader.innerHTML = `
+        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        ${UI.escapeHTML(String(text || 'AI is improving...'))}
+    `;
 }
 
 /**

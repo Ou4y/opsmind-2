@@ -398,9 +398,15 @@
     <script type="module" src="/assets/js/app.js"></script>
     <script type="module">
         import AuthService from '/services/authService.js';
-        if (!AuthService.isAuthenticated() || !(AuthService.isAdmin() || AuthService.isTechnician())) {
-            sessionStorage.setItem('opsmind_error', '⚠️ Access Denied: Admin or Technician required to access Inventory.');
-            window.location.href = 'dashboard.html';
+        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+        const technicianLevel = String(context.technicianLevel || '').toUpperCase();
+        const canAccessInventory =
+            context.roleCategory === 'ADMIN' ||
+            ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
+
+        if (!AuthService.isAuthenticated() || !canAccessInventory) {
+            sessionStorage.setItem('opsmind_error', '⚠️ Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
+            window.location.href = context.dashboardPath || '/pages/dashboard.html';
         }
     </script>
     

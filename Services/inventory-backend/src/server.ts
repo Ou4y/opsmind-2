@@ -14,6 +14,7 @@ import ticketRoutes from './routes/ticketRoutes';
 import configRoutes from './routes/configRoutes';
 import { notificationService } from './services/NotificationService';
 import { AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
+import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -29,7 +30,7 @@ if (!process.env.RABBITMQ_URI) {
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type']
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
@@ -432,6 +433,8 @@ async function enrichAssetSpecificationsWithAI(params: {
 }
 
 // --- MOUNT ROUTERS ---
+app.use('/api/config', requireInventoryReadAccess);
+app.use('/api/assets', requireInventoryReadAccess);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/config', configRoutes);
 
@@ -599,7 +602,7 @@ app.get('/api/assets/:id', async (req: Request, res: Response) => {
 });
 
 // --- CREATE LOGIC ---
-app.post('/api/assets', async (req: Request, res: Response) => {
+app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: Response) => {
     try {
         console.log(`📥 POST /api/assets from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         console.log('📦 Payload:', JSON.stringify(req.body));
@@ -961,7 +964,7 @@ app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
 });
 
 // --- DELETE LOGIC ---
-app.delete('/api/assets/:id', async (req: Request, res: Response) => {
+app.delete('/api/assets/:id', requireInventoryAdminAccess, async (req: Request, res: Response) => {
     try {
         console.log(`📤 DELETE /api/assets/${req.params.id} from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         const id = req.params.id;

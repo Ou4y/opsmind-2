@@ -42,7 +42,6 @@ const Router = {
     seniorPages: [
         'senior-dashboard.html',
         'workflows.html',  // Can manage workflows
-        'inventory.html',  // Asset inventory
         'sla.html'         // SLA tracking
     ],
     
@@ -112,6 +111,10 @@ const Router = {
         if (this.currentPage === 'supervisor-dashboard.html') {
             return context.dashboardType === 'supervisor';
         }
+
+        if (this.currentPage === 'inventory.html') {
+            return this.canAccessInventoryWithContext(context);
+        }
         
         // Admin pages - only admins
         if (this.isAdminPage()) return context.roleCategory === 'ADMIN';
@@ -142,6 +145,12 @@ const Router = {
         
         // Default: allow access to non-restricted pages
         return true;
+    },
+
+    canAccessInventoryWithContext(context) {
+        const level = String(context?.technicianLevel || '').toUpperCase();
+        if (context?.roleCategory === 'ADMIN') return true;
+        return ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(level);
     },
 
     /**
@@ -221,6 +230,11 @@ const Router = {
         // Admin pages - only admins can access
         if (this.adminPages.includes(pageName)) {
             return AuthService.isAdmin();
+        }
+
+        if (pageName === 'inventory.html') {
+            const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+            return this.canAccessInventoryWithContext(context);
         }
         
         // All other pages - authenticated users can access

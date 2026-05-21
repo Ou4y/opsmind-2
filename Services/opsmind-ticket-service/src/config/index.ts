@@ -30,6 +30,13 @@ export const config = {
     timeoutMs: parseInt(process.env.AI_SERVICE_TIMEOUT_MS ?? "3000", 10),
   },
 
+  ollama: {
+    baseUrl: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434",
+    model: process.env.OLLAMA_MODEL ?? "gemma3:4b",
+    timeoutMs: parseInt(process.env.OLLAMA_TIMEOUT_MS ?? "45000", 10),
+    debugRawOutput: process.env.AI_DEBUG_RAW_OUTPUT === "true",
+  },
+
   cors: {
     origins: (process.env.CORS_ORIGINS ?? "http://localhost:5173")
       .split(",")
