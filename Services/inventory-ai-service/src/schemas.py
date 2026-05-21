@@ -135,6 +135,7 @@ class AssetSpecInferenceRequest(BaseModel):
 
 class AssetSpecInferenceResponse(BaseModel):
     inferred_specifications: dict
+    field_confidence: dict[str, float] = Field(default_factory=dict)
     confidence: float = Field(..., ge=0.0, le=1.0)
     source: str
     explanation: str
@@ -185,6 +186,15 @@ class HealthResponse(BaseModel):
     ticket_models_loaded: bool = False
     asset_model_loaded: bool = False
     version: str
+    llm_provider: str = "none"
+    llm_enabled: bool = False
+    llm_model: Optional[str] = None
+    llm_status: str = "disabled"
+    llm_last_error: Optional[str] = None
+    gemini_enabled: bool = False
+    gemini_model: Optional[str] = None
+    gemini_status: str = "disabled"
+    gemini_last_error: Optional[str] = None
 
 
 # ── Additional endpoint schemas (frontend integration) ─────────────────────

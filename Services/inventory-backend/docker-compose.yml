@@ -62,6 +62,12 @@ services:
       - opsmind-rabbitmq
     networks:
       - opsmind-net
+     
+    inventory-backend-worker:
+    build: .
+    container_name: opsmind-inventory-backend-worker
+    restart: always
+    command: ["npm", "run", "worker"]
 
 networks:
   opsmind-net:

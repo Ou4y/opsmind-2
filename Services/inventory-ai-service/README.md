@@ -15,6 +15,8 @@ Inventory-focused AI microservice for OpsMind.
 - `GET /metrics/spec-inference`
   - Computes field-level precision/recall from the golden dataset.
   - Supports `?variant=control|candidate` for A/B evaluation.
+- `GET /metrics`
+  - Exposes in-memory Prometheus-style endpoint metrics (latency/counters).
 
 ## Docker
 
@@ -34,17 +36,52 @@ This starts both:
 
 ## Environment
 
+- `LLM_PROVIDER` (`ollama` or `gemini`, default `ollama`)
+- `OLLAMA_BASE_URL` (default `http://host.docker.internal:11434`)
+- `OLLAMA_MODEL` (default `qwen2.5:7b`)
+- `OLLAMA_TIMEOUT_SECONDS` (default `45`)
 - `SERPAPI_API_KEY` (required for live catalog lookup)
 - `SERPAPI_ENDPOINT` (default `https://serpapi.com/search.json`)
+- `GEMINI_API_KEY` (enables Gemini structured inference)
+- `GEMINI_MODEL` (default `gemini-2.0-flash`)
 - `SPEC_LOOKUP_TIMEOUT_SECONDS` (default `8`)
+- `SPEC_HTTP_RETRY_ATTEMPTS` (default `3`)
+- `SPEC_HTTP_BACKOFF_SECONDS` (default `0.35`)
+- `SPEC_LOOKUP_CIRCUIT_FAILURES` (default `4`)
+- `SPEC_LOOKUP_CIRCUIT_RESET_SECONDS` (default `90`)
 - `SPEC_RULE_VERSION_CONTROL` / `SPEC_RULE_VERSION_CANDIDATE`
 - `SPEC_AB_ROLLOUT_PERCENT` (A/B rollout)
 - `SPEC_FORCE_VARIANT` (`control` / `candidate`, optional override)
 - `SPEC_VERIFICATION_CONFIDENCE_THRESHOLD` (default `0.85`)
+- `SPEC_VARIANT_POLICY_PATH` (default `/app/data/spec_variant_policy.json`)
+- `SPEC_PROMOTION_MIN_EVALS` (default `40`)
+- `SPEC_PROMOTION_MIN_IMPROVEMENT` (default `0.01`)
 - `INVENTORY_AI_DATA_DIR` (default `/app/data`)
 - `SCHEDULER_POLL_SECONDS` (default `60`)
 - `SPEC_DAILY_HOUR_UTC` / `SPEC_DAILY_MINUTE_UTC`
 - `LIFESPAN_MONTHLY_DAY_UTC` / `LIFESPAN_MONTHLY_HOUR_UTC` / `LIFESPAN_MONTHLY_MINUTE_UTC`
+
+## Free local LLM (Ollama)
+
+Run Ollama on your host machine:
+
+```bash
+ollama serve
+ollama pull qwen2.5:7b
+```
+
+Then start this service with:
+
+```bash
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen2.5:7b
+```
+
+Health endpoint will show LLM state:
+- `llm_provider`
+- `llm_status`
+- `llm_last_error` (if any)
 
 ## Training workflow
 

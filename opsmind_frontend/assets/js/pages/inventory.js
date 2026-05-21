@@ -13,6 +13,10 @@ let EOL_METRICS = {};
 let selectedAssetCustomId = null;
 let currentAssets = [];
 const lifespanPredictionCache = new Map();
+let specVerificationSnapshot = {
+  pendingCount: 0,
+  metrics: null
+};
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -234,8 +238,37 @@ function parseSpecsText(specsText) {
   return specs;
 }
 
+function formatSpecsObject(specs = {}) {
+  const entries = Object.entries(specs || {})
+    .filter(([key, value]) => String(key || '').trim() && String(value ?? '').trim())
+    .map(([key, value]) => `${key}: ${value}`);
+  return entries.length ? entries.join('\n') : '';
+}
+
 function getAssetSpecs(asset) {
   return (asset?.specifications && typeof asset.specifications === 'object') ? asset.specifications : {};
+}
+
+function getAssetQuantity(asset) {
+  const quantity = Number(asset?.quantity);
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function getAssetsTotalQuantity(assets = []) {
+  return assets.reduce((total, asset) => total + getAssetQuantity(asset), 0);
+}
+
+function getAssetUnitRows(assets = []) {
+  return assets.flatMap(asset => {
+    const quantity = getAssetQuantity(asset);
+    return Array.from({ length: quantity }, (_, index) => ({
+      asset,
+      unitIndex: index + 1,
+      unitCount: quantity,
+      unitLabel: quantity > 1 ? `${asset.customId} #${index + 1}` : asset.customId,
+      isVirtualUnit: quantity > 1
+    }));
+  });
 }
 
 function toBoolean(value) {
@@ -542,6 +575,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const exportBtn = document.getElementById('exportPdfBtn');
   if (exportBtn) exportBtn.addEventListener('click', exportAssetsToDetailedPDF);
+  const specRefreshBtn = document.getElementById('specVerificationRefreshBtn');
+  if (specRefreshBtn) specRefreshBtn.addEventListener('click', refreshSpecVerificationSnapshot);
+
+  const specApproveBtn = document.getElementById('specApproveBtn');
+  const specCorrectBtn = document.getElementById('specCorrectBtn');
+  const specRejectBtn = document.getElementById('specRejectBtn');
+  if (specApproveBtn) specApproveBtn.addEventListener('click', () => submitSpecVerificationAction('approve'));
+  if (specCorrectBtn) specCorrectBtn.addEventListener('click', () => submitSpecVerificationAction('correct'));
+  if (specRejectBtn) specRejectBtn.addEventListener('click', () => submitSpecVerificationAction('reject'));
 
   const locSelect = document.getElementById('assetLocation');
   const deptSelect = document.getElementById('assetDepartment');
@@ -602,12 +644,15 @@ async function loadAssets() {
     if (!response.ok) throw new Error('Failed to fetch assets');
 
     const assets = await response.json();
+    console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
     currentAssets = assets; 
     await loadAssetLifespanPredictions();
 
     populateFilters();
     renderTable();
+    updateDeleteAllAssetsButton();
     checkGlobalEOLAlerts(); 
+    await refreshSpecVerificationSnapshot();
 
   } catch (error) {
     console.error('Error:', error);
@@ -703,6 +748,128 @@ function checkGlobalEOLAlerts() {
       banner.classList.add('d-none');
   }
 }
+
+function getSpecVerificationStatus(asset) {
+  const specs = getAssetSpecs(asset);
+  return String(specs.specVerificationStatus || '').trim().toLowerCase();
+}
+
+function getSpecVerificationBadge(status) {
+  if (status === 'pending') return '<span class="badge bg-warning text-dark">Spec Review Pending</span>';
+  if (status === 'corrected') return '<span class="badge bg-info text-dark">Spec Corrected</span>';
+  if (status === 'verified') return '<span class="badge bg-success">Spec Verified</span>';
+  if (status === 'rejected') return '<span class="badge bg-secondary">Spec Rejected</span>';
+  return '<span class="badge bg-light text-dark border">Spec Unchecked</span>';
+}
+
+async function refreshSpecVerificationSnapshot() {
+  const summaryEl = document.getElementById('specVerificationSummary');
+  const badgeEl = document.getElementById('specVerificationPendingBadge');
+  try {
+    const [pendingRes, metricsRes] = await Promise.all([
+      fetch(`${API_URL}/assets/spec-verification/pending`),
+      fetch(`${API_URL}/assets/spec-verification/metrics`)
+    ]);
+
+    const pendingPayload = pendingRes.ok ? await pendingRes.json() : { count: 0, assets: [] };
+    const metricsPayload = metricsRes.ok ? await metricsRes.json() : null;
+
+    specVerificationSnapshot = {
+      pendingCount: Number(pendingPayload.count || 0),
+      metrics: metricsPayload
+    };
+
+    if (badgeEl) {
+      badgeEl.className = `badge ${specVerificationSnapshot.pendingCount > 0 ? 'bg-warning text-dark' : 'bg-success'}`;
+      badgeEl.textContent = `Pending: ${specVerificationSnapshot.pendingCount}`;
+    }
+
+    if (summaryEl) {
+      const evaluated = Number(metricsPayload?.evaluated_records || 0);
+      const ramPrecision = Number(metricsPayload?.precision_by_field?.RAM || 0);
+      summaryEl.textContent = `Reviewed records: ${evaluated}. RAM precision: ${(ramPrecision * 100).toFixed(0)}%.`;
+    }
+  } catch (error) {
+    console.error('Failed to refresh spec verification snapshot', error);
+    if (summaryEl) summaryEl.textContent = 'Could not load verification queue/metrics.';
+    if (badgeEl) {
+      badgeEl.className = 'badge bg-secondary';
+      badgeEl.textContent = 'Pending: --';
+    }
+  }
+}
+
+window.openSpecVerificationModal = (customId) => {
+  const asset = currentAssets.find(a => a.customId === customId);
+  if (!asset) {
+    showMessage('Asset not found.', 'error');
+    return;
+  }
+  const specs = getAssetSpecs(asset);
+  const predicted = (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object') ? specs.aiDetectedSpecs : {};
+  const correctedSeed = Object.keys(predicted).length ? predicted : specs;
+
+  const assetIdInput = document.getElementById('specVerificationAssetId');
+  const assetLabel = document.getElementById('specVerificationAssetLabel');
+  const predictedBox = document.getElementById('specVerificationPredicted');
+  const correctedBox = document.getElementById('specVerificationCorrected');
+  const meta = document.getElementById('specVerificationMeta');
+
+  if (assetIdInput) assetIdInput.value = customId;
+  if (assetLabel) assetLabel.textContent = `${asset.name || 'Asset'} (${customId})`;
+  if (predictedBox) predictedBox.value = formatSpecsObject(predicted) || 'No AI predicted specs stored.';
+  if (correctedBox) correctedBox.value = formatSpecsObject(correctedSeed);
+  if (meta) {
+    const conf = Number(specs.aiSpecConfidence || 0);
+    const source = String(specs.aiSpecSource || 'unknown');
+    const mode = String(specs.aiSpecLookupMode || 'unknown');
+    meta.textContent = `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode}`;
+  }
+
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('specVerificationModal'));
+  modal.show();
+};
+
+async function submitSpecVerificationAction(action) {
+  const assetId = document.getElementById('specVerificationAssetId')?.value;
+  if (!assetId) {
+    showMessage('Missing asset ID for verification.', 'error');
+    return;
+  }
+
+  const correctedText = document.getElementById('specVerificationCorrected')?.value || '';
+  const correctedSpecifications = parseSpecsText(correctedText);
+
+  if (action === 'correct' && !Object.keys(correctedSpecifications).length) {
+    showMessage('Please provide corrected specifications before choosing Correct.', 'warning');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_URL}/assets/${encodeURIComponent(assetId)}/spec-verification`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        correctedSpecifications,
+        reviewer: 'inventory-admin-ui'
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'Verification update failed');
+    }
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('specVerificationModal'));
+    if (modal) modal.hide();
+    await loadAssets();
+    await refreshSpecVerificationSnapshot();
+    showMessage(`Specification review saved (${action}).`, 'success');
+  } catch (error) {
+    console.error(error);
+    showMessage(error.message || 'Failed to submit specification review.', 'error');
+  }
+}
 function populateFilters() {
   const buildingSelect = document.getElementById('filterBuilding');
   const deptSelect = document.getElementById('filterDept');
@@ -768,6 +935,7 @@ function renderTable() {
 
   if (!filteredAssets || filteredAssets.length === 0) {
     tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">No assets found matching filters.</td></tr>`;
+    updateDeleteAllAssetsButton();
     return;
   }
 
@@ -778,7 +946,7 @@ function renderTable() {
   });
 
   tableBody.innerHTML = Object.entries(groupedByName).map(([assetName, assetGroup]) => {
-    const totalQty = assetGroup.length;
+    const totalQty = getAssetsTotalQuantity(assetGroup);
     const firstAsset = assetGroup[0];
     const typeObj = ASSET_TYPES.find(t => normalizeValue(t.value) === normalizeValue(canonicalType(firstAsset.type)));
     const typeLabel = typeObj ? typeObj.label : formatType(firstAsset.type);
@@ -812,6 +980,15 @@ function renderTable() {
       </tr>
     `;
   }).join('');
+  updateDeleteAllAssetsButton();
+}
+
+function updateDeleteAllAssetsButton() {
+  const button = document.getElementById('deleteAllAssetsBtn');
+  if (!button) return;
+  const count = getAssetsTotalQuantity(currentAssets);
+  button.disabled = count === 0;
+  button.innerHTML = `<i class="bi bi-trash3"></i> Delete All${count ? ` (${count})` : ''}`;
 }
 
 async function handleAddAsset(e) {
@@ -826,7 +1003,8 @@ async function handleAddAsset(e) {
   const originalText = submitBtn.innerHTML;
   
   const name = document.getElementById('assetName').value;
-  const quantity = parseInt(document.getElementById('assetQuantity').value, 10);
+  const quantityRaw = document.getElementById('assetQuantity').value;
+  const quantity = parseInt(quantityRaw, 10);
   const type = document.getElementById('assetType').value;
   const location = document.getElementById('assetLocation').value || 'Central Warehouse';
   const department = document.getElementById('assetDepartment').value || 'Unassigned';
@@ -894,6 +1072,25 @@ async function handleAddAsset(e) {
 
       if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
     }
+    const quantityToCreate = quantity;
+    const customId = generateCustomId();
+    const assetData = {
+      name,
+      customId,
+      type,
+      location,
+      department,
+      status: 'active',
+      quantity: quantityToCreate,
+      specifications
+    };
+
+    const response = await fetch(`${API_URL}/assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(assetData),
+    });
+    if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
 
     const modalEl = document.getElementById('receiveOrderModal');
     if (modalEl) bootstrap.Modal.getInstance(modalEl).hide();
@@ -905,7 +1102,7 @@ async function handleAddAsset(e) {
     updateInferredQualityPreview();
 
     await loadAssets();
-    showMessage(`Created ${quantity} asset${quantity === 1 ? '' : 's'} successfully.`, 'success');
+    showMessage(`Created bulk asset (${quantityToCreate} units) successfully.`, 'success');
 
   } catch (error) {
     console.error('Error:', error);
@@ -952,7 +1149,13 @@ window.viewAssetDetails = (assetName) => {
     return;
   }
 
-  document.getElementById('detailModalTitle').textContent = `${assetName} - ${groupAssets.length} Item(s)`;
+  const totalQty = getAssetsTotalQuantity(groupAssets);
+  const unitRows = getAssetUnitRows(groupAssets);
+  console.debug('[AssetCreateDebug] modal-render', { assetName, groupAssets: groupAssets.length, totalQty, renderedRows: unitRows.length });
+  const batchCount = groupAssets.length;
+  document.getElementById('detailModalTitle').textContent = `${assetName} - ${totalQty} Unit(s)`;
+  const detailSubtitle = document.getElementById('detailModalSubtitle');
+  if (detailSubtitle) detailSubtitle.textContent = `Showing ${totalQty} unit(s) across ${batchCount} backend batch(es)`;
   document.getElementById('innerSearchInput').value = '';
 
   const detailsBody = document.getElementById('detailsTableBody');
@@ -968,7 +1171,10 @@ window.viewAssetDetails = (assetName) => {
     aiBanner.id = 'aiSummaryBanner';
     aiBanner.className = 'alert w-100 d-flex align-items-center mb-3 mt-2 ai-summary-banner';
     
-    const failingCount = groupAssets.filter(a => { const eol = getEOLDetails(a); return !eol.isClosedLifecycle && eol.daysRemaining <= 180; }).length;
+    const failingCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (!eol.isClosedLifecycle && eol.daysRemaining <= 180 ? getAssetQuantity(asset) : 0);
+    }, 0);
     let aiText = `<strong>AI Prediction:</strong> Profile-based lifespan for a <strong>${formatType(sampleAsset.type)}</strong> is <strong>${eolData.metrics.years} years</strong>. `;
     
     if (failingCount > 0) {
@@ -981,19 +1187,23 @@ window.viewAssetDetails = (assetName) => {
     headerDiv.insertBefore(aiBanner, headerDiv.firstChild);
   }
 
-  detailsBody.innerHTML = groupAssets.map(asset => {
+  detailsBody.innerHTML = unitRows.map(({ asset, unitIndex, unitCount, unitLabel, isVirtualUnit }) => {
     const eol = getEOLDetails(asset);
     const profile = eol.metrics.prediction.profile;
+    const specStatus = getSpecVerificationStatus(asset);
     const isDeployed = normalizeValue(displayLocation(asset.location)) !== normalizeValue('Central Warehouse');
     const trackingLabel = profile.trackWorkingHours
       ? `${OPERATIONAL_STATE_LABELS[profile.operationalState]} - ${Math.round(profile.workingHours).toLocaleString()}h`
       : 'Hours not tracked';
     return `
-    <tr>
-      <td class="ps-4">
-        <span class="font-monospace fw-bold">${asset.customId}</span>
-        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
-        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
+	    <tr>
+	      <td class="ps-4">
+	        <span class="font-monospace fw-bold">${unitLabel}</span>
+	        <div class="text-muted pred-lifespan-text">Batch ID: ${asset.customId}</div>
+	        ${isVirtualUnit ? `<div class="text-muted pred-lifespan-text">Unit ${unitIndex} of ${unitCount}</div>` : ''}
+	        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
+	        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
+        <div class="mt-1">${getSpecVerificationBadge(specStatus)}</div>
       </td>
       <td>
         <span class="badge ${getStatusBadgeClass(asset.status)}">
@@ -1100,11 +1310,16 @@ window.transferIndividual = (customId) => {
   const asset = currentAssets.find(a => a.customId === customId);
   if (!asset) return;
 
+  const availableQuantity = getAssetQuantity(asset);
+  const requestedQuantity = Number(quantityOverride);
+  const quantity = Number.isFinite(requestedQuantity) && requestedQuantity > 0
+    ? Math.min(requestedQuantity, availableQuantity)
+    : availableQuantity;
   selectedAssetCustomId = customId;
-  document.getElementById('transferAssetId').textContent = customId;
-  document.getElementById('maxTransferQty').textContent = '1';
-  document.getElementById('transferQty').value = '1';
-  document.getElementById('transferQty').max = 1;
+  document.getElementById('transferAssetId').textContent = `${displayLabel || customId} (${quantity} unit${quantity === 1 ? '' : 's'})`;
+  document.getElementById('maxTransferQty').textContent = quantity;
+  document.getElementById('transferQty').value = quantity;
+  document.getElementById('transferQty').max = quantity;
 
   document.getElementById('checkBuilding').checked = false;
   document.getElementById('checkDept').checked = false;
@@ -1165,11 +1380,12 @@ window.bulkTransferGroup = (assetName) => {
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
 
+  const totalQty = getAssetsTotalQuantity(groupAssets);
   selectedAssetCustomId = assetName; 
-  document.getElementById('transferAssetId').textContent = `${assetName} (${groupAssets.length} items)`;
-  document.getElementById('maxTransferQty').textContent = groupAssets.length;
-  document.getElementById('transferQty').value = groupAssets.length;
-  document.getElementById('transferQty').max = groupAssets.length;
+  document.getElementById('transferAssetId').textContent = `${assetName} (${totalQty} unit${totalQty === 1 ? '' : 's'})`;
+  document.getElementById('maxTransferQty').textContent = totalQty;
+  document.getElementById('transferQty').value = totalQty;
+  document.getElementById('transferQty').max = totalQty;
 
   document.getElementById('checkBuilding').checked = false;
   document.getElementById('checkDept').checked = false;
@@ -1190,10 +1406,11 @@ window.bulkDeleteGroup = async (assetName) => {
 
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
+  const totalQty = getAssetsTotalQuantity(groupAssets);
 
   const confirmed = await confirmInventoryAction({
     title: 'Delete Asset Group',
-    message: `Delete all ${groupAssets.length} items of "${assetName}"? This cannot be undone.`,
+    message: `Delete all ${totalQty} unit(s) of "${assetName}"? This cannot be undone.`,
     confirmText: 'Delete Group',
     confirmClass: 'inventory-insight-danger'
   });
@@ -1209,10 +1426,57 @@ window.bulkDeleteGroup = async (assetName) => {
     if (detailsModal) detailsModal.hide();
 
     await loadAssets();
-    showMessage(`Deleted all ${groupAssets.length} items of "${assetName}".`, 'success');
+    showMessage(`Deleted all ${totalQty} unit(s) of "${assetName}".`, 'success');
   } catch (error) {
     console.error(error);
     showMessage(error.message || 'Failed to delete asset group.', 'error');
+  }
+};
+
+window.deleteAllAssets = async () => {
+  const assetsToDelete = [...currentAssets];
+  const totalQty = getAssetsTotalQuantity(assetsToDelete);
+  if (!assetsToDelete.length) {
+    showMessage('No assets to delete.', 'warning');
+    return;
+  }
+
+  const confirmed = await confirmInventoryAction({
+    title: 'Delete All Assets',
+    message: `Delete all ${totalQty} asset unit(s)? This cannot be undone.`,
+    confirmText: 'Delete All',
+    confirmClass: 'inventory-insight-danger'
+  });
+  if (!confirmed) return;
+
+  const deleteButton = document.getElementById('deleteAllAssetsBtn');
+  const originalHtml = deleteButton?.innerHTML;
+  if (deleteButton) {
+    deleteButton.disabled = true;
+    deleteButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Deleting...';
+  }
+
+  try {
+    for (const asset of assetsToDelete) {
+      const response = await fetch(`${API_URL}/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || `Failed to delete ${asset.customId}`);
+      }
+    }
+
+    const detailsModal = bootstrap.Modal.getInstance(document.getElementById('detailsModal'));
+    if (detailsModal) detailsModal.hide();
+
+    await loadAssets();
+    showMessage(`Deleted ${totalQty} asset unit(s).`, 'success');
+  } catch (error) {
+    console.error(error);
+    if (deleteButton) {
+      deleteButton.disabled = false;
+      deleteButton.innerHTML = originalHtml || '<i class="bi bi-trash3"></i> Delete All';
+    }
+    showMessage(error.message || 'Failed to delete all assets.', 'error');
   }
 };
 
@@ -1379,8 +1643,25 @@ window.submitTransfer = async () => {
     confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Transferring...';
 
     const isBulk = currentAssets.some(a => a.name === selectedAssetCustomId);
+    const transferAssetQuantity = async (assetId, destType, destination, quantityToMove, label) => {
+      const transferData = { destType, destination, quantityToMove };
+      const response = await fetch(`${API_URL}/assets/${assetId}/transfer`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(transferData),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || `${label} transfer failed for ${assetId}`);
+      }
+    };
 
     if (!isBulk) {
+      const selectedAsset = currentAssets.find(a => a.customId === selectedAssetCustomId);
+      const maxQuantity = getAssetQuantity(selectedAsset);
+      if (quantity > maxQuantity) {
+        throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
+      }
       if (buildingChecked) {
         const transferData = { destType: 'building', destination: buildingValue, quantityToMove: quantity };
         const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
@@ -1398,9 +1679,15 @@ window.submitTransfer = async () => {
       }
     } else {
       const groupAssets = currentAssets.filter(a => a.name === selectedAssetCustomId);
-      const assetsToTransfer = groupAssets.slice(0, quantity);
+      const maxQuantity = getAssetsTotalQuantity(groupAssets);
+      if (quantity > maxQuantity) {
+        throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
+      }
 
-      for (const asset of assetsToTransfer) {
+      let remainingQuantity = quantity;
+      for (const asset of groupAssets) {
+        if (remainingQuantity <= 0) break;
+        const quantityToMove = Math.min(remainingQuantity, getAssetQuantity(asset));
         if (buildingChecked) {
           const transferData = { destType: 'building', destination: buildingValue, quantityToMove: 1 };
           const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
@@ -1416,6 +1703,7 @@ window.submitTransfer = async () => {
           });
           if (!response.ok) throw new Error((await response.json()).message || `Department transfer failed for ${asset.customId}`);
         }
+        remainingQuantity -= quantityToMove;
       }
     }
 

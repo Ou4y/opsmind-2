@@ -11,6 +11,7 @@ import { EventBusService } from "../src/services/EventBus";
 describe("EventBusService", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.EVENTS_EXCHANGE_NAME;
   });
 
   it("connects to RabbitMQ and asserts topic exchange", async () => {
@@ -24,7 +25,7 @@ describe("EventBusService", () => {
     await service.connect();
 
     expect(amqp.connect).toHaveBeenCalledWith("amqp://local-test");
-    expect(assertExchange).toHaveBeenCalledWith("opsmind_events", "topic", { durable: false });
+    expect(assertExchange).toHaveBeenCalledWith("opsmind.events", "topic", { durable: true });
   });
 
   it("publishes serialized payload when channel exists", async () => {
@@ -35,7 +36,22 @@ describe("EventBusService", () => {
     await service.publish("asset.created", { id: "A1" });
 
     expect(publish).toHaveBeenCalledWith(
-      "opsmind_events",
+      "opsmind.events",
+      "asset.created",
+      expect.any(Buffer)
+    );
+  });
+
+  it("uses override exchange name from env when provided", async () => {
+    const publish = jest.fn();
+    process.env.EVENTS_EXCHANGE_NAME = "custom.exchange";
+    const service = new EventBusService() as unknown as { channel: { publish: jest.Mock }; publish: (topic: string, data: unknown) => Promise<void> };
+    service.channel = { publish };
+
+    await service.publish("asset.created", { id: "A1" });
+
+    expect(publish).toHaveBeenCalledWith(
+      "custom.exchange",
       "asset.created",
       expect.any(Buffer)
     );
@@ -62,7 +78,7 @@ describe("EventBusService", () => {
     await service.subscribe("asset.updated", callback);
 
     expect(channel.assertQueue).toHaveBeenCalledWith("", { exclusive: true });
-    expect(channel.bindQueue).toHaveBeenCalledWith("auto-q", "opsmind_events", "asset.updated");
+    expect(channel.bindQueue).toHaveBeenCalledWith("auto-q", "opsmind.events", "asset.updated");
     expect(callback).toHaveBeenCalledWith({ id: "A1" });
   });
 });

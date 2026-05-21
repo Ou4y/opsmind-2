@@ -724,9 +724,10 @@ body {
 .main-content {
     flex: 1;
     margin-left: var(--sidebar-width);
+    min-width: 0;
     min-height: calc(100vh - var(--navbar-height));
     background: var(--color-gray-100);
-    width: calc(100% - var(--sidebar-width));
+    width: auto;
 }
 
 @media (max-width: 991.98px) {
@@ -3602,6 +3603,7 @@ body.app-body::after {
 .inventory-toolbar-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
+    min-width: 0;
 }
 
 .inventory-search-group {
@@ -3614,6 +3616,10 @@ body.app-body::after {
 
 .inventory-create-btn {
     min-height: 38px;
+}
+
+.inventory-delete-all-btn {
+    white-space: nowrap;
 }
 
 .inventory-filter-card {
@@ -3649,6 +3655,64 @@ body.app-body::after {
 
 #groupTable {
     overflow: hidden;
+}
+
+.inventory-table-card {
+    margin-left: var(--content-padding);
+    margin-right: var(--content-padding);
+    max-width: calc(100% - (var(--content-padding) * 2));
+    overflow: hidden;
+}
+
+.inventory-table-card #groupTable {
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.inventory-table-wrap {
+    overflow-x: hidden;
+}
+
+.inventory-table-wrap #groupTable {
+    table-layout: fixed;
+    width: 100%;
+}
+
+.inventory-table-wrap #groupTable th:nth-child(1),
+.inventory-table-wrap #groupTable td:nth-child(1) {
+    width: 38%;
+}
+
+.inventory-table-wrap #groupTable th:nth-child(2),
+.inventory-table-wrap #groupTable td:nth-child(2) {
+    width: 15%;
+}
+
+.inventory-table-wrap #groupTable th:nth-child(3),
+.inventory-table-wrap #groupTable td:nth-child(3) {
+    width: 14%;
+}
+
+.inventory-table-wrap #groupTable th:nth-child(4),
+.inventory-table-wrap #groupTable td:nth-child(4) {
+    width: 23%;
+}
+
+.inventory-table-wrap #groupTable th:nth-child(5),
+.inventory-table-wrap #groupTable td:nth-child(5) {
+    width: 10%;
+}
+
+.inventory-table-wrap #groupTable td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.inventory-table-wrap #groupTable td .text-muted,
+.inventory-table-wrap #groupTable td .fw-bold {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 #groupTable,

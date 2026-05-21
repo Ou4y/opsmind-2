@@ -5,7 +5,7 @@
 // OPSMIND_TICKET_URL is used by ticketService.js for ticket operations
 // OPSMIND_WORKFLOW_API_URL is read by workflowService.js for workflow operations
 // OPSMIND_AI_API_URL is read by aiService.js for AI/ML endpoints
-// OPSMIND_INVENTORY_AI_API_URL is read by inventory.js for asset lifespan predictions
+// OPSMIND_INVENTORY_AI_API_URL is available for direct inventory-AI calls when needed
 // OPSMIND_SLA_URL is read by slaService.js for SLA operations
 // OPSMIND_NOTIFICATION_URL is read by notificationService.js for notification operations
 // OPSMIND_INVENTORY_API_URL is read by inventory page scripts for asset operations

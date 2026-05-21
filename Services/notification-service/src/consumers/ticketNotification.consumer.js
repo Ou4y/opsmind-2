@@ -10,6 +10,11 @@ async function consumeTicketNotifications(channel, exchange) {
 
   // 2) Bind queue to exchange
   await channel.bindQueue(q.queue, exchange, "ticket.notification.*");
+  const inventoryExchange = process.env.INVENTORY_EVENTS_EXCHANGE || "opsmind.events";
+  if (inventoryExchange !== exchange) {
+    await channel.assertExchange(inventoryExchange, "topic", { durable: true });
+    await channel.bindQueue(q.queue, inventoryExchange, "ticket.notification.*");
+  }
 
   console.log(" Waiting for ticket notification events...");
 
@@ -257,6 +262,11 @@ async function consumeTicketNotifications(channel, exchange) {
 
       if (routingKey === "ticket.notification.lowStock") {
         const { item, admin } = event;
+        const { item } = event;
+        const supervisor = event.admin || event.supervisor;
+        if (!supervisor || !supervisor.id) {
+          throw new Error("Low stock event missing admin/supervisor payload");
+        }
 
         await sendInAppNotification(
           admin.id,

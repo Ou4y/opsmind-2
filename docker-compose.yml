@@ -142,6 +142,7 @@ services:
       # Auth -> Workflow identity sync (must use Docker service DNS from inside container)
       WORKFLOW_SERVICE_URL: http://workflow-service:3003
       WORKFLOW_SYNC_TIMEOUT_MS: "5000"
+      INTERNAL_API_TOKEN: "opsmind-internal-dev-token"
 
       CORS_ORIGIN: "*"
     ports:
@@ -318,6 +319,8 @@ services:
       RABBITMQ_URI: amqp://opsmind:opsmind@rabbitmq:5672
       INVENTORY_AI_SERVICE_URL: http://inventory-ai-service:8000
       SPEC_VERIFICATION_CONFIDENCE_THRESHOLD: ${SPEC_VERIFICATION_CONFIDENCE_THRESHOLD:-0.85}
+      AUTH_SERVICE_URL: http://auth-service:3002
+      INTERNAL_API_TOKEN: "opsmind-internal-dev-token"
 
       # (Optional) if the inventory backend posts notifications via HTTP
       NOTIFICATION_API_URL: http://notification-service:3000/api/notifications
@@ -325,6 +328,36 @@ services:
     command: ["sh", "-c", "npm run db:migrate:prod && npm run api"]
     ports:
       - "5000:5000"
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
+  inventory-backend-worker:
+    image: opsmind-inventory-backend:local
+    build:
+      context: ./Services/inventory-backend
+      dockerfile: Dockerfile
+    depends_on:
+      postgres-inventory:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      inventory-backend:
+        condition: service_started
+    environment:
+      PORT: "5000"
+      NODE_ENV: "production"
+
+      DATABASE_URL: postgresql://postgres:IS1234567@postgres-inventory:5432/opsmind_assets
+      RABBITMQ_URI: amqp://opsmind:opsmind@rabbitmq:5672
+      INVENTORY_AI_SERVICE_URL: http://inventory-ai-service:8000
+      SPEC_VERIFICATION_CONFIDENCE_THRESHOLD: ${SPEC_VERIFICATION_CONFIDENCE_THRESHOLD:-0.85}
+      AUTH_SERVICE_URL: http://auth-service:3002
+      INTERNAL_API_TOKEN: "opsmind-internal-dev-token"
+
+      NOTIFICATION_API_URL: http://notification-service:3000/api/notifications
+      INTERNAL_SECRET: "supersecret"
+    command: ["sh", "-c", "npm run worker"]
     networks:
       - opsmind-net
     restart: unless-stopped
@@ -346,18 +379,35 @@ services:
       context: ./Services/inventory-ai-service
       dockerfile: Dockerfile
     environment:
+      LLM_PROVIDER: gemini
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
       SERPAPI_ENDPOINT: ${SERPAPI_ENDPOINT:-https://serpapi.com/search.json}
       SPEC_LOOKUP_TIMEOUT_SECONDS: ${SPEC_LOOKUP_TIMEOUT_SECONDS:-8}
+      SPEC_HTTP_RETRY_ATTEMPTS: ${SPEC_HTTP_RETRY_ATTEMPTS:-3}
+      SPEC_HTTP_BACKOFF_SECONDS: ${SPEC_HTTP_BACKOFF_SECONDS:-0.35}
+      SPEC_LOOKUP_CIRCUIT_FAILURES: ${SPEC_LOOKUP_CIRCUIT_FAILURES:-4}
+      SPEC_LOOKUP_CIRCUIT_RESET_SECONDS: ${SPEC_LOOKUP_CIRCUIT_RESET_SECONDS:-90}
+      SPEC_ENABLE_LOCAL_MODEL_CATALOG: "0"
+      SPEC_REAL_SPECS_ONLY: "1"
       SPEC_RULE_VERSION_CONTROL: ${SPEC_RULE_VERSION_CONTROL:-spec-rules-v1}
       SPEC_RULE_VERSION_CANDIDATE: ${SPEC_RULE_VERSION_CANDIDATE:-spec-rules-v2}
       SPEC_AB_ROLLOUT_PERCENT: ${SPEC_AB_ROLLOUT_PERCENT:-20}
       SPEC_FORCE_VARIANT: ${SPEC_FORCE_VARIANT:-}
       SPEC_VERIFICATION_CONFIDENCE_THRESHOLD: ${SPEC_VERIFICATION_CONFIDENCE_THRESHOLD:-0.85}
+      SPEC_VARIANT_POLICY_PATH: /app/data/spec_variant_policy.json
+      SPEC_PROMOTION_MIN_EVALS: ${SPEC_PROMOTION_MIN_EVALS:-40}
+      SPEC_PROMOTION_MIN_IMPROVEMENT: ${SPEC_PROMOTION_MIN_IMPROVEMENT:-0.01}
       INVENTORY_AI_DATA_DIR: /app/data
     volumes:
       - ./Services/inventory-ai-service/data:/app/data
       - ./Services/inventory-ai-service/models:/app/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8002:8000"
     healthcheck:
@@ -380,21 +430,39 @@ services:
         condition: service_healthy
     command: ["python", "-m", "src.scheduler"]
     environment:
+      LLM_PROVIDER: gemini
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       INVENTORY_AI_DATA_DIR: /app/data
       SPEC_GOLDEN_PATH: /app/data/spec_golden_dataset.jsonl
       SPEC_FEEDBACK_CACHE_PATH: /app/data/spec_feedback_cache.json
+      SPEC_VARIANT_POLICY_PATH: /app/data/spec_variant_policy.json
       LIFESPAN_TRAIN_DATA_PATH: /app/data/lifespan_training.csv
       LIFESPAN_MODEL_DIR: /app/models
       LIFESPAN_RECALIBRATION_METADATA_PATH: /app/data/lifespan_recalibration_metadata.json
+      LIFECYCLE_LABELS_CSV: /app/data/lifecycle_outcomes_labels.csv
+      INVENTORY_BACKEND_URL: http://inventory-backend:5000
+      INVENTORY_DATABASE_URL: postgresql://postgres:IS1234567@postgres-inventory:5432/opsmind_assets
       SCHEDULER_POLL_SECONDS: ${SCHEDULER_POLL_SECONDS:-60}
       SPEC_DAILY_HOUR_UTC: ${SPEC_DAILY_HOUR_UTC:-1}
       SPEC_DAILY_MINUTE_UTC: ${SPEC_DAILY_MINUTE_UTC:-0}
       LIFESPAN_MONTHLY_DAY_UTC: ${LIFESPAN_MONTHLY_DAY_UTC:-1}
       LIFESPAN_MONTHLY_HOUR_UTC: ${LIFESPAN_MONTHLY_HOUR_UTC:-2}
       LIFESPAN_MONTHLY_MINUTE_UTC: ${LIFESPAN_MONTHLY_MINUTE_UTC:-0}
+      WEEKLY_RETRAIN_DAY_UTC: ${WEEKLY_RETRAIN_DAY_UTC:-0}
+      WEEKLY_RETRAIN_HOUR_UTC: ${WEEKLY_RETRAIN_HOUR_UTC:-3}
+      WEEKLY_RETRAIN_MINUTE_UTC: ${WEEKLY_RETRAIN_MINUTE_UTC:-0}
+      PROXY_LABEL_WEIGHT: ${PROXY_LABEL_WEIGHT:-0.2}
+      SPEC_PROMOTION_MIN_EVALS: ${SPEC_PROMOTION_MIN_EVALS:-40}
+      SPEC_PROMOTION_MIN_IMPROVEMENT: ${SPEC_PROMOTION_MIN_IMPROVEMENT:-0.01}
     volumes:
       - ./Services/inventory-ai-service/data:/app/data
       - ./Services/inventory-ai-service/models:/app/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - opsmind-net
     restart: unless-stopped

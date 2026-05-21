@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 
-: "${OPSMIND_API_URL:=http://localhost:3002}"
+: "${OPSMIND_API_URL:=http://localhost:3012}"
 : "${OPSMIND_TICKET_URL:=http://localhost:3001}"
 : "${OPSMIND_WORKFLOW_API_URL:=http://localhost:3003}"
 : "${OPSMIND_AI_API_URL:=http://localhost:8000}"
+: "${OPSMIND_INVENTORY_AI_API_URL:=http://localhost:8002}"
 : "${OPSMIND_SLA_URL:=http://localhost:3004}"
 : "${OPSMIND_NOTIFICATION_URL:=http://localhost:3005/api/notifications}"
 : "${OPSMIND_INVENTORY_API_URL:=http://localhost:5000/api}"

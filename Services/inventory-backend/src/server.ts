@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+<<<<<<< Updated upstream
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
@@ -15,11 +16,32 @@ import configRoutes from './routes/configRoutes';
 import { notificationService } from './services/NotificationService';
 import { AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
 import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
+=======
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import crypto from 'crypto';
+import { prisma } from './lib/prisma';
+import AssetService from './models/Assets';
+import HistoryService from './models/History';
+import TicketService from './models/Tickets';
+import { EventBus } from './services/EventBus';
+import { TOPICS } from './events/assetEvents';
+import ticketRoutes from './routes/ticketRoutes';
+import configRoutes from './routes/configRoutes';
+import { Asset, AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
+>>>>>>> Stashed changes
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const INVENTORY_AI_SERVICE_URL = process.env.INVENTORY_AI_SERVICE_URL || 'http://localhost:8002';
 const SPEC_VERIFICATION_CONFIDENCE_THRESHOLD = Number(process.env.SPEC_VERIFICATION_CONFIDENCE_THRESHOLD || 0.85);
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://auth-service:3002';
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+const LIFESPAN_IMPACT_MIN_HOURS = Math.max(0.5, Number(process.env.LIFESPAN_IMPACT_MIN_HOURS || 2));
+const LIFESPAN_IMPACT_MIN_YEAR_DELTA = Math.max(0.05, Number(process.env.LIFESPAN_IMPACT_MIN_YEAR_DELTA || 0.1));
+const LIFESPAN_IMPACT_MIN_RISK_DELTA = Math.max(0.01, Number(process.env.LIFESPAN_IMPACT_MIN_RISK_DELTA || 0.03));
+
+class RequestValidationError extends Error {}
 
 // ✅ FIXED: REMOVED HARDCODED OVERRIDE
 if (!process.env.RABBITMQ_URI) {
@@ -125,6 +147,29 @@ function mapToAssetDepartment(value: string): AssetDepartment {
     return deptMap[value] || 'UNASSIGNED';
 }
 
+const MAX_ASSET_CREATION_QUANTITY = 500;
+
+function parseRequestedQuantity(rawQuantity: unknown): number {
+    const parsed = Number(rawQuantity);
+    if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        throw new RequestValidationError('Quantity must be a positive integer.');
+    }
+    if (parsed > MAX_ASSET_CREATION_QUANTITY) {
+        throw new RequestValidationError(`Quantity must be <= ${MAX_ASSET_CREATION_QUANTITY}.`);
+    }
+    return parsed;
+}
+
+function buildUnitAssetIds(baseId: string, quantity: number): string[] {
+    if (quantity <= 1) return [baseId];
+    const padding = Math.max(3, String(quantity).length);
+    return Array.from({ length: quantity }, (_, index) => {
+        const unitNumber = String(index + 1);
+        const zeroPadding = unitNumber.length >= padding ? '' : '0'.repeat(padding - unitNumber.length);
+        return `${baseId}-UNIT-${zeroPadding}${unitNumber}`;
+    });
+}
+
 const OPERATIONAL_STATE_RATES: Record<string, number> = {
     online_in_use: 1,
     online_idle: 0.2,
@@ -136,21 +181,53 @@ function resolveTelemetryState(isOnline: boolean, isActive: boolean): string {
     return isActive ? 'online_in_use' : 'online_idle';
 }
 
-function getTelemetryAdjustedHours(specifications: Record<string, any>): number {
-    const storedHours = Number(specifications.workingHours || 0);
+function isTelemetryTracked(specifications: Record<string, any>): boolean {
+    return specifications.trackWorkingHours === true || String(specifications.trackWorkingHours || '').toLowerCase() === 'true';
+}
+
+function getTelemetryAdjustedHours(specifications: Record<string, any>, measuredAt: Date = new Date()): number {
+    const storedHours = isTelemetryTracked(specifications) ? Number(specifications.workingHours || 0) : 0;
     const previousState = String(specifications.operationalState || 'offline');
     const previousUpdate = specifications.operationalStateUpdatedAt
         ? new Date(specifications.operationalStateUpdatedAt)
         : null;
 
     if (!previousUpdate || Number.isNaN(previousUpdate.getTime())) return storedHours;
+    if (!measuredAt || Number.isNaN(measuredAt.getTime())) return storedHours;
 
-    const elapsedHours = Math.max(0, (Date.now() - previousUpdate.getTime()) / 36e5);
+    const elapsedHours = Math.max(0, (measuredAt.getTime() - previousUpdate.getTime()) / 36e5);
     return storedHours + elapsedHours * (OPERATIONAL_STATE_RATES[previousState] ?? 0);
 }
 
 function normalizeValue(value: unknown): string {
     return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+const AI_SPEC_PROTECTED_FIELDS = new Set([
+    'workingHours',
+    'Working Hours',
+    'trackWorkingHours',
+    'workingHoursSource',
+    'operationalState',
+    'operationalStateUpdatedAt',
+    'lastTelemetryAt',
+    'lifecyclePrediction',
+    'predictedLifespanYears',
+    'failureRisk',
+    'lifespanModelVersion',
+    'lifespanUpdatedAt',
+    'actualLifespanYears',
+    'lifecycle',
+].map(normalizeValue));
+
+function stripLifecycleManagedSpecFields(specs: Record<string, any>): Record<string, any> {
+    const safeSpecs: Record<string, any> = {};
+    for (const key of Object.keys(specs || {})) {
+        if (!AI_SPEC_PROTECTED_FIELDS.has(normalizeValue(key))) {
+            safeSpecs[key] = specs[key];
+        }
+    }
+    return safeSpecs;
 }
 
 function canonicalAssetType(type: unknown): string {
@@ -203,14 +280,227 @@ function getSpecNumber(specs: Record<string, any>, keys: string[], fallback = 0)
     return fallback;
 }
 
-function getEffectiveWorkingHours(specs: Record<string, any>): number {
-    const storedHours = Math.max(0, getSpecNumber(specs, ['workingHours', 'Working Hours'], 0));
+function getEffectiveWorkingHours(specs: Record<string, any>, measuredAt: Date = new Date()): number {
+    const storedHours = isTelemetryTracked(specs)
+        ? Math.max(0, getSpecNumber(specs, ['workingHours', 'Working Hours'], 0))
+        : 0;
     const state = String(specs.operationalState || 'offline');
     const stateUpdatedAt = specs.operationalStateUpdatedAt ? new Date(specs.operationalStateUpdatedAt) : null;
 
     if (!stateUpdatedAt || Number.isNaN(stateUpdatedAt.getTime())) return storedHours;
-    const elapsedHours = Math.max(0, (Date.now() - stateUpdatedAt.getTime()) / 36e5);
+    if (!measuredAt || Number.isNaN(measuredAt.getTime())) return storedHours;
+    const elapsedHours = Math.max(0, (measuredAt.getTime() - stateUpdatedAt.getTime()) / 36e5);
     return storedHours + (elapsedHours * (OPERATIONAL_STATE_RATES[state] ?? 0));
+}
+
+type LifespanPredictionResponse = {
+    predicted_lifespan_years: number;
+    quality_tier: string;
+    failure_risk: number;
+    model_version: string;
+    explanation: string;
+};
+
+type LifespanPredictionSnapshot = {
+    predictedLifespanYears: number;
+    failureRisk: number;
+    qualityTier: string;
+    modelVersion: string;
+    explanation: string;
+    workingHours: number;
+    operationalState: string;
+    updatedAt: string;
+    reason: string;
+};
+
+type LifespanRefreshReason =
+    | 'asset_created'
+    | 'asset_transferred'
+    | 'telemetry_update'
+    | 'manual_request'
+    | 'asset_updated';
+
+type LifespanRefreshOptions = {
+    reason: LifespanRefreshReason;
+    forcePersist?: boolean;
+    minimumHoursDelta?: number;
+    requestId?: string;
+    baseLifespanYears?: number;
+    asOf?: Date;
+};
+
+function readLifespanSnapshot(specs: Record<string, any>): LifespanPredictionSnapshot | null {
+    const raw = specs.lifecyclePrediction;
+    if (!raw || typeof raw !== 'object') return null;
+    const predicted = Number((raw as Record<string, any>).predictedLifespanYears);
+    const risk = Number((raw as Record<string, any>).failureRisk);
+    if (!Number.isFinite(predicted) || !Number.isFinite(risk)) return null;
+    return {
+        predictedLifespanYears: predicted,
+        failureRisk: risk,
+        qualityTier: String((raw as Record<string, any>).qualityTier || ''),
+        modelVersion: String((raw as Record<string, any>).modelVersion || ''),
+        explanation: String((raw as Record<string, any>).explanation || ''),
+        workingHours: Number((raw as Record<string, any>).workingHours || 0),
+        operationalState: String((raw as Record<string, any>).operationalState || 'offline'),
+        updatedAt: String((raw as Record<string, any>).updatedAt || ''),
+        reason: String((raw as Record<string, any>).reason || ''),
+    };
+}
+
+function hasMeaningfulLifespanImpact(
+    previous: LifespanPredictionSnapshot | null,
+    nextPrediction: LifespanPredictionResponse,
+    currentWorkingHours: number,
+    currentState: string,
+    minimumHoursDelta: number,
+): boolean {
+    if (!previous) return true;
+
+    const hoursDelta = Math.max(0, currentWorkingHours - Number(previous.workingHours || 0));
+    const yearsDelta = Math.abs(Number(previous.predictedLifespanYears || 0) - Number(nextPrediction.predicted_lifespan_years || 0));
+    const riskDelta = Math.abs(Number(previous.failureRisk || 0) - Number(nextPrediction.failure_risk || 0));
+    const stateChanged = String(previous.operationalState || 'offline') !== String(currentState || 'offline');
+    const onlineInUse = String(currentState || '') === 'online_in_use';
+    const onlineIdle = String(currentState || '') === 'online_idle';
+
+    if (stateChanged) return true;
+    if (onlineInUse && hoursDelta >= minimumHoursDelta) return true;
+    if (onlineIdle && hoursDelta >= (minimumHoursDelta * 2)) return true;
+    if (hoursDelta >= minimumHoursDelta && yearsDelta >= LIFESPAN_IMPACT_MIN_YEAR_DELTA) return true;
+    if (hoursDelta >= minimumHoursDelta && riskDelta >= LIFESPAN_IMPACT_MIN_RISK_DELTA) return true;
+    if (hoursDelta >= minimumHoursDelta * 3) return true;
+    return false;
+}
+
+async function requestAssetLifespanPrediction(
+    asset: Asset,
+    opts: { baseLifespanYears?: number; requestId?: string; asOf?: Date } = {},
+): Promise<{ prediction: LifespanPredictionResponse; requestId: string; workingHours: number; operationalState: string; durationMs: number }> {
+    const requestId = opts.requestId || crypto.randomUUID();
+    const startedAt = Date.now();
+    const specs = ((asset.specifications as Record<string, any>) || {});
+    const baseLifespanYears = Number.isFinite(Number(opts.baseLifespanYears))
+        && Number(opts.baseLifespanYears) > 0
+        ? Number(opts.baseLifespanYears)
+        : 5;
+    const workingHours = Math.round(getEffectiveWorkingHours(specs, opts.asOf || new Date()));
+    const operationalState = String(specs.operationalState || 'offline');
+
+    const payload = {
+        assetId: asset.customId,
+        type: canonicalAssetType(asset.type),
+        brand: String(specs.brand || specs.Brand || '').trim(),
+        model: String(specs.version || specs.Version || specs.model || specs.Model || '').trim(),
+        specifications: specs,
+        baseLifespanYears,
+        workingHours,
+        operationalState,
+    };
+
+    const aiResponse = await fetch(`${INVENTORY_AI_SERVICE_URL}/predict-asset-lifespan`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': requestId,
+        },
+        body: JSON.stringify(payload),
+    });
+
+    if (!aiResponse.ok) {
+        const errorText = await aiResponse.text();
+        throw new Error(`Inventory AI service unavailable (${aiResponse.status}): ${errorText}`);
+    }
+
+    const prediction = await aiResponse.json() as LifespanPredictionResponse;
+    const durationMs = Date.now() - startedAt;
+    return {
+        prediction,
+        requestId,
+        workingHours,
+        operationalState,
+        durationMs,
+    };
+}
+
+async function refreshAndPersistAssetLifespan(assetId: string, options: LifespanRefreshOptions): Promise<{
+    persisted: boolean;
+    skippedReason?: string;
+    prediction?: LifespanPredictionResponse;
+    snapshot?: LifespanPredictionSnapshot;
+    durationMs?: number;
+    requestId?: string;
+}> {
+    const asset = await AssetService.getAssetByCustomId(assetId);
+    if (!asset) return { persisted: false, skippedReason: 'asset_not_found' };
+
+    const specs = ((asset.specifications as Record<string, any>) || {});
+    const previousSnapshot = readLifespanSnapshot(specs);
+    const asOf = options.asOf || new Date();
+    const currentWorkingHours = Math.round(getEffectiveWorkingHours(specs, asOf));
+    const currentState = String(specs.operationalState || 'offline');
+    const minimumHoursDelta = Math.max(0.25, Number(options.minimumHoursDelta ?? LIFESPAN_IMPACT_MIN_HOURS));
+
+    if (!options.forcePersist && options.reason === 'telemetry_update') {
+        const previousHours = Number(previousSnapshot?.workingHours || 0);
+        const hoursDelta = Math.max(0, currentWorkingHours - previousHours);
+        const stateChanged = String(previousSnapshot?.operationalState || currentState) !== currentState;
+        const consumptionState = currentState === 'online_in_use' || currentState === 'online_idle';
+        if (!stateChanged && (!consumptionState || hoursDelta < minimumHoursDelta)) {
+            return { persisted: false, skippedReason: 'consumption_change_below_threshold' };
+        }
+    }
+
+    const { prediction, requestId, durationMs } = await requestAssetLifespanPrediction(asset, {
+        requestId: options.requestId,
+        baseLifespanYears: options.baseLifespanYears,
+        asOf,
+    });
+
+    const shouldPersist = Boolean(options.forcePersist)
+        || hasMeaningfulLifespanImpact(previousSnapshot, prediction, currentWorkingHours, currentState, minimumHoursDelta);
+
+    if (!shouldPersist) {
+        return {
+            persisted: false,
+            skippedReason: 'impact_not_significant',
+            prediction,
+            durationMs,
+            requestId,
+        };
+    }
+
+    const lifecyclePrediction: LifespanPredictionSnapshot = {
+        predictedLifespanYears: Number(prediction.predicted_lifespan_years || 0),
+        failureRisk: Number(prediction.failure_risk || 0),
+        qualityTier: String(prediction.quality_tier || ''),
+        modelVersion: String(prediction.model_version || ''),
+        explanation: String(prediction.explanation || ''),
+        workingHours: currentWorkingHours,
+        operationalState: currentState,
+        updatedAt: new Date().toISOString(),
+        reason: options.reason,
+    };
+
+    const updatedSpecs = {
+        ...specs,
+        workingHours: currentWorkingHours,
+        operationalState: currentState,
+        lifecyclePrediction,
+        predictedLifespanYears: lifecyclePrediction.predictedLifespanYears,
+        failureRisk: lifecyclePrediction.failureRisk,
+        lifespanModelVersion: lifecyclePrediction.modelVersion,
+        lifespanUpdatedAt: lifecyclePrediction.updatedAt,
+    };
+
+    await AssetService.updateAsset(assetId, { specifications: updatedSpecs });
+    return {
+        persisted: true,
+        prediction,
+        snapshot: lifecyclePrediction,
+        durationMs,
+        requestId,
+    };
 }
 
 function parseOptionalDate(value: unknown): Date | null {
@@ -253,6 +543,49 @@ async function submitSpecVerificationFeedback(payload: Record<string, any>) {
     } catch (error: any) {
         console.warn(`[InventoryAI] feedback/spec-verification error: ${error.message}`);
     }
+}
+
+async function publishLowStockEvent(params: {
+    itemId: string;
+    itemName: string;
+    admin?: { id?: string; name?: string; email?: string };
+}) {
+    let admin = params.admin || {};
+    if (!admin.id || !admin.email) {
+        try {
+            const response = await fetch(`${AUTH_SERVICE_URL}/internal/admin-users`, {
+                method: 'GET',
+                headers: {
+                    'x-internal-token': INTERNAL_API_TOKEN,
+                },
+            });
+            if (response.ok) {
+                const payload = await response.json() as { data?: Array<{ id?: string; email?: string; firstName?: string; lastName?: string }> };
+                const firstAdmin = Array.isArray(payload.data) ? payload.data.find((a) => a?.id && a?.email) : null;
+                if (firstAdmin) {
+                    admin = {
+                        id: String(firstAdmin.id || ''),
+                        email: String(firstAdmin.email || ''),
+                        name: [String(firstAdmin.firstName || ''), String(firstAdmin.lastName || '')].join(' ').trim(),
+                    };
+                }
+            }
+        } catch (error: any) {
+            console.warn(`[LowStock] Failed to fetch admin from auth-service DB-backed endpoint: ${error.message}`);
+        }
+    }
+
+    await EventBus.publish(TOPICS.ASSET_LOW_STOCK, {
+        item: {
+            id: params.itemId,
+            name: params.itemName,
+        },
+        admin: {
+            id: String(admin.id || process.env.LOW_STOCK_ADMIN_ID || '456'),
+            name: String(admin.name || process.env.LOW_STOCK_ADMIN_NAME || 'Omar'),
+            email: String(admin.email || process.env.LOW_STOCK_ADMIN_EMAIL || 'omar@example.com'),
+        },
+    });
 }
 
 type LifecycleOutcomePayload = {
@@ -405,6 +738,7 @@ async function enrichAssetSpecificationsWithAI(params: {
 
         const data = await response.json() as {
             inferred_specifications?: Record<string, any>;
+            field_confidence?: Record<string, number>;
             confidence?: number;
             source?: string;
             source_urls?: string[];
@@ -413,9 +747,13 @@ async function enrichAssetSpecificationsWithAI(params: {
             variant?: string;
         };
 
-        const inferred = data.inferred_specifications || {};
+        const inferred = stripLifecycleManagedSpecFields(data.inferred_specifications || {});
+        const fieldConfidence = stripLifecycleManagedSpecFields(
+            (data.field_confidence && typeof data.field_confidence === 'object') ? data.field_confidence : {}
+        );
         const merged: Record<string, any> = { ...inferred, ...existing };
         merged.aiDetectedSpecs = inferred;
+<<<<<<< Updated upstream
         merged.aiSpecConfidence = Number(data.confidence || 0);
         merged.aiSpecSource = data.source || 'inventory-ai-spec-inference-v1';
         merged.aiSpecLookupMode = data.lookup_mode || 'heuristic_fallback';
@@ -437,6 +775,28 @@ app.use('/api/config', requireInventoryReadAccess);
 app.use('/api/assets', requireInventoryReadAccess);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/config', configRoutes);
+=======
+        merged.aiSpecFieldConfidence = fieldConfidence;
+        merged.aiSpecConfidence = Number(data.confidence || 0);
+        merged.aiSpecSource = data.source || 'inventory-ai-spec-inference-v1';
+        merged.aiSpecLookupMode = data.lookup_mode || 'heuristic_fallback';
+        merged.aiSpecSourceUrls = Array.isArray(data.source_urls) ? data.source_urls : [];
+        merged.aiSpecRuleVersion = data.rule_version || 'spec-rules-v1';
+        merged.aiSpecVariant = data.variant || 'control';
+        merged.aiSpecDetectedAt = new Date().toISOString();
+        merged.specVerificationStatus = requiresHumanSpecVerification(merged) ? 'pending' : 'verified';
+        merged.specVerificationUpdatedAt = new Date().toISOString();
+        return merged;
+    } catch (error: any) {
+        console.warn(`[InventoryAI] infer-asset-specs error: ${error.message}`);
+        return existing;
+    }
+}
+
+// --- MOUNT ROUTERS ---
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/config', configRoutes);
+>>>>>>> Stashed changes
 
 // --- ASSET ROUTES ---
 
@@ -560,6 +920,9 @@ app.patch('/api/assets/:id/spec-verification', async (req: Request, res: Respons
             model: String(specs.version || specs.Version || specs.model || specs.Model || ''),
             predicted_specifications: specs.aiDetectedSpecs || {},
             corrected_specifications: normalizedAction === 'correct' ? (correctedSpecifications || {}) : (specs.aiDetectedSpecs || {}),
+            field_confidence: (specs.aiSpecFieldConfidence && typeof specs.aiSpecFieldConfidence === 'object')
+                ? specs.aiSpecFieldConfidence
+                : {},
             confidence: Number(specs.aiSpecConfidence || 0),
             source: String(specs.aiSpecSource || ''),
             source_urls: Array.isArray(specs.aiSpecSourceUrls) ? specs.aiSpecSourceUrls : [],
@@ -607,7 +970,13 @@ app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: R
         console.log(`📥 POST /api/assets from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         console.log('📦 Payload:', JSON.stringify(req.body));
 
-        const { name, type, value, customId, location, department, quantity, specifications } = req.body;
+        const { name, type, value, customId, location, department, quantity, specifications, admin } = req.body;
+        if (!String(name || '').trim()) {
+            return res.status(400).json({ message: 'Asset name is required.' });
+        }
+        if (!String(type || '').trim()) {
+            return res.status(400).json({ message: 'Asset type is required.' });
+        }
         const inputSpecifications = (specifications && typeof specifications === 'object') ? specifications : {};
         const enrichedSpecifications = await enrichAssetSpecificationsWithAI({
             name: String(name || ''),
@@ -615,17 +984,15 @@ app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: R
             existingSpecs: inputSpecifications
         });
 
-        const qty = Number(quantity) || 1;
-        const baseCustomId = customId || `ASSET-${Date.now()}`;
+        const qty = parseRequestedQuantity(quantity ?? 1);
+        const assetGroupId = String(customId || `ASSET-${Date.now()}`).trim();
+        const unitIds = buildUnitAssetIds(assetGroupId, qty);
+        console.log(`[AssetCreateDebug] quantityRequested=${qty} generatedUnitIds=${unitIds.length}`);
 
-        const createdAssets = [];
-
-        for (let i = 0; i < qty; i++) {
-            const uniqueSuffix = qty > 1 ? `${baseCustomId}-${i + 1}` : baseCustomId;
-
-            const asset = await AssetService.createAsset({
-                customId: uniqueSuffix,
-                name: name,
+        const createdAssets = await AssetService.createAssets(
+            unitIds.map((unitId) => ({
+                customId: unitId,
+                name: String(name),
                 type: mapToAssetType(type),
                 status: 'ACTIVE',
                 value: value || 0,
@@ -633,42 +1000,72 @@ app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: R
                 department: mapToAssetDepartment(department || 'Unassigned'),
                 quantity: 1,
                 specifications: enrichedSpecifications,
-            });
+            }))
+        );
+        console.log(`[AssetCreateDebug] insertedRecords=${createdAssets.length} requestedQuantity=${qty}`);
 
-            // Add creation history
-            await HistoryService.createHistory({
-                assetId: uniqueSuffix,
-                action: 'Created',
-                details: qty > 1 ? `Batch item ${i + 1} of ${qty}` : 'Asset Created'
-            });
-
-            createdAssets.push(asset);
+        for (const createdAsset of createdAssets) {
+            try {
+                const creationRefresh = await refreshAndPersistAssetLifespan(createdAsset.customId, {
+                    reason: 'asset_created',
+                    forcePersist: true,
+                });
+                if (!creationRefresh.persisted) {
+                    console.warn(`[InventoryAI] initial lifespan snapshot skipped for ${createdAsset.customId}: ${creationRefresh.skippedReason}`);
+                }
+            } catch (error: any) {
+                console.warn(`[InventoryAI] initial lifespan snapshot failed for ${createdAsset.customId}: ${error.message}`);
+            }
         }
 
-        console.log('✅ Created assets (customIds):', createdAssets.map(a => a.customId));
+        const LOW_STOCK_THRESHOLD = 5;
+        if (createdAssets.length === LOW_STOCK_THRESHOLD) {
+            await publishLowStockEvent({
+                itemId: assetGroupId,
+                itemName: String(name),
+                admin,
+            });
+        }
 
-        await EventBus.publish(TOPICS.ASSET_CREATED, {
-            summary: `Batch created: ${qty} x ${name}`,
-            firstId: createdAssets[0].customId,
-            totalQuantity: qty,
-            timestamp: new Date()
-        });
+        await Promise.all(
+            createdAssets.map((createdAsset, index) =>
+                EventBus.publish(TOPICS.ASSET_CREATED, {
+                    customId: createdAsset.customId,
+                    quantity: createdAsset.quantity,
+                    location: String(createdAsset.location),
+                    department: String(createdAsset.department),
+                    status: String(createdAsset.status),
+                    timestamp: new Date().toISOString(),
+                    source: 'inventory-backend',
+                    historyAction: 'Created',
+                    historyDetails: qty > 1
+                        ? `Bulk asset created (${index + 1}/${qty}) in group ${assetGroupId}`
+                        : 'Asset Created',
+                })
+            )
+        );
 
         res.status(201).json({
-            message: `Successfully created ${qty} individual assets`,
+            message: `Successfully created ${createdAssets.length} asset unit(s).`,
+            quantityRequested: qty,
+            createdCount: createdAssets.length,
+            assetGroupId,
+            asset: createdAssets[0],
             assets: createdAssets
         });
 
     } catch (error: any) {
-        console.error("❌ POST Error:", error.message);
-        if (error.code === 'P2002') return res.status(400).json({ message: "Asset ID already exists. Try a different ID." });
+        console.error('[AssetCreate] POST Error:', error.message);
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        if (error.code === 'P2002') return res.status(400).json({ message: 'Asset ID already exists. Try a different ID.' });
         res.status(500).json({ message: error.message });
     }
 });
-
 // --- TRANSFER & SPLIT LOGIC ---
 app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
-    const { destType, destination, quantityToMove } = req.body;
+    const { destType, destination, quantityToMove, admin } = req.body;
     console.log(`📦 Attempting transfer for ID: ${req.params.id}`);
 
     try {
@@ -690,17 +1087,38 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
             updateData.status = 'ASSIGNED';
         }
 
-        const moveQty = Number(quantityToMove) || asset.quantity;
+        const parsedMoveQty = Number(quantityToMove);
+        const moveQty = Number.isFinite(parsedMoveQty) && parsedMoveQty > 0 ? parsedMoveQty : asset.quantity;
+        if (!Number.isInteger(moveQty) || moveQty <= 0) {
+            return res.status(400).json({ message: "quantityToMove must be a positive integer." });
+        }
         if (moveQty > asset.quantity) return res.status(400).json({ message: "Not enough quantity." });
 
         if (moveQty === asset.quantity) {
             const updated = await AssetService.updateAsset(req.params.id, updateData);
-            await HistoryService.createHistory({
-                assetId: req.params.id,
-                action: 'Transfer',
-                details: `Moved to ${destType}: ${destination}`
+            await EventBus.publish(TOPICS.ASSET_TRANSFERRED, {
+                customId: updated.customId,
+                quantityMoved: moveQty,
+                destinationType: destType,
+                destination,
+                location: String(updated.location),
+                department: String(updated.department),
+                status: String(updated.status),
+                timestamp: new Date().toISOString(),
+                source: 'inventory-backend',
+                historyAction: 'Transfer',
+                historyDetails: `Moved to ${destType}: ${destination}`,
             });
-            return res.json(updated);
+            try {
+                await refreshAndPersistAssetLifespan(updated.customId, {
+                    reason: 'asset_transferred',
+                    forcePersist: true,
+                });
+            } catch (error: any) {
+                console.warn(`[InventoryAI] transfer lifespan refresh failed for ${updated.customId}: ${error.message}`);
+            }
+            const refreshed = await AssetService.getAssetByCustomId(updated.customId);
+            return res.json(refreshed || updated);
         }
 
         // Partial transfer - reduce original quantity
@@ -709,53 +1127,81 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
         });
 
         const LOW_STOCK_THRESHOLD = 5;
-        if (updated.quantity <= LOW_STOCK_THRESHOLD) {
-            await notificationService.notifyLowStock(
-                asset.customId,
-                asset.name,
-                updated.quantity,
-                'admin1',
-                'admin@email.com'
-            );
-
-            await EventBus.publish(TOPICS.ASSET_LOW_STOCK, {
-                event: 'Low_Stock_Warning',
-                assetId: asset.customId,
-                name: asset.name,
-                currentQuantity: updated.quantity,
-                location: asset.location,
-                timestamp: new Date()
+        if (updated.quantity === LOW_STOCK_THRESHOLD) {
+            await publishLowStockEvent({
+                itemId: asset.customId,
+                itemName: asset.name,
+                admin,
             });
         }
 
-        await HistoryService.createHistory({
-            assetId: req.params.id,
-            action: 'Distributed',
-            details: `Sent ${moveQty} units to ${destination}`
+        await EventBus.publish(TOPICS.ASSET_UPDATED, {
+            customId: updated.customId,
+            fields: ['quantity'],
+            quantity: updated.quantity,
+            timestamp: new Date().toISOString(),
+            source: 'inventory-backend',
+            historyAction: 'Distributed',
+            historyDetails: `Sent ${moveQty} units to ${destination}`,
         });
 
-        // Create new batch for transferred quantity
-        const newSplitId = `${asset.customId}-SPLIT-${Math.floor(1000 + Math.random() * 9000)}`;
-        const newBatch = await AssetService.createAsset({
-            customId: newSplitId,
-            name: asset.name,
-            type: asset.type,
-            status: asset.status,
-            value: Number(asset.value),
-            quantity: moveQty,
-            location: updateData.location || asset.location,
-            department: updateData.department || asset.department,
-            assignedUser: updateData.assignedUser,
-            specifications: (asset.specifications as Record<string, any>) || {}
-        });
+        // Create new unit records for transferred quantity (legacy multi-quantity rows are normalized here).
+        const splitBaseId = `${asset.customId}-SPLIT-${Math.floor(1000 + Math.random() * 9000)}`;
+        const splitUnitIds = buildUnitAssetIds(splitBaseId, moveQty);
+        const newBatches = await AssetService.createAssets(
+            splitUnitIds.map((splitUnitId) => ({
+                customId: splitUnitId,
+                name: asset.name,
+                type: asset.type,
+                status: updateData.status || asset.status,
+                value: Number(asset.value),
+                quantity: 1,
+                location: updateData.location || asset.location,
+                department: updateData.department || asset.department,
+                assignedUser: updateData.assignedUser,
+                specifications: (asset.specifications as Record<string, any>) || {}
+            }))
+        );
 
-        await HistoryService.createHistory({
-            assetId: newSplitId,
-            action: 'Received_Distribution',
-            details: `Split from ${asset.customId}`
-        });
+        await Promise.all(
+            newBatches.map((newBatch, index) =>
+                EventBus.publish(TOPICS.ASSET_TRANSFERRED, {
+                    customId: newBatch.customId,
+                    parentAssetId: asset.customId,
+                    quantityMoved: newBatch.quantity,
+                    destinationType: destType,
+                    destination,
+                    location: String(newBatch.location),
+                    department: String(newBatch.department),
+                    status: String(newBatch.status),
+                    timestamp: new Date().toISOString(),
+                    source: 'inventory-backend',
+                    historyAction: 'Received_Distribution',
+                    historyDetails: moveQty > 1
+                        ? `Split from ${asset.customId} (${index + 1}/${moveQty})`
+                        : `Split from ${asset.customId}`,
+                })
+            )
+        );
 
-        res.json({ original: updated, newBatch });
+        for (const newBatch of newBatches) {
+            try {
+                await refreshAndPersistAssetLifespan(newBatch.customId, {
+                    reason: 'asset_transferred',
+                    forcePersist: true,
+                });
+            } catch (error: any) {
+                console.warn(`[InventoryAI] split transfer lifespan refresh failed for ${newBatch.customId}: ${error.message}`);
+            }
+        }
+        const refreshedOriginal = await AssetService.getAssetByCustomId(updated.customId);
+        const refreshedSplits = await Promise.all(newBatches.map((newBatch) => AssetService.getAssetByCustomId(newBatch.customId)));
+
+        res.json({
+            original: refreshedOriginal || updated,
+            newBatch: refreshedSplits[0] || newBatches[0],
+            newBatches: refreshedSplits.filter((entry): entry is Asset => Boolean(entry)),
+        });
     } catch (error: any) {
         console.error("❌ Transfer Route Error:", error.message);
         res.status(500).json({ message: "Transfer failed", error: error.message });
@@ -768,6 +1214,15 @@ app.patch('/api/assets/:id/status', async (req: Request, res: Response) => {
         const { status } = req.body;
         const updated = await AssetService.updateAsset(req.params.id, {
             status: mapToAssetStatus(status)
+        });
+        await EventBus.publish(TOPICS.ASSET_UPDATED, {
+            customId: updated.customId,
+            fields: ['status'],
+            status: String(updated.status),
+            timestamp: new Date().toISOString(),
+            source: 'inventory-backend',
+            historyAction: 'Status Updated',
+            historyDetails: `Status changed to ${updated.status}`,
         });
         res.json(updated);
     } catch (err) {
@@ -785,27 +1240,62 @@ app.patch('/api/assets/:id/telemetry', async (req: Request, res: Response) => {
 
         const currentSpecs = (asset.specifications as Record<string, any>) || {};
         const nextState = resolveTelemetryState(Boolean(isOnline), Boolean(isActive));
-        const adjustedHours = getTelemetryAdjustedHours(currentSpecs);
         const timestamp = reportedAt ? new Date(reportedAt) : new Date();
+        if (Number.isNaN(timestamp.getTime())) {
+            return res.status(400).json({ message: "Invalid telemetry timestamp." });
+        }
+
+        const previousUpdate = currentSpecs.operationalStateUpdatedAt
+            ? new Date(currentSpecs.operationalStateUpdatedAt)
+            : null;
+        const measuredAt = (previousUpdate && !Number.isNaN(previousUpdate.getTime()) && timestamp < previousUpdate)
+            ? previousUpdate
+            : timestamp;
+        const adjustedHours = getTelemetryAdjustedHours(currentSpecs, measuredAt);
 
         const updatedSpecifications = {
             ...currentSpecs,
             trackWorkingHours: true,
             workingHours: Math.round(adjustedHours),
+            workingHoursSource: 'telemetry',
             operationalState: nextState,
-            operationalStateUpdatedAt: timestamp.toISOString(),
+            operationalStateUpdatedAt: measuredAt.toISOString(),
             lastTelemetryAt: timestamp.toISOString()
         };
 
-        const updatedAsset = await AssetService.updateAsset(req.params.id, {
+        await AssetService.updateAsset(req.params.id, {
             specifications: updatedSpecifications
         });
 
-        await HistoryService.createHistory({
-            assetId: req.params.id,
-            action: 'Telemetry Updated',
-            details: `Detected state: ${nextState}`
+        await EventBus.publish(TOPICS.ASSET_UPDATED, {
+            customId: req.params.id,
+            fields: ['specifications.workingHours', 'specifications.operationalState', 'specifications.lastTelemetryAt'],
+            operationalState: nextState,
+            workingHours: Math.round(adjustedHours),
+            timestamp: timestamp.toISOString(),
+            source: 'inventory-backend',
+            historyAction: 'Telemetry Updated',
+            historyDetails: `Detected state: ${nextState}`,
         });
+
+        try {
+            const telemetryRefresh = await refreshAndPersistAssetLifespan(req.params.id, {
+                reason: 'telemetry_update',
+                forcePersist: false,
+                minimumHoursDelta: LIFESPAN_IMPACT_MIN_HOURS,
+                asOf: measuredAt,
+            });
+            if (!telemetryRefresh.persisted && telemetryRefresh.skippedReason) {
+                console.log(`[InventoryAI] telemetry lifespan refresh skipped for ${req.params.id}: ${telemetryRefresh.skippedReason}`);
+            }
+        } catch (error: any) {
+            console.warn(`[InventoryAI] telemetry lifespan refresh failed for ${req.params.id}: ${error.message}`);
+        }
+
+        const updatedAsset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!updatedAsset) {
+            return res.status(404).json({ message: "Asset not found after telemetry update" });
+        }
 
         res.json(updatedAsset);
     } catch (error: any) {
@@ -876,89 +1366,104 @@ app.patch('/api/assets/:id/lifecycle-outcome', async (req: Request, res: Respons
 app.post('/api/assets/:id/lifespan-prediction', async (req: Request, res: Response) => {
     const { id } = req.params;
     const requestId = req.header('x-request-id') || crypto.randomUUID();
-    const startedAt = Date.now();
+    const persistSnapshot = String(req.query.persist || 'true').toLowerCase() !== 'false';
 
     try {
         const asset = await AssetService.getAssetByCustomId(id);
         if (!asset) return res.status(404).json({ message: 'Asset not found', requestId });
 
-        const specs = ((asset.specifications as Record<string, any>) || {});
         const bodyBase = Number(req.body?.baseLifespanYears);
         const baseLifespanYears = Number.isFinite(bodyBase) && bodyBase > 0 ? bodyBase : 5;
-        const payload = {
-            assetId: asset.customId,
-            type: canonicalAssetType(asset.type),
-            brand: String(specs.brand || specs.Brand || '').trim(),
-            model: String(specs.version || specs.Version || specs.model || specs.Model || '').trim(),
-            specifications: specs,
+        const refresh = await refreshAndPersistAssetLifespan(id, {
+            reason: 'manual_request',
+            forcePersist: persistSnapshot,
+            requestId,
             baseLifespanYears,
-            workingHours: Math.round(getEffectiveWorkingHours(specs)),
-            operationalState: String(specs.operationalState || 'offline')
-        };
-
-        const aiResponse = await fetch(`${INVENTORY_AI_SERVICE_URL}/predict-asset-lifespan`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-request-id': requestId
-            },
-            body: JSON.stringify(payload)
         });
-
-        if (!aiResponse.ok) {
-            const errorText = await aiResponse.text();
-            console.error(`[InventoryAI] requestId=${requestId} status=${aiResponse.status} body=${errorText}`);
+        if (!refresh.prediction) {
             return res.status(502).json({
                 message: 'Inventory AI service unavailable',
                 requestId,
-                upstreamStatus: aiResponse.status
             });
         }
-
-        const prediction = await aiResponse.json();
-        const durationMs = Date.now() - startedAt;
-        console.log(`[InventoryAI] requestId=${requestId} assetId=${id} status=ok durationMs=${durationMs}`);
+        console.log(`[InventoryAI] requestId=${refresh.requestId || requestId} assetId=${id} status=ok durationMs=${refresh.durationMs || 0}`);
 
         return res.json({
-            ...prediction,
-            requestId,
+            ...refresh.prediction,
+            requestId: refresh.requestId || requestId,
             observedBy: 'inventory-backend',
-            durationMs
+            durationMs: refresh.durationMs || 0,
+            persisted: refresh.persisted,
+            persistSkippedReason: refresh.skippedReason || null,
         });
     } catch (error: any) {
-        const durationMs = Date.now() - startedAt;
-        console.error(`[InventoryAI] requestId=${requestId} assetId=${id} status=error durationMs=${durationMs} error=${error.message}`);
-        return res.status(500).json({
+        console.error(`[InventoryAI] requestId=${requestId} assetId=${id} status=error error=${error.message}`);
+        return res.status(502).json({
             message: 'Failed to retrieve lifespan prediction',
-            requestId
+            requestId,
+            error: error.message,
         });
     }
 });
 
 app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
     try {
-        const { name, type, department, quantity, specifications } = req.body;
+        const { name, type, department, quantity, specifications, admin } = req.body;
 
         const updateData: any = {};
         if (name) updateData.name = name;
         if (type) updateData.type = mapToAssetType(type);
         if (department) updateData.department = mapToAssetDepartment(department);
-        if (quantity) updateData.quantity = Number(quantity);
+        if (typeof quantity !== 'undefined') {
+            const normalizedQuantity = parseRequestedQuantity(quantity);
+            if (normalizedQuantity !== 1) {
+                return res.status(400).json({
+                    message: 'Direct quantity edits greater than 1 are not allowed. Create additional units instead.',
+                });
+            }
+            updateData.quantity = 1;
+        }
         if (specifications) updateData.specifications = specifications;
 
         const updatedAsset = await AssetService.updateAsset(req.params.id, updateData);
-
         if (!updatedAsset) return res.status(404).json({ message: "Asset not found" });
 
-        await HistoryService.createHistory({
-            assetId: req.params.id,
-            action: 'Details Updated',
-            details: 'Specs modified'
+        await EventBus.publish(TOPICS.ASSET_UPDATED, {
+            customId: updatedAsset.customId,
+            fields: Object.keys(updateData),
+            status: String(updatedAsset.status),
+            timestamp: new Date().toISOString(),
+            source: 'inventory-backend',
+            historyAction: 'Details Updated',
+            historyDetails: `Fields changed: ${Object.keys(updateData).join(', ') || 'details'}`,
         });
 
-        res.json(updatedAsset);
+        if (updateData.specifications) {
+            try {
+                await refreshAndPersistAssetLifespan(updatedAsset.customId, {
+                    reason: 'asset_updated',
+                    forcePersist: true,
+                });
+            } catch (error: any) {
+                console.warn(`[InventoryAI] details lifespan refresh failed for ${updatedAsset.customId}: ${error.message}`);
+            }
+        }
+
+        if (typeof quantity !== 'undefined' && Number(quantity) === 5) {
+            await publishLowStockEvent({
+                itemId: updatedAsset.customId,
+                itemName: updatedAsset.name,
+                admin,
+            });
+        }
+
+        const refreshed = await AssetService.getAssetByCustomId(updatedAsset.customId);
+        res.json(refreshed || updatedAsset);
     } catch (error: any) {
-        console.error("❌ Details Update Error:", error.message);
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        console.error("Details Update Error:", error.message);
         res.status(500).json({ message: "Update failed", error: error.message });
     }
 });
@@ -998,4 +1503,9 @@ const startServer = async () => {
     });
 };
 
+<<<<<<< Updated upstream
 startServer();
+=======
+startServer();
+
+>>>>>>> Stashed changes

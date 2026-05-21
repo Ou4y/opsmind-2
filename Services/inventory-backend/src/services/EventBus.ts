@@ -3,7 +3,7 @@ import amqp from 'amqplib';
 export class EventBusService {
   private connection: any = null;
   private channel: any = null;
-  private EXCHANGE_NAME = 'opsmind_events';
+  private EXCHANGE_NAME = process.env.EVENTS_EXCHANGE_NAME || 'opsmind.events';
 
   async connect() {
     try {
@@ -14,7 +14,7 @@ export class EventBusService {
 
       this.connection = await amqp.connect(rabbitURI);
       this.channel = await this.connection.createChannel();
-      await this.channel.assertExchange(this.EXCHANGE_NAME, 'topic', { durable: false });
+      await this.channel.assertExchange(this.EXCHANGE_NAME, 'topic', { durable: true });
 
       console.log('✅ Connected to RabbitMQ Event Bus');
     } catch (error) {

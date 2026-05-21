@@ -6,20 +6,35 @@ services:
       dockerfile: Dockerfile
     container_name: opsmind-inventory-ai-service
     environment:
+      LLM_PROVIDER: gemini
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
       SERPAPI_ENDPOINT: ${SERPAPI_ENDPOINT:-https://serpapi.com/search.json}
       SPEC_LOOKUP_TIMEOUT_SECONDS: ${SPEC_LOOKUP_TIMEOUT_SECONDS:-8}
+      SPEC_HTTP_RETRY_ATTEMPTS: ${SPEC_HTTP_RETRY_ATTEMPTS:-3}
+      SPEC_HTTP_BACKOFF_SECONDS: ${SPEC_HTTP_BACKOFF_SECONDS:-0.35}
+      SPEC_LOOKUP_CIRCUIT_FAILURES: ${SPEC_LOOKUP_CIRCUIT_FAILURES:-4}
+      SPEC_LOOKUP_CIRCUIT_RESET_SECONDS: ${SPEC_LOOKUP_CIRCUIT_RESET_SECONDS:-90}
       SPEC_RULE_VERSION_CONTROL: ${SPEC_RULE_VERSION_CONTROL:-spec-rules-v1}
       SPEC_RULE_VERSION_CANDIDATE: ${SPEC_RULE_VERSION_CANDIDATE:-spec-rules-v2}
       SPEC_AB_ROLLOUT_PERCENT: ${SPEC_AB_ROLLOUT_PERCENT:-20}
       SPEC_FORCE_VARIANT: ${SPEC_FORCE_VARIANT:-}
       SPEC_VERIFICATION_CONFIDENCE_THRESHOLD: ${SPEC_VERIFICATION_CONFIDENCE_THRESHOLD:-0.85}
+      SPEC_VARIANT_POLICY_PATH: /app/data/spec_variant_policy.json
+      SPEC_PROMOTION_MIN_EVALS: ${SPEC_PROMOTION_MIN_EVALS:-40}
+      SPEC_PROMOTION_MIN_IMPROVEMENT: ${SPEC_PROMOTION_MIN_IMPROVEMENT:-0.01}
       INVENTORY_AI_DATA_DIR: /app/data
     ports:
       - "8002:8000"
     volumes:
       - ./data:/app/data
       - ./models:/app/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
       - opsmind-net
@@ -41,9 +56,16 @@ services:
         condition: service_healthy
     command: ["python", "-m", "src.scheduler"]
     environment:
+      LLM_PROVIDER: gemini
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       INVENTORY_AI_DATA_DIR: /app/data
       SPEC_GOLDEN_PATH: /app/data/spec_golden_dataset.jsonl
       SPEC_FEEDBACK_CACHE_PATH: /app/data/spec_feedback_cache.json
+      SPEC_VARIANT_POLICY_PATH: /app/data/spec_variant_policy.json
       LIFESPAN_TRAIN_DATA_PATH: /app/data/lifespan_training.csv
       LIFESPAN_MODEL_DIR: /app/models
       LIFESPAN_RECALIBRATION_METADATA_PATH: /app/data/lifespan_recalibration_metadata.json
@@ -53,9 +75,13 @@ services:
       LIFESPAN_MONTHLY_DAY_UTC: ${LIFESPAN_MONTHLY_DAY_UTC:-1}
       LIFESPAN_MONTHLY_HOUR_UTC: ${LIFESPAN_MONTHLY_HOUR_UTC:-2}
       LIFESPAN_MONTHLY_MINUTE_UTC: ${LIFESPAN_MONTHLY_MINUTE_UTC:-0}
+      SPEC_PROMOTION_MIN_EVALS: ${SPEC_PROMOTION_MIN_EVALS:-40}
+      SPEC_PROMOTION_MIN_IMPROVEMENT: ${SPEC_PROMOTION_MIN_IMPROVEMENT:-0.01}
     volumes:
       - ./data:/app/data
       - ./models:/app/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
       - opsmind-net

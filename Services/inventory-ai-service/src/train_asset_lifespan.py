@@ -37,6 +37,9 @@ def train(data_path: str, model_dir: str) -> str:
 
     X = data[FEATURES].copy()
     y = data[TARGET].astype(float)
+    sample_weight = None
+    if "sample_weight" in data.columns:
+        sample_weight = pd.to_numeric(data["sample_weight"], errors="coerce").fillna(1.0).clip(lower=0.05)
 
     categorical = ["type", "brand", "model", "operational_state"]
     numeric = ["ram_gb", "storage_gb", "working_hours"]
@@ -54,7 +57,10 @@ def train(data_path: str, model_dir: str) -> str:
             ("regressor", HistGradientBoostingRegressor(random_state=42)),
         ]
     )
-    model.fit(X, y)
+    if sample_weight is not None:
+        model.fit(X, y, regressor__sample_weight=sample_weight)
+    else:
+        model.fit(X, y)
 
     os.makedirs(model_dir, exist_ok=True)
     output_path = os.path.join(model_dir, "asset_lifespan_model.pkl")

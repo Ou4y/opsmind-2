@@ -20,6 +20,7 @@ import { errorHandler, notFoundHandler } from '@middlewares/error.middleware';
 import authRoutes from '@modules/auth/auth.routes';
 import { authController } from '@modules/auth/auth.controller';
 import adminRoutes from '@modules/admin/admin.routes';
+import { userRepository } from '@modules/users/user.repository';
 
 class Server {
   private app: Application;
@@ -114,6 +115,30 @@ class Server {
 
     // Internal service-to-service route used by ticket-service for SLA enrichment.
     this.app.get('/users/:id', authController.getUserById.bind(authController));
+    this.app.get('/internal/admin-users', async (req, res) => {
+      const expectedToken = process.env.INTERNAL_API_TOKEN || '';
+      const providedToken = String(req.header('x-internal-token') || '');
+      if (!expectedToken || providedToken !== expectedToken) {
+        return res.status(401).json({ success: false, message: 'Unauthorized' });
+      }
+
+      const users = await userRepository.findAll({ isActive: true });
+      const admins = users
+        .filter((u) => Array.isArray(u.roles) && u.roles.some((r: any) => String(r?.name || '').toUpperCase() === 'ADMIN'))
+        .map((u) => ({
+          id: u.id,
+          email: u.email,
+          firstName: u.first_name,
+          lastName: u.last_name,
+          isActive: u.is_active,
+        }));
+
+      return res.status(200).json({
+        success: true,
+        count: admins.length,
+        data: admins,
+      });
+    });
 
     // API routes
     this.app.use('/auth', authRoutes);
