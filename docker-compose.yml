@@ -255,10 +255,10 @@ services:
       RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
       MONGO_URI: mongodb://mongodb:27017/notificationDB
 
-      EMAIL_HOST: smtp.gmail.com
-      EMAIL_PORT: "587"
-      EMAIL_USER: malakmahdy2005@gmail.com
-      EMAIL_PASS: clobatpozzgclkqs
+      EMAIL_HOST: mailhog
+      EMAIL_PORT: "1025"
+      EMAIL_USER: noreply@opsmind.local
+      EMAIL_PASS: ""
     ports:
       - "3005:3000"
     networks:
