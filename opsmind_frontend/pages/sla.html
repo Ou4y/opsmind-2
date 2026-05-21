@@ -28,6 +28,9 @@
                     <p class="page-subtitle mb-0" id="slaConnectionStatus">Checking connected ticket data</p>
                 </div>
                 <div class="page-header-actions">
+                    <button class="btn btn-outline-info d-none" id="editSlaPoliciesBtn">
+                        <i class="bi bi-pencil me-2"></i>Edit SLA Time
+                    </button>
                     <button class="btn btn-outline-primary" id="refreshSlaBtn">
                         <i class="bi bi-arrow-clockwise me-2"></i>Refresh
                     </button>
@@ -134,6 +137,70 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body" id="slaDetailsBody"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="slaPoliciesModal" tabindex="-1" aria-labelledby="slaPoliciesTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="slaPoliciesTitle">Edit SLA Policy Time</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="slaPoliciesForm">
+                    <div class="modal-body">
+                        <p class="text-muted small mb-3">
+                            Update SLA response and resolution times by priority. This uses the live SLA policy API and does not hardcode values in the frontend.
+                        </p>
+                        <div class="alert alert-light border small mb-3">
+                            Existing ticket deadlines are not recalculated here. Changes apply to SLA policy values used going forward.
+                        </div>
+                        <div id="slaPoliciesBody">
+                            <div class="text-center py-4">
+                                <div class="spinner-border text-primary mb-3" role="status">
+                                    <span class="visually-hidden">Loading policies...</span>
+                                </div>
+                                <p class="text-muted mb-0">Loading SLA policies...</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="saveSlaPoliciesBtn">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="slaTicketDeadlineModal" tabindex="-1" aria-labelledby="slaTicketDeadlineTitle" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="slaTicketDeadlineTitle">Edit Ticket SLA Time</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="slaTicketDeadlineForm">
+                    <div class="modal-body">
+                        <input type="hidden" id="slaDeadlineTicketId">
+                        <div class="mb-3">
+                            <label class="form-label" for="slaDeadlineResponseDueAt">Response Due</label>
+                            <input type="datetime-local" class="form-control" id="slaDeadlineResponseDueAt" required>
+                        </div>
+                        <div class="mb-0">
+                            <label class="form-label" for="slaDeadlineResolutionDueAt">Resolution Due</label>
+                            <input type="datetime-local" class="form-control" id="slaDeadlineResolutionDueAt" required>
+                        </div>
+                        <div class="form-text mt-2">
+                            This changes the SLA time for this specific ticket only. It does not change the priority policy defaults.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="saveSlaTicketDeadlineBtn">Save Ticket Time</button>
+                    </div>
+                </form>
             </div>
         </div>
     </div>

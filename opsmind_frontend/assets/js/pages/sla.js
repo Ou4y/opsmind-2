@@ -1,10 +1,13 @@
 import UI from '/assets/js/ui.js';
 import SLAService from '/services/slaService.js';
+import AuthService from '/services/authService.js';
 
 const state = {
     tickets: [],
     total: 0,
     isLoading: false,
+    isAdmin: false,
+    policies: [],
     filters: {
         q: '',
         status: '',
@@ -14,6 +17,8 @@ const state = {
 
 export async function initSLAPage() {
     await waitForApp();
+    state.isAdmin = AuthService.isAdmin();
+    toggleAdminControls();
     setupEventListeners();
     await loadTickets();
 }
@@ -30,6 +35,9 @@ function waitForApp() {
 
 function setupEventListeners() {
     document.getElementById('refreshSlaBtn')?.addEventListener('click', () => loadTickets());
+    document.getElementById('editSlaPoliciesBtn')?.addEventListener('click', () => openPoliciesModal());
+    document.getElementById('slaPoliciesForm')?.addEventListener('submit', handlePoliciesSave);
+    document.getElementById('slaTicketDeadlineForm')?.addEventListener('submit', handleTicketDeadlineSave);
 
     document.getElementById('slaSearchInput')?.addEventListener('input', UI.debounce((event) => {
         state.filters.q = event.target.value.trim();
@@ -63,6 +71,11 @@ function setupEventListeners() {
 
         if (action === 'view') {
             await openDetails(ticketId);
+            return;
+        }
+
+        if (action === 'edit-deadline') {
+            await openTicketDeadlineModal(ticketId);
             return;
         }
 
@@ -102,6 +115,10 @@ function setupEventListeners() {
             }
         }
     });
+}
+
+function toggleAdminControls() {
+    UI.toggle('#editSlaPoliciesBtn', state.isAdmin);
 }
 
 async function loadTickets() {
@@ -201,16 +218,275 @@ function renderActionButtons(ticket) {
             <i class="bi bi-eye"></i>
         </button>
     `;
+    const editButton = state.isAdmin
+        ? `<button class="btn btn-outline-info" data-action="edit-deadline" data-ticket-id="${ticketId}" title="Edit Ticket SLA Time"><i class="bi bi-pencil"></i></button>`
+        : '';
 
     if (ticket.status === 'RESOLVED' || ticket.status === 'CLOSED') {
-        return `<div class="btn-group btn-group-sm">${base}</div>`;
+        return `<div class="btn-group btn-group-sm">${base}${editButton}</div>`;
     }
 
     const actionButton = ticket.status === 'PAUSED'
         ? `<button class="btn btn-outline-success" data-action="resume" data-ticket-id="${ticketId}"><i class="bi bi-play-fill"></i></button>`
         : `<button class="btn btn-outline-warning" data-action="pause" data-ticket-id="${ticketId}"><i class="bi bi-pause-fill"></i></button>`;
 
-    return `<div class="btn-group btn-group-sm">${base}${actionButton}</div>`;
+    return `<div class="btn-group btn-group-sm">${base}${editButton}${actionButton}</div>`;
+}
+
+async function openPoliciesModal() {
+    if (!state.isAdmin) {
+        UI.error('Only administrators can edit SLA policy time.');
+        return;
+    }
+
+    const modalElement = document.getElementById('slaPoliciesModal');
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    modal.show();
+
+    await loadPolicies();
+}
+
+async function loadPolicies() {
+    const body = document.getElementById('slaPoliciesBody');
+    if (!body) return;
+
+    body.innerHTML = `
+        <div class="text-center py-4">
+            <div class="spinner-border text-primary mb-3" role="status">
+                <span class="visually-hidden">Loading policies...</span>
+            </div>
+            <p class="text-muted mb-0">Loading SLA policies...</p>
+        </div>
+    `;
+
+    try {
+        const response = await SLAService.getPolicies();
+        const items = Array.isArray(response.data) ? response.data : [];
+        state.policies = items
+            .slice()
+            .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority));
+        renderPoliciesForm();
+    } catch (error) {
+        body.innerHTML = `
+            <div class="alert alert-danger mb-0">
+                ${UI.escapeHTML(error.message || 'Failed to load SLA policies.')}
+            </div>
+        `;
+    }
+}
+
+function renderPoliciesForm() {
+    const body = document.getElementById('slaPoliciesBody');
+    if (!body) return;
+
+    if (state.policies.length === 0) {
+        body.innerHTML = '<div class="alert alert-warning mb-0">No SLA policies were found.</div>';
+        return;
+    }
+
+    body.innerHTML = `
+        <div class="table-responsive">
+            <table class="table align-middle">
+                <thead>
+                    <tr>
+                        <th>Priority</th>
+                        <th>Policy Name</th>
+                        <th>Response Minutes</th>
+                        <th>Resolution Minutes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${state.policies.map((policy) => `
+                        <tr data-priority="${UI.escapeHTML(policy.priority)}">
+                            <td><span class="badge bg-light text-dark">${UI.escapeHTML(policy.priority)}</span></td>
+                            <td>${UI.escapeHTML(policy.name || `${policy.priority} Priority`)}</td>
+                            <td>
+                                <input
+                                    type="number"
+                                    class="form-control"
+                                    data-field="responseMinutes"
+                                    data-priority="${UI.escapeHTML(policy.priority)}"
+                                    value="${Number(policy.responseMinutes || 0)}"
+                                    min="1"
+                                    step="1"
+                                    required
+                                >
+                            </td>
+                            <td>
+                                <input
+                                    type="number"
+                                    class="form-control"
+                                    data-field="resolutionMinutes"
+                                    data-priority="${UI.escapeHTML(policy.priority)}"
+                                    value="${Number(policy.resolutionMinutes || 0)}"
+                                    min="1"
+                                    step="1"
+                                    required
+                                >
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function handlePoliciesSave(event) {
+    event.preventDefault();
+
+    if (!state.isAdmin) {
+        UI.error('Only administrators can edit SLA policy time.');
+        return;
+    }
+
+    const nextPolicies = collectPoliciesFromForm();
+    if (!nextPolicies) return;
+
+    const changedPolicies = nextPolicies.filter((policy, index) => {
+        const current = state.policies[index];
+        return !current ||
+            Number(current.responseMinutes) !== Number(policy.responseMinutes) ||
+            Number(current.resolutionMinutes) !== Number(policy.resolutionMinutes);
+    });
+
+    if (changedPolicies.length === 0) {
+        UI.info('No SLA time changes to save.');
+        return;
+    }
+
+    const loader = UI.showLoading('Saving SLA policy time...');
+    const saveButton = document.getElementById('saveSlaPoliciesBtn');
+    if (saveButton) saveButton.disabled = true;
+
+    try {
+        for (const policy of changedPolicies) {
+            await SLAService.upsertPolicy(policy);
+        }
+
+        state.policies = nextPolicies;
+        UI.success('SLA policy time updated successfully.');
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('slaPoliciesModal')).hide();
+    } catch (error) {
+        UI.error(error.message || 'Failed to save SLA policy time.');
+    } finally {
+        if (saveButton) saveButton.disabled = false;
+        loader.hide();
+    }
+}
+
+async function openTicketDeadlineModal(ticketId) {
+    if (!state.isAdmin) {
+        UI.error('Only administrators can edit ticket SLA time.');
+        return;
+    }
+
+    const existing = state.tickets.find((ticket) => String(ticket.ticketId) === String(ticketId));
+    const ticket = existing || (await SLAService.getTicket(ticketId)).data;
+
+    document.getElementById('slaDeadlineTicketId').value = ticket.ticketId;
+    document.getElementById('slaDeadlineResponseDueAt').value = toDateTimeLocalValue(ticket.responseDueAt);
+    document.getElementById('slaDeadlineResolutionDueAt').value = toDateTimeLocalValue(ticket.resolutionDueAt);
+    document.getElementById('slaTicketDeadlineTitle').textContent = `Edit SLA Time: ${ticket.ticketId}`;
+
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('slaTicketDeadlineModal')).show();
+}
+
+async function handleTicketDeadlineSave(event) {
+    event.preventDefault();
+
+    if (!state.isAdmin) {
+        UI.error('Only administrators can edit ticket SLA time.');
+        return;
+    }
+
+    const ticketId = document.getElementById('slaDeadlineTicketId').value;
+    const responseDueAtRaw = document.getElementById('slaDeadlineResponseDueAt').value;
+    const resolutionDueAtRaw = document.getElementById('slaDeadlineResolutionDueAt').value;
+
+    if (!ticketId || !responseDueAtRaw || !resolutionDueAtRaw) {
+        UI.error('Both SLA time values are required.');
+        return;
+    }
+
+    const responseDueAt = new Date(responseDueAtRaw);
+    const resolutionDueAt = new Date(resolutionDueAtRaw);
+
+    if (Number.isNaN(responseDueAt.getTime()) || Number.isNaN(resolutionDueAt.getTime())) {
+        UI.error('Please enter valid SLA time values.');
+        return;
+    }
+
+    if (resolutionDueAt.getTime() < responseDueAt.getTime()) {
+        UI.error('Resolution due time must be after response due time.');
+        return;
+    }
+
+    const loader = UI.showLoading('Saving ticket SLA time...');
+    const saveButton = document.getElementById('saveSlaTicketDeadlineBtn');
+    if (saveButton) saveButton.disabled = true;
+
+    try {
+        await SLAService.updateTicketDeadlines(ticketId, {
+            responseDueAt: responseDueAt.toISOString(),
+            resolutionDueAt: resolutionDueAt.toISOString(),
+        });
+
+        UI.success(`SLA time updated for ticket ${ticketId}.`);
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('slaTicketDeadlineModal')).hide();
+        await loadTickets();
+    } catch (error) {
+        UI.error(error.message || 'Failed to update ticket SLA time.');
+    } finally {
+        if (saveButton) saveButton.disabled = false;
+        loader.hide();
+    }
+}
+
+function collectPoliciesFromForm() {
+    const nextPolicies = state.policies.map((policy) => {
+        const responseInput = document.querySelector(`[data-field="responseMinutes"][data-priority="${cssEscape(policy.priority)}"]`);
+        const resolutionInput = document.querySelector(`[data-field="resolutionMinutes"][data-priority="${cssEscape(policy.priority)}"]`);
+
+        const responseMinutes = Number(responseInput?.value);
+        const resolutionMinutes = Number(resolutionInput?.value);
+
+        if (!Number.isInteger(responseMinutes) || responseMinutes <= 0) {
+            UI.error(`Response minutes must be a positive number for ${policy.priority}.`);
+            responseInput?.focus();
+            return null;
+        }
+
+        if (!Number.isInteger(resolutionMinutes) || resolutionMinutes <= 0) {
+            UI.error(`Resolution minutes must be a positive number for ${policy.priority}.`);
+            resolutionInput?.focus();
+            return null;
+        }
+
+        return {
+            ...policy,
+            responseMinutes,
+            resolutionMinutes,
+        };
+    });
+
+    return nextPolicies.every(Boolean) ? nextPolicies : null;
+}
+
+function priorityRank(priority) {
+    const order = {
+        LOW: 0,
+        MEDIUM: 1,
+        HIGH: 2,
+        CRITICAL: 3,
+    };
+
+    return order[String(priority || '').toUpperCase()] ?? 99;
+}
+
+function cssEscape(value) {
+    if (window.CSS?.escape) return window.CSS.escape(String(value || ''));
+    return String(value || '').replace(/"/g, '\\"');
 }
 
 async function openDetails(ticketId) {
@@ -333,6 +609,15 @@ function formatDateTime(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return 'N/A';
     return date.toLocaleString();
+}
+
+function toDateTimeLocalValue(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+
+    const pad = (number) => String(number).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 document.addEventListener('DOMContentLoaded', initSLAPage);

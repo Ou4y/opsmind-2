@@ -63,6 +63,41 @@ const SLAService = {
         return handleResponse(response);
     },
 
+    async getPolicies() {
+        const response = await fetch(`${API_BASE_URL}/sla/policies`, {
+            method: 'GET',
+            headers: {
+                ...AuthService.getAuthHeaders()
+            }
+        });
+
+        return handleResponse(response);
+    },
+
+    async upsertPolicy(policy) {
+        const response = await fetch(`${API_BASE_URL}/sla/policies`, {
+            method: 'POST',
+            headers: {
+                ...AuthService.getAuthHeaders()
+            },
+            body: JSON.stringify(policy)
+        });
+
+        return handleResponse(response);
+    },
+
+    async updateTicketDeadlines(ticketId, deadlines) {
+        const response = await fetch(`${API_BASE_URL}/sla/tickets/${encodeURIComponent(ticketId)}/deadlines`, {
+            method: 'PATCH',
+            headers: {
+                ...AuthService.getAuthHeaders()
+            },
+            body: JSON.stringify(deadlines)
+        });
+
+        return handleResponse(response);
+    },
+
     async pauseTicket(ticketId, reason = 'Paused from frontend') {
         const response = await fetch(`${API_BASE_URL}/sla/tickets/${encodeURIComponent(ticketId)}/pause`, {
             method: 'POST',
