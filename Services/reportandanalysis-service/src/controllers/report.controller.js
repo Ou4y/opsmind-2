@@ -120,7 +120,6 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown(2);
 
-    
     doc
       .fontSize(16)
       .font("Helvetica-Bold")
@@ -128,10 +127,8 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown();
 
-
     const addField = (label, value) => {
       doc.font("Helvetica-Bold").fontSize(13).text(label + ": ", { continued: true });
-      
       doc.font("Helvetica").fontSize(12).text(value !== undefined && value !== null
         ? String(value)
         : "N/A");
@@ -148,12 +145,19 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown();
 
-   doc
-         .font("Helvetica")
-               .fontSize(12)
+    doc
+      .fontSize(16)
+      .font("Helvetica-Bold")
+      .text("Technician Solution", { underline: true });
+
+    doc.moveDown();
+
+    doc
+      .font("Helvetica")
+      .fontSize(12)
       .text(ticket.technician_solution || "No solution added");
 
-          doc.end();
+    doc.end();
 
   } catch (error) {
     console.error(error);
