@@ -148,4 +148,5 @@ exports.generatePDF = async (req, res) => {
    doc
          .font("Helvetica")
                .fontSize(12)
+      .text(ticket.technician_solution || "No solution added");
 
