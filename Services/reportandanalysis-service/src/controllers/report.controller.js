@@ -153,3 +153,4 @@ exports.generatePDF = async (req, res) => {
           doc.end();
 
   } catch (error) {
+    console.error(error);
