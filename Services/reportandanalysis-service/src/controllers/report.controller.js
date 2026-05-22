@@ -146,3 +146,4 @@ exports.generatePDF = async (req, res) => {
     doc.moveDown();
 
    doc
+         .font("Helvetica")
