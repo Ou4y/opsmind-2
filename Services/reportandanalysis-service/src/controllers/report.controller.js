@@ -27,6 +27,7 @@ exports.syncTickets = async (req, res) => {
 
       if (!exists) {
         const technicianUUID = await getTechnicianUUID(t.assigned_to);
+        console.log("ESCALATION =", t.escalation_count);
 
         await Ticket.create({
           id: t.id,
@@ -128,7 +129,9 @@ exports.generatePDF = async (req, res) => {
 
     const addField = (label, value) => {
       doc.font("Helvetica-Bold").fontSize(13).text(label + ": ", { continued: true });
-      doc.font("Helvetica").fontSize(12).text(value || "N/A");
+      doc.font("Helvetica").fontSize(12).text(value !== undefined && value !== null
+        ? String(value)
+        : "N/A");
       doc.moveDown();
     };
 
@@ -137,7 +140,6 @@ exports.generatePDF = async (req, res) => {
     addField("Description", ticket.description);
     addField("Priority", ticket.priority);
     addField("Technician ID", ticket.assigned_to); // UUID
-    addField("Technician Name", ticket.assigned_to_name);
     addField("Escalation Count", ticket.escalation_count);
     addField("Created At", ticket.created_at);
 
