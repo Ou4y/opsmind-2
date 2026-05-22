@@ -9,6 +9,73 @@
 
 import AuthService from '/services/authService.js';
 
+const SUPPORT_ACCESS_ROLES = new Set([
+    'ADMIN',
+    'SUPERVISOR',
+    'TECHNICIAN',
+    'JUNIOR_TECHNICIAN',
+    'SENIOR_TECHNICIAN',
+    'L1_TECHNICIAN',
+    'L2_TECHNICIAN',
+    'L3_TECHNICIAN',
+    'L4_TECHNICIAN',
+    'L1',
+    'L2',
+    'L3',
+    'L4',
+    'JUNIOR',
+    'SENIOR',
+    'SYSTEM_ADMIN',
+    'ADMINISTRATOR',
+    'HEAD_OF_IT',
+    'IT_ADMIN',
+    'BUILDING_MANAGER',
+    'SENIOR_BUILDING_MANAGER'
+]);
+
+function normalizeRole(value) {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .replace(/[\s-]+/g, '_');
+}
+
+function resolveUserRoleSet(user, context) {
+    const roleSet = new Set();
+    const addRole = (role) => {
+        const normalized = normalizeRole(role);
+        if (normalized) {
+            roleSet.add(normalized);
+        }
+    };
+
+    addRole(user?.role);
+    if (Array.isArray(user?.roles)) {
+        user.roles.forEach(addRole);
+    }
+
+    addRole(user?.technicianLevel);
+    addRole(user?.technician_level);
+    addRole(user?.level);
+    addRole(user?.supportLevel);
+    addRole(user?.support_level);
+    addRole(context?.technicianLevel);
+
+    if (context?.roleCategory === 'ADMIN') {
+        addRole('ADMIN');
+    }
+    if (context?.roleCategory === 'TECHNICIAN') {
+        addRole('TECHNICIAN');
+    }
+
+    return roleSet;
+}
+
+function hasSupportAccess(context, user) {
+    const roleSet = resolveUserRoleSet(user, context);
+    return Array.from(roleSet).some((role) => SUPPORT_ACCESS_ROLES.has(role));
+}
+
 /**
  * Router - Simple client-side router for multi-page app
  */
@@ -35,7 +102,8 @@ const Router = {
     technicianPages: [
         'junior-dashboard.html',
         'tickets.html',  // Technicians can see and claim tickets
-        'report.html'  // Technicians can view reports
+        'report.html',  // Technicians can view reports
+        'endpoint-devices.html' // Endpoint registry operations
     ],
     
     // Pages for SENIOR role (building managers)
@@ -94,7 +162,8 @@ const Router = {
         // Public pages - everyone can access
         if (this.isPublicPage()) return true;
 
-        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+        const currentUser = AuthService.getCurrentUser();
+        const context = AuthService.resolveUserDashboardContext(currentUser);
 
         if (this.currentPage === 'admin-dashboard.html') {
             return context.dashboardType === 'admin';
@@ -114,6 +183,10 @@ const Router = {
 
         if (this.currentPage === 'inventory.html') {
             return this.canAccessInventoryWithContext(context);
+        }
+
+        if (this.currentPage === 'endpoint-devices.html') {
+            return hasSupportAccess(context, currentUser);
         }
         
         // Admin pages - only admins
@@ -235,6 +308,12 @@ const Router = {
         if (pageName === 'inventory.html') {
             const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
             return this.canAccessInventoryWithContext(context);
+        }
+
+        if (pageName === 'endpoint-devices.html') {
+            const currentUser = AuthService.getCurrentUser();
+            const context = AuthService.resolveUserDashboardContext(currentUser);
+            return hasSupportAccess(context, currentUser);
         }
         
         // All other pages - authenticated users can access

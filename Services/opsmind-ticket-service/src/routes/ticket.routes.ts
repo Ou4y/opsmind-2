@@ -88,6 +88,24 @@ const router = Router();
  */
 router.post("/", validate(createTicketSchema), async (req, res, next) => {
   try {
+    console.log("[TicketService] Incoming agentic fields", {
+      affectedDeviceId: req.body?.affectedDeviceId,
+      affectedDeviceName: req.body?.affectedDeviceName,
+      osType: req.body?.osType,
+      issueScope: req.body?.issueScope,
+      remoteSupportConsent: req.body?.remoteSupportConsent,
+    });
+
+    const parsed = createTicketSchema.parse(req.body) as CreateTicketInput;
+
+    console.log("[TicketService] Parsed agentic fields", {
+      affectedDeviceId: parsed.affectedDeviceId,
+      affectedDeviceName: parsed.affectedDeviceName,
+      osType: parsed.osType,
+      issueScope: parsed.issueScope,
+      remoteSupportConsent: parsed.remoteSupportConsent,
+    });
+
     const {
       title,
       description,
@@ -106,7 +124,7 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
       remoteSupportConsent,
       latitude,
       longitude,
-    } = req.body as CreateTicketInput;
+    } = parsed;
 
     const ticketId = randomUUID();
     const createdAt = new Date();

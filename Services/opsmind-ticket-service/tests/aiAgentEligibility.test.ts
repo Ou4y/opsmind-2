@@ -34,4 +34,56 @@ describe("evaluateAiAgentEligibility", () => {
     expect(result.aiAgentEligible).toBe(true);
     expect(result.aiAgentEligibilityReason).toBeNull();
   });
+
+  it("returns true for SOFTWARE + MACOS when all requirements are met", () => {
+    const result = evaluateAiAgentEligibility({
+      title: "Unable to download Google Chrome",
+      description: "macOS user cannot download approved software",
+      typeOfRequest: "SERVICE_REQUEST",
+      category: "SOFTWARE",
+      issueScope: "MY_DEVICE",
+      remoteSupportConsent: true,
+      osType: "MACOS",
+      affectedDeviceId: "endpoint-mac-1",
+    });
+
+    expect(result.aiAgentEligible).toBe(true);
+    expect(result.aiAgentEligibilityReason).toBeNull();
+  });
+
+  it("returns unsupported category reason when category is not supported", () => {
+    const result = evaluateAiAgentEligibility({
+      title: "Building access card issue",
+      description: "Physical access card problem",
+      typeOfRequest: "INCIDENT",
+      category: "ACCESS",
+      issueScope: "MY_DEVICE",
+      remoteSupportConsent: true,
+      osType: "WINDOWS",
+      affectedDeviceId: "endpoint-22",
+    });
+
+    expect(result.aiAgentEligible).toBe(false);
+    expect(result.aiAgentEligibilityReason).toBe(
+      "AI Agent unavailable because the ticket category is not supported.",
+    );
+  });
+
+  it("returns unsupported os reason for linux endpoints", () => {
+    const result = evaluateAiAgentEligibility({
+      title: "Linux app issue",
+      description: "Cannot launch app",
+      typeOfRequest: "INCIDENT",
+      category: "SOFTWARE",
+      issueScope: "MY_DEVICE",
+      remoteSupportConsent: true,
+      osType: "LINUX",
+      affectedDeviceId: "endpoint-linux-1",
+    });
+
+    expect(result.aiAgentEligible).toBe(false);
+    expect(result.aiAgentEligibilityReason).toBe(
+      "AI Agent unavailable because this operating system is not supported for endpoint actions in this version.",
+    );
+  });
 });

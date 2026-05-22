@@ -340,6 +340,34 @@ services:
       - opsmind-net
     restart: unless-stopped
 
+  opsmind-agentic-ai-service:
+    image: opsmind-agentic-ai-service:local
+    build:
+      context: ./Services/opsmind-agentic-ai-service
+      dockerfile: Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: "development"
+      PORT: "4010"
+      SERVICE_NAME: opsmind-agentic-ai-service
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/agentic_ai_db
+      JWT_SECRET: "opsmind-local-jwt"
+    ports:
+      - "4010:4010"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - opsmind-net
+    restart: unless-stopped
+
   inventory-ai-service:
     image: opsmind-inventory-ai-service:local
     build:
@@ -446,6 +474,7 @@ services:
       OPSMIND_TICKET_URL: ${OPSMIND_TICKET_URL:-http://localhost:3001}
       OPSMIND_WORKFLOW_API_URL: ${OPSMIND_WORKFLOW_API_URL:-http://localhost:3003}
       OPSMIND_AI_API_URL: ${OPSMIND_AI_API_URL:-http://localhost:8001}
+      OPSMIND_AGENTIC_AI_API_URL: ${OPSMIND_AGENTIC_AI_API_URL:-http://localhost:4010}
       OPSMIND_INVENTORY_AI_API_URL: ${OPSMIND_INVENTORY_AI_API_URL:-http://localhost:8002}
       OPSMIND_SLA_URL: ${OPSMIND_SLA_URL:-http://localhost:3004}
       OPSMIND_NOTIFICATION_URL: ${OPSMIND_NOTIFICATION_URL:-http://localhost:3005/api/notifications}
