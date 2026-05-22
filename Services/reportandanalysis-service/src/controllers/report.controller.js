@@ -147,3 +147,5 @@ exports.generatePDF = async (req, res) => {
 
    doc
          .font("Helvetica")
+               .fontSize(12)
+
