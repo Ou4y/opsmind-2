@@ -127,6 +127,7 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown();
 
+    
     const addField = (label, value) => {
       doc.font("Helvetica-Bold").fontSize(13).text(label + ": ", { continued: true });
       
