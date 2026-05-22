@@ -13,6 +13,20 @@ let EOL_METRICS = {};
 let selectedAssetCustomId = null;
 let currentAssets = [];
 const lifespanPredictionCache = new Map();
+const eolAssessmentCache = new Map();
+const aiJobStatusCache = new Map();
+const PAGELOAD_AI_CONCURRENCY = 4;
+let loadAssetsInFlightPromise = null;
+let specPreviewRequestNonce = 0;
+let specPreviewInFlight = false;
+let specPreviewIsWriting = false;
+let specPreviewUserIntervened = false;
+let lastSpecPreviewMeta = {
+  sourceType: '',
+  evidenceStatus: '',
+  confidence: 0,
+  requiresReview: true,
+};
 let specVerificationSnapshot = {
   pendingCount: 0,
   metrics: null
@@ -213,13 +227,50 @@ const QUALITY_LIFESPAN_FACTORS = {
 const OPERATIONAL_STATE_RATES = {
   online_in_use: 1,
   online_idle: 0.2,
-  offline: 0
+  offline: 0,
+  not_monitored: 0,
+  insufficient_data: 0,
+  unknown: 0
 };
 
 const OPERATIONAL_STATE_LABELS = {
   online_in_use: 'Online - In use',
   online_idle: 'Online but idle',
-  offline: 'Offline'
+  offline: 'Offline',
+  not_monitored: 'Not monitored',
+  insufficient_data: 'Monitoring enabled · Waiting for signal',
+  unknown: 'Unknown'
+};
+
+const SPEC_PREVIEW_TEMPLATES = {
+  laptop: { OS: 'Unknown - verify exact installed OS', 'Processor/Chip': 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', Display: 'Unknown - verify exact model/year', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  desktop: { OS: 'Unknown - verify exact installed OS', Processor: 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', GPU: 'Unknown - verify exact configuration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  server: { OS: 'Unknown - verify exact installed OS', CPU: 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', RAID: 'Unknown - verify exact configuration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  tablet: { OS: 'Unknown - verify exact installed OS', 'Processor/Chip': 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', Display: 'Unknown - verify exact model/year', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  printer: { 'Print Technology': 'Unknown - verify exact model', Duplex: 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Page Count': 'Unknown - read device counter', 'Toner/Ink Type': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  scanner: { 'Scan Technology': 'Unknown - verify exact model', Resolution: 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Scan Count': 'Unknown - verify counter', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  router: { Ports: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'PoE Support': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  switch: { Ports: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'PoE Support': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  access_point: { 'WiFi Standard': 'Unknown - verify exact model', Band: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  firewall: { Throughput: 'Unknown - verify exact model', 'VPN Support': 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', Ports: 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  projector: { Resolution: 'Unknown - verify exact model', Brightness: 'Unknown - verify exact model', 'Lamp Hours': 'Unknown - verify exact count', 'Input Ports': 'Unknown - verify exact ports', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  smartboard: { 'Display Size': 'Unknown - verify exact model', Resolution: 'Unknown - verify exact model', 'Touch Points': 'Unknown - verify exact model', 'Input Ports': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  camera: { Resolution: 'Unknown - verify exact model', 'Lens Type': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Storage Media': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  microphone: { Type: 'Unknown - verify exact model', 'Frequency Response': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  speaker: { 'Output Power': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Frequency Range': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  desk: { Material: 'Unknown - verify exact material', 'Frame Type': 'Unknown - verify exact frame type', Dimensions: 'Unknown - verify exact dimensions', Condition: 'Pending inspection', 'Inspection Date': 'Pending' },
+  chair: { Material: 'Unknown - verify exact material', 'Frame Type': 'Unknown - verify exact frame type', 'Seat Condition': 'Pending inspection', 'Back Support': 'Unknown - verify exact support type', Dimensions: 'Unknown - verify exact dimensions', 'Weight Capacity': 'Unknown - verify exact capacity', Condition: 'Pending inspection' },
+  filing_cabinet: { Material: 'Unknown - verify exact material', 'Drawer Count': 'Unknown - verify exact count', 'Lock Type': 'Unknown - verify exact type', Dimensions: 'Unknown - verify exact dimensions', Condition: 'Pending inspection' },
+  whiteboard: { 'Surface Type': 'Unknown - verify exact type', Dimensions: 'Unknown - verify exact dimensions', 'Mount Type': 'Unknown - verify exact type', Condition: 'Pending inspection' },
+  microscope: { Magnification: 'Unknown - verify exact model', 'Lighting Type': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  centrifuge: { 'Max RPM': 'Unknown - verify exact model', Capacity: 'Unknown - verify exact model', 'Rotor Type': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  oscilloscope: { Bandwidth: 'Unknown - verify exact model', Channels: 'Unknown - verify exact model', 'Sample Rate': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  '3d_printer': { 'Build Volume': 'Unknown - verify exact model', 'Nozzle Size': 'Unknown - verify exact model', 'Supported Materials': 'Unknown - verify exact model', 'Print Hours': 'Unknown - verify current count', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  vehicle: { Odometer: 'Unknown - verify current reading', 'Engine Hours': 'Unknown - verify current reading', 'Fuel Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'VIN/Serial Number': 'Pending', Condition: 'Pending inspection' },
+  generator: { Capacity: 'Unknown - verify exact model', 'Runtime Hours': 'Unknown - verify current reading', 'Fuel Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  hvac: { Capacity: 'Unknown - verify exact model', 'Runtime Hours': 'Unknown - verify current reading', 'Refrigerant Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  maintenance_tool: { 'Tool Type': 'Unknown - verify exact type', 'Power Source': 'Unknown - verify exact source', 'Runtime Hours': 'Unknown - verify current reading', 'Inspection Date': 'Pending', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  default: { Condition: 'Unknown', Notes: 'Add model-specific technical details' }
 };
 
 function parseSpecsText(specsText) {
@@ -243,6 +294,48 @@ function formatSpecsObject(specs = {}) {
     .filter(([key, value]) => String(key || '').trim() && String(value ?? '').trim())
     .map(([key, value]) => `${key}: ${value}`);
   return entries.length ? entries.join('\n') : '';
+}
+
+function getSpecTemplateForType(type) {
+  const key = canonicalType(type);
+  return SPEC_PREVIEW_TEMPLATES[key] || SPEC_PREVIEW_TEMPLATES.default;
+}
+
+function isSpecsPlaceholderLike(text = '', placeholder = '') {
+  const compact = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!compact) return true;
+  const placeholderCompact = String(placeholder || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (placeholderCompact && compact === placeholderCompact) return true;
+  return compact.includes('unknown - verify');
+}
+
+function setSpecPreviewStatus(message = '', tone = 'muted') {
+  const statusEl = document.getElementById('assetSpecsAiStatus');
+  if (!statusEl) return;
+  const toneClass = tone === 'danger'
+    ? 'text-danger'
+    : tone === 'warning'
+      ? 'text-warning'
+      : tone === 'success'
+        ? 'text-success'
+        : 'text-muted';
+  statusEl.className = `form-text small ${toneClass}`;
+  statusEl.textContent = message || 'Approve/Edit before Create.';
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.min(safeLimit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const itemIndex = cursor++;
+      await worker(items[itemIndex], itemIndex);
+    }
+  });
+
+  await Promise.all(runners);
 }
 
 function getAssetSpecs(asset) {
@@ -273,6 +366,67 @@ function getAssetUnitRows(assets = []) {
 
 function toBoolean(value) {
   return value === true || value === 'true' || value === 'yes' || value === '1';
+}
+
+function normalizeOperationalState(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+  if (OPERATIONAL_STATE_RATES[normalized] !== undefined) return normalized;
+  return 'unknown';
+}
+
+function getOperationalStateLabel(state) {
+  return OPERATIONAL_STATE_LABELS[state] || OPERATIONAL_STATE_LABELS.unknown;
+}
+
+function getTelemetryStatusMeta(specs = {}) {
+  const trackWorkingHours = toBoolean(specs.trackWorkingHours);
+  const hasTelemetryTimestamp = Boolean(specs.lastTelemetryAt || specs.operationalStateUpdatedAt);
+  const hasTelemetryHours = Number(specs.workingHours || 0) > 0 && String(specs.workingHoursSource || '').toLowerCase() === 'telemetry';
+  const hasTelemetry = hasTelemetryTimestamp || hasTelemetryHours;
+  const requestedState = normalizeOperationalState(specs.operationalState);
+
+  if (!trackWorkingHours && !hasTelemetry) {
+    return {
+      state: 'not_monitored',
+      confidence: 'low',
+      reason: 'Telemetry not connected',
+      hasTelemetry: false
+    };
+  }
+
+  if (trackWorkingHours && !hasTelemetry) {
+    return {
+      state: 'insufficient_data',
+      confidence: 'low',
+      reason: 'Telemetry monitoring enabled, but no live signal has been received yet.',
+      hasTelemetry: false
+    };
+  }
+
+  if (['online_in_use', 'online_idle', 'offline'].includes(requestedState)) {
+    return {
+      state: requestedState,
+      confidence: 'high',
+      reason: 'Derived from telemetry heartbeat/activity',
+      hasTelemetry: true
+    };
+  }
+
+  if (requestedState === 'not_monitored' || requestedState === 'insufficient_data') {
+    return {
+      state: requestedState,
+      confidence: 'low',
+      reason: 'Telemetry incomplete for reliable classification',
+      hasTelemetry
+    };
+  }
+
+  return {
+    state: 'unknown',
+    confidence: 'low',
+    reason: hasTelemetry ? 'Telemetry signals do not map to a supported live status' : 'Telemetry not connected',
+    hasTelemetry
+  };
 }
 
 function getSpecNumber(specs, keys, fallback = 0) {
@@ -320,8 +474,7 @@ function inferAssetQuality({ brand = '', version = '', specs = {}, type = '' } =
 }
 
 function getOperationalState(specs) {
-  const state = String(specs.operationalState || 'offline');
-  return OPERATIONAL_STATE_RATES[state] !== undefined ? state : 'offline';
+  return getTelemetryStatusMeta(specs).state;
 }
 
 function getEffectiveWorkingHours(specs) {
@@ -340,11 +493,24 @@ function getAssetProfile(asset) {
   const brand = String(specs.brand || specs.Brand || '').trim();
   const version = String(specs.version || specs.Version || specs.model || specs.Model || '').trim();
   const quality = String(specs.inferredQuality || specs.quality || inferAssetQuality({ brand, version, specs, type: asset?.type })).toLowerCase();
+  const telemetry = getTelemetryStatusMeta(specs);
   const workingHours = Math.max(0, getEffectiveWorkingHours(specs));
   const trackWorkingHours = toBoolean(specs.trackWorkingHours) && TRACKABLE_ASSET_TYPES.has(canonicalType(asset?.type));
-  const operationalState = getOperationalState(specs);
+  const operationalState = telemetry.state;
 
-  return { specs, brand, quality, version, workingHours, trackWorkingHours, operationalState };
+  return {
+    specs,
+    brand,
+    quality,
+    version,
+    workingHours,
+    trackWorkingHours,
+    operationalState,
+    telemetryStatus: telemetry.state,
+    telemetryConfidence: telemetry.confidence,
+    telemetryReason: telemetry.reason,
+    hasTelemetry: telemetry.hasTelemetry
+  };
 }
 
 function estimateSpecFactor(asset) {
@@ -412,14 +578,49 @@ function buildAssetLifespanPayload(asset, baseMetrics) {
   };
 }
 
+async function loadAssetAiJobStatuses() {
+  aiJobStatusCache.clear();
+  if (!currentAssets.length) return;
+
+  const assetIds = currentAssets
+    .map((asset) => String(asset?.customId || '').trim())
+    .filter(Boolean);
+  if (!assetIds.length) return;
+
+  try {
+    const response = await inventoryRequest(`/assets/ai-jobs/status?assetIds=${encodeURIComponent(assetIds.join(','))}`);
+    if (!response.ok) throw new Error('AI job status endpoint unavailable');
+    const payload = await response.json();
+    const summaries = (payload?.summaries && typeof payload.summaries === 'object')
+      ? payload.summaries
+      : {};
+
+    Object.entries(summaries).forEach(([assetId, summary]) => {
+      aiJobStatusCache.set(assetId, summary);
+    });
+  } catch (error) {
+    console.warn('Failed to load background AI job statuses:', error?.message || error);
+  }
+}
+
 async function loadAssetLifespanPredictions() {
   lifespanPredictionCache.clear();
   if (!currentAssets.length) return;
 
-  await Promise.all(currentAssets.map(async (asset) => {
+  await runWithConcurrency(currentAssets, PAGELOAD_AI_CONCURRENCY, async (asset) => {
+    const jobSummary = aiJobStatusCache.get(asset.customId);
+    if (jobSummary?.hasActiveJobs) {
+      const fallbackMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || { years: 5, cost: 500 };
+      const fallbackPrediction = predictAssetLifespan(asset, fallbackMetrics);
+      lifespanPredictionCache.set(asset.customId, {
+        ...fallbackPrediction,
+        source: 'background_processing'
+      });
+      return;
+    }
     const baseMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || { years: 5, cost: 500 };
     try {
-      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction`, {
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction?persist=false`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseLifespanYears: baseMetrics.years || 5 })
@@ -440,7 +641,26 @@ async function loadAssetLifespanPredictions() {
     } catch (error) {
       lifespanPredictionCache.set(asset.customId, predictAssetLifespan(asset, baseMetrics));
     }
-  }));
+  });
+}
+
+async function loadAssetEolAssessments() {
+  eolAssessmentCache.clear();
+  if (!currentAssets.length) return;
+
+  await runWithConcurrency(currentAssets, PAGELOAD_AI_CONCURRENCY, async (asset) => {
+    const jobSummary = aiJobStatusCache.get(asset.customId);
+    if (jobSummary?.hasActiveJobs) return;
+    try {
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/eol-assessment`);
+      if (!response.ok) throw new Error('EOL assessment unavailable');
+      const payload = await response.json();
+      eolAssessmentCache.set(asset.customId, payload);
+    } catch (error) {
+      // Keep graceful fallback to client-side estimation when backend assessment fails.
+      console.warn(`EOL assessment fetch failed for ${asset.customId}:`, error?.message || error);
+    }
+  });
 }
 
 function showInventoryInsight(options = {}) {
@@ -570,8 +790,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('addAssetForm');
   if (form) form.addEventListener('submit', handleAddAsset);
 
-  const transferForm = document.getElementById('transferAssetForm');
-  if (transferForm) transferForm.addEventListener('submit', handleTransferAsset);
+  const transferForm = document.getElementById('transferForm');
+  if (transferForm) {
+    transferForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      window.submitTransfer();
+    });
+  }
 
   const exportBtn = document.getElementById('exportPdfBtn');
   if (exportBtn) exportBtn.addEventListener('click', exportAssetsToDetailedPDF);
@@ -590,16 +815,32 @@ document.addEventListener('DOMContentLoaded', () => {
   const assetTypeSelect = document.getElementById('assetType');
   const brandInput = document.getElementById('assetBrand');
   const versionInput = document.getElementById('assetVersion');
+  const nameInput = document.getElementById('assetName');
   const specsInput = document.getElementById('assetSpecs');
+  const generateSpecsBtn = document.getElementById('assetGenerateSpecsBtn');
   if (locSelect) locSelect.value = 'Central Warehouse';
   if (deptSelect) deptSelect.value = 'Unassigned';
   if (assetTypeSelect) assetTypeSelect.addEventListener('change', () => {
+    invalidateSpecPreviewRequest();
     updateWorkingHoursAvailability();
+    applyAssetTypeSpecTemplate();
     updateInferredQualityPreview();
   });
-  [brandInput, versionInput, specsInput].forEach(input => {
+  [brandInput, versionInput, nameInput, specsInput].forEach(input => {
     if (input) input.addEventListener('input', updateInferredQualityPreview);
   });
+  [brandInput, versionInput, nameInput].forEach(input => {
+    if (input) input.addEventListener('input', invalidateSpecPreviewRequest);
+  });
+  if (specsInput) {
+    specsInput.addEventListener('input', () => {
+      if (specPreviewInFlight || specPreviewIsWriting) {
+        specPreviewUserIntervened = true;
+        invalidateSpecPreviewRequest();
+      }
+    });
+  }
+  if (generateSpecsBtn) generateSpecsBtn.addEventListener('click', handleGenerateSpecsPreview);
 
   const buildingFilter = document.getElementById('filterBuilding');
   const deptFilter = document.getElementById('filterDept');
@@ -610,6 +851,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeFilter) typeFilter.addEventListener('change', syncFilters);
 
   updateWorkingHoursAvailability();
+  applyAssetTypeSpecTemplate();
+  updateSpecPreviewButtonState();
+  setSpecPreviewStatus('Approve/Edit before Create.', 'muted');
   updateInferredQualityPreview();
 });
 
@@ -639,27 +883,38 @@ async function loadConfig() {
 }
 
 async function loadAssets() {
-  try {
-    const response = await inventoryRequest('/assets');
-    if (!response.ok) throw new Error('Failed to fetch assets');
+  if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
 
-    const assets = await response.json();
-    console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
-    currentAssets = assets; 
-    await loadAssetLifespanPredictions();
+  loadAssetsInFlightPromise = (async () => {
+    try {
+      const response = await inventoryRequest('/assets');
+      if (!response.ok) throw new Error('Failed to fetch assets');
 
-    populateFilters();
-    renderTable();
-    updateDeleteAllAssetsButton();
-    checkGlobalEOLAlerts(); 
-    await refreshSpecVerificationSnapshot();
+      const assets = await response.json();
+      console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
+      currentAssets = assets;
+      await loadAssetAiJobStatuses();
+      await loadAssetLifespanPredictions();
+      await loadAssetEolAssessments();
 
-  } catch (error) {
-    console.error('Error:', error);
-    const tableBody = document.getElementById('inventoryTableBody');
-    if (tableBody) {
+      populateFilters();
+      renderTable();
+      updateDeleteAllAssetsButton();
+      checkGlobalEOLAlerts();
+      await refreshSpecVerificationSnapshot();
+    } catch (error) {
+      console.error('Error:', error);
+      const tableBody = document.getElementById('inventoryTableBody');
+      if (tableBody) {
         tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-4">Error loading assets. Check port 5000.</td></tr>`;
+      }
     }
+  })();
+
+  try {
+    await loadAssetsInFlightPromise;
+  } finally {
+    loadAssetsInFlightPromise = null;
   }
 }
 
@@ -669,11 +924,18 @@ function getEOLDetails(asset) {
   const lifecycle = getLifecycleSnapshot(asset);
   const startDate = lifecycle.commissionedAt || lifecycle.purchaseDate || toValidDate(asset.createdAt) || now;
   const outcomeDate = lifecycle.replacementDate || lifecycle.retiredAt || lifecycle.failureDate;
+  const backendAssessment = eolAssessmentCache.get(asset.customId) || null;
+  const jobSummary = aiJobStatusCache.get(asset.customId) || null;
+  const backgroundProcessing = Boolean(jobSummary?.hasActiveJobs);
 
   const defaultMetrics = { years: 5, cost: 500 };
   const baseMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || defaultMetrics;
   const prediction = lifespanPredictionCache.get(asset.customId) || predictAssetLifespan(asset, baseMetrics);
-  const predictedYears = lifecycle.actualLifespanYears || prediction.years || baseMetrics.years || defaultMetrics.years;
+  const predictedYears = lifecycle.actualLifespanYears
+    || Number(backendAssessment?.predictedLifespanYears || 0)
+    || prediction.years
+    || baseMetrics.years
+    || defaultMetrics.years;
   const metrics = {
     ...baseMetrics,
     years: Math.max(0.5, Number(predictedYears) || defaultMetrics.years),
@@ -681,8 +943,11 @@ function getEOLDetails(asset) {
     prediction
   };
 
-  const expiryDate = outcomeDate ? new Date(outcomeDate) : new Date(startDate);
-  if (!outcomeDate) expiryDate.setDate(expiryDate.getDate() + Math.round(metrics.years * 365));
+  const backendEolDate = toValidDate(backendAssessment?.predictedEolDate);
+  const expiryDate = outcomeDate
+    ? new Date(outcomeDate)
+    : (backendEolDate ? new Date(backendEolDate) : new Date(startDate));
+  if (!outcomeDate && !backendEolDate) expiryDate.setDate(expiryDate.getDate() + Math.round(metrics.years * 365));
 
   const msRemaining = expiryDate - now;
   const daysRemaining = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
@@ -691,46 +956,177 @@ function getEOLDetails(asset) {
 
   let remainingText = '';
   let statusClass = 'bg-success';
+  let confidence = Number(backendAssessment?.confidence ?? NaN);
+  let reason = String(backendAssessment?.reason || '');
+  let eolStatus = String(backendAssessment?.status || '').toLowerCase();
 
-  if (closedOutcome && outcomeDate) {
-    remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+  if (!backendAssessment && backgroundProcessing) {
+    remainingText = 'Processing';
     statusClass = 'bg-secondary';
-  } else if (daysRemaining < 0) {
-    remainingText = `Expired ${Math.abs(daysRemaining)} days ago`;
-    statusClass = 'bg-danger';
-  } else if (daysRemaining <= 180) {
-    remainingText = `⚠️ ${daysRemaining} days left`;
-    statusClass = 'bg-warning text-dark';
-  } else if (daysRemaining < 365) {
-    const months = Math.floor(daysRemaining / 30);
-    remainingText = `${months} month${months > 1 ? 's' : ''} left`;
-    statusClass = 'bg-info text-dark';
+    eolStatus = 'processing';
+    reason = 'AI/EOL background processing is in progress.';
+  } else if (backendAssessment) {
+    const monthsRemaining = Number(backendAssessment.monthsRemaining);
+    if (closedOutcome && outcomeDate) {
+      remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+      statusClass = 'bg-secondary';
+    } else if (eolStatus === 'overdue') {
+      const overdueMonths = Number.isFinite(monthsRemaining) ? Math.abs(monthsRemaining).toFixed(1) : '0';
+      remainingText = `Overdue by ${overdueMonths} month(s)`;
+      statusClass = 'bg-danger';
+    } else if (eolStatus === 'due_soon') {
+      const soonMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `⚠️ ${soonMonths} month(s) left`;
+      statusClass = 'bg-warning text-dark';
+    } else if (eolStatus === 'watch') {
+      const watchMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `Watch window: ${watchMonths} month(s) left`;
+      statusClass = 'bg-info text-dark';
+    } else if (eolStatus === 'healthy') {
+      const healthyMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `Healthy: ${healthyMonths} month(s) left`;
+      statusClass = 'bg-success';
+    } else if (eolStatus === 'insufficient_data') {
+      remainingText = 'Insufficient data';
+      statusClass = 'bg-secondary';
+    } else {
+      remainingText = 'Unknown (low confidence)';
+      statusClass = 'bg-secondary';
+    }
   } else {
-    const years = Math.floor(daysRemaining / 365);
-    const months = Math.floor((daysRemaining % 365) / 30);
-    remainingText = `${years}y ${months}m left`;
-    statusClass = 'bg-success';
+    if (closedOutcome && outcomeDate) {
+      remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+      statusClass = 'bg-secondary';
+    } else if (daysRemaining < 0) {
+      remainingText = `Expired ${Math.abs(daysRemaining)} days ago`;
+      statusClass = 'bg-danger';
+    } else if (daysRemaining <= 180) {
+      remainingText = `⚠️ ${daysRemaining} days left`;
+      statusClass = 'bg-warning text-dark';
+    } else if (daysRemaining < 365) {
+      const months = Math.floor(daysRemaining / 30);
+      remainingText = `${months} month${months > 1 ? 's' : ''} left`;
+      statusClass = 'bg-info text-dark';
+    } else {
+      const years = Math.floor(daysRemaining / 365);
+      const months = Math.floor((daysRemaining % 365) / 30);
+      remainingText = `${years}y ${months}m left`;
+      statusClass = 'bg-success';
+    }
+
+    if (!closedOutcome && failureRisk >= 0.9) {
+      statusClass = 'bg-danger';
+      remainingText = `High failure risk (${Math.round(failureRisk * 100)}%)`;
+    } else if (!closedOutcome && failureRisk >= 0.75 && daysRemaining > 180) {
+      statusClass = 'bg-warning text-dark';
+      remainingText = `Elevated risk (${Math.round(failureRisk * 100)}%)`;
+    }
   }
 
-  if (!closedOutcome && failureRisk >= 0.9) {
-    statusClass = 'bg-danger';
-    remainingText = `High failure risk (${Math.round(failureRisk * 100)}%)`;
-  } else if (!closedOutcome && failureRisk >= 0.75 && daysRemaining > 180) {
-    statusClass = 'bg-warning text-dark';
-    remainingText = `Elevated risk (${Math.round(failureRisk * 100)}%)`;
-  }
+  const lowConfidence = Number.isFinite(confidence) ? confidence < 0.6 : true;
+  const procurementRecommended = Boolean(backendAssessment?.procurementRecommended) && !lowConfidence;
+  const shortAction = backgroundProcessing
+    ? 'Waiting for AI pipeline'
+    : procurementRecommended
+      ? 'Plan procurement'
+      : lowConfidence
+        ? 'Manual review recommended'
+        : 'Monitoring';
+  const whyDetails = {
+    reason: reason || 'No detailed explanation available.',
+    predictionSource: String(backendAssessment?.predictionSource || 'frontend_estimate'),
+    telemetryStatus: String(backendAssessment?.telemetryStatus || getAssetProfile(asset).telemetryStatus || 'unknown'),
+    specEvidenceStatus: String(backendAssessment?.specEvidenceStatus || getAssetSpecs(asset).aiSpecEvidenceStatus || 'insufficient_source_evidence'),
+    modelVersion: String(getAssetSpecs(asset).lifespanModelVersion || ''),
+    failureRisk: Number(failureRisk || 0),
+    aiLifespanYears: Number(metrics.years || 0),
+  };
 
-  return { remainingText, statusClass, daysRemaining, metrics, expiryDate, failureRisk, isClosedLifecycle: closedOutcome };
+  return {
+    remainingText,
+    statusClass,
+    daysRemaining,
+    metrics,
+    expiryDate,
+    failureRisk,
+    isClosedLifecycle: closedOutcome,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    reason: reason || '',
+    eolStatus: eolStatus || 'unknown',
+    procurementRecommended,
+    predictionSource: String(backendAssessment?.predictionSource || 'frontend_estimate'),
+    evidenceLevel: String(backendAssessment?.evidenceLevel || 'low'),
+    lowConfidence,
+    backgroundProcessing,
+    shortAction,
+    whyDetails,
+  };
 }
+
+window.showEolWhy = async function showEolWhy(assetId) {
+  const asset = currentAssets.find((entry) => String(entry.customId) === String(assetId));
+  if (!asset) {
+    showMessage('Asset not found for EOL details.', 'warning');
+    return;
+  }
+
+  const eol = getEOLDetails(asset);
+  const details = eol.whyDetails || {};
+  const reason = String(details.reason || 'No detailed explanation available.');
+  let message = [
+    `Status: ${eol.remainingText}`,
+    `Confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'}`,
+    `AI Lifespan: ${Number.isFinite(Number(details.aiLifespanYears)) ? `${details.aiLifespanYears} years` : 'N/A'}`,
+    `Failure Risk: ${Math.round((Number(details.failureRisk || 0) || 0) * 100)}%`,
+    `Telemetry: ${String(details.telemetryStatus || 'unknown')}`,
+    `Spec Evidence: ${String(details.specEvidenceStatus || 'insufficient_source_evidence')}`,
+    details.modelVersion ? `Model Version: ${details.modelVersion}` : '',
+    `Reason: ${reason}`,
+  ].filter(Boolean).join(' | ');
+
+  try {
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(assetId)}/eol-explanation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        telemetryStatus: details.telemetryStatus || 'unknown',
+        specEvidenceStatus: details.specEvidenceStatus || 'insufficient_source_evidence',
+        confidence: eol.confidence,
+        predictedLifespanYears: details.aiLifespanYears,
+        procurementSuitable: eol.procurementRecommended,
+      }),
+    });
+    if (response.ok) {
+      const explanation = await response.json();
+      const shortUser = String(explanation.shortUserExplanation || '').trim();
+      const technical = String(explanation.technicalExplanation || '').trim();
+      if (shortUser || technical) {
+        message = [shortUser, technical].filter(Boolean).join(' | ');
+      }
+    }
+  } catch (_error) {
+    // Keep deterministic fallback message when helper is unavailable.
+  }
+
+  await showInventoryInsight({
+    title: 'EOL Why',
+    message,
+    type: eol.lowConfidence ? 'warning' : 'info',
+    confirmText: 'Close',
+  });
+};
 
 function checkGlobalEOLAlerts() {
   const activeAssets = currentAssets.filter((asset) => !getEOLDetails(asset).isClosedLifecycle);
   const expiringCount = activeAssets.filter(a => {
     const eol = getEOLDetails(a);
-    return eol.daysRemaining >= 0 && eol.daysRemaining <= 180;
+    return !eol.lowConfidence && eol.daysRemaining >= 0 && eol.daysRemaining <= 180;
   }).length;
 
-  const expiredCount = activeAssets.filter(a => getEOLDetails(a).daysRemaining < 0).length;
+  const expiredCount = activeAssets.filter(a => {
+    const eol = getEOLDetails(a);
+    return !eol.lowConfidence && eol.daysRemaining < 0;
+  }).length;
   const banner = document.getElementById('eolAlertBanner');
   
   if (banner && (expiringCount > 0 || expiredCount > 0)) {
@@ -751,7 +1147,36 @@ function checkGlobalEOLAlerts() {
 
 function getSpecVerificationStatus(asset) {
   const specs = getAssetSpecs(asset);
-  return String(specs.specVerificationStatus || '').trim().toLowerCase();
+  const explicitStatus = String(
+    specs.specVerificationStatus ||
+    specs.spec_status ||
+    specs?.specVerification?.status ||
+    ''
+  ).trim().toLowerCase();
+
+  if (explicitStatus) return explicitStatus;
+
+  const aiDetectedSpecs = (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object')
+    ? specs.aiDetectedSpecs
+    : {};
+  const hasAIDetectedSpecs = Object.keys(aiDetectedSpecs).length > 0;
+  if (!hasAIDetectedSpecs) return 'unchecked';
+
+  const confidence = Number(specs.aiSpecConfidence);
+  const lowConfidence = Number.isFinite(confidence) ? confidence < 0.85 : false;
+  const lookupMode = String(specs.aiSpecLookupMode || '').trim().toLowerCase();
+  const evidenceStatus = String(specs.aiSpecEvidenceStatus || '').trim().toLowerCase();
+  const weakEvidence = evidenceStatus === 'insufficient_source_evidence' || evidenceStatus === 'llm_or_heuristic_only';
+  const weakLookup = (
+    lookupMode.includes('heuristic')
+    || lookupMode.includes('fallback')
+    || lookupMode.includes('low_confidence')
+    || lookupMode.includes('llm')
+    || lookupMode.includes('no_source')
+  );
+
+  if (lowConfidence || weakLookup || weakEvidence) return 'pending';
+  return 'verified';
 }
 
 function getSpecVerificationBadge(status) {
@@ -760,6 +1185,10 @@ function getSpecVerificationBadge(status) {
   if (status === 'verified') return '<span class="badge bg-success">Spec Verified</span>';
   if (status === 'rejected') return '<span class="badge bg-secondary">Spec Rejected</span>';
   return '<span class="badge bg-light text-dark border">Spec Unchecked</span>';
+}
+
+function shouldShowSpecReviewButton(status) {
+  return status === 'pending' || status === 'unchecked' || status === 'rejected';
 }
 
 async function refreshSpecVerificationSnapshot() {
@@ -823,7 +1252,10 @@ window.openSpecVerificationModal = (customId) => {
     const conf = Number(specs.aiSpecConfidence || 0);
     const source = String(specs.aiSpecSource || 'unknown');
     const mode = String(specs.aiSpecLookupMode || 'unknown');
-    meta.textContent = `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode}`;
+    const evidenceReason = String(specs.aiSpecEvidenceReason || '').trim();
+    meta.textContent = evidenceReason
+      ? `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode} | ${evidenceReason}`
+      : `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode}`;
   }
 
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('specVerificationModal'));
@@ -998,6 +1430,10 @@ async function handleAddAsset(e) {
     showMessage('Only admins can create new assets.', 'error');
     return;
   }
+  if (specPreviewInFlight) {
+    showMessage('Please wait for AI specs generation to complete.', 'warning');
+    return;
+  }
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
   const originalText = submitBtn.innerHTML;
@@ -1005,12 +1441,25 @@ async function handleAddAsset(e) {
   const name = document.getElementById('assetName').value;
   const quantityRaw = document.getElementById('assetQuantity').value;
   const quantity = parseInt(quantityRaw, 10);
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    showMessage('Quantity must be a positive integer.', 'warning');
+    return;
+  }
   const type = document.getElementById('assetType').value;
   const location = document.getElementById('assetLocation').value || 'Central Warehouse';
   const department = document.getElementById('assetDepartment').value || 'Unassigned';
   const brand = document.getElementById('assetBrand')?.value.trim() || '';
   const version = document.getElementById('assetVersion')?.value.trim() || '';
   const trackWorkingHours = Boolean(document.getElementById('assetTrackHours')?.checked);
+  const specConfirmationReviewed = Boolean(document.getElementById('assetSpecConfirmedOnCreate')?.checked);
+  const reviewerUser = AuthService.getUser();
+  const reviewerNameCandidate = `${reviewerUser?.firstName || ''} ${reviewerUser?.lastName || ''}`.trim();
+  const specConfirmationReviewedBy = String(
+    reviewerUser?.email
+    || reviewerUser?.name
+    || reviewerNameCandidate
+    || 'asset_creator'
+  ).trim();
   const manualSpecs = parseSpecsText(document.getElementById('assetSpecs')?.value || '');
   const inferredQuality = inferAssetQuality({ brand, version, specs: manualSpecs, type });
   const specifications = {
@@ -1019,9 +1468,22 @@ async function handleAddAsset(e) {
     version,
     inferredQuality,
     trackWorkingHours,
+    telemetryEnabled: trackWorkingHours,
     workingHours: 0,
-    operationalState: trackWorkingHours ? 'offline' : undefined,
-    operationalStateUpdatedAt: trackWorkingHours ? new Date().toISOString() : undefined
+    operationalState: trackWorkingHours ? 'insufficient_data' : undefined,
+    telemetryStatus: trackWorkingHours ? 'insufficient_data' : 'not_monitored',
+    telemetryConfidence: 'low',
+    telemetryReason: trackWorkingHours
+      ? 'Telemetry monitoring enabled, but no live signal has been received yet.'
+      : 'Telemetry monitoring disabled for this asset.',
+    operationalStateUpdatedAt: trackWorkingHours ? new Date().toISOString() : undefined,
+    specVerificationStatus: specConfirmationReviewed ? 'verified' : 'pending',
+    specVerificationConfirmedOnCreate: specConfirmationReviewed,
+    specVerificationReviewedBy: specConfirmationReviewed ? specConfirmationReviewedBy : undefined,
+    specVerificationReviewedAt: specConfirmationReviewed ? new Date().toISOString() : undefined,
+    specVerificationAction: specConfirmationReviewed ? 'confirmed_on_create' : undefined,
+    aiSpecEvidenceStatus: 'insufficient_source_evidence',
+    aiSpecEvidenceReason: 'No trusted exact source evidence found. Manual review recommended.'
   };
 
   const idleAssets = currentAssets.filter(a =>
@@ -1054,24 +1516,39 @@ async function handleAddAsset(e) {
       }
   }
 
+  const sanityCheck = await requestSpecSanityCheck({
+    assetType: type,
+    brand,
+    model: version,
+    normalizedSpecs: manualSpecs,
+    sourceType: lastSpecPreviewMeta.sourceType || '',
+    evidenceStatus: lastSpecPreviewMeta.evidenceStatus || specifications.aiSpecEvidenceStatus,
+  });
+  if (sanityCheck) {
+    const warnings = Array.isArray(sanityCheck.warnings) ? sanityCheck.warnings.filter(Boolean) : [];
+    const suspicious = Array.isArray(sanityCheck.suspiciousFields) ? sanityCheck.suspiciousFields.filter(Boolean) : [];
+    if (warnings.length > 0) {
+      setSpecPreviewStatus(`Spec sanity check: ${warnings[0]}`, 'warning');
+    }
+    if (Boolean(sanityCheck.requiresReview) && suspicious.length > 0) {
+      const proceedWithWarnings = await confirmInventoryAction({
+        title: 'Spec Sanity Warnings',
+        message: `${warnings.slice(0, 2).join(' ')} Continue creating assets with these warnings?`,
+        type: 'warning',
+        confirmText: 'Create Anyway',
+        cancelText: 'Review Specs',
+        confirmClass: 'inventory-insight-primary'
+      });
+      if (!proceedWithWarnings) return;
+    }
+  }
+
   submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
   submitBtn.disabled = true;
 
   function generateCustomId() { return `ASSET-${Date.now()}-${Math.floor(Math.random() * 10000)}`; }
 
   try {
-    for (let i = 0; i < quantity; i++) {
-      const customId = generateCustomId();
-      const assetData = { name, customId, type, location, department, status: 'active', quantity: 1, specifications };
-
-      const response = await inventoryRequest('/assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(assetData),
-      });
-
-      if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
-    }
     const quantityToCreate = quantity;
     const customId = generateCustomId();
     const assetData = {
@@ -1082,15 +1559,19 @@ async function handleAddAsset(e) {
       department,
       status: 'active',
       quantity: quantityToCreate,
-      specifications
+      specifications,
+      specConfirmationReviewed,
+      specConfirmationReviewedBy,
     };
 
-    const response = await fetch(`${API_URL}/assets`, {
+    const response = await inventoryRequest('/assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(assetData),
     });
     if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
+    const payload = await response.json().catch(() => ({}));
+    const createdCount = Number(payload?.createdCount || quantityToCreate);
 
     const modalEl = document.getElementById('receiveOrderModal');
     if (modalEl) bootstrap.Modal.getInstance(modalEl).hide();
@@ -1098,11 +1579,28 @@ async function handleAddAsset(e) {
     e.target.reset();
     document.getElementById('assetLocation').value = 'Central Warehouse';
     document.getElementById('assetDepartment').value = 'Unassigned';
+    const specConfirmedCheckbox = document.getElementById('assetSpecConfirmedOnCreate');
+    if (specConfirmedCheckbox) specConfirmedCheckbox.checked = false;
+    lastSpecPreviewMeta = {
+      sourceType: '',
+      evidenceStatus: '',
+      confidence: 0,
+      requiresReview: true,
+    };
     updateWorkingHoursAvailability();
+    applyAssetTypeSpecTemplate();
+    setSpecPreviewStatus('Approve/Edit before Create.', 'muted');
     updateInferredQualityPreview();
 
     await loadAssets();
-    showMessage(`Created bulk asset (${quantityToCreate} units) successfully.`, 'success');
+    const bgStatus = String(payload?.backgroundProcessing?.status || 'queued');
+    if (bgStatus === 'enqueue_failed') {
+      showMessage(`Created ${createdCount} asset unit(s), but background AI/EOL jobs failed to queue.`, 'warning');
+    } else if (bgStatus === 'partially_queued') {
+      showMessage(`Created ${createdCount} asset unit(s). AI/EOL processing is queued for most units.`, 'info');
+    } else {
+      showMessage(`Created ${createdCount} asset unit(s). AI/EOL processing in background.`, 'success');
+    }
 
   } catch (error) {
     console.error('Error:', error);
@@ -1175,12 +1673,27 @@ window.viewAssetDetails = (assetName) => {
       const eol = getEOLDetails(asset);
       return count + (!eol.isClosedLifecycle && eol.daysRemaining <= 180 ? getAssetQuantity(asset) : 0);
     }, 0);
-    let aiText = `<strong>AI Prediction:</strong> Profile-based lifespan for a <strong>${formatType(sampleAsset.type)}</strong> is <strong>${eolData.metrics.years} years</strong>. `;
-    
-    if (failingCount > 0) {
-        aiText += `<span class="text-danger">Based on usage, <b>${failingCount} item(s)</b> in this group need replacement soon.</span>`;
+    const lowConfidenceCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (eol.lowConfidence ? getAssetQuantity(asset) : 0);
+    }, 0);
+    const unknownCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (eol.eolStatus === 'unknown' || eol.eolStatus === 'insufficient_data' ? getAssetQuantity(asset) : 0);
+    }, 0);
+
+    let aiText = `<strong>AI Prediction:</strong>&nbsp;Profile-based lifespan for a&nbsp;<strong>${formatType(sampleAsset.type)}</strong>&nbsp;is&nbsp;<strong>${eolData.metrics.years} years</strong>.&nbsp;`;
+
+    if (unknownCount > 0) {
+      aiText += ` <span class="text-warning">` +
+        `${unknownCount} item${unknownCount === 1 ? '' : 's'} ha${unknownCount === 1 ? 's' : 've'} unknown EOL status due to insufficient evidence or missing telemetry.` +
+        `</span>`;
+    } else if (lowConfidenceCount > 0) {
+      aiText += ` <span class="text-warning">Backend EOL assessment is low confidence. Manual review recommended.</span>`;
+    } else if (failingCount > 0) {
+      aiText += ` <span class="text-danger">Based on backend EOL assessment, <b>${failingCount} item(s)</b> in this group need replacement planning soon.</span>`;
     } else {
-        aiText += `<span class="text-success">All items in this group currently have a healthy lifespan.</span>`;
+      aiText += ` <span class="text-success">All items in this group currently have a healthy EOL status.</span>`;
     }
 
     aiBanner.innerHTML = aiText;
@@ -1193,8 +1706,8 @@ window.viewAssetDetails = (assetName) => {
     const specStatus = getSpecVerificationStatus(asset);
     const isDeployed = normalizeValue(displayLocation(asset.location)) !== normalizeValue('Central Warehouse');
     const trackingLabel = profile.trackWorkingHours
-      ? `${OPERATIONAL_STATE_LABELS[profile.operationalState]} - ${Math.round(profile.workingHours).toLocaleString()}h`
-      : 'Hours not tracked';
+      ? `${getOperationalStateLabel(profile.telemetryStatus)} · ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` · ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
+      : 'Not monitored';
     return `
 	    <tr>
 	      <td class="ps-4">
@@ -1212,20 +1725,27 @@ window.viewAssetDetails = (assetName) => {
       </td>
       <td>${displayLocation(asset.location)}</td>
       <td>${displayDepartment(asset.department)}</td>
-      <td>
-        <div class="mb-1">
-          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-magic inventory-ai-inline-icon"></i> AI Lifespan: ${eol.metrics.years}y
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-shield-exclamation inventory-ai-inline-icon"></i> Failure risk: ${Math.round((eol.failureRisk || 0) * 100)}%
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
-        </div>
-      </td>
+	      <td>
+	        <div class="mb-1">
+	          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-bar-chart-line inventory-ai-inline-icon"></i> EOL confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'} (${capitalize(eol.evidenceLevel || 'low')})
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-lightning-charge inventory-ai-inline-icon"></i> ${UI.escapeHTML(eol.shortAction)}
+	        </div>
+	        ${eol.lowConfidence ? `<div class="text-warning pred-lifespan-text"><i class="bi bi-exclamation-triangle-fill me-1"></i>Low confidence</div>` : ''}
+	        ${eol.procurementRecommended ? `<div class="text-danger pred-lifespan-text"><i class="bi bi-cart-check me-1"></i>Procurement recommended</div>` : ''}
+	        <div class="mt-1">
+	          <button class="btn btn-sm btn-outline-secondary" onclick="window.showEolWhy('${asset.customId}')" title="Why this EOL status">
+	            Why?
+	          </button>
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
+	        </div>
+	      </td>
       <td class="text-end pe-4">
         ${profile.trackWorkingHours && isDeployed ? `
         <button class="btn btn-sm btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Auto-detected Device State">
@@ -1238,6 +1758,10 @@ window.viewAssetDetails = (assetName) => {
           <i class="bi bi-clock-history"></i>
         </button>
         ${INVENTORY_ACCESS.canEditSpecs ? `
+        ${shouldShowSpecReviewButton(specStatus) ? `
+        <button class="btn btn-sm btn-warning text-dark" onclick="window.openSpecVerificationModal('${asset.customId}')" title="Review AI-detected specifications">
+          <i class="bi bi-shield-exclamation"></i>
+        </button>` : ''}
         <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${asset.customId}', false)" title="Edit Specs">
           <i class="bi bi-pencil"></i>
         </button>` : ''}
@@ -1311,10 +1835,8 @@ window.transferIndividual = (customId) => {
   if (!asset) return;
 
   const availableQuantity = getAssetQuantity(asset);
-  const requestedQuantity = Number(quantityOverride);
-  const quantity = Number.isFinite(requestedQuantity) && requestedQuantity > 0
-    ? Math.min(requestedQuantity, availableQuantity)
-    : availableQuantity;
+  const quantity = availableQuantity;
+  const displayLabel = asset.name || customId;
   selectedAssetCustomId = customId;
   document.getElementById('transferAssetId').textContent = `${displayLabel || customId} (${quantity} unit${quantity === 1 ? '' : 's'})`;
   document.getElementById('maxTransferQty').textContent = quantity;
@@ -1589,12 +2111,267 @@ window.toggleWorkingHoursInput = function() {
 function updateWorkingHoursAvailability() {
   const type = canonicalType(document.getElementById('assetType')?.value || '');
   const checkbox = document.getElementById('assetTrackHours');
+  const label = document.querySelector('label[for="assetTrackHours"]');
+  const hint = document.getElementById('assetTrackHoursHint');
   if (!checkbox) return;
 
   const canTrack = TRACKABLE_ASSET_TYPES.has(type);
   checkbox.disabled = Boolean(type) && !canTrack;
   if (!canTrack) {
     checkbox.checked = false;
+  }
+
+  if (label) {
+    label.textContent = canTrack
+      ? 'Enable automatic telemetry for lifespan prediction'
+      : 'Telemetry monitoring is not applicable for this asset type';
+  }
+
+  if (hint) {
+    hint.textContent = canTrack
+      ? 'When enabled, telemetry starts in waiting-for-signal mode until a real signal arrives.'
+      : 'Use inspection/condition updates for this asset type instead of online/offline telemetry.';
+  }
+}
+
+function applyAssetTypeSpecTemplate() {
+  const specsInput = document.getElementById('assetSpecs');
+  const type = document.getElementById('assetType')?.value || '';
+  if (!specsInput) return;
+
+  const template = getSpecTemplateForType(type);
+  specsInput.placeholder = formatSpecsObject(template);
+}
+
+function updateSpecPreviewButtonState() {
+  const button = document.getElementById('assetGenerateSpecsBtn');
+  if (!button) return;
+  button.disabled = specPreviewInFlight;
+  button.innerHTML = specPreviewInFlight
+    ? '<span class="spinner-border spinner-border-sm me-1"></span>Generating...'
+    : '<i class="bi bi-stars me-1"></i>Generate Specs with AI';
+}
+
+function invalidateSpecPreviewRequest() {
+  specPreviewRequestNonce += 1;
+  lastSpecPreviewMeta = {
+    sourceType: '',
+    evidenceStatus: '',
+    confidence: 0,
+    requiresReview: true,
+  };
+}
+
+async function animateSpecsIntoTextarea(textarea, text, nonce) {
+  if (!textarea) return;
+  const safeText = String(text || '');
+  const lines = safeText.split('\n');
+  textarea.value = '';
+  specPreviewIsWriting = true;
+  specPreviewUserIntervened = false;
+
+  const charDelayMs = 22;
+  const lineDelayMs = 180;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    for (let i = 0; i < line.length; i += 1) {
+      if (nonce !== specPreviewRequestNonce || specPreviewUserIntervened) {
+        specPreviewIsWriting = false;
+        return;
+      }
+      textarea.value += line[i];
+      await new Promise((resolve) => setTimeout(resolve, charDelayMs));
+    }
+
+    if (lineIndex < lines.length - 1) {
+      if (nonce !== specPreviewRequestNonce || specPreviewUserIntervened) {
+        specPreviewIsWriting = false;
+        return;
+      }
+      textarea.value += '\n';
+      await new Promise((resolve) => setTimeout(resolve, lineDelayMs));
+    }
+  }
+  specPreviewIsWriting = false;
+}
+
+function buildSpecPreviewPayload() {
+  const type = document.getElementById('assetType')?.value || '';
+  const name = document.getElementById('assetName')?.value.trim() || '';
+  const brand = document.getElementById('assetBrand')?.value.trim() || '';
+  const model = document.getElementById('assetVersion')?.value.trim() || '';
+  const currentSpecsText = document.getElementById('assetSpecs')?.value || '';
+  const currentSpecs = parseSpecsText(currentSpecsText);
+
+  return {
+    name,
+    type,
+    brand,
+    model,
+    currentSpecsText,
+    currentSpecs
+  };
+}
+
+async function requestSpecNormalization(payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+  try {
+    const response = await inventoryRequest('/assets/spec-normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_error) {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function requestSpecSanityCheck(payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await inventoryRequest('/assets/spec-sanity-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_error) {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function handleGenerateSpecsPreview() {
+  const specsInput = document.getElementById('assetSpecs');
+  const submitBtn = document.querySelector('#addAssetForm button[type="submit"]');
+  const payload = buildSpecPreviewPayload();
+  if (specPreviewInFlight) return;
+
+  if (!payload.type) {
+    showMessage('Please select an asset type before generating specs.', 'warning');
+    return;
+  }
+
+  if (!payload.brand && !payload.model && !payload.name) {
+    showMessage('Enter at least asset name, brand, or model before generating specs.', 'warning');
+    return;
+  }
+
+  const currentText = String(specsInput?.value || '').trim();
+  const currentPlaceholder = String(specsInput?.placeholder || '');
+  if (currentText && !isSpecsPlaceholderLike(currentText, currentPlaceholder)) {
+    const overwrite = window.confirm('Technical Specs already contain text. Replace with AI-generated specs?');
+    if (!overwrite) return;
+  }
+
+  const requestNonce = specPreviewRequestNonce + 1;
+  specPreviewRequestNonce = requestNonce;
+  specPreviewInFlight = true;
+  specPreviewUserIntervened = false;
+  updateSpecPreviewButtonState();
+  if (submitBtn) submitBtn.disabled = true;
+  setSpecPreviewStatus('AI is preparing specs...', 'muted');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await inventoryRequest('/assets/spec-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'AI spec preview request failed');
+    }
+
+    const preview = await response.json();
+    if (requestNonce !== specPreviewRequestNonce) return;
+
+    const normalizedSpecs = (preview.normalizedSpecs && typeof preview.normalizedSpecs === 'object')
+      ? preview.normalizedSpecs
+      : {};
+    const fallbackTemplate = getSpecTemplateForType(payload.type);
+    let specsText = String(preview.specsText || '').trim() || formatSpecsObject(
+      Object.keys(normalizedSpecs).length ? normalizedSpecs : fallbackTemplate
+    );
+    let normalizationWarnings = [];
+    const normalizeResponse = await requestSpecNormalization({
+      assetType: payload.type,
+      brand: payload.brand,
+      model: payload.model,
+      rawSpecsText: specsText,
+      currentSpecs: normalizedSpecs,
+    });
+    if (normalizeResponse && requestNonce === specPreviewRequestNonce) {
+      const normalizedText = String(normalizeResponse.normalizedSpecsText || '').trim();
+      if (normalizedText) {
+        specsText = normalizedText;
+      }
+      normalizationWarnings = Array.isArray(normalizeResponse.warnings) ? normalizeResponse.warnings.filter(Boolean) : [];
+    }
+
+    setSpecPreviewStatus('Writing specs...', 'muted');
+    await animateSpecsIntoTextarea(specsInput, specsText, requestNonce);
+    if (specPreviewUserIntervened || requestNonce !== specPreviewRequestNonce) {
+      if (specPreviewUserIntervened) {
+        setSpecPreviewStatus('Stopped AI writing because you edited specs manually.', 'warning');
+      }
+      return;
+    }
+    updateInferredQualityPreview();
+
+    const confidencePercent = Math.round((Number(preview.confidence || 0) || 0) * 100);
+    const evidenceStatus = String(preview.evidenceStatus || '').toLowerCase();
+    const reason = String(preview.evidenceReason || preview.reason || '').trim();
+    const extraWarnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
+    const combinedWarnings = [...extraWarnings, ...normalizationWarnings].filter(Boolean);
+    const sourceType = String(preview.sourceType || '').trim();
+    const warningText = combinedWarnings.length ? ` ${combinedWarnings[0]}` : '';
+    lastSpecPreviewMeta = {
+      sourceType,
+      evidenceStatus,
+      confidence: Number(preview.confidence || 0) || 0,
+      requiresReview: Boolean(preview.requiresReview),
+    };
+
+    if (evidenceStatus === 'trusted') {
+      setSpecPreviewStatus(`Trusted source evidence found (${confidencePercent}% confidence). Source: ${sourceType || 'verified_dataset'}. Review/edit before create.${warningText}`, 'success');
+    } else if (evidenceStatus === 'user_confirmed' && preview.requiresReview !== true) {
+      setSpecPreviewStatus(
+        `Using previously user-confirmed specs (${confidencePercent}% confidence). Source: ${sourceType || 'user_confirmed_previous_asset'}. Review/edit before create.${warningText}`,
+        'success'
+      );
+    } else {
+      setSpecPreviewStatus(
+        `AI generated specs require review (${confidencePercent}% confidence). ${reason || 'No trusted source evidence; please verify.'}${warningText}`,
+        'warning'
+      );
+    }
+  } catch (error) {
+    if (requestNonce === specPreviewRequestNonce) {
+      const isAbort = String(error?.name || '').toLowerCase() === 'aborterror';
+      setSpecPreviewStatus('AI preview unavailable. You can still enter specs manually.', 'danger');
+      showMessage(isAbort ? 'AI spec preview timed out. You can continue with manual specs.' : (error.message || 'Failed to generate AI spec preview.'), 'error');
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    specPreviewIsWriting = false;
+    specPreviewInFlight = false;
+    updateSpecPreviewButtonState();
+    if (submitBtn) submitBtn.disabled = false;
   }
 }
 
@@ -1729,6 +2506,8 @@ window.viewOperationalTelemetry = async (customId) => {
   if (!asset) return;
 
   const profile = getAssetProfile(asset);
+  const statusLabel = getOperationalStateLabel(profile.telemetryStatus);
+  const telemetryReason = profile.telemetryReason || 'Telemetry not connected';
   const modalId = `operationalStateModal-${Date.now()}`;
   const modalHTML = `
     <div class="modal fade inventory-modal-stack-high" id="${modalId}" tabindex="-1" aria-hidden="true">
@@ -1739,12 +2518,15 @@ window.viewOperationalTelemetry = async (customId) => {
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
-            <p class="text-muted small mb-3">This state is auto-detected from device heartbeat and activity telemetry for <strong>${UI.escapeHTML(customId)}</strong>.</p>
+            <p class="text-muted small mb-3">Live status is computed from real telemetry when available for <strong>${UI.escapeHTML(customId)}</strong>.</p>
             <div class="inventory-ai-quality-preview mb-3">
-              Detected state: ${OPERATIONAL_STATE_LABELS[profile.operationalState]}
+              Detected state: ${statusLabel}
             </div>
             <div class="inventory-ai-quality-preview mt-3">
-              Current consumption-adjusted hours: ${Math.round(profile.workingHours).toLocaleString()}
+              Current consumption-adjusted hours: ${profile.hasTelemetry ? Math.round(profile.workingHours).toLocaleString() : 'Unavailable'}
+            </div>
+            <div class="inventory-ai-quality-preview mt-3">
+              Confidence: ${String(profile.telemetryConfidence || 'low').toUpperCase()} | Reason: ${UI.escapeHTML(telemetryReason)}
             </div>
           </div>
           <div class="modal-footer">
@@ -2008,7 +2790,7 @@ window.exportAssetsToDetailedPDF = function() {
       `Brand: ${profile.brand || 'N/A'}`,
       `Version: ${profile.version || 'N/A'}`,
       `Detected Quality: ${capitalize(profile.quality)}`,
-      `Device State: ${profile.trackWorkingHours ? OPERATIONAL_STATE_LABELS[profile.operationalState] : 'Not tracked'}`,
+      `Device State: ${profile.trackWorkingHours ? getOperationalStateLabel(profile.telemetryStatus) : 'Not monitored'}`,
       `AI Predicted Lifespan: ${eol.metrics.years} years`,
       `Consumption Hours: ${profile.trackWorkingHours ? Math.round(profile.workingHours).toLocaleString() : 'Not tracked'}`,
       `Barcode: ${asset.barcode || 'N/A'}`,
@@ -2078,7 +2860,7 @@ window.generateEOLReport = function() {
   currentAssets.forEach(asset => {
     const eol = getEOLDetails(asset);
 
-    if (!eol.isClosedLifecycle && eol.daysRemaining <= 365) {
+    if (!eol.isClosedLifecycle && eol.procurementRecommended && !eol.lowConfidence) {
       totalEstimatedBudget += eol.metrics.cost;
 
       reportData.push([

@@ -1,0 +1,2 @@
+assetId,assetType,purchaseDate,actualLifespanYears,reasonForRetirement,retiredDate,failureDate,repairCount,usageLevel
+ASSET-EXAMPLE-0001,laptop,2019-08-01,6.1,performance_degradation,2025-09-10,,3,high

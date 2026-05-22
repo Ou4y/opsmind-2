@@ -538,6 +538,61 @@ class SpecInferenceService:
                 fallback_conf = secondary.field_confidence.get(field, secondary.confidence)
                 primary.field_confidence[field] = clamp_confidence(fallback_conf, primary.confidence * 0.8)
 
+    def _apply_truthful_evidence_labels(self, response: AssetSpecInferenceResponse) -> AssetSpecInferenceResponse:
+        urls = [url for url in sanitize_urls(response.source_urls) if self._is_safe_external_url(url)]
+        trusted_urls = [url for url in urls if self._is_authoritative(url)]
+        lookup_mode = str(response.lookup_mode or "").lower()
+        has_trusted_evidence = bool(trusted_urls)
+        fallback_mode = (
+            "fallback" in lookup_mode
+            or "heuristic" in lookup_mode
+            or "low_confidence" in lookup_mode
+            or "llm" in lookup_mode
+        )
+
+        response.source_urls = trusted_urls or urls
+
+        if not response.source_urls:
+            response.confidence = clamp_confidence(min(float(response.confidence or 0.0), 0.45), 0.05)
+            response.lookup_mode = "heuristic_no_source_evidence" if fallback_mode else "llm_no_source_evidence"
+            response.explanation = (
+                "No trusted source evidence found. LLM/heuristic estimate only; manual spec verification required."
+            )
+            response.field_confidence = sanitize_field_confidence(
+                response.field_confidence,
+                response.inferred_specifications,
+                default_confidence=max(0.25, response.confidence * 0.9),
+            )
+            return response
+
+        if not has_trusted_evidence:
+            response.confidence = clamp_confidence(min(float(response.confidence or 0.0), 0.55), 0.05)
+            response.lookup_mode = "heuristic_no_trusted_source" if fallback_mode else "llm_no_trusted_source"
+            response.explanation = (
+                "No trusted source evidence found. LLM/heuristic estimate only; manual spec verification required."
+            )
+            response.field_confidence = sanitize_field_confidence(
+                response.field_confidence,
+                response.inferred_specifications,
+                default_confidence=max(0.3, response.confidence * 0.9),
+            )
+            return response
+
+        if fallback_mode and response.confidence > self.settings.spec_verification_confidence_threshold:
+            response.confidence = clamp_confidence(
+                self.settings.spec_verification_confidence_threshold - 0.01,
+                0.0,
+            )
+            response.explanation = (
+                f"{response.explanation} Manual verification required because fallback/LLM reasoning contributed."
+            )
+            response.field_confidence = sanitize_field_confidence(
+                response.field_confidence,
+                response.inferred_specifications,
+                default_confidence=max(0.35, response.confidence * 0.9),
+            )
+        return response
+
     async def infer_asset_specs(self, payload: AssetSpecInferenceRequest) -> AssetSpecInferenceResponse:
         started = time.perf_counter()
         variant = self._spec_variant_for_payload(payload)
@@ -653,6 +708,8 @@ class SpecInferenceService:
                 explanation="No high-confidence live or LLM output; used heuristic model fallback.",
                 source_urls=authoritative_links,
             )
+
+        response = self._apply_truthful_evidence_labels(response)
 
         self.metrics.inc(
             "inventory_ai_spec_inference_total",

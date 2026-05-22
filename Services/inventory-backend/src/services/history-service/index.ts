@@ -9,6 +9,33 @@ const eventHistory = (data: any, fallbackAction: string, fallbackDetails: string
   details: data?.historyDetails ? String(data.historyDetails) : fallbackDetails,
 });
 
+const isForeignKeyError = (error: any): boolean => String(error?.code || '') === 'P2003';
+
+const createHistorySafely = async (params: {
+  eventName: string;
+  assetId: string;
+  action: string;
+  details: string;
+}) => {
+  try {
+    await HistoryService.createHistory({
+      assetId: params.assetId,
+      action: params.action,
+      details: params.details,
+    });
+  } catch (error: any) {
+    if (isForeignKeyError(error)) {
+      console.warn(
+        `[HistoryService] skipped history insert after ${params.eventName} for asset ${params.assetId}: asset no longer exists (FK constraint).`
+      );
+      return;
+    }
+    console.error(
+      `[HistoryService] failed processing ${params.eventName} for asset ${params.assetId}: ${error?.message || error}`
+    );
+  }
+};
+
 const startHistoryService = async () => {
   console.log('History Service listening for asset events...');
 
@@ -21,7 +48,8 @@ const startHistoryService = async () => {
       `Initial batch of ${data.quantity} created at ${data.location}`
     );
 
-    await HistoryService.createHistory({
+    await createHistorySafely({
+      eventName: TOPICS.ASSET_CREATED,
       assetId: data.customId,
       action: history.action,
       details: history.details,
@@ -39,7 +67,8 @@ const startHistoryService = async () => {
       `Moved ${quantityMoved > 0 ? quantityMoved : ''} to ${destination}`.trim()
     );
 
-    await HistoryService.createHistory({
+    await createHistorySafely({
+      eventName: TOPICS.ASSET_TRANSFERRED,
       assetId: data.customId,
       action: history.action,
       details: history.details,
@@ -52,7 +81,8 @@ const startHistoryService = async () => {
     const fields = Array.isArray(data.fields) ? data.fields.join(', ') : 'unknown fields';
     const history = eventHistory(data, 'UPDATED', `Fields changed: ${fields}`);
 
-    await HistoryService.createHistory({
+    await createHistorySafely({
+      eventName: TOPICS.ASSET_UPDATED,
       assetId: data.customId,
       action: history.action,
       details: history.details,
@@ -64,7 +94,8 @@ const startHistoryService = async () => {
     if (!data?.customId) return;
     const history = eventHistory(data, 'DELETED', 'Permanently removed from database');
 
-    await HistoryService.createHistory({
+    await createHistorySafely({
+      eventName: TOPICS.ASSET_DELETED,
       assetId: data.customId,
       action: history.action,
       details: history.details,

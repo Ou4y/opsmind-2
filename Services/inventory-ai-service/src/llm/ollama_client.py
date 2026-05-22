@@ -38,7 +38,7 @@ def _extract_first_json_object(text: str) -> dict[str, Any] | None:
 class OllamaClient:
     def __init__(self, base_url: str, model: str, timeout_seconds: int = 45) -> None:
         self._base_url = (base_url or "http://127.0.0.1:11434").rstrip("/")
-        self._model = (model or "qwen2.5:7b").strip() or "qwen2.5:7b"
+        self._model = (model or "gemma3:4b").strip() or "gemma3:4b"
         self._timeout_seconds = max(3, int(timeout_seconds))
         self._last_error: str = ""
         self._blocked_until_epoch: float = 0.0

@@ -1,37 +1,37 @@
-// src/worker.ts
 import dotenv from 'dotenv';
-dotenv.config(); // Load env vars
+dotenv.config();
 
 import { EventBus } from './services/EventBus';
 import startHistoryService from './services/history-service/index';
 import { prisma } from './lib/prisma';
+import { startInventoryAiJobWorker, stopInventoryAiJobWorker } from './services/asset-ai-jobs';
 
 const startWorker = async () => {
-  console.log('👷 Starting Background Worker...');
+  console.log('[WORKER] Starting background worker...');
 
-  // 1. Verify Prisma connection
   try {
     await prisma.$queryRaw`SELECT NOW()`;
-    console.log('✅ [WORKER] Connected to PostgreSQL via Prisma');
-  } catch (err: any) {
-    console.error('❌ [WORKER] DB Error:', err.message);
+    console.log('[WORKER] Connected to PostgreSQL via Prisma');
+  } catch (error: any) {
+    console.error('[WORKER] DB connection failed:', error?.message || error);
     process.exit(1);
   }
 
-  // 2. Connect to RabbitMQ
   await EventBus.connect();
-
-  // 3. Start Listening (The Consumer)
   await startHistoryService();
+  await startInventoryAiJobWorker();
 
-  console.log('👂 Worker is listening for events...');
+  console.log('[WORKER] Listening for history and inventory AI jobs...');
 };
 
-startWorker();
+startWorker().catch((error) => {
+  console.error('[WORKER] Fatal startup error:', error);
+  process.exit(1);
+});
 
-// Graceful Shutdown for Worker
 process.on('SIGINT', async () => {
-  console.log('\n🛑 Worker shutting down...');
+  console.log('\n[WORKER] Shutting down...');
+  await stopInventoryAiJobWorker();
   await prisma.$disconnect();
   process.exit(0);
-}); 
+});

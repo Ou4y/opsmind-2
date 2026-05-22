@@ -178,6 +178,66 @@ class AssetSpecMetricsResponse(BaseModel):
     recall_by_field: dict = Field(default_factory=dict)
 
 
+class SpecNormalizationRequest(BaseModel):
+    asset_type: str = Field(..., validation_alias=AliasChoices("asset_type", "assetType", "type"))
+    brand: Optional[str] = None
+    model: Optional[str] = Field(None, validation_alias=AliasChoices("model", "version"))
+    raw_specs_text: str = Field("", validation_alias=AliasChoices("raw_specs_text", "rawSpecsText", "specsText"))
+    expected_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("expected_fields", "expectedFields"))
+    not_applicable_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("not_applicable_fields", "notApplicableFields"))
+    current_specs: dict = Field(default_factory=dict, validation_alias=AliasChoices("current_specs", "currentSpecs"))
+
+    model_config = {"extra": "allow"}
+
+
+class SpecNormalizationResponse(BaseModel):
+    normalized_specs: dict[str, str] = Field(default_factory=dict)
+    normalized_specs_text: str = ""
+    invalid_fields: list[str] = Field(default_factory=list)
+    missing_important_fields: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    llm_used: bool = False
+
+
+class SpecSanityCheckRequest(BaseModel):
+    asset_type: str = Field(..., validation_alias=AliasChoices("asset_type", "assetType", "type"))
+    brand: Optional[str] = None
+    model: Optional[str] = Field(None, validation_alias=AliasChoices("model", "version"))
+    normalized_specs: dict[str, str] = Field(default_factory=dict, validation_alias=AliasChoices("normalized_specs", "normalizedSpecs"))
+    source_type: Optional[str] = Field(None, validation_alias=AliasChoices("source_type", "sourceType"))
+    evidence_status: Optional[str] = Field(None, validation_alias=AliasChoices("evidence_status", "evidenceStatus"))
+    expected_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("expected_fields", "expectedFields"))
+    not_applicable_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("not_applicable_fields", "notApplicableFields"))
+
+    model_config = {"extra": "allow"}
+
+
+class SpecSanityCheckResponse(BaseModel):
+    warnings: list[str] = Field(default_factory=list)
+    suspicious_fields: list[str] = Field(default_factory=list)
+    suggested_fixes: list[str] = Field(default_factory=list)
+    requires_review: bool = True
+    llm_used: bool = False
+
+
+class EolExplanationRequest(BaseModel):
+    assessment: dict = Field(default_factory=dict)
+    telemetry_status: Optional[str] = Field(None, validation_alias=AliasChoices("telemetry_status", "telemetryStatus"))
+    spec_evidence_status: Optional[str] = Field(None, validation_alias=AliasChoices("spec_evidence_status", "specEvidenceStatus"))
+    predicted_lifespan_years: Optional[float] = Field(None, validation_alias=AliasChoices("predicted_lifespan_years", "predictedLifespanYears"))
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    procurement_suitable: Optional[bool] = Field(None, validation_alias=AliasChoices("procurement_suitable", "procurementSuitable", "suitableForProcurementPlanning"))
+
+    model_config = {"extra": "allow"}
+
+
+class EolExplanationResponse(BaseModel):
+    short_user_explanation: str
+    technical_explanation: str
+    llm_used: bool = False
+
+
 class HealthResponse(BaseModel):
     """Schema for the health-check endpoint."""
 

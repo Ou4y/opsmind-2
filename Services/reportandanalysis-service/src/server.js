@@ -3,7 +3,8 @@ const app = require("./app");
 const connectDB = require("./config/db");
 const axios = require("axios");
 
-const PORT = process.env.PORT || 3004;
+const PORT = Number(process.env.PORT || 3000);
+const REPORT_SYNC_URL = process.env.REPORT_SYNC_URL || `http://127.0.0.1:${PORT}/analytics/sync`;
 
 async function start() {
   try {
@@ -20,7 +21,7 @@ async function start() {
     setInterval(async () => {
       try {
         console.log(" Auto syncing tickets...");
-        await axios.get("http://localhost:3000/analytics/sync");
+        await axios.get(REPORT_SYNC_URL);
       } catch (err) {
         console.error("Sync failed:", err.message);
       }

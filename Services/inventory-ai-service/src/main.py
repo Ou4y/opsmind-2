@@ -22,6 +22,7 @@ from src.routers.health_router import router as health_router
 from src.routers.prediction_router import router as prediction_router
 from src.routers.sla_router import router as sla_router
 from src.services.lifespan_service import LifespanService
+from src.services.inventory_reasoning_service import InventoryReasoningService
 from src.services.spec_inference_service import SpecInferenceService
 from src.services.ticket_ai_service import TicketAIService
 
@@ -66,6 +67,7 @@ spec_service = SpecInferenceService(
 )
 ticket_service = TicketAIService(settings=settings, llm=llm_client)
 lifespan_service = LifespanService(settings=settings, metrics=metrics)
+inventory_reasoning_service = InventoryReasoningService(settings=settings, llm=llm_client)
 
 
 @asynccontextmanager
@@ -121,6 +123,7 @@ app.state.feedback_repository = feedback_repository
 app.state.spec_service = spec_service
 app.state.ticket_service = ticket_service
 app.state.lifespan_service = lifespan_service
+app.state.inventory_reasoning_service = inventory_reasoning_service
 
 app.include_router(health_router)
 app.include_router(prediction_router)

@@ -6,11 +6,12 @@ services:
       dockerfile: Dockerfile
     container_name: opsmind-inventory-ai-service
     environment:
-      LLM_PROVIDER: gemini
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-45000}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
       SERPAPI_ENDPOINT: ${SERPAPI_ENDPOINT:-https://serpapi.com/search.json}
@@ -56,11 +57,12 @@ services:
         condition: service_healthy
     command: ["python", "-m", "src.scheduler"]
     environment:
-      LLM_PROVIDER: gemini
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-45000}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-45}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-AIzaSyDyqkKcGlp6H82L-NQFhOaeWi7zo38nt78}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       INVENTORY_AI_DATA_DIR: /app/data
       SPEC_GOLDEN_PATH: /app/data/spec_golden_dataset.jsonl

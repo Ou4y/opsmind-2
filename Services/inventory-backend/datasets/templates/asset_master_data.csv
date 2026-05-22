@@ -1,0 +1,2 @@
+assetId,name,assetType,brand,model,department,location,currentStatus,serialNumber,purchaseDate,warrantyEndDate,assignedUser
+ASSET-EXAMPLE-0001,Dell Latitude 5440,laptop,Dell,Latitude 5440,Computer Science,Main Building,active,DL5440SN001,2025-09-15,2028-09-15,user@university.edu

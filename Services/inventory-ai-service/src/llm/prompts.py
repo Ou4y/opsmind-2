@@ -62,3 +62,71 @@ Return JSON only with key `responses` as a string array.
 
 Ticket ID: {ticket_id}
 """
+
+
+SPEC_NORMALIZATION_PROMPT = """You normalize inventory asset specs.
+Use only provided input data. Do not invent missing exact specs.
+If uncertain, keep values as-is and add warnings.
+
+Rules:
+- Return ONLY JSON.
+- Do not add new exact hardware facts not present in input.
+- Prefer preserving user values and normalizing field names/format.
+- Respect asset type fields. Reject not-applicable fields.
+- For suspicious contradictions (e.g., MacBook + Windows), keep value and warn.
+
+Required output:
+{
+  "normalized_specs": {},
+  "invalid_fields": [],
+  "missing_important_fields": [],
+  "warnings": [],
+  "confidence": 0.0
+}
+
+Input:
+{payload_json}
+"""
+
+
+SPEC_SANITY_PROMPT = """You are a strict inventory spec sanity checker.
+Analyze only given facts; do not invent new specs.
+
+Rules:
+- Return ONLY JSON.
+- Identify suspicious/impossible/invalid fields.
+- Suggest safe fixes (e.g., remove field, mark Unknown - verify).
+- Do not block creation by yourself; only set requires_review flag.
+
+Required output:
+{
+  "warnings": [],
+  "suspicious_fields": [],
+  "suggested_fixes": [],
+  "requires_review": true
+}
+
+Input:
+{payload_json}
+"""
+
+
+EOL_EXPLANATION_PROMPT = """You explain an existing backend EOL assessment to users.
+Do not change facts. Do not recompute status or confidence.
+If evidence is weak, say so clearly.
+
+Rules:
+- Return ONLY JSON.
+- Keep explanations grounded in provided data.
+- short_user_explanation: concise user-facing sentence(s).
+- technical_explanation: concise technical reason summary.
+
+Required output:
+{
+  "short_user_explanation": "",
+  "technical_explanation": ""
+}
+
+Input:
+{payload_json}
+"""

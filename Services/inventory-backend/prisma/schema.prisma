@@ -11,121 +11,327 @@ datasource db {
 }
 
 enum AssetType {
-  LAPTOP @map("laptop")
-  DESKTOP @map("desktop")
-  TABLET @map("tablet")
-  SERVER @map("server")
-  MONITOR @map("monitor")
-  PERIPHERAL @map("peripheral")
-  KEYBOARD @map("keyboard")
-  ELECTRONICS @map("electronics")
-  PROJECTOR @map("projector")
-  SMARTBOARD @map("smartboard")
-  CAMERA @map("camera")
-  SPEAKER @map("speaker")
-  MICROPHONE @map("microphone")
-  ROUTER @map("router")
-  SWITCH @map("switch")
-  ACCESS_POINT @map("access_point")
-  FIREWALL @map("firewall")
-  PRINTER @map("printer")
-  SCANNER @map("scanner")
-  DESK @map("desk")
-  CHAIR @map("chair")
-  WHITEBOARD @map("whiteboard")
-  FILING_CABINET @map("filing_cabinet")
-  FURNITURE @map("furniture")
-  MICROSCOPE @map("microscope")
-  CENTRIFUGE @map("centrifuge")
-  OSCILLOSCOPE @map("oscilloscope")
-  THREE_D_PRINTER @map("3d_printer")
-  LAB_BENCH @map("lab_bench")
-  VEHICLE @map("vehicle")
-  GENERATOR @map("generator")
-  HVAC @map("hvac")
+  LAPTOP           @map("laptop")
+  DESKTOP          @map("desktop")
+  TABLET           @map("tablet")
+  SERVER           @map("server")
+  MONITOR          @map("monitor")
+  PERIPHERAL       @map("peripheral")
+  KEYBOARD         @map("keyboard")
+  ELECTRONICS      @map("electronics")
+  PROJECTOR        @map("projector")
+  SMARTBOARD       @map("smartboard")
+  CAMERA           @map("camera")
+  SPEAKER          @map("speaker")
+  MICROPHONE       @map("microphone")
+  ROUTER           @map("router")
+  SWITCH           @map("switch")
+  ACCESS_POINT     @map("access_point")
+  FIREWALL         @map("firewall")
+  PRINTER          @map("printer")
+  SCANNER          @map("scanner")
+  DESK             @map("desk")
+  CHAIR            @map("chair")
+  WHITEBOARD       @map("whiteboard")
+  FILING_CABINET   @map("filing_cabinet")
+  FURNITURE        @map("furniture")
+  MICROSCOPE       @map("microscope")
+  CENTRIFUGE       @map("centrifuge")
+  OSCILLOSCOPE     @map("oscilloscope")
+  THREE_D_PRINTER  @map("3d_printer")
+  LAB_BENCH        @map("lab_bench")
+  VEHICLE          @map("vehicle")
+  GENERATOR        @map("generator")
+  HVAC             @map("hvac")
   MAINTENANCE_TOOL @map("maintenance_tool")
 }
 
 enum AssetStatus {
-  ACTIVE @map("active")
-  REPAIR @map("repair")
-  RETIRED @map("retired")
-  ASSIGNED @map("assigned")
+  ACTIVE      @map("active")
+  REPAIR      @map("repair")
+  RETIRED     @map("retired")
+  ASSIGNED    @map("assigned")
   MAINTENANCE @map("maintenance")
 }
 
 enum AssetLocation {
   CENTRAL_WAREHOUSE @map("Central Warehouse")
-  MAIN_BUILDING @map("Main Building")
-  K_BUILDING @map("K Building")
-  N_BUILDING @map("N Building")
-  S_BUILDING @map("S Building")
-  R_BUILDING @map("R Building")
+  MAIN_BUILDING     @map("Main Building")
+  K_BUILDING        @map("K Building")
+  N_BUILDING        @map("N Building")
+  S_BUILDING        @map("S Building")
+  R_BUILDING        @map("R Building")
   PHARMACY_BUILDING @map("Pharmacy Building")
 }
 
 enum AssetDepartment {
   COMPUTER_SCIENCE @map("Computer Science")
-  ENGINEERING @map("Engineering")
-  ARCHITECTURE @map("Architecture")
-  BUSINESS @map("Business")
-  MASS_COMM @map("Mass Comm")
-  ALSUN @map("Alsun")
-  PHARMACY @map("Pharmacy")
-  DENTISTRY @map("Dentistry")
-  UNASSIGNED @map("Unassigned")
-  GENERAL @map("General")
+  ENGINEERING      @map("Engineering")
+  ARCHITECTURE     @map("Architecture")
+  BUSINESS         @map("Business")
+  MASS_COMM        @map("Mass Comm")
+  ALSUN            @map("Alsun")
+  PHARMACY         @map("Pharmacy")
+  DENTISTRY        @map("Dentistry")
+  UNASSIGNED       @map("Unassigned")
+  GENERAL          @map("General")
 }
 
 enum TicketStatus {
-  OPEN @map("Open")
+  OPEN        @map("Open")
   IN_PROGRESS @map("In Progress")
-  RESOLVED @map("Resolved")
-  CLOSED @map("Closed")
+  RESOLVED    @map("Resolved")
+  CLOSED      @map("Closed")
 }
 
 enum TicketPriority {
-  LOW @map("Low")
-  MEDIUM @map("Medium")
-  HIGH @map("High")
+  LOW      @map("Low")
+  MEDIUM   @map("Medium")
+  HIGH     @map("High")
   CRITICAL @map("Critical")
 }
 
 enum TicketType {
   HARDWARE @map("Hardware")
   SOFTWARE @map("Software")
-  NETWORK @map("Network")
-  ACCESS @map("Access")
-  OTHER @map("Other")
+  NETWORK  @map("Network")
+  ACCESS   @map("Access")
+  OTHER    @map("Other")
 }
 
 model Asset {
-  id             String        @id @default(uuid())
-  customId       String        @unique
+  id             String          @id @default(uuid())
+  customId       String          @unique
   name           String
   type           AssetType
-  status         AssetStatus   @default(ACTIVE)
-  value          Decimal       @default(0)
-  quantity       Int           @default(1)
+  status         AssetStatus     @default(ACTIVE)
+  value          Decimal         @default(0)
+  quantity       Int             @default(1)
   assignedUser   String?
   location       AssetLocation
   department     AssetDepartment
-  specifications Json          @default("{}")
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  specifications Json            @default("{}")
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   // Relations
-  histories      AssetHistory[]
-  assetTickets   AssetTicket[]
-  relatedTickets Ticket[]
-  lifecycleOutcome AssetLifecycleOutcome?
+  histories             AssetHistory[]
+  assetTickets          AssetTicket[]
+  relatedTickets        Ticket[]
+  lifecycleOutcome      AssetLifecycleOutcome?
+  specSnapshots         AssetSpecSnapshot[]
+  specEvidence          AssetSpecEvidence[]
+  telemetrySamples      AssetTelemetrySample[]
+  lifespanPredictions   AssetLifespanPrediction[]
+  eolAssessments        AssetEolAssessment[]
+  procurementCandidates AssetProcurementCandidate[]
+  aiJobs                InventoryAiJob[]
 
   @@map("assets")
 }
 
+model AssetSpecSnapshot {
+  id                 String    @id @default(uuid())
+  assetId            String
+  normalizedSpecs    Json      @default("{}")
+  lookupMode         String    @default("unknown")
+  verificationStatus String    @default("pending")
+  confidence         Float?
+  evidenceStatus     String    @default("insufficient_source_evidence")
+  evidenceReason     String?
+  provider           String?
+  ruleVersion        String?
+  variant            String?
+  snapshotHash       String?
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  asset        Asset               @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  evidenceRows AssetSpecEvidence[]
+
+  @@index([assetId, createdAt])
+  @@index([verificationStatus])
+  @@index([evidenceStatus])
+  @@index([snapshotHash])
+  @@map("asset_spec_snapshots")
+}
+
+model AssetSpecEvidence {
+  id               String    @id @default(uuid())
+  snapshotId       String
+  assetId          String
+  provider         String?
+  sourceUrl        String
+  sourceDomain     String?
+  fetchedAt        DateTime?
+  contentHash      String?
+  extractedFields  Json?
+  sourceConfidence Float?
+  isTrusted        Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  snapshot AssetSpecSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  asset    Asset             @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, createdAt])
+  @@index([sourceDomain])
+  @@index([fetchedAt])
+  @@index([contentHash])
+  @@map("asset_spec_evidence")
+}
+
+model AssetTelemetrySample {
+  id                 String   @id @default(uuid())
+  assetId            String
+  observedAt         DateTime
+  telemetrySource    String
+  rawSignals         Json     @default("{}")
+  derivedStatus      String
+  confidence         Float?
+  reason             String?
+  activeHours        Float?
+  idleHours          Float?
+  offlineHours       Float?
+  utilization        Json?
+  consumptionScore   Float?
+  qualityImpactScore Float?
+  sampleHash         String?
+  createdAt          DateTime @default(now())
+
+  asset Asset @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, observedAt])
+  @@index([derivedStatus, observedAt])
+  @@index([telemetrySource, observedAt])
+  @@index([sampleHash])
+  @@map("asset_telemetry_samples")
+}
+
+model AssetLifespanPrediction {
+  id                     String    @id @default(uuid())
+  assetId                String
+  predictedLifespanYears Float
+  predictedEolDate       DateTime?
+  monthsRemaining        Float?
+  failureRisk            Float?
+  qualityTier            String?
+  confidence             Float?
+  evidenceLevel          String?
+  modelVersion           String?
+  predictionSource       String
+  trigger                String
+  reason                 String?
+  explanation            String?
+  workingHours           Float?
+  operationalState       String?
+  telemetryStatus        String?
+  specEvidenceStatus     String?
+  isDisplayOnly          Boolean   @default(false)
+  previousPredictionId   String?
+  deltaLifespanYears     Float?
+  deltaMonthsRemaining   Float?
+  generatedBy            String?
+  provider               String?
+  requestId              String?
+  createdAt              DateTime  @default(now())
+
+  asset              Asset                     @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  previousPrediction AssetLifespanPrediction?  @relation("LifespanPredictionHistory", fields: [previousPredictionId], references: [id], onDelete: SetNull)
+  nextPredictions    AssetLifespanPrediction[] @relation("LifespanPredictionHistory")
+
+  @@index([assetId, createdAt])
+  @@index([trigger, createdAt])
+  @@index([isDisplayOnly, createdAt])
+  @@index([requestId])
+  @@map("asset_lifespan_predictions")
+}
+
+model AssetEolAssessment {
+  id                             String    @id @default(uuid())
+  assetId                        String
+  status                         String
+  predictedEolDate               DateTime?
+  monthsRemaining                Float?
+  confidence                     Float
+  reason                         String
+  evidenceLevel                  String
+  predictionSource               String
+  telemetryStatus                String
+  specEvidenceStatus             String
+  suitableForProcurementPlanning Boolean   @default(false)
+  procurementRecommended         Boolean   @default(false)
+  procurementWindowMonths        Int?
+  generatedAt                    DateTime
+  createdAt                      DateTime  @default(now())
+  updatedAt                      DateTime  @updatedAt
+
+  asset                 Asset                       @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  procurementCandidates AssetProcurementCandidate[]
+
+  @@index([assetId, generatedAt])
+  @@index([status, confidence])
+  @@index([procurementRecommended, procurementWindowMonths])
+  @@map("asset_eol_assessments")
+}
+
+model AssetProcurementCandidate {
+  id                      String    @id @default(uuid())
+  assetId                 String
+  eolAssessmentId         String?
+  candidateStatus         String    @default("open")
+  predictedEolDate        DateTime?
+  confidence              Float?
+  reason                  String?
+  procurementWindowMonths Int?
+  recommendedAt           DateTime  @default(now())
+  acknowledgedAt          DateTime?
+  acknowledgedBy          String?
+  dismissedAt             DateTime?
+  dismissedBy             String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  asset         Asset               @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  eolAssessment AssetEolAssessment? @relation(fields: [eolAssessmentId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, candidateStatus])
+  @@index([candidateStatus, recommendedAt])
+  @@map("asset_procurement_candidates")
+}
+
+model InventoryAiJob {
+  id             String    @id @default(uuid())
+  jobType        String
+  assetId        String
+  status         String    @default("queued")
+  payload        Json      @default("{}")
+  idempotencyKey String    @unique
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(4)
+  lastError      String?
+  scheduledAt    DateTime  @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  failedAt       DateTime?
+  parentJobId    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  asset     Asset            @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  parentJob InventoryAiJob?  @relation("InventoryAiJobParent", fields: [parentJobId], references: [id], onDelete: SetNull)
+  childJobs InventoryAiJob[] @relation("InventoryAiJobParent")
+
+  @@index([assetId, createdAt])
+  @@index([jobType, status, scheduledAt])
+  @@index([status, scheduledAt])
+  @@map("inventory_ai_jobs")
+}
+
 model AssetLifecycleOutcome {
-  id                  String   @id @default(uuid())
-  assetId             String   @unique
+  id                  String    @id @default(uuid())
+  assetId             String    @unique
   purchaseDate        DateTime?
   commissionedAt      DateTime?
   failureDate         DateTime?
@@ -136,8 +342,8 @@ model AssetLifecycleOutcome {
   actualLifespanYears Float?
   finalOutcome        String?
   notes               String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   asset Asset @relation(fields: [assetId], references: [customId], onDelete: Cascade)
 
@@ -158,16 +364,16 @@ model AssetHistory {
 }
 
 model Ticket {
-  id           String        @id @default(uuid())
+  id           String         @id @default(uuid())
   title        String
   description  String
-  status       TicketStatus  @default(OPEN)
+  status       TicketStatus   @default(OPEN)
   priority     TicketPriority @default(MEDIUM)
-  type         TicketType    @default(OTHER)
+  type         TicketType     @default(OTHER)
   assignedTo   String?
   relatedAsset String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   // Relations
   asset        Asset?        @relation(fields: [relatedAsset], references: [customId])

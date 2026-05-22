@@ -1,8 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-<<<<<<< Updated upstream
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import { prisma } from './lib/prisma';
@@ -13,23 +12,23 @@ import { EventBus } from './services/EventBus';
 import { TOPICS } from './events/assetEvents';
 import ticketRoutes from './routes/ticketRoutes';
 import configRoutes from './routes/configRoutes';
+import inventoryAiReadinessRoutes from './routes/inventoryAiReadinessRoutes';
+import { EOL_METRICS } from './config/constants';
 import { notificationService } from './services/NotificationService';
-import { AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
-import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
-=======
-import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
-import crypto from 'crypto';
-import { prisma } from './lib/prisma';
-import AssetService from './models/Assets';
-import HistoryService from './models/History';
-import TicketService from './models/Tickets';
-import { EventBus } from './services/EventBus';
-import { TOPICS } from './events/assetEvents';
-import ticketRoutes from './routes/ticketRoutes';
-import configRoutes from './routes/configRoutes';
+import {
+    getLatestPersistedLifespanPrediction,
+    getLatestSpecSnapshot,
+    getLatestTelemetrySample,
+    persistEolAssessment,
+    persistLifespanPrediction,
+    persistSpecSnapshot,
+    persistTelemetrySample,
+} from './services/asset-ai-canonical';
+import { getAssetTypeSpecProfile, lookupVerifiedSpecs } from './services/asset-intelligence/specDatasetService';
+import { lookupUserConfirmedSpecs } from './services/asset-intelligence/userConfirmedSpecsService';
+import { enqueueInitialAssetCreatedJobs, readAssetPipelineSummary, InventoryAiJobQueue } from './services/asset-ai-jobs';
 import { Asset, AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
->>>>>>> Stashed changes
+import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -40,8 +39,23 @@ const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
 const LIFESPAN_IMPACT_MIN_HOURS = Math.max(0.5, Number(process.env.LIFESPAN_IMPACT_MIN_HOURS || 2));
 const LIFESPAN_IMPACT_MIN_YEAR_DELTA = Math.max(0.05, Number(process.env.LIFESPAN_IMPACT_MIN_YEAR_DELTA || 0.1));
 const LIFESPAN_IMPACT_MIN_RISK_DELTA = Math.max(0.01, Number(process.env.LIFESPAN_IMPACT_MIN_RISK_DELTA || 0.03));
+const INVENTORY_ENFORCE_AUTH = String(process.env.INVENTORY_ENFORCE_AUTH || 'false').toLowerCase() === 'true';
 
 class RequestValidationError extends Error {}
+
+const passthroughGuard: RequestHandler = (_req, _res, next) => next();
+const inventoryReadGuard: RequestHandler = INVENTORY_ENFORCE_AUTH ? requireInventoryReadAccess : passthroughGuard;
+const inventoryAdminGuard: RequestHandler = INVENTORY_ENFORCE_AUTH ? requireInventoryAdminAccess : passthroughGuard;
+
+const internalWorkerGuard: RequestHandler = (req, res, next) => {
+    const expected = String(INTERNAL_API_TOKEN || '').trim();
+    if (!expected) return next();
+    const provided = String(req.headers['x-internal-token'] || '').trim();
+    if (provided !== expected) {
+        return res.status(403).json({ message: 'Forbidden' });
+    }
+    return next();
+};
 
 // ✅ FIXED: REMOVED HARDCODED OVERRIDE
 if (!process.env.RABBITMQ_URI) {
@@ -160,6 +174,12 @@ function parseRequestedQuantity(rawQuantity: unknown): number {
     return parsed;
 }
 
+function parseBooleanFlag(value: unknown): boolean {
+    if (value === true) return true;
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+}
+
 function buildUnitAssetIds(baseId: string, quantity: number): string[] {
     if (quantity <= 1) return [baseId];
     const padding = Math.max(3, String(quantity).length);
@@ -173,7 +193,10 @@ function buildUnitAssetIds(baseId: string, quantity: number): string[] {
 const OPERATIONAL_STATE_RATES: Record<string, number> = {
     online_in_use: 1,
     online_idle: 0.2,
-    offline: 0
+    offline: 0,
+    not_monitored: 0,
+    insufficient_data: 0,
+    unknown: 0
 };
 
 function resolveTelemetryState(isOnline: boolean, isActive: boolean): string {
@@ -181,13 +204,86 @@ function resolveTelemetryState(isOnline: boolean, isActive: boolean): string {
     return isActive ? 'online_in_use' : 'online_idle';
 }
 
+type TelemetryTruthState = 'online_in_use' | 'online_idle' | 'offline' | 'not_monitored' | 'insufficient_data' | 'unknown';
+
+function normalizeOperationalStateValue(value: unknown): TelemetryTruthState {
+    const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+    if (normalized === 'online_in_use') return 'online_in_use';
+    if (normalized === 'online_idle') return 'online_idle';
+    if (normalized === 'offline') return 'offline';
+    if (normalized === 'not_monitored') return 'not_monitored';
+    if (normalized === 'insufficient_data') return 'insufficient_data';
+    return 'unknown';
+}
+
+function getTelemetryTruth(specifications: Record<string, any>): {
+    state: TelemetryTruthState;
+    confidence: 'high' | 'low';
+    reason: string;
+    hasTelemetry: boolean;
+} {
+    const hasTelemetryTimestamp = Boolean(specifications?.lastTelemetryAt || specifications?.operationalStateUpdatedAt);
+    const hasTelemetryHours = Number(specifications?.workingHours || 0) > 0 && String(specifications?.workingHoursSource || '').toLowerCase() === 'telemetry';
+    const hasTelemetry = hasTelemetryTimestamp || hasTelemetryHours;
+    const trackEnabled = isTelemetryTracked(specifications);
+    const requestedState = normalizeOperationalStateValue(specifications?.operationalState);
+
+    if (!trackEnabled && !hasTelemetry) {
+        return {
+            state: 'not_monitored',
+            confidence: 'low',
+            reason: 'Telemetry not connected for this asset.',
+            hasTelemetry: false,
+        };
+    }
+
+    if (trackEnabled && !hasTelemetry) {
+        return {
+            state: 'insufficient_data',
+            confidence: 'low',
+            reason: 'Telemetry tracking enabled but no telemetry samples received yet.',
+            hasTelemetry: false,
+        };
+    }
+
+    if (requestedState === 'online_in_use' || requestedState === 'online_idle' || requestedState === 'offline') {
+        return {
+            state: requestedState,
+            confidence: 'high',
+            reason: 'Derived from telemetry heartbeat/activity signals.',
+            hasTelemetry: true,
+        };
+    }
+
+    if (requestedState === 'not_monitored' || requestedState === 'insufficient_data') {
+        return {
+            state: requestedState,
+            confidence: 'low',
+            reason: 'Telemetry is incomplete for reliable live-status classification.',
+            hasTelemetry: hasTelemetry,
+        };
+    }
+
+    return {
+        state: 'unknown',
+        confidence: 'low',
+        reason: 'Telemetry signals are present but do not map to a supported live-status state.',
+        hasTelemetry: hasTelemetry,
+    };
+}
+
 function isTelemetryTracked(specifications: Record<string, any>): boolean {
-    return specifications.trackWorkingHours === true || String(specifications.trackWorkingHours || '').toLowerCase() === 'true';
+    return (
+        specifications.trackWorkingHours === true
+        || String(specifications.trackWorkingHours || '').toLowerCase() === 'true'
+        || specifications.telemetryEnabled === true
+        || String(specifications.telemetryEnabled || '').toLowerCase() === 'true'
+    );
 }
 
 function getTelemetryAdjustedHours(specifications: Record<string, any>, measuredAt: Date = new Date()): number {
     const storedHours = isTelemetryTracked(specifications) ? Number(specifications.workingHours || 0) : 0;
-    const previousState = String(specifications.operationalState || 'offline');
+    const previousState = getTelemetryTruth(specifications).state;
     const previousUpdate = specifications.operationalStateUpdatedAt
         ? new Date(specifications.operationalStateUpdatedAt)
         : null;
@@ -220,6 +316,41 @@ const AI_SPEC_PROTECTED_FIELDS = new Set([
     'lifecycle',
 ].map(normalizeValue));
 
+const AI_SPEC_METADATA_FIELDS = new Set([
+    'brand',
+    'version',
+    'model',
+    'inferredQuality',
+    'quality',
+    'trackWorkingHours',
+    'telemetryEnabled',
+    'workingHours',
+    'workingHoursSource',
+    'operationalState',
+    'operationalStateUpdatedAt',
+    'telemetryStatus',
+    'telemetryConfidence',
+    'telemetryReason',
+    'lastTelemetryAt',
+    'aiDetectedSpecs',
+    'aiSpecFieldConfidence',
+    'aiSpecConfidence',
+    'aiSpecSource',
+    'aiSpecLookupMode',
+    'aiSpecSourceUrls',
+    'aiSpecRuleVersion',
+    'aiSpecVariant',
+    'aiSpecEvidenceStatus',
+    'aiSpecEvidenceReason',
+    'aiSpecDetectedAt',
+    'specVerificationStatus',
+    'specVerificationUpdatedAt',
+    'specVerificationReviewedBy',
+    'specVerificationReviewedAt',
+    'specVerificationAction',
+    'specVerificationCorrections',
+].map(normalizeValue));
+
 function stripLifecycleManagedSpecFields(specs: Record<string, any>): Record<string, any> {
     const safeSpecs: Record<string, any> = {};
     for (const key of Object.keys(specs || {})) {
@@ -228,6 +359,230 @@ function stripLifecycleManagedSpecFields(specs: Record<string, any>): Record<str
         }
     }
     return safeSpecs;
+}
+
+function parseSpecTextToObject(specText: unknown): Record<string, string> {
+    if (!specText || typeof specText !== 'string') return {};
+    const parsed: Record<string, string> = {};
+    for (const rawLine of specText.split('\n')) {
+        const line = String(rawLine || '').trim();
+        if (!line) continue;
+        const separatorIndex = line.indexOf(':');
+        if (separatorIndex <= 0) continue;
+        const key = line.slice(0, separatorIndex).trim();
+        const value = line.slice(separatorIndex + 1).trim();
+        if (!key || !value) continue;
+        parsed[key] = value;
+    }
+    return parsed;
+}
+
+function mergeSpecMaps(...maps: Array<Record<string, string> | null | undefined>): Record<string, string> {
+    const merged: Record<string, string> = {};
+    maps.forEach((map) => {
+        if (!map) return;
+        Object.entries(map).forEach(([key, value]) => {
+            const safeKey = String(key || '').trim();
+            const safeValue = String(value || '').trim();
+            if (!safeKey || !safeValue) return;
+            merged[safeKey] = safeValue;
+        });
+    });
+    return merged;
+}
+
+function restrictPreviewSpecsToProfile(
+    candidateSpecs: Record<string, string>,
+    expectedFields: string[],
+    warnings: string[],
+): Record<string, string> {
+    if (!expectedFields.length) return candidateSpecs;
+    const expectedMap = new Map(expectedFields.map((field) => [normalizeValue(field), field]));
+    const filtered: Record<string, string> = {};
+    const dropped: string[] = [];
+
+    Object.entries(candidateSpecs || {}).forEach(([key, value]) => {
+        const matchedKey = expectedMap.get(normalizeValue(key));
+        if (!matchedKey) {
+            dropped.push(key);
+            return;
+        }
+        filtered[matchedKey] = value;
+    });
+
+    if (dropped.length) {
+        warnings.push(`Ignored unsupported fields for selected asset type: ${dropped.join(', ')}`);
+    }
+
+    return filtered;
+}
+
+function extractRenderableSpecs(specs: Record<string, any>): Record<string, string> {
+    const base = stripLifecycleManagedSpecFields(specs || {});
+    const out: Record<string, string> = {};
+    for (const [key, rawValue] of Object.entries(base)) {
+        if (!String(key || '').trim()) continue;
+        if (AI_SPEC_METADATA_FIELDS.has(normalizeValue(key))) continue;
+        const value = String(rawValue ?? '').trim();
+        if (!value) continue;
+        out[String(key)] = value;
+    }
+    return out;
+}
+
+function formatSpecsForTextarea(specs: Record<string, string>): string {
+    return Object.entries(specs || {})
+        .filter(([key, value]) => String(key || '').trim() && String(value || '').trim())
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\n');
+}
+
+type SpecNormalizationHelperResponse = {
+    normalizedSpecs: Record<string, string>;
+    normalizedSpecsText: string;
+    invalidFields: string[];
+    missingImportantFields: string[];
+    warnings: string[];
+    confidence: number;
+    llmUsed: boolean;
+};
+
+type SpecSanityHelperResponse = {
+    warnings: string[];
+    suspiciousFields: string[];
+    suggestedFixes: string[];
+    requiresReview: boolean;
+    llmUsed: boolean;
+};
+
+type EolExplanationHelperResponse = {
+    shortUserExplanation: string;
+    technicalExplanation: string;
+    llmUsed: boolean;
+};
+
+async function callInventoryAiHelper(path: string, body: Record<string, unknown>, timeoutMs = 8_000): Promise<any | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(`${INVENTORY_AI_SERVICE_URL}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            console.warn(`[InventoryAIHelpers] ${path} failed status=${response.status} body=${text.slice(0, 240)}`);
+            return null;
+        }
+        return await response.json();
+    } catch (error: any) {
+        console.warn(`[InventoryAIHelpers] ${path} request failed: ${error?.message || error}`);
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function buildSpecNormalizationFallback(params: {
+    rawSpecsText: string;
+    currentSpecs: Record<string, any>;
+    expectedFields: string[];
+    notApplicableFields: string[];
+    brand?: string;
+    model?: string;
+    assetType?: string;
+}): SpecNormalizationHelperResponse {
+    const parsedText = parseSpecTextToObject(params.rawSpecsText || '');
+    const renderableCurrent = extractRenderableSpecs(params.currentSpecs || {});
+    const merged = mergeSpecMaps(parsedText, renderableCurrent);
+    const warnings: string[] = [];
+    const filtered = restrictPreviewSpecsToProfile(merged, params.expectedFields, warnings);
+    const invalidFields = Object.keys(merged).filter((key) => !Object.prototype.hasOwnProperty.call(filtered, key));
+    const missingImportantFields = (params.expectedFields || [])
+        .filter((field) => !Object.keys(filtered).some((key) => normalizeValue(key) === normalizeValue(field)));
+
+    const brandModel = normalizeValue(`${params.brand || ''} ${params.model || ''}`);
+    const osField = Object.keys(filtered).find((key) => normalizeValue(key) === 'os');
+    if (
+        params.assetType === 'laptop'
+        && (brandModel.includes('apple') || brandModel.includes('macbook'))
+        && osField
+        && String(filtered[osField] || '').toLowerCase().includes('windows')
+    ) {
+        warnings.push('MacBook/Apple model with Windows OS looks suspicious. Verify exact model/year and OS.');
+    }
+
+    return {
+        normalizedSpecs: filtered,
+        normalizedSpecsText: formatSpecsForTextarea(filtered),
+        invalidFields,
+        missingImportantFields,
+        warnings,
+        confidence: Object.keys(filtered).length ? 0.55 : 0.4,
+        llmUsed: false,
+    };
+}
+
+function buildSpecSanityFallback(params: {
+    normalizedSpecs: Record<string, string>;
+    assetType: string;
+    brand?: string;
+    model?: string;
+    expectedFields: string[];
+    notApplicableFields: string[];
+    sourceType?: string;
+    evidenceStatus?: string;
+}): SpecSanityHelperResponse {
+    const warnings: string[] = [];
+    const suspiciousFields: string[] = [];
+    const suggestedFixes: string[] = [];
+    const notApplicable = new Set((params.notApplicableFields || []).map((field) => normalizeValue(field)));
+    const expected = new Set((params.expectedFields || []).map((field) => normalizeValue(field)));
+
+    Object.entries(params.normalizedSpecs || {}).forEach(([field, value]) => {
+        const normalizedField = normalizeValue(field);
+        if (notApplicable.has(normalizedField)) {
+            suspiciousFields.push(field);
+            warnings.push(`${field} is not applicable for ${params.assetType}.`);
+            suggestedFixes.push(`Remove ${field} and keep only ${params.assetType}-relevant fields.`);
+        }
+        if (expected.size && !expected.has(normalizedField)) {
+            warnings.push(`${field} is outside expected fields for ${params.assetType}.`);
+        }
+        const brandModel = normalizeValue(`${params.brand || ''} ${params.model || ''}`);
+        if (
+            normalizedField === 'os'
+            && (brandModel.includes('apple') || brandModel.includes('macbook'))
+            && String(value || '').toLowerCase().includes('windows')
+        ) {
+            suspiciousFields.push(field);
+            warnings.push('MacBook/Apple with Windows OS is suspicious.');
+            suggestedFixes.push("Set OS to 'macOS' or 'Unknown - verify exact configuration'.");
+        }
+    });
+
+    const lowEvidence = ['insufficient_source_evidence', 'llm_or_heuristic_only'].includes(String(params.evidenceStatus || '').toLowerCase());
+    if (lowEvidence) {
+        warnings.push('No trusted source evidence. Manual verification is recommended before create.');
+    }
+    return {
+        warnings: Array.from(new Set(warnings)),
+        suspiciousFields: Array.from(new Set(suspiciousFields)),
+        suggestedFixes: Array.from(new Set(suggestedFixes)),
+        requiresReview: lowEvidence || suspiciousFields.length > 0,
+        llmUsed: false,
+    };
+}
+
+function buildEolExplanationFallback(assessment: EolAssessmentResponse): EolExplanationHelperResponse {
+    const confidencePct = Math.round(Number(assessment.confidence || 0) * 100);
+    return {
+        shortUserExplanation: `EOL status is ${assessment.status.replace(/_/g, ' ')} with ${confidencePct}% confidence. ${assessment.suitableForProcurementPlanning ? 'Procurement planning can be considered.' : 'Manual review and monitoring are recommended.'}`,
+        technicalExplanation: `status=${assessment.status}; confidence=${confidencePct}%; telemetry=${assessment.telemetryStatus}; specEvidence=${assessment.specEvidenceStatus}; source=${assessment.predictionSource}; monthsRemaining=${assessment.monthsRemaining}; reason=${assessment.reason}`,
+        llmUsed: false,
+    };
 }
 
 function canonicalAssetType(type: unknown): string {
@@ -284,7 +639,8 @@ function getEffectiveWorkingHours(specs: Record<string, any>, measuredAt: Date =
     const storedHours = isTelemetryTracked(specs)
         ? Math.max(0, getSpecNumber(specs, ['workingHours', 'Working Hours'], 0))
         : 0;
-    const state = String(specs.operationalState || 'offline');
+    const telemetryTruth = getTelemetryTruth(specs);
+    const state = telemetryTruth.state;
     const stateUpdatedAt = specs.operationalStateUpdatedAt ? new Date(specs.operationalStateUpdatedAt) : null;
 
     if (!stateUpdatedAt || Number.isNaN(stateUpdatedAt.getTime())) return storedHours;
@@ -327,6 +683,37 @@ type LifespanRefreshOptions = {
     requestId?: string;
     baseLifespanYears?: number;
     asOf?: Date;
+};
+
+function mapRefreshReasonToCanonicalTrigger(reason: LifespanRefreshReason): string {
+    if (reason === 'manual_request') return 'manual_recalculation';
+    if (reason === 'telemetry_update') return 'telemetry_update';
+    if (reason === 'asset_created') return 'asset_created';
+    if (reason === 'asset_transferred') return 'asset_transferred';
+    if (reason === 'asset_updated') return 'asset_updated';
+    return 'manual_recalculation';
+}
+
+type EolAssessmentStatus = 'healthy' | 'watch' | 'due_soon' | 'overdue' | 'unknown' | 'insufficient_data';
+type EolPredictionSource = 'persisted_lifecycle_prediction' | 'freshly_calculated_prediction' | 'fallback_category_default' | 'insufficient_data';
+type EolEvidenceLevel = 'high' | 'medium' | 'low';
+
+type EolAssessmentResponse = {
+    assetId: string;
+    status: EolAssessmentStatus;
+    predictedEolDate: string | null;
+    monthsRemaining: number | null;
+    confidence: number;
+    reason: string;
+    evidenceLevel: EolEvidenceLevel;
+    procurementRecommended: boolean;
+    procurementWindowMonths: number | null;
+    predictionSource: EolPredictionSource;
+    telemetryStatus: TelemetryTruthState;
+    specEvidenceStatus: 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' | 'user_confirmed';
+    suitableForProcurementPlanning: boolean;
+    predictedLifespanYears: number | null;
+    generatedAt: string;
 };
 
 function readLifespanSnapshot(specs: Record<string, any>): LifespanPredictionSnapshot | null {
@@ -384,8 +771,11 @@ async function requestAssetLifespanPrediction(
         && Number(opts.baseLifespanYears) > 0
         ? Number(opts.baseLifespanYears)
         : 5;
-    const workingHours = Math.round(getEffectiveWorkingHours(specs, opts.asOf || new Date()));
-    const operationalState = String(specs.operationalState || 'offline');
+    const telemetryTruth = getTelemetryTruth(specs);
+    const workingHours = telemetryTruth.hasTelemetry
+        ? Math.round(getEffectiveWorkingHours(specs, opts.asOf || new Date()))
+        : 0;
+    const operationalState = telemetryTruth.state;
 
     const payload = {
         assetId: asset.customId,
@@ -396,6 +786,8 @@ async function requestAssetLifespanPrediction(
         baseLifespanYears,
         workingHours,
         operationalState,
+        telemetryConfidence: telemetryTruth.confidence,
+        telemetryReason: telemetryTruth.reason,
     };
 
     const aiResponse = await fetch(`${INVENTORY_AI_SERVICE_URL}/predict-asset-lifespan`, {
@@ -435,10 +827,12 @@ async function refreshAndPersistAssetLifespan(assetId: string, options: Lifespan
     if (!asset) return { persisted: false, skippedReason: 'asset_not_found' };
 
     const specs = ((asset.specifications as Record<string, any>) || {});
-    const previousSnapshot = readLifespanSnapshot(specs);
+    const canonicalPrevious = await getLatestPersistedLifespanPrediction(assetId);
+    const previousSnapshot = snapshotFromCanonicalPrediction(canonicalPrevious as unknown as Record<string, any>) || readLifespanSnapshot(specs);
     const asOf = options.asOf || new Date();
-    const currentWorkingHours = Math.round(getEffectiveWorkingHours(specs, asOf));
-    const currentState = String(specs.operationalState || 'offline');
+    const telemetryTruth = getTelemetryTruth(specs);
+    const currentWorkingHours = telemetryTruth.hasTelemetry ? Math.round(getEffectiveWorkingHours(specs, asOf)) : 0;
+    const currentState = telemetryTruth.state;
     const minimumHoursDelta = Math.max(0.25, Number(options.minimumHoursDelta ?? LIFESPAN_IMPACT_MIN_HOURS));
 
     if (!options.forcePersist && options.reason === 'telemetry_update') {
@@ -494,6 +888,42 @@ async function refreshAndPersistAssetLifespan(assetId: string, options: Lifespan
     };
 
     await AssetService.updateAsset(assetId, { specifications: updatedSpecs });
+    try {
+        const predictionSource = String(prediction.model_version || '').toLowerCase().includes('fallback')
+            ? 'fallback_category_default'
+            : 'persisted_workflow_prediction';
+        const specEvidenceStatus = resolveSpecEvidenceStatus(specs);
+        let confidence = String(prediction.model_version || '').toLowerCase().includes('fallback') ? 0.42 : 0.68;
+        if (specEvidenceStatus === 'trusted') confidence += 0.12;
+        if (specEvidenceStatus !== 'trusted') confidence -= 0.08;
+        if (telemetryTruth.hasTelemetry) confidence += 0.08;
+        if (!telemetryTruth.hasTelemetry) confidence -= 0.08;
+        confidence = clampNumber(confidence, 0.05, 0.95);
+        const evidenceLevel = confidence >= 0.75 ? 'high' : confidence >= 0.5 ? 'medium' : 'low';
+        await persistLifespanPrediction({
+            assetId,
+            predictedLifespanYears: lifecyclePrediction.predictedLifespanYears,
+            failureRisk: lifecyclePrediction.failureRisk,
+            qualityTier: lifecyclePrediction.qualityTier,
+            modelVersion: lifecyclePrediction.modelVersion,
+            predictionSource,
+            trigger: mapRefreshReasonToCanonicalTrigger(options.reason),
+            reason: lifecyclePrediction.reason,
+            explanation: lifecyclePrediction.explanation,
+            workingHours: lifecyclePrediction.workingHours,
+            operationalState: lifecyclePrediction.operationalState,
+            telemetryStatus: telemetryTruth.state,
+            specEvidenceStatus,
+            startDate: resolveLifecycleStartDate(asset, specs),
+            confidence,
+            evidenceLevel,
+            requestId,
+            provider: 'inventory-ai-service',
+            generatedBy: 'inventory-backend',
+        });
+    } catch (error: any) {
+        console.warn(`[InventoryAI] canonical lifespan persistence failed for ${assetId}: ${error.message}`);
+    }
     return {
         persisted: true,
         prediction,
@@ -525,8 +955,322 @@ function requiresHumanSpecVerification(specs: Record<string, any>): boolean {
     const confidence = Number(specs.aiSpecConfidence || 0);
     const lookupMode = String(specs.aiSpecLookupMode || '').toLowerCase();
     const hasSources = Array.isArray(specs.aiSpecSourceUrls) && specs.aiSpecSourceUrls.length > 0;
-    const looksFallback = lookupMode.includes('fallback') || lookupMode.includes('low_confidence');
-    return confidence < SPEC_VERIFICATION_CONFIDENCE_THRESHOLD || !hasSources || looksFallback;
+    const evidenceStatus = String(specs.aiSpecEvidenceStatus || '').toLowerCase();
+    const looksFallback = (
+        lookupMode.includes('fallback')
+        || lookupMode.includes('heuristic')
+        || lookupMode.includes('low_confidence')
+        || lookupMode.includes('no_source')
+        || lookupMode.includes('estimate')
+        || lookupMode.includes('llm')
+    );
+    const weakEvidence = evidenceStatus === 'insufficient_source_evidence' || evidenceStatus === 'llm_or_heuristic_only';
+    return confidence < SPEC_VERIFICATION_CONFIDENCE_THRESHOLD || !hasSources || looksFallback || weakEvidence;
+}
+
+function snapshotFromCanonicalPrediction(row: Record<string, any> | null): LifespanPredictionSnapshot | null {
+    if (!row) return null;
+    const predicted = Number(row.predictedLifespanYears);
+    const risk = Number(row.failureRisk);
+    if (!Number.isFinite(predicted)) return null;
+    return {
+        predictedLifespanYears: predicted,
+        failureRisk: Number.isFinite(risk) ? risk : 0,
+        qualityTier: String(row.qualityTier || ''),
+        modelVersion: String(row.modelVersion || ''),
+        explanation: String(row.explanation || ''),
+        workingHours: Number(row.workingHours || 0),
+        operationalState: String(row.operationalState || row.telemetryStatus || 'unknown'),
+        updatedAt: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
+        reason: String(row.reason || row.trigger || ''),
+    };
+}
+
+function telemetryTruthFromCanonicalSample(sample: Record<string, any> | null): {
+    state: TelemetryTruthState;
+    confidence: 'high' | 'low';
+    reason: string;
+    hasTelemetry: boolean;
+} | null {
+    if (!sample) return null;
+    const state = normalizeOperationalStateValue(sample.derivedStatus);
+    const confidenceScore = Number(sample.confidence);
+    const confidence: 'high' | 'low' = Number.isFinite(confidenceScore) && confidenceScore >= 0.65 ? 'high' : 'low';
+    return {
+        state,
+        confidence,
+        reason: String(sample.reason || 'Derived from canonical telemetry sample.'),
+        hasTelemetry: true,
+    };
+}
+
+function buildSpecEvidenceAssessment(params: {
+    confidence: number;
+    lookupMode: string;
+    sourceUrls: string[];
+}): { evidenceStatus: 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only'; evidenceReason: string } {
+    const lookupMode = String(params.lookupMode || '').toLowerCase();
+    const sourceUrls = Array.isArray(params.sourceUrls) ? params.sourceUrls.filter(Boolean) : [];
+    const confidence = Number(params.confidence || 0);
+    const hasAnySource = sourceUrls.length > 0;
+    const trustedByLookupMode = (
+        lookupMode === 'live_catalog_lookup'
+        || lookupMode === 'verified_feedback_cache'
+    );
+
+    if (!hasAnySource) {
+        return {
+            evidenceStatus: 'insufficient_source_evidence',
+            evidenceReason: 'No trusted source evidence found.',
+        };
+    }
+
+    if (!trustedByLookupMode) {
+        return {
+            evidenceStatus: 'llm_or_heuristic_only',
+            evidenceReason: 'LLM/heuristic estimate only; requires human verification.',
+        };
+    }
+
+    if (confidence < SPEC_VERIFICATION_CONFIDENCE_THRESHOLD) {
+        return {
+            evidenceStatus: 'insufficient_source_evidence',
+            evidenceReason: 'Source evidence exists but model confidence is below verification threshold.',
+        };
+    }
+
+    return {
+        evidenceStatus: 'trusted',
+        evidenceReason: 'Trusted source evidence available.',
+    };
+}
+
+function annotateAssetWithTruthfulSignals(asset: Asset): Asset {
+    const specs = ((asset.specifications as Record<string, any>) || {});
+    const telemetryTruth = getTelemetryTruth(specs);
+    const evidence = buildSpecEvidenceAssessment({
+        confidence: Number(specs.aiSpecConfidence || 0),
+        lookupMode: String(specs.aiSpecLookupMode || ''),
+        sourceUrls: Array.isArray(specs.aiSpecSourceUrls) ? specs.aiSpecSourceUrls : [],
+    });
+    return {
+        ...asset,
+        specifications: {
+            ...specs,
+            operationalState: telemetryTruth.state,
+            telemetryStatus: telemetryTruth.state,
+            telemetryConfidence: telemetryTruth.confidence,
+            telemetryReason: telemetryTruth.reason,
+            aiSpecEvidenceStatus: specs.aiSpecEvidenceStatus || evidence.evidenceStatus,
+            aiSpecEvidenceReason: specs.aiSpecEvidenceReason || evidence.evidenceReason,
+        },
+    };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function resolveSpecEvidenceStatus(specs: Record<string, any>): 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' {
+    const explicit = String(specs.aiSpecEvidenceStatus || '').toLowerCase();
+    if (explicit === 'trusted' || explicit === 'insufficient_source_evidence' || explicit === 'llm_or_heuristic_only') {
+        return explicit;
+    }
+    return buildSpecEvidenceAssessment({
+        confidence: Number(specs.aiSpecConfidence || 0),
+        lookupMode: String(specs.aiSpecLookupMode || ''),
+        sourceUrls: Array.isArray(specs.aiSpecSourceUrls) ? specs.aiSpecSourceUrls : [],
+    }).evidenceStatus;
+}
+
+function normalizeCanonicalSpecEvidenceStatus(rawValue: unknown): 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' {
+    const normalized = String(rawValue || '').trim().toLowerCase();
+    if (normalized === 'trusted') return 'trusted';
+    if (normalized === 'llm_or_heuristic_only') return 'llm_or_heuristic_only';
+    return 'insufficient_source_evidence';
+}
+
+function determineFallbackLifespanYears(assetType: string): number {
+    const typeKey = canonicalAssetType(assetType);
+    const metrics = (EOL_METRICS as Record<string, { years?: number }>)[typeKey]
+        || (EOL_METRICS as Record<string, { years?: number }>).default
+        || { years: 5 };
+    const years = Number(metrics.years || 5);
+    return Number.isFinite(years) && years > 0 ? years : 5;
+}
+
+function resolveLifecycleStartDate(asset: Asset, specs: Record<string, any>): Date | null {
+    const lifecycle = (specs.lifecycle && typeof specs.lifecycle === 'object') ? specs.lifecycle : {};
+    const candidates = [
+        lifecycle.commissionedAt,
+        lifecycle.purchaseDate,
+        specs.commissionedAt,
+        specs.purchaseDate,
+        specs.acquiredAt,
+        asset.createdAt,
+    ];
+    for (const value of candidates) {
+        if (!value) continue;
+        const parsed = new Date(String(value));
+        if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+    return null;
+}
+
+function computePredictedEolDate(startDate: Date | null, lifespanYears: number | null): Date | null {
+    if (!startDate || !Number.isFinite(Number(lifespanYears)) || Number(lifespanYears) <= 0) return null;
+    const result = new Date(startDate);
+    result.setDate(result.getDate() + Math.round(Number(lifespanYears) * 365.25));
+    return Number.isNaN(result.getTime()) ? null : result;
+}
+
+function monthsBetween(now: Date, futureDate: Date | null): number | null {
+    if (!futureDate) return null;
+    const months = (futureDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30.4375);
+    return Number.isFinite(months) ? Number(months.toFixed(1)) : null;
+}
+
+function classifyEolStatus(monthsRemaining: number | null, confidence: number, predictionSource: EolPredictionSource): EolAssessmentStatus {
+    if (monthsRemaining === null) return 'insufficient_data';
+    if (monthsRemaining < 0) return 'overdue';
+    if (confidence < 0.5) return predictionSource === 'insufficient_data' ? 'insufficient_data' : 'unknown';
+    if (monthsRemaining <= 3) return 'due_soon';
+    if (monthsRemaining <= 12) return 'watch';
+    return 'healthy';
+}
+
+async function buildAssetEolAssessment(asset: Asset): Promise<EolAssessmentResponse> {
+    const now = new Date();
+    const annotated = annotateAssetWithTruthfulSignals(asset);
+    const specs = ((annotated.specifications as Record<string, any>) || {});
+    const canonicalSpecSnapshot = await getLatestSpecSnapshot(asset.customId);
+    const canonicalTelemetrySample = await getLatestTelemetrySample(asset.customId);
+    const canonicalPrediction = await getLatestPersistedLifespanPrediction(asset.customId);
+    const telemetryTruth = telemetryTruthFromCanonicalSample(canonicalTelemetrySample as unknown as Record<string, any>) || getTelemetryTruth(specs);
+    const specEvidenceStatus = canonicalSpecSnapshot
+        ? normalizeCanonicalSpecEvidenceStatus(canonicalSpecSnapshot.evidenceStatus)
+        : resolveSpecEvidenceStatus(specs);
+    const lifecycleSnapshot = snapshotFromCanonicalPrediction(canonicalPrediction as unknown as Record<string, any>) || readLifespanSnapshot(specs);
+    const startDate = resolveLifecycleStartDate(asset, specs);
+    const fallbackYears = determineFallbackLifespanYears(String(asset.type || ''));
+
+    let predictedLifespanYears: number | null = null;
+    let predictionSource: EolPredictionSource = 'insufficient_data';
+    let reasonParts: string[] = [];
+    let modelVersion = '';
+
+    if (lifecycleSnapshot && Number.isFinite(Number(lifecycleSnapshot.predictedLifespanYears || 0))) {
+        predictedLifespanYears = Number(lifecycleSnapshot.predictedLifespanYears);
+        predictionSource = 'persisted_lifecycle_prediction';
+        modelVersion = String(lifecycleSnapshot.modelVersion || '');
+        reasonParts.push('Using persisted lifecycle prediction snapshot.');
+    } else {
+        try {
+            const fresh = await requestAssetLifespanPrediction(asset, {
+                baseLifespanYears: fallbackYears,
+            });
+            predictedLifespanYears = Number(fresh.prediction.predicted_lifespan_years || 0);
+            modelVersion = String(fresh.prediction.model_version || '');
+            if (modelVersion.includes('fallback')) {
+                predictionSource = 'fallback_category_default';
+                reasonParts.push('No persisted lifecycle snapshot; using fallback category/model estimate.');
+            } else {
+                predictionSource = 'freshly_calculated_prediction';
+                reasonParts.push('No persisted lifecycle snapshot; using fresh display-only prediction.');
+            }
+        } catch (error: any) {
+            predictedLifespanYears = fallbackYears;
+            predictionSource = 'fallback_category_default';
+            reasonParts.push(`AI prediction unavailable; using fallback category default (${fallbackYears} years).`);
+        }
+    }
+
+    if (!Number.isFinite(Number(predictedLifespanYears)) || Number(predictedLifespanYears) <= 0) {
+        predictedLifespanYears = fallbackYears;
+        predictionSource = 'fallback_category_default';
+        reasonParts.push('Predicted lifespan was invalid; using fallback category default.');
+    }
+
+    const predictedEolDate = computePredictedEolDate(startDate, predictedLifespanYears);
+    const monthsRemaining = monthsBetween(now, predictedEolDate);
+
+    let confidence = (
+        predictionSource === 'persisted_lifecycle_prediction' ? 0.72
+            : predictionSource === 'freshly_calculated_prediction' ? 0.64
+                : predictionSource === 'fallback_category_default' ? 0.42
+                    : 0.2
+    );
+
+    if (specEvidenceStatus === 'trusted') {
+        confidence += 0.15;
+        reasonParts.push('Specification evidence is trusted.');
+    } else if (specEvidenceStatus === 'llm_or_heuristic_only') {
+        confidence -= 0.22;
+        reasonParts.push('Specification evidence is heuristic/LLM-only.');
+    } else {
+        confidence -= 0.25;
+        reasonParts.push('Specification evidence is insufficient.');
+    }
+
+    if (telemetryTruth.state === 'online_in_use' || telemetryTruth.state === 'online_idle' || telemetryTruth.state === 'offline') {
+        confidence += 0.08;
+        reasonParts.push('Telemetry signals are available.');
+    } else {
+        confidence -= 0.12;
+        reasonParts.push(`Telemetry state is ${telemetryTruth.state}.`);
+    }
+
+    if (predictionSource === 'fallback_category_default') {
+        confidence -= 0.1;
+    }
+
+    if (!startDate) {
+        confidence = Math.min(confidence, 0.25);
+        reasonParts.push('Lifecycle start date is missing; EOL date confidence is reduced.');
+    }
+
+    confidence = clampNumber(confidence, 0.05, 0.98);
+    const evidenceLevel: EolEvidenceLevel = confidence >= 0.75 ? 'high' : confidence >= 0.5 ? 'medium' : 'low';
+    const status = classifyEolStatus(monthsRemaining, confidence, predictionSource);
+
+    const isLifecycleClosed = ['retired', 'replaced', 'failed'].includes(String((specs.lifecycle as Record<string, any>)?.finalOutcome || '').toLowerCase())
+        || String(asset.status || '').toUpperCase() === 'RETIRED';
+    if (isLifecycleClosed) {
+        reasonParts.push('Asset lifecycle is closed; procurement recommendation is not applicable.');
+    }
+
+    const suitableForProcurementPlanning = !isLifecycleClosed
+        && confidence >= 0.6
+        && (status === 'watch' || status === 'due_soon' || status === 'overdue');
+    const procurementRecommended = suitableForProcurementPlanning && (status === 'due_soon' || status === 'overdue' || (status === 'watch' && (monthsRemaining ?? 99) <= 6));
+    const procurementWindowMonths = procurementRecommended
+        ? (status === 'overdue' || status === 'due_soon' ? 3 : 6)
+        : null;
+
+    if (status === 'unknown' || status === 'insufficient_data') {
+        reasonParts.push('Confidence is too low for procurement-grade EOL planning.');
+    }
+    if (modelVersion) {
+        reasonParts.push(`Model version: ${modelVersion}.`);
+    }
+
+    return {
+        assetId: asset.customId,
+        status,
+        predictedEolDate: predictedEolDate ? predictedEolDate.toISOString() : null,
+        monthsRemaining,
+        confidence: Number(confidence.toFixed(3)),
+        reason: reasonParts.join(' '),
+        evidenceLevel,
+        procurementRecommended,
+        procurementWindowMonths,
+        predictionSource,
+        telemetryStatus: telemetryTruth.state,
+        specEvidenceStatus,
+        suitableForProcurementPlanning,
+        predictedLifespanYears,
+        generatedAt: new Date().toISOString(),
+    };
 }
 
 async function submitSpecVerificationFeedback(payload: Record<string, any>) {
@@ -753,29 +1497,6 @@ async function enrichAssetSpecificationsWithAI(params: {
         );
         const merged: Record<string, any> = { ...inferred, ...existing };
         merged.aiDetectedSpecs = inferred;
-<<<<<<< Updated upstream
-        merged.aiSpecConfidence = Number(data.confidence || 0);
-        merged.aiSpecSource = data.source || 'inventory-ai-spec-inference-v1';
-        merged.aiSpecLookupMode = data.lookup_mode || 'heuristic_fallback';
-        merged.aiSpecSourceUrls = Array.isArray(data.source_urls) ? data.source_urls : [];
-        merged.aiSpecRuleVersion = data.rule_version || 'spec-rules-v1';
-        merged.aiSpecVariant = data.variant || 'control';
-        merged.aiSpecDetectedAt = new Date().toISOString();
-        merged.specVerificationStatus = requiresHumanSpecVerification(merged) ? 'pending' : 'verified';
-        merged.specVerificationUpdatedAt = new Date().toISOString();
-        return merged;
-    } catch (error: any) {
-        console.warn(`[InventoryAI] infer-asset-specs error: ${error.message}`);
-        return existing;
-    }
-}
-
-// --- MOUNT ROUTERS ---
-app.use('/api/config', requireInventoryReadAccess);
-app.use('/api/assets', requireInventoryReadAccess);
-app.use('/api/tickets', ticketRoutes);
-app.use('/api/config', configRoutes);
-=======
         merged.aiSpecFieldConfidence = fieldConfidence;
         merged.aiSpecConfidence = Number(data.confidence || 0);
         merged.aiSpecSource = data.source || 'inventory-ai-spec-inference-v1';
@@ -783,6 +1504,13 @@ app.use('/api/config', configRoutes);
         merged.aiSpecSourceUrls = Array.isArray(data.source_urls) ? data.source_urls : [];
         merged.aiSpecRuleVersion = data.rule_version || 'spec-rules-v1';
         merged.aiSpecVariant = data.variant || 'control';
+        const evidence = buildSpecEvidenceAssessment({
+            confidence: merged.aiSpecConfidence,
+            lookupMode: merged.aiSpecLookupMode,
+            sourceUrls: merged.aiSpecSourceUrls,
+        });
+        merged.aiSpecEvidenceStatus = evidence.evidenceStatus;
+        merged.aiSpecEvidenceReason = evidence.evidenceReason;
         merged.aiSpecDetectedAt = new Date().toISOString();
         merged.specVerificationStatus = requiresHumanSpecVerification(merged) ? 'pending' : 'verified';
         merged.specVerificationUpdatedAt = new Date().toISOString();
@@ -794,16 +1522,210 @@ app.use('/api/config', configRoutes);
 }
 
 // --- MOUNT ROUTERS ---
+app.use('/api/config', inventoryReadGuard);
+app.use('/api/assets', inventoryReadGuard);
+app.use('/api/inventory-ai', inventoryReadGuard);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/config', configRoutes);
->>>>>>> Stashed changes
+app.use('/api/inventory-ai', inventoryAiReadinessRoutes);
+
+app.post('/internal/inventory-ai/assets/:id/spec-refresh', internalWorkerGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const asset = await AssetService.getAssetByCustomId(assetId);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+
+        const currentSpecs = ((asset.specifications as Record<string, any>) || {});
+        const enriched = await enrichAssetSpecificationsWithAI({
+            name: String(asset.name || ''),
+            type: String(asset.type || ''),
+            existingSpecs: currentSpecs,
+        });
+
+        const reviewedOnCreate = parseBooleanFlag(
+            req.body?.specConfirmationReviewed
+            ?? enriched.specVerificationConfirmedOnCreate
+            ?? currentSpecs.specVerificationConfirmedOnCreate
+        );
+        const reviewedBy = String(
+            req.body?.specConfirmationReviewedBy
+            || enriched.specVerificationReviewedBy
+            || currentSpecs.specVerificationReviewedBy
+            || 'asset_creator'
+        ).trim();
+
+        const nextSpecs: Record<string, any> = {
+            ...enriched,
+            specVerificationStatus: reviewedOnCreate
+                ? 'verified'
+                : (String(enriched.specVerificationStatus || '').trim() || 'pending'),
+            specVerificationConfirmedOnCreate: reviewedOnCreate,
+            specVerificationReviewedBy: reviewedOnCreate ? reviewedBy : enriched.specVerificationReviewedBy,
+            specVerificationReviewedAt: reviewedOnCreate
+                ? (String(enriched.specVerificationReviewedAt || '').trim() || new Date().toISOString())
+                : enriched.specVerificationReviewedAt,
+            specVerificationAction: reviewedOnCreate
+                ? 'confirmed_on_create'
+                : (enriched.specVerificationAction || undefined),
+            aiSpecEvidenceStatus: String(enriched.aiSpecEvidenceStatus || 'insufficient_source_evidence'),
+            aiSpecEvidenceReason: String(
+                enriched.aiSpecEvidenceReason
+                || 'No trusted exact source evidence found. Manual review recommended.'
+            ),
+        };
+
+        const updated = await AssetService.updateAsset(assetId, { specifications: nextSpecs });
+
+        try {
+            await persistSpecSnapshot({
+                assetId,
+                specifications: nextSpecs,
+                context: 'background_spec_refresh',
+                reviewer: reviewedOnCreate ? reviewedBy : null,
+                reviewedAt: reviewedOnCreate ? new Date() : null,
+            });
+        } catch (error: any) {
+            console.warn(`[InventoryAIJobs] canonical spec snapshot persistence failed for ${assetId}: ${error.message}`);
+        }
+
+        if (reviewedOnCreate) {
+            await submitSpecVerificationFeedback({
+                asset_id: assetId,
+                action: 'candidate_confirmed_on_create',
+                name: String(asset.name || ''),
+                type: canonicalAssetType(asset.type),
+                brand: String(nextSpecs.brand || nextSpecs.Brand || ''),
+                model: String(nextSpecs.version || nextSpecs.Version || nextSpecs.model || nextSpecs.Model || ''),
+                predicted_specifications: nextSpecs.aiDetectedSpecs || {},
+                corrected_specifications: extractRenderableSpecs(nextSpecs),
+                field_confidence: (nextSpecs.aiSpecFieldConfidence && typeof nextSpecs.aiSpecFieldConfidence === 'object')
+                    ? nextSpecs.aiSpecFieldConfidence
+                    : {},
+                confidence: Number(nextSpecs.aiSpecConfidence || 0),
+                source: String(nextSpecs.aiSpecSource || ''),
+                source_urls: Array.isArray(nextSpecs.aiSpecSourceUrls) ? nextSpecs.aiSpecSourceUrls : [],
+                lookup_mode: String(nextSpecs.aiSpecLookupMode || ''),
+                variant: String(nextSpecs.aiSpecVariant || 'control'),
+                rule_version: String(nextSpecs.aiSpecRuleVersion || 'spec-rules-v1'),
+                submitted_by: reviewedBy,
+            });
+        }
+
+        return res.json({
+            assetId,
+            status: 'ok',
+            specVerificationStatus: nextSpecs.specVerificationStatus,
+            specVerificationConfirmedOnCreate: reviewedOnCreate,
+            updatedAt: updated.updatedAt,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to refresh specs in background', error: error.message });
+    }
+});
+
+app.post('/internal/inventory-ai/assets/:id/lifespan-refresh', internalWorkerGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const trigger = String(req.body?.trigger || '').toLowerCase();
+        const reason: LifespanRefreshReason = trigger.includes('telemetry')
+            ? 'telemetry_update'
+            : trigger.includes('transfer')
+                ? 'asset_transferred'
+                : trigger.includes('create')
+                    ? 'asset_created'
+                    : 'asset_updated';
+        const refresh = await refreshAndPersistAssetLifespan(assetId, {
+            reason,
+            forcePersist: true,
+            requestId: req.body?.requestId ? String(req.body.requestId) : undefined,
+            minimumHoursDelta: LIFESPAN_IMPACT_MIN_HOURS,
+        });
+        return res.json({
+            assetId,
+            ...refresh,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to refresh lifespan in background', error: error.message });
+    }
+});
+
+app.post('/internal/inventory-ai/assets/:id/eol-refresh', internalWorkerGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const asset = await AssetService.getAssetByCustomId(assetId);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+
+        const assessment = await buildAssetEolAssessment(asset);
+        try {
+            await persistEolAssessment({
+                assetId: asset.customId,
+                status: assessment.status,
+                predictedEolDate: assessment.predictedEolDate,
+                monthsRemaining: assessment.monthsRemaining,
+                confidence: assessment.confidence,
+                reason: assessment.reason,
+                evidenceLevel: assessment.evidenceLevel,
+                predictionSource: assessment.predictionSource,
+                telemetryStatus: assessment.telemetryStatus,
+                specEvidenceStatus: assessment.specEvidenceStatus,
+                suitableForProcurementPlanning: assessment.suitableForProcurementPlanning,
+                procurementRecommended: assessment.procurementRecommended,
+                procurementWindowMonths: assessment.procurementWindowMonths,
+                generatedAt: assessment.generatedAt,
+            });
+        } catch (persistError: any) {
+            console.warn(`[InventoryAIJobs] canonical EOL assessment persistence failed for ${assetId}: ${persistError.message}`);
+        }
+
+        return res.json({
+            ...assessment,
+            assetId,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to refresh EOL assessment in background', error: error.message });
+    }
+});
+
+app.post('/internal/inventory-ai/assets/:id/procurement-refresh', internalWorkerGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const asset = await AssetService.getAssetByCustomId(assetId);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const assessment = await buildAssetEolAssessment(asset);
+        await persistEolAssessment({
+            assetId: asset.customId,
+            status: assessment.status,
+            predictedEolDate: assessment.predictedEolDate,
+            monthsRemaining: assessment.monthsRemaining,
+            confidence: assessment.confidence,
+            reason: assessment.reason,
+            evidenceLevel: assessment.evidenceLevel,
+            predictionSource: assessment.predictionSource,
+            telemetryStatus: assessment.telemetryStatus,
+            specEvidenceStatus: assessment.specEvidenceStatus,
+            suitableForProcurementPlanning: assessment.suitableForProcurementPlanning,
+            procurementRecommended: assessment.procurementRecommended,
+            procurementWindowMonths: assessment.procurementWindowMonths,
+            generatedAt: assessment.generatedAt,
+        });
+        return res.json({
+            assetId,
+            procurementRecommended: assessment.procurementRecommended,
+            procurementWindowMonths: assessment.procurementWindowMonths,
+            status: assessment.status,
+            confidence: assessment.confidence,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to refresh procurement candidate in background', error: error.message });
+    }
+});
 
 // --- ASSET ROUTES ---
 
 app.get('/api/assets', async (req: Request, res: Response) => {
     try {
         const assets = await AssetService.getAssets();
-        res.json(assets);
+        res.json(assets.map((asset) => annotateAssetWithTruthfulSignals(asset)));
     } catch (err) { 
         res.status(500).json({ error: 'Failed to fetch assets' }); 
     }
@@ -820,7 +1742,7 @@ app.get('/api/assets/single/:id', async (req: Request, res: Response) => {
         if (!asset) {
             return res.status(404).json({ message: "Asset not found" });
         }
-        res.json(asset);
+        res.json(annotateAssetWithTruthfulSignals(asset));
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: "Search failed" });
@@ -874,6 +1796,287 @@ app.get('/api/assets/spec-verification/metrics', async (req: Request, res: Respo
     }
 });
 
+app.post('/api/assets/spec-normalize', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const rawAssetType = String(req.body?.assetType || req.body?.type || '').trim();
+        if (!rawAssetType) {
+            return res.status(400).json({ message: 'assetType is required.' });
+        }
+        const assetType = canonicalAssetType(rawAssetType);
+        const profile = getAssetTypeSpecProfile(assetType);
+        const expectedFields = Array.isArray(profile?.expectedSpecFields) ? profile!.expectedSpecFields : [];
+        const notApplicableFields = Array.isArray(profile?.notApplicableFields) ? profile!.notApplicableFields : [];
+        const rawSpecsText = String(req.body?.rawSpecsText || req.body?.specsText || '');
+        const currentSpecs = (req.body?.currentSpecs && typeof req.body.currentSpecs === 'object')
+            ? (req.body.currentSpecs as Record<string, any>)
+            : {};
+        const brand = String(req.body?.brand || '').trim();
+        const model = String(req.body?.model || req.body?.version || '').trim();
+
+        const helperPayload = {
+            assetType,
+            brand,
+            model,
+            rawSpecsText,
+            currentSpecs,
+            expectedFields,
+            notApplicableFields,
+        };
+
+        const ai = await callInventoryAiHelper('/normalize-asset-specs', helperPayload, 9_000);
+        if (!ai) {
+            const fallback = buildSpecNormalizationFallback({
+                rawSpecsText,
+                currentSpecs,
+                expectedFields,
+                notApplicableFields,
+                brand,
+                model,
+                assetType,
+            });
+            return res.json(fallback);
+        }
+
+        return res.json({
+            normalizedSpecs: (ai.normalized_specs && typeof ai.normalized_specs === 'object') ? ai.normalized_specs : {},
+            normalizedSpecsText: String(ai.normalized_specs_text || ''),
+            invalidFields: Array.isArray(ai.invalid_fields) ? ai.invalid_fields : [],
+            missingImportantFields: Array.isArray(ai.missing_important_fields) ? ai.missing_important_fields : [],
+            warnings: Array.isArray(ai.warnings) ? ai.warnings : [],
+            confidence: clampNumber(Number(ai.confidence || 0.5), 0.3, 0.95),
+            llmUsed: Boolean(ai.llm_used),
+        } as SpecNormalizationHelperResponse);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to normalize specs', error: error.message });
+    }
+});
+
+app.post('/api/assets/spec-sanity-check', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const rawAssetType = String(req.body?.assetType || req.body?.type || '').trim();
+        if (!rawAssetType) {
+            return res.status(400).json({ message: 'assetType is required.' });
+        }
+        const assetType = canonicalAssetType(rawAssetType);
+        const profile = getAssetTypeSpecProfile(assetType);
+        const expectedFields = Array.isArray(profile?.expectedSpecFields) ? profile!.expectedSpecFields : [];
+        const notApplicableFields = Array.isArray(profile?.notApplicableFields) ? profile!.notApplicableFields : [];
+        const normalizedSpecs = (req.body?.normalizedSpecs && typeof req.body.normalizedSpecs === 'object')
+            ? (req.body.normalizedSpecs as Record<string, string>)
+            : {};
+        const brand = String(req.body?.brand || '').trim();
+        const model = String(req.body?.model || req.body?.version || '').trim();
+        const sourceType = String(req.body?.sourceType || '').trim();
+        const evidenceStatus = String(req.body?.evidenceStatus || '').trim();
+
+        const helperPayload = {
+            assetType,
+            brand,
+            model,
+            normalizedSpecs,
+            sourceType,
+            evidenceStatus,
+            expectedFields,
+            notApplicableFields,
+        };
+
+        const ai = await callInventoryAiHelper('/check-asset-spec-sanity', helperPayload, 8_000);
+        if (!ai) {
+            return res.json(buildSpecSanityFallback({
+                normalizedSpecs,
+                assetType,
+                brand,
+                model,
+                expectedFields,
+                notApplicableFields,
+                sourceType,
+                evidenceStatus,
+            }));
+        }
+
+        return res.json({
+            warnings: Array.isArray(ai.warnings) ? ai.warnings : [],
+            suspiciousFields: Array.isArray(ai.suspicious_fields) ? ai.suspicious_fields : [],
+            suggestedFixes: Array.isArray(ai.suggested_fixes) ? ai.suggested_fixes : [],
+            requiresReview: Boolean(ai.requires_review),
+            llmUsed: Boolean(ai.llm_used),
+        } as SpecSanityHelperResponse);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run spec sanity check', error: error.message });
+    }
+});
+
+app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const {
+            name = '',
+            type = '',
+            brand = '',
+            model = '',
+            currentSpecsText = '',
+            currentSpecs = {},
+        } = req.body || {};
+
+        if (!String(type || '').trim()) {
+            return res.status(400).json({ message: 'Asset type is required for spec preview.' });
+        }
+
+        const warnings: string[] = [];
+        const normalizedType = canonicalAssetType(type);
+        const profile = getAssetTypeSpecProfile(normalizedType);
+        const parsedTextSpecs = parseSpecTextToObject(currentSpecsText);
+        const currentSpecsObject = (currentSpecs && typeof currentSpecs === 'object') ? (currentSpecs as Record<string, any>) : {};
+        const manualSpecs = mergeSpecMaps(parsedTextSpecs, extractRenderableSpecs(currentSpecsObject));
+
+        const previewBrand = String(brand || '').trim();
+        const previewModel = String(model || '').trim() || String(name || '').trim();
+        const verifiedMatch = lookupVerifiedSpecs({
+            brand: previewBrand,
+            model: previewModel,
+            assetType: normalizedType,
+        });
+        const userConfirmedMatch = await lookupUserConfirmedSpecs({
+            brand: previewBrand,
+            model: previewModel,
+            assetType: normalizedType,
+        });
+
+        let generatedSpecs: Record<string, string> = {};
+        let confidence = 0.45;
+        let lookupMode = 'asset_type_profile_fallback';
+        let sourceType = 'asset_type_profile';
+        let sourceUrls: string[] = [];
+        let sourceDomain = '';
+        let evidenceStatus: 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' | 'user_confirmed' = 'insufficient_source_evidence';
+        let evidenceReason = 'No trusted source evidence found. Profile-based template only; manual verification required.';
+        let requiresReview = true;
+
+        const verifiedHasTrustedExactEvidence = Boolean(
+            verifiedMatch
+            && verifiedMatch.quality === 'exact'
+            && String(verifiedMatch.row.sourceUrl || '').trim()
+            && String(verifiedMatch.row.sourceDomain || '').trim()
+            && String(verifiedMatch.row.sourceType || '').trim()
+            && !normalizeValue(verifiedMatch.row.notes).includes('generic')
+            && !normalizeValue(verifiedMatch.row.notes).includes('family')
+            && !normalizeValue(verifiedMatch.row.notes).includes('verify'),
+        );
+
+        if (verifiedMatch && verifiedHasTrustedExactEvidence) {
+            generatedSpecs = mergeSpecMaps(verifiedMatch.row.verifiedSpecsJson);
+            sourceType = 'verified_dataset';
+            sourceUrls = verifiedMatch.row.sourceUrl ? [verifiedMatch.row.sourceUrl] : [];
+            sourceDomain = verifiedMatch.row.sourceDomain || '';
+            lookupMode = 'verified_dataset_exact';
+            warnings.push(...verifiedMatch.warnings);
+            confidence = clampNumber(Number(verifiedMatch.row.confidence || 0.9), 0.85, 0.95);
+            evidenceStatus = 'trusted';
+            evidenceReason = 'Verified dataset exact match with trusted source evidence.';
+            requiresReview = false;
+        } else if (userConfirmedMatch) {
+            generatedSpecs = mergeSpecMaps(userConfirmedMatch.specs);
+            sourceType = 'user_confirmed_previous_asset';
+            sourceUrls = [];
+            sourceDomain = '';
+            lookupMode = 'user_confirmed_exact_match';
+            warnings.push(...userConfirmedMatch.warnings);
+            confidence = clampNumber(Number(userConfirmedMatch.confidence || 0.82), 0.75, 0.9);
+            evidenceStatus = 'user_confirmed';
+            evidenceReason = userConfirmedMatch.reviewedBy
+                ? `Specs reused from a previous asset confirmed by user/admin "${userConfirmedMatch.reviewedBy}".`
+                : 'Specs reused from a previous asset confirmed by a user/admin.';
+            requiresReview = Boolean(userConfirmedMatch.requiresReview);
+        } else if (verifiedMatch) {
+            generatedSpecs = mergeSpecMaps(verifiedMatch.row.verifiedSpecsJson);
+            sourceType = 'verified_dataset';
+            sourceUrls = verifiedMatch.row.sourceUrl ? [verifiedMatch.row.sourceUrl] : [];
+            sourceDomain = verifiedMatch.row.sourceDomain || '';
+            lookupMode = verifiedMatch.quality === 'exact'
+                ? 'verified_dataset_exact_weak'
+                : 'verified_dataset_family';
+            warnings.push(...verifiedMatch.warnings);
+            confidence = clampNumber(
+                Number(verifiedMatch.row.confidence || 0.68),
+                0.6,
+                verifiedMatch.quality === 'exact' ? 0.82 : 0.75,
+            );
+            evidenceStatus = 'insufficient_source_evidence';
+            evidenceReason = 'No trusted exact source evidence found. Please verify exact model/year/specs.';
+            requiresReview = true;
+        } else if (profile) {
+            generatedSpecs = mergeSpecMaps(profile.fallbackSpecTemplate);
+            confidence = 0.45;
+            lookupMode = 'asset_type_profile_fallback';
+            sourceType = 'asset_type_profile';
+            sourceUrls = [];
+            sourceDomain = '';
+            evidenceStatus = 'insufficient_source_evidence';
+            evidenceReason = 'No trusted exact source evidence found. Profile-based safe template only.';
+            requiresReview = true;
+            warnings.push('No verified dataset match found; using asset type profile fallback template.');
+        } else {
+            generatedSpecs = mergeSpecMaps({
+                Condition: 'Pending inspection',
+                Notes: 'Unknown - verify exact specifications manually',
+            });
+            confidence = 0.35;
+            lookupMode = 'safe_fallback_minimal';
+            sourceType = 'asset_type_profile';
+            sourceUrls = [];
+            sourceDomain = '';
+            evidenceStatus = 'llm_or_heuristic_only';
+            evidenceReason = 'Insufficient data to infer reliable specs. Manual entry required.';
+            requiresReview = true;
+            warnings.push(`No asset type profile found for "${normalizedType}".`);
+        }
+
+        const expectedFields = profile?.expectedSpecFields || [];
+        const filteredGeneratedSpecs = restrictPreviewSpecsToProfile(generatedSpecs, expectedFields, warnings);
+        const effectiveSpecs = mergeSpecMaps(filteredGeneratedSpecs, manualSpecs);
+        if (!Object.keys(effectiveSpecs).length && profile?.fallbackSpecTemplate) {
+            Object.assign(effectiveSpecs, profile.fallbackSpecTemplate);
+        }
+
+        // Safety guard: Apple/MacBook previews must never default to Windows.
+        const normalizedBrandModel = normalizeValue(`${brand} ${model} ${name}`);
+        if (
+            normalizedType === 'laptop'
+            && (normalizedBrandModel.includes('apple') || normalizedBrandModel.includes('macbook'))
+            && String(effectiveSpecs.OS || '').toLowerCase().includes('windows')
+        ) {
+            effectiveSpecs.OS = 'macOS';
+            effectiveSpecs['Processor/Chip'] = effectiveSpecs['Processor/Chip'] || 'Unknown - verify exact MacBook Pro model/year';
+            effectiveSpecs.Memory = effectiveSpecs.Memory || 'Unknown - verify exact configuration';
+            effectiveSpecs.Storage = effectiveSpecs.Storage || 'Unknown - verify exact configuration';
+            effectiveSpecs.Display = effectiveSpecs.Display || 'Unknown - verify exact model/year';
+            evidenceStatus = 'insufficient_source_evidence';
+            evidenceReason = 'No trusted exact source evidence found. Please verify exact MacBook Pro model/year/specs.';
+            confidence = clampNumber(confidence, 0.6, 0.75);
+            requiresReview = true;
+            warnings.push('Applied Apple/MacBook safety override to prevent unsupported Windows defaults.');
+        }
+
+        return res.json({
+            specsText: formatSpecsForTextarea(effectiveSpecs),
+            normalizedSpecs: effectiveSpecs,
+            confidence,
+            lookupMode,
+            sourceType,
+            sourceUrls,
+            sourceDomain,
+            evidenceStatus,
+            evidenceReason,
+            requiresReview,
+            warnings,
+        });
+    } catch (error: any) {
+        return res.status(500).json({
+            message: 'Failed to generate spec preview',
+            error: error.message,
+        });
+    }
+});
+
 app.patch('/api/assets/:id/spec-verification', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -904,6 +2107,17 @@ app.patch('/api/assets/:id/spec-verification', async (req: Request, res: Respons
         }
 
         const updated = await AssetService.updateAsset(id, { specifications: nextSpecs });
+        try {
+            await persistSpecSnapshot({
+                assetId: id,
+                specifications: nextSpecs,
+                context: 'spec_verification_patch',
+                reviewer,
+                reviewedAt: new Date(),
+            });
+        } catch (error: any) {
+            console.warn(`[InventoryAI] canonical spec verification snapshot persistence failed for ${id}: ${error.message}`);
+        }
 
         await HistoryService.createHistory({
             assetId: id,
@@ -951,6 +2165,102 @@ app.get('/api/assets/:id/history', async (req: Request, res: Response) => {
     }
 });
 
+app.get('/api/assets/:id/eol-assessment', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const asset = await AssetService.getAssetByCustomId(id);
+        if (!asset) return res.status(404).json({ message: "Asset not found" });
+        const assessment = await buildAssetEolAssessment(asset);
+        try {
+            await persistEolAssessment({
+                assetId: assessment.assetId,
+                status: assessment.status,
+                predictedEolDate: assessment.predictedEolDate,
+                monthsRemaining: assessment.monthsRemaining,
+                confidence: assessment.confidence,
+                reason: assessment.reason,
+                evidenceLevel: assessment.evidenceLevel,
+                predictionSource: assessment.predictionSource,
+                telemetryStatus: assessment.telemetryStatus,
+                specEvidenceStatus: assessment.specEvidenceStatus,
+                suitableForProcurementPlanning: assessment.suitableForProcurementPlanning,
+                procurementRecommended: assessment.procurementRecommended,
+                procurementWindowMonths: assessment.procurementWindowMonths,
+                generatedAt: assessment.generatedAt,
+            });
+        } catch (persistError: any) {
+            console.warn(`[InventoryAI] canonical EOL assessment persistence failed for ${id}: ${persistError.message}`);
+        }
+        res.json(assessment);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to compute EOL assessment', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/eol-explanation', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const asset = await AssetService.getAssetByCustomId(id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const assessment = await buildAssetEolAssessment(asset);
+        const payload = {
+            assessment,
+            telemetryStatus: assessment.telemetryStatus,
+            specEvidenceStatus: assessment.specEvidenceStatus,
+            predictedLifespanYears: assessment.predictedLifespanYears,
+            confidence: assessment.confidence,
+            procurementSuitable: assessment.suitableForProcurementPlanning,
+        };
+        const ai = await callInventoryAiHelper('/explain-eol-assessment', payload, 7_000);
+        if (!ai) {
+            return res.json(buildEolExplanationFallback(assessment));
+        }
+        return res.json({
+            shortUserExplanation: String(ai.short_user_explanation || buildEolExplanationFallback(assessment).shortUserExplanation),
+            technicalExplanation: String(ai.technical_explanation || buildEolExplanationFallback(assessment).technicalExplanation),
+            llmUsed: Boolean(ai.llm_used),
+        } as EolExplanationHelperResponse);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate EOL explanation', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/ai-jobs', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const asset = await AssetService.getAssetByCustomId(id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const summary = await readAssetPipelineSummary(id);
+        return res.json(summary);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to read AI job status', error: error.message });
+    }
+});
+
+app.get('/api/assets/ai-jobs/status', async (req: Request, res: Response) => {
+    try {
+        const raw = String(req.query.assetIds || '').trim();
+        const assetIds = raw
+            ? raw.split(',').map((value) => value.trim()).filter(Boolean)
+            : [];
+        if (!assetIds.length) {
+            return res.json({ summaries: {} });
+        }
+        const uniqueAssetIds = Array.from(new Set(assetIds));
+        const summaries = await Promise.all(
+            uniqueAssetIds.map(async (assetId) => {
+                const summary = await readAssetPipelineSummary(assetId);
+                return [assetId, summary] as const;
+            })
+        );
+        return res.json({
+            summaries: Object.fromEntries(summaries),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to read AI job status summaries', error: error.message });
+    }
+});
+
 // --- CATCH-ALL FETCH ROUTE ---
 app.get('/api/assets/:id', async (req: Request, res: Response) => {
     try {
@@ -958,31 +2268,92 @@ app.get('/api/assets/:id', async (req: Request, res: Response) => {
         const asset = await AssetService.getAssetByCustomId(id);
 
         if (!asset) return res.status(404).json({ message: "Asset not found" });
-        res.json(asset);
+        res.json(annotateAssetWithTruthfulSignals(asset));
     } catch (err) {
         res.status(500).json({ message: "Server error fetching asset" });
     }
 });
 
 // --- CREATE LOGIC ---
-app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: Response) => {
+app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
         console.log(`📥 POST /api/assets from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         console.log('📦 Payload:', JSON.stringify(req.body));
 
-        const { name, type, value, customId, location, department, quantity, specifications, admin } = req.body;
+        const {
+            name,
+            type,
+            value,
+            customId,
+            location,
+            department,
+            quantity,
+            specifications,
+            admin,
+            specConfirmationReviewed,
+            specConfirmationReviewedBy,
+        } = req.body;
         if (!String(name || '').trim()) {
             return res.status(400).json({ message: 'Asset name is required.' });
         }
         if (!String(type || '').trim()) {
             return res.status(400).json({ message: 'Asset type is required.' });
         }
-        const inputSpecifications = (specifications && typeof specifications === 'object') ? specifications : {};
-        const enrichedSpecifications = await enrichAssetSpecificationsWithAI({
-            name: String(name || ''),
-            type: String(type || ''),
-            existingSpecs: inputSpecifications
-        });
+        const inputSpecifications = (specifications && typeof specifications === 'object')
+            ? stripLifecycleManagedSpecFields(specifications as Record<string, any>)
+            : {};
+        const reviewedOnCreate = parseBooleanFlag(
+            specConfirmationReviewed ?? inputSpecifications.specVerificationConfirmedOnCreate
+        );
+        const reviewedBy = String(
+            specConfirmationReviewedBy
+            || inputSpecifications.specVerificationReviewedBy
+            || admin?.email
+            || admin?.name
+            || 'asset_creator'
+        ).trim();
+
+        const enrichedSpecificationsBase: Record<string, any> = {
+            ...inputSpecifications,
+            specVerificationConfirmedOnCreate: reviewedOnCreate,
+            specVerificationReviewedBy: reviewedOnCreate ? reviewedBy : undefined,
+            specVerificationReviewedAt: reviewedOnCreate ? new Date().toISOString() : undefined,
+            specVerificationAction: reviewedOnCreate
+                ? 'confirmed_on_create'
+                : (inputSpecifications.specVerificationAction || undefined),
+            specVerificationStatus: reviewedOnCreate
+                ? 'verified'
+                : (String(inputSpecifications.specVerificationStatus || '').trim() || 'pending'),
+            aiSpecEvidenceStatus: String(inputSpecifications.aiSpecEvidenceStatus || 'insufficient_source_evidence'),
+            aiSpecEvidenceReason: String(
+                inputSpecifications.aiSpecEvidenceReason
+                || 'No trusted exact source evidence found. Manual review recommended.'
+            ),
+        };
+        const trackTelemetry = (
+            enrichedSpecificationsBase.trackWorkingHours === true
+            || String(enrichedSpecificationsBase.trackWorkingHours || '').toLowerCase() === 'true'
+            || enrichedSpecificationsBase.telemetryEnabled === true
+            || String(enrichedSpecificationsBase.telemetryEnabled || '').toLowerCase() === 'true'
+        );
+        const enrichedSpecifications = {
+            ...enrichedSpecificationsBase,
+            trackWorkingHours: trackTelemetry,
+            telemetryEnabled: trackTelemetry,
+            telemetryStatus: trackTelemetry ? 'insufficient_data' : 'not_monitored',
+            telemetryConfidence: 'low',
+            telemetryReason: trackTelemetry
+                ? 'Telemetry monitoring enabled, but no live signal has been received yet.'
+                : 'Telemetry monitoring disabled for this asset.',
+            operationalState: trackTelemetry
+                ? (String(enrichedSpecificationsBase.operationalState || '').trim() || 'insufficient_data')
+                : 'not_monitored',
+            operationalStateUpdatedAt: trackTelemetry
+                ? (String(enrichedSpecificationsBase.operationalStateUpdatedAt || '').trim() || new Date().toISOString())
+                : undefined,
+            lastTelemetryAt: trackTelemetry ? (enrichedSpecificationsBase.lastTelemetryAt || undefined) : undefined,
+            workingHours: Number(enrichedSpecificationsBase.workingHours || 0),
+        };
 
         const qty = parseRequestedQuantity(quantity ?? 1);
         const assetGroupId = String(customId || `ASSET-${Date.now()}`).trim();
@@ -1004,19 +2375,30 @@ app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: R
         );
         console.log(`[AssetCreateDebug] insertedRecords=${createdAssets.length} requestedQuantity=${qty}`);
 
-        for (const createdAsset of createdAssets) {
-            try {
-                const creationRefresh = await refreshAndPersistAssetLifespan(createdAsset.customId, {
-                    reason: 'asset_created',
-                    forcePersist: true,
-                });
-                if (!creationRefresh.persisted) {
-                    console.warn(`[InventoryAI] initial lifespan snapshot skipped for ${createdAsset.customId}: ${creationRefresh.skippedReason}`);
+        const enqueueResults = await Promise.all(
+            createdAssets.map(async (createdAsset) => {
+                try {
+                    await enqueueInitialAssetCreatedJobs({
+                        assetId: createdAsset.customId,
+                        trigger: 'asset_created',
+                        requestId: crypto.randomUUID(),
+                        specConfirmationReviewed: reviewedOnCreate,
+                        specConfirmationReviewedBy: reviewedBy,
+                    });
+                    return { assetId: createdAsset.customId, status: 'queued' as const };
+                } catch (error: any) {
+                    console.warn(`[InventoryAIJobs] failed to enqueue asset-created job for ${createdAsset.customId}: ${error?.message || error}`);
+                    return {
+                        assetId: createdAsset.customId,
+                        status: 'enqueue_failed' as const,
+                        error: String(error?.message || error),
+                    };
                 }
-            } catch (error: any) {
-                console.warn(`[InventoryAI] initial lifespan snapshot failed for ${createdAsset.customId}: ${error.message}`);
-            }
-        }
+            })
+        );
+
+        const queuedJobs = enqueueResults.filter((result) => result.status === 'queued').length;
+        const failedJobs = enqueueResults.length - queuedJobs;
 
         const LOW_STOCK_THRESHOLD = 5;
         if (createdAssets.length === LOW_STOCK_THRESHOLD) {
@@ -1051,7 +2433,20 @@ app.post('/api/assets', requireInventoryAdminAccess, async (req: Request, res: R
             createdCount: createdAssets.length,
             assetGroupId,
             asset: createdAssets[0],
-            assets: createdAssets
+            assets: createdAssets,
+            backgroundProcessing: {
+                status: failedJobs === 0 ? 'queued' : (queuedJobs > 0 ? 'partially_queued' : 'enqueue_failed'),
+                queuedJobs,
+                failedJobs,
+                queueJobType: 'inventory.ai.asset_created',
+                message: failedJobs === 0
+                    ? 'Assets created. AI/EOL processing is running in background.'
+                    : 'Assets created, but some background AI jobs could not be queued.',
+            },
+            specConfirmation: {
+                reviewed: reviewedOnCreate,
+                reviewedBy: reviewedOnCreate ? reviewedBy : null,
+            },
         });
 
     } catch (error: any) {
@@ -1267,6 +2662,31 @@ app.patch('/api/assets/:id/telemetry', async (req: Request, res: Response) => {
             specifications: updatedSpecifications
         });
 
+        try {
+            await persistTelemetrySample({
+                assetId: req.params.id,
+                observedAt: timestamp,
+                telemetrySource: 'inventory-backend-telemetry-endpoint',
+                rawSignals: {
+                    isOnline: Boolean(isOnline),
+                    isActive: Boolean(isActive),
+                    reportedAt: timestamp.toISOString(),
+                    workingHours: Math.round(adjustedHours),
+                },
+                derivedStatus: nextState,
+                confidence: 0.9,
+                reason: 'Telemetry patch endpoint received direct heartbeat/activity signal.',
+                activeHours: nextState === 'online_in_use' ? Math.round(adjustedHours) : null,
+                idleHours: nextState === 'online_idle' ? Math.round(adjustedHours) : null,
+                offlineHours: nextState === 'offline' ? Math.round(adjustedHours) : null,
+                utilization: null,
+                consumptionScore: null,
+                qualityImpactScore: null,
+            });
+        } catch (error: any) {
+            console.warn(`[InventoryAI] canonical telemetry sample persistence failed for ${req.params.id}: ${error.message}`);
+        }
+
         await EventBus.publish(TOPICS.ASSET_UPDATED, {
             customId: req.params.id,
             fields: ['specifications.workingHours', 'specifications.operationalState', 'specifications.lastTelemetryAt'],
@@ -1297,7 +2717,7 @@ app.patch('/api/assets/:id/telemetry', async (req: Request, res: Response) => {
             return res.status(404).json({ message: "Asset not found after telemetry update" });
         }
 
-        res.json(updatedAsset);
+        res.json(annotateAssetWithTruthfulSignals(updatedAsset));
     } catch (error: any) {
         console.error("Telemetry Update Error:", error.message);
         res.status(500).json({ message: "Telemetry update failed", error: error.message });
@@ -1366,7 +2786,7 @@ app.patch('/api/assets/:id/lifecycle-outcome', async (req: Request, res: Respons
 app.post('/api/assets/:id/lifespan-prediction', async (req: Request, res: Response) => {
     const { id } = req.params;
     const requestId = req.header('x-request-id') || crypto.randomUUID();
-    const persistSnapshot = String(req.query.persist || 'true').toLowerCase() !== 'false';
+    const persistSnapshot = String(req.query.persist || 'false').toLowerCase() === 'true';
 
     try {
         const asset = await AssetService.getAssetByCustomId(id);
@@ -1374,9 +2794,25 @@ app.post('/api/assets/:id/lifespan-prediction', async (req: Request, res: Respon
 
         const bodyBase = Number(req.body?.baseLifespanYears);
         const baseLifespanYears = Number.isFinite(bodyBase) && bodyBase > 0 ? bodyBase : 5;
+        if (!persistSnapshot) {
+            const { prediction, requestId: aiRequestId, durationMs } = await requestAssetLifespanPrediction(asset, {
+                requestId,
+                baseLifespanYears,
+            });
+            console.log(`[InventoryAI] requestId=${aiRequestId} assetId=${id} status=ok durationMs=${durationMs} persist=false`);
+            return res.json({
+                ...prediction,
+                requestId: aiRequestId,
+                observedBy: 'inventory-backend',
+                durationMs,
+                persisted: false,
+                persistSkippedReason: 'display_only_request',
+            });
+        }
+
         const refresh = await refreshAndPersistAssetLifespan(id, {
             reason: 'manual_request',
-            forcePersist: persistSnapshot,
+            forcePersist: true,
             requestId,
             baseLifespanYears,
         });
@@ -1469,7 +2905,7 @@ app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
 });
 
 // --- DELETE LOGIC ---
-app.delete('/api/assets/:id', requireInventoryAdminAccess, async (req: Request, res: Response) => {
+app.delete('/api/assets/:id', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
         console.log(`📤 DELETE /api/assets/${req.params.id} from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         const id = req.params.id;
@@ -1490,6 +2926,7 @@ const startServer = async () => {
     try {
         console.log("🔌 Connecting to RabbitMQ...");
         await EventBus.connect();
+        await InventoryAiJobQueue.connect();
         console.log("✅ [EventBus] RabbitMQ Connected Successfully!");
     } catch (err: any) {
         console.error("❌ [EventBus] Connection FAILED.");
@@ -1503,9 +2940,4 @@ const startServer = async () => {
     });
 };
 
-<<<<<<< Updated upstream
 startServer();
-=======
-startServer();
-
->>>>>>> Stashed changes

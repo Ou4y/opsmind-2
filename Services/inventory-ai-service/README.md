@@ -38,8 +38,9 @@ This starts both:
 
 - `LLM_PROVIDER` (`ollama` or `gemini`, default `ollama`)
 - `OLLAMA_BASE_URL` (default `http://host.docker.internal:11434`)
-- `OLLAMA_MODEL` (default `qwen2.5:7b`)
+- `OLLAMA_MODEL` (default `gemma3:4b`)
 - `OLLAMA_TIMEOUT_SECONDS` (default `45`)
+- `OLLAMA_TIMEOUT_MS` (optional compatibility alias used by ticket service; e.g. `45000`)
 - `SERPAPI_API_KEY` (required for live catalog lookup)
 - `SERPAPI_ENDPOINT` (default `https://serpapi.com/search.json`)
 - `GEMINI_API_KEY` (enables Gemini structured inference)
@@ -67,7 +68,7 @@ Run Ollama on your host machine:
 
 ```bash
 ollama serve
-ollama pull qwen2.5:7b
+ollama pull gemma3:4b
 ```
 
 Then start this service with:
@@ -75,7 +76,7 @@ Then start this service with:
 ```bash
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://host.docker.internal:11434
-OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_MODEL=gemma3:4b
 ```
 
 Health endpoint will show LLM state:

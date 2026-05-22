@@ -13,6 +13,25 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_ollama_timeout_seconds() -> int:
+    """Resolve timeout from either seconds or millisecond env vars.
+
+    Ticket service uses OLLAMA_TIMEOUT_MS while inventory-ai historically used
+    OLLAMA_TIMEOUT_SECONDS; support both so deployments stay compatible.
+    """
+    raw_seconds = os.getenv("OLLAMA_TIMEOUT_SECONDS")
+    if raw_seconds is not None and str(raw_seconds).strip():
+        return max(3, int(str(raw_seconds).strip()))
+
+    raw_ms = os.getenv("OLLAMA_TIMEOUT_MS")
+    if raw_ms is not None and str(raw_ms).strip():
+        timeout_ms = max(3000, int(str(raw_ms).strip()))
+        # Round up to avoid unintentionally shortening configured timeout.
+        return max(3, (timeout_ms + 999) // 1000)
+
+    return 45
+
+
 @dataclass(slots=True)
 class AppSettings:
     app_version: str = "1.1.0"
@@ -21,7 +40,7 @@ class AppSettings:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     ollama_base_url: str = "http://host.docker.internal:11434"
-    ollama_model: str = "qwen2.5:7b"
+    ollama_model: str = "gemma3:4b"
     ollama_timeout_seconds: int = 45
 
     data_dir: Path = Path("/app/data")
@@ -163,8 +182,8 @@ class AppSettings:
                 os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").strip()
                 or "http://host.docker.internal:11434"
             ),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b").strip() or "qwen2.5:7b",
-            ollama_timeout_seconds=max(3, int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))),
+            ollama_model=os.getenv("OLLAMA_MODEL", "gemma3:4b").strip() or "gemma3:4b",
+            ollama_timeout_seconds=_parse_ollama_timeout_seconds(),
             data_dir=data_dir,
             model_dir=model_dir,
             spec_feedback_path=data_dir / "spec_feedback.jsonl",

@@ -11,12 +11,18 @@ from src.models import get_store
 from src.schemas import (
     AssetLifespanRequest,
     AssetLifespanResponse,
+    EolExplanationRequest,
+    EolExplanationResponse,
     AssetSpecFeedbackRequest,
     AssetSpecFeedbackResponse,
     AssetSpecInferenceRequest,
     AssetSpecInferenceResponse,
     AssetSpecMetricsResponse,
     PredictionResponse,
+    SpecNormalizationRequest,
+    SpecNormalizationResponse,
+    SpecSanityCheckRequest,
+    SpecSanityCheckResponse,
     TicketInput,
 )
 
@@ -135,3 +141,69 @@ async def spec_inference_metrics(request: Request, variant: str | None = None) -
     except Exception as exc:
         logger.exception("Failed to compute spec inference metrics")
         raise HTTPException(status_code=500, detail=f"Spec metrics error: {exc}") from exc
+
+
+@router.post(
+    "/normalize-asset-specs",
+    response_model=SpecNormalizationResponse,
+    summary="Normalize raw asset specs text with deterministic + LLM-assisted rules",
+)
+async def normalize_asset_specs(payload: SpecNormalizationRequest, request: Request) -> SpecNormalizationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.normalize_specs(payload)
+    except Exception as exc:
+        logger.exception("Spec normalization helper failed")
+        raise HTTPException(status_code=500, detail=f"Spec normalization error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "normalize_asset_specs"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "normalize_asset_specs"},
+        )
+
+
+@router.post(
+    "/check-asset-spec-sanity",
+    response_model=SpecSanityCheckResponse,
+    summary="Run deterministic + LLM-assisted sanity checks on normalized asset specs",
+)
+async def check_asset_spec_sanity(payload: SpecSanityCheckRequest, request: Request) -> SpecSanityCheckResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.check_spec_sanity(payload)
+    except Exception as exc:
+        logger.exception("Spec sanity helper failed")
+        raise HTTPException(status_code=500, detail=f"Spec sanity error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "check_asset_spec_sanity"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "check_asset_spec_sanity"},
+        )
+
+
+@router.post(
+    "/explain-eol-assessment",
+    response_model=EolExplanationResponse,
+    summary="Generate user-friendly and technical explanations for an existing EOL assessment",
+)
+async def explain_eol_assessment(payload: EolExplanationRequest, request: Request) -> EolExplanationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.explain_eol_assessment(payload)
+    except Exception as exc:
+        logger.exception("EOL explanation helper failed")
+        raise HTTPException(status_code=500, detail=f"EOL explanation error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "explain_eol_assessment"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "explain_eol_assessment"},
+        )
