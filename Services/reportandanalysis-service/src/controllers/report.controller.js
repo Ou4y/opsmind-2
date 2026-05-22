@@ -145,22 +145,4 @@ exports.generatePDF = async (req, res) => {
 
     doc.moveDown();
 
-    doc
-      .fontSize(16)
-      .font("Helvetica-Bold")
-      .text("Technician Solution", { underline: true });
-
-    doc.moveDown();
-
-    doc
-      .font("Helvetica")
-      .fontSize(12)
-      .text(ticket.technician_solution || "No solution added");
-
-    doc.end();
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Error generating PDF" });
-  }
-};
+   doc
