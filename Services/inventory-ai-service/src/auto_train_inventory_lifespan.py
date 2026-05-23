@@ -41,6 +41,7 @@ TRAINING_COLUMNS = [
     "operational_state",
     "lifespan_years",
 ]
+OPTIONAL_COLUMNS = ["sample_weight", "label_source", "label_confidence"]
 
 
 def _download_file(url: str, destination: Path, timeout_seconds: int = 120) -> Path:
@@ -76,7 +77,10 @@ def _coerce_training_frame(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
         if column not in frame.columns:
             frame[column] = np.nan
 
-    frame = frame[TRAINING_COLUMNS].copy()
+    for column in OPTIONAL_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = np.nan
+    frame = frame[TRAINING_COLUMNS + OPTIONAL_COLUMNS].copy()
     frame["type"] = frame["type"].astype(str).str.strip().str.lower().replace({"": "unknown"})
     frame["brand"] = frame["brand"].astype(str).str.strip().str.lower().replace({"": "unknown"})
     frame["model"] = frame["model"].astype(str).str.strip().replace({"": "unknown"})
@@ -90,6 +94,9 @@ def _coerce_training_frame(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
 
     for numeric_col in ["ram_gb", "storage_gb", "working_hours", "lifespan_years"]:
         frame[numeric_col] = pd.to_numeric(frame[numeric_col], errors="coerce")
+    frame["sample_weight"] = pd.to_numeric(frame["sample_weight"], errors="coerce").fillna(1.0).clip(lower=0.05)
+    frame["label_source"] = frame["label_source"].astype(str).replace({"nan": source_label})
+    frame["label_confidence"] = frame["label_confidence"].astype(str).replace({"nan": "high"})
 
     frame = frame.dropna(subset=["lifespan_years"])
     frame = frame[frame["lifespan_years"] > 0]
@@ -275,11 +282,11 @@ def _merge_frames(frames: list[pd.DataFrame], output_csv: Path) -> pd.DataFrame:
     merged = merged.dropna(subset=["lifespan_years"])
     merged = merged[merged["lifespan_years"] > 0]
 
-    # Deduplicate exact feature-target duplicates while preserving source stats.
-    merged = merged.drop_duplicates(subset=TRAINING_COLUMNS, keep="first")
+    # Keep the highest-confidence row when exact feature-target duplicates exist.
+    merged = merged.sort_values(by=["sample_weight"], ascending=False).drop_duplicates(subset=TRAINING_COLUMNS, keep="first")
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    merged[TRAINING_COLUMNS].to_csv(output_csv, index=False)
+    merged[TRAINING_COLUMNS + ["sample_weight"]].to_csv(output_csv, index=False)
     return merged
 
 
@@ -303,6 +310,17 @@ def main() -> None:
     parser.add_argument("--skip-ai4i", action="store_true", help="Skip AI4I UCI warm-start")
     parser.add_argument("--skip-cmapss", action="store_true", help="Skip NASA C-MAPSS warm-start")
     parser.add_argument("--skip-backblaze", action="store_true", help="Skip Backblaze warm-start")
+    parser.add_argument(
+        "--include-proxy-labels",
+        action="store_true",
+        help="Include low-confidence proxy labels for active unlabeled assets during local export",
+    )
+    parser.add_argument(
+        "--proxy-weight",
+        type=float,
+        default=0.2,
+        help="Sample weight for proxy labels (default: 0.2)",
+    )
     parser.add_argument(
         "--backblaze-max-failure-rows",
         type=int,
@@ -331,6 +349,8 @@ def main() -> None:
                     database_url=args.database_url,
                     output_csv=local_training_csv,
                     candidates_csv=local_training_csv.with_name("lifespan_training_candidates.csv"),
+                    include_proxy_labels=bool(args.include_proxy_labels),
+                    proxy_weight=float(args.proxy_weight),
                 )
                 if rows > 0 and local_training_csv.exists():
                     local_df = pd.read_csv(local_training_csv)

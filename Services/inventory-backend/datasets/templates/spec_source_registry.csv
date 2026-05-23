@@ -1,0 +1,2 @@
+sourceKey,sourceType,brandMatchers,assetTypeMatchers,trustedDomains,priority,confidenceBase,trustedUrlPatterns,requiresRecencyDays
+manufacturer.dell,manufacturer,dell,*,dell.com|delltechnologies.com,100,0.92,/product|/support,3650

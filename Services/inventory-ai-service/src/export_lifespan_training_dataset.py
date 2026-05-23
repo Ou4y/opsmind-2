@@ -11,6 +11,7 @@ import argparse
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import psycopg
 
@@ -259,7 +260,88 @@ def _fetch_dataframe(database_url: str, sql: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def export_training_csv(database_url: str, output_csv: Path, candidates_csv: Path | None = None) -> tuple[int, int]:
+def _base_lifespan_by_type(asset_type: str) -> float:
+    t = str(asset_type or "").strip().lower()
+    mapping = {
+        "laptop": 5.0,
+        "desktop": 6.0,
+        "tablet": 4.0,
+        "server": 7.0,
+        "monitor": 6.0,
+        "peripheral": 4.0,
+        "printer": 6.0,
+        "scanner": 6.0,
+        "router": 6.0,
+        "switch": 7.0,
+    }
+    return mapping.get(t, 5.0)
+
+
+def _build_proxy_rows(candidates_df: pd.DataFrame, proxy_weight: float) -> pd.DataFrame:
+    if candidates_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "type",
+                "brand",
+                "model",
+                "ram_gb",
+                "storage_gb",
+                "working_hours",
+                "operational_state",
+                "lifespan_years",
+                "label_source",
+                "label_confidence",
+                "sample_weight",
+            ]
+        )
+
+    proxies = candidates_df.copy()
+    proxies["status"] = proxies["status"].astype(str).str.lower()
+    proxies = proxies[proxies["label_source"] == "unlabeled"]
+    proxies = proxies[proxies["status"].isin(["active", "assigned", "maintenance", "repair"])]
+    if proxies.empty:
+        return pd.DataFrame(columns=["type", "brand", "model", "ram_gb", "storage_gb", "working_hours", "operational_state", "lifespan_years", "label_source", "label_confidence", "sample_weight"])
+
+    now = pd.Timestamp.utcnow()
+    proxies["created_at"] = pd.to_datetime(proxies["created_at"], errors="coerce", utc=True)
+    proxies["age_years"] = ((now - proxies["created_at"]).dt.total_seconds() / 31557600.0).fillna(0).clip(lower=0)
+    proxies["working_hours"] = pd.to_numeric(proxies["working_hours"], errors="coerce").fillna(0).clip(lower=0)
+
+    base_years = proxies["type"].map(_base_lifespan_by_type).astype(float)
+    stress_penalty = np.minimum(proxies["working_hours"] / (24.0 * 365.25 * 2.0), 2.0)
+    estimated_total = (base_years - stress_penalty).clip(lower=1.0, upper=10.0)
+    proxies["lifespan_years"] = np.maximum(estimated_total, proxies["age_years"] + 0.25)
+
+    proxies["ram_gb"] = 0.0
+    proxies["storage_gb"] = 0.0
+    proxies["operational_state"] = "online_idle"
+    proxies["label_source"] = "proxy_heuristic"
+    proxies["label_confidence"] = "low"
+    proxies["sample_weight"] = max(float(proxy_weight), 0.05)
+    return proxies[
+        [
+            "type",
+            "brand",
+            "model",
+            "ram_gb",
+            "storage_gb",
+            "working_hours",
+            "operational_state",
+            "lifespan_years",
+            "label_source",
+            "label_confidence",
+            "sample_weight",
+        ]
+    ]
+
+
+def export_training_csv(
+    database_url: str,
+    output_csv: Path,
+    candidates_csv: Path | None = None,
+    include_proxy_labels: bool = False,
+    proxy_weight: float = 0.2,
+) -> tuple[int, int]:
     try:
         training_df = _fetch_dataframe(database_url, TRAINING_EXPORT_SQL)
     except Exception as exc:
@@ -269,17 +351,27 @@ def export_training_csv(database_url: str, output_csv: Path, candidates_csv: Pat
             ) from exc
         raise
     training_df = training_df.dropna(subset=["lifespan_years"])
-    training_df = training_df[training_df["lifespan_years"] > 0]
+    training_df = training_df[training_df["lifespan_years"] > 0].copy()
+    training_df["label_source"] = "db_labeled"
+    training_df["label_confidence"] = "high"
+    training_df["sample_weight"] = 1.0
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    training_df.to_csv(output_csv, index=False)
 
     candidate_count = 0
+    candidates_df = pd.DataFrame()
     if candidates_csv is not None:
         candidates_df = _fetch_dataframe(database_url, CANDIDATES_SQL)
         candidate_count = int(len(candidates_df))
         candidates_csv.parent.mkdir(parents=True, exist_ok=True)
         candidates_df.to_csv(candidates_csv, index=False)
+
+    if include_proxy_labels and not candidates_df.empty:
+        proxy_df = _build_proxy_rows(candidates_df, proxy_weight=proxy_weight)
+        if not proxy_df.empty:
+            training_df = pd.concat([training_df, proxy_df], ignore_index=True)
+
+    training_df.to_csv(output_csv, index=False)
 
     return int(len(training_df)), candidate_count
 
@@ -301,6 +393,17 @@ def main() -> None:
         default="/app/data/lifespan_training_candidates.csv",
         help="Optional CSV path for all candidate assets and label-source diagnostics",
     )
+    parser.add_argument(
+        "--include-proxy-labels",
+        action="store_true",
+        help="Generate low-confidence proxy labels for currently active unlabeled assets",
+    )
+    parser.add_argument(
+        "--proxy-weight",
+        type=float,
+        default=0.2,
+        help="Sample weight for proxy labels (default: 0.2)",
+    )
     args = parser.parse_args()
 
     if not args.database_url:
@@ -308,7 +411,13 @@ def main() -> None:
 
     output_csv = Path(args.output)
     candidates_csv = Path(args.candidates_output) if args.candidates_output else None
-    rows, candidate_rows = export_training_csv(args.database_url, output_csv, candidates_csv)
+    rows, candidate_rows = export_training_csv(
+        args.database_url,
+        output_csv,
+        candidates_csv,
+        include_proxy_labels=bool(args.include_proxy_labels),
+        proxy_weight=float(args.proxy_weight),
+    )
 
     print(f"Exported labelled rows: {rows}")
     print(f"Saved labelled training CSV: {output_csv}")

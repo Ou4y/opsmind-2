@@ -13,6 +13,28 @@ let EOL_METRICS = {};
 let selectedAssetCustomId = null;
 let currentAssets = [];
 const lifespanPredictionCache = new Map();
+const eolAssessmentCache = new Map();
+const aiJobStatusCache = new Map();
+const PAGELOAD_AI_CONCURRENCY = 4;
+let loadAssetsInFlightPromise = null;
+let specPreviewRequestNonce = 0;
+let specPreviewInFlight = false;
+let specPreviewIsWriting = false;
+let specPreviewUserIntervened = false;
+let specPreviewActiveMode = 'idle';
+let lastSpecPreviewMeta = {
+  sourceType: '',
+  evidenceStatus: '',
+  confidence: 0,
+  requiresReview: true,
+};
+let specVerificationSnapshot = {
+  pendingCount: 0,
+  metrics: null
+};
+let activeDetailsGroupName = null;
+let bulkSpecReviewContext = null;
+let bulkSpecActionInFlight = false;
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -209,13 +231,50 @@ const QUALITY_LIFESPAN_FACTORS = {
 const OPERATIONAL_STATE_RATES = {
   online_in_use: 1,
   online_idle: 0.2,
-  offline: 0
+  offline: 0,
+  not_monitored: 0,
+  insufficient_data: 0,
+  unknown: 0
 };
 
 const OPERATIONAL_STATE_LABELS = {
   online_in_use: 'Online - In use',
   online_idle: 'Online but idle',
-  offline: 'Offline'
+  offline: 'Offline',
+  not_monitored: 'Not monitored',
+  insufficient_data: 'Monitoring enabled · Waiting for signal',
+  unknown: 'Unknown'
+};
+
+const SPEC_PREVIEW_TEMPLATES = {
+  laptop: { OS: 'Unknown - verify exact installed OS', 'Processor/Chip': 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', Display: 'Unknown - verify exact model/year', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  desktop: { OS: 'Unknown - verify exact installed OS', Processor: 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', GPU: 'Unknown - verify exact configuration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  server: { OS: 'Unknown - verify exact installed OS', CPU: 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', RAID: 'Unknown - verify exact configuration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  tablet: { OS: 'Unknown - verify exact installed OS', 'Processor/Chip': 'Unknown - verify exact configuration', Memory: 'Unknown - verify exact configuration', Storage: 'Unknown - verify exact configuration', Display: 'Unknown - verify exact model/year', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  printer: { 'Print Technology': 'Unknown - verify exact model', Duplex: 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Page Count': 'Unknown - read device counter', 'Toner/Ink Type': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  scanner: { 'Scan Technology': 'Unknown - verify exact model', Resolution: 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Scan Count': 'Unknown - verify counter', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  router: { Ports: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'PoE Support': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  switch: { Ports: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'PoE Support': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  access_point: { 'WiFi Standard': 'Unknown - verify exact model', Band: 'Unknown - verify exact model', Throughput: 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  firewall: { Throughput: 'Unknown - verify exact model', 'VPN Support': 'Unknown - verify exact model', 'Firmware Version': 'Unknown - verify exact version', Ports: 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  projector: { Resolution: 'Unknown - verify exact model', Brightness: 'Unknown - verify exact model', 'Lamp Hours': 'Unknown - verify exact count', 'Input Ports': 'Unknown - verify exact ports', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  smartboard: { 'Display Size': 'Unknown - verify exact model', Resolution: 'Unknown - verify exact model', 'Touch Points': 'Unknown - verify exact model', 'Input Ports': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  camera: { Resolution: 'Unknown - verify exact model', 'Lens Type': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Storage Media': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  microphone: { Type: 'Unknown - verify exact model', 'Frequency Response': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  speaker: { 'Output Power': 'Unknown - verify exact model', Connectivity: 'Unknown - verify exact model', 'Frequency Range': 'Unknown - verify exact model', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  desk: { Material: 'Unknown - verify exact material', 'Frame Type': 'Unknown - verify exact frame type', Dimensions: 'Unknown - verify exact dimensions', Condition: 'Pending inspection', 'Inspection Date': 'Pending' },
+  chair: { Material: 'Unknown - verify exact material', 'Frame Type': 'Unknown - verify exact frame type', 'Seat Condition': 'Pending inspection', 'Back Support': 'Unknown - verify exact support type', Dimensions: 'Unknown - verify exact dimensions', 'Weight Capacity': 'Unknown - verify exact capacity', Condition: 'Pending inspection' },
+  filing_cabinet: { Material: 'Unknown - verify exact material', 'Drawer Count': 'Unknown - verify exact count', 'Lock Type': 'Unknown - verify exact type', Dimensions: 'Unknown - verify exact dimensions', Condition: 'Pending inspection' },
+  whiteboard: { 'Surface Type': 'Unknown - verify exact type', Dimensions: 'Unknown - verify exact dimensions', 'Mount Type': 'Unknown - verify exact type', Condition: 'Pending inspection' },
+  microscope: { Magnification: 'Unknown - verify exact model', 'Lighting Type': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  centrifuge: { 'Max RPM': 'Unknown - verify exact model', Capacity: 'Unknown - verify exact model', 'Rotor Type': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  oscilloscope: { Bandwidth: 'Unknown - verify exact model', Channels: 'Unknown - verify exact model', 'Sample Rate': 'Unknown - verify exact model', 'Calibration Status': 'Unknown - verify latest calibration', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  '3d_printer': { 'Build Volume': 'Unknown - verify exact model', 'Nozzle Size': 'Unknown - verify exact model', 'Supported Materials': 'Unknown - verify exact model', 'Print Hours': 'Unknown - verify current count', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  vehicle: { Odometer: 'Unknown - verify current reading', 'Engine Hours': 'Unknown - verify current reading', 'Fuel Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'VIN/Serial Number': 'Pending', Condition: 'Pending inspection' },
+  generator: { Capacity: 'Unknown - verify exact model', 'Runtime Hours': 'Unknown - verify current reading', 'Fuel Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  hvac: { Capacity: 'Unknown - verify exact model', 'Runtime Hours': 'Unknown - verify current reading', 'Refrigerant Type': 'Unknown - verify exact type', 'Service Interval': 'Unknown - verify manufacturer guideline', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  maintenance_tool: { 'Tool Type': 'Unknown - verify exact type', 'Power Source': 'Unknown - verify exact source', 'Runtime Hours': 'Unknown - verify current reading', 'Inspection Date': 'Pending', 'Serial Number': 'Pending', Condition: 'Pending inspection' },
+  default: { Condition: 'Unknown', Notes: 'Add model-specific technical details' }
 };
 
 function parseSpecsText(specsText) {
@@ -234,12 +293,144 @@ function parseSpecsText(specsText) {
   return specs;
 }
 
+function formatSpecsObject(specs = {}) {
+  const entries = Object.entries(specs || {})
+    .filter(([key, value]) => String(key || '').trim() && String(value ?? '').trim())
+    .map(([key, value]) => `${key}: ${value}`);
+  return entries.length ? entries.join('\n') : '';
+}
+
+function getSpecTemplateForType(type) {
+  const key = canonicalType(type);
+  return SPEC_PREVIEW_TEMPLATES[key] || SPEC_PREVIEW_TEMPLATES.default;
+}
+
+function isSpecsPlaceholderLike(text = '', placeholder = '') {
+  const compact = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!compact) return true;
+  const placeholderCompact = String(placeholder || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (placeholderCompact && compact === placeholderCompact) return true;
+  return compact.includes('unknown - verify');
+}
+
+function setSpecPreviewStatus(message = '', tone = 'muted') {
+  const statusEl = document.getElementById('assetSpecsAiStatus');
+  if (!statusEl) return;
+  const toneClass = tone === 'danger'
+    ? 'text-danger'
+    : tone === 'warning'
+      ? 'text-warning'
+      : tone === 'success'
+        ? 'text-success'
+        : 'text-muted';
+  statusEl.className = `form-text small ${toneClass}`;
+  statusEl.textContent = message || 'Approve/Edit before Create.';
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.min(safeLimit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const itemIndex = cursor++;
+      await worker(items[itemIndex], itemIndex);
+    }
+  });
+
+  await Promise.all(runners);
+}
+
 function getAssetSpecs(asset) {
   return (asset?.specifications && typeof asset.specifications === 'object') ? asset.specifications : {};
 }
 
+function getAssetQuantity(asset) {
+  const quantity = Number(asset?.quantity);
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function getAssetsTotalQuantity(assets = []) {
+  return assets.reduce((total, asset) => total + getAssetQuantity(asset), 0);
+}
+
+function getAssetUnitRows(assets = []) {
+  return assets.flatMap(asset => {
+    const quantity = getAssetQuantity(asset);
+    return Array.from({ length: quantity }, (_, index) => ({
+      asset,
+      unitIndex: index + 1,
+      unitCount: quantity,
+      unitLabel: quantity > 1 ? `${asset.customId} #${index + 1}` : asset.customId,
+      isVirtualUnit: quantity > 1
+    }));
+  });
+}
+
 function toBoolean(value) {
   return value === true || value === 'true' || value === 'yes' || value === '1';
+}
+
+function normalizeOperationalState(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+  if (OPERATIONAL_STATE_RATES[normalized] !== undefined) return normalized;
+  return 'unknown';
+}
+
+function getOperationalStateLabel(state) {
+  return OPERATIONAL_STATE_LABELS[state] || OPERATIONAL_STATE_LABELS.unknown;
+}
+
+function getTelemetryStatusMeta(specs = {}) {
+  const trackWorkingHours = toBoolean(specs.trackWorkingHours);
+  const hasTelemetryTimestamp = Boolean(specs.lastTelemetryAt || specs.operationalStateUpdatedAt);
+  const hasTelemetryHours = Number(specs.workingHours || 0) > 0 && String(specs.workingHoursSource || '').toLowerCase() === 'telemetry';
+  const hasTelemetry = hasTelemetryTimestamp || hasTelemetryHours;
+  const requestedState = normalizeOperationalState(specs.operationalState);
+
+  if (!trackWorkingHours && !hasTelemetry) {
+    return {
+      state: 'not_monitored',
+      confidence: 'low',
+      reason: 'Telemetry not connected',
+      hasTelemetry: false
+    };
+  }
+
+  if (trackWorkingHours && !hasTelemetry) {
+    return {
+      state: 'insufficient_data',
+      confidence: 'low',
+      reason: 'Telemetry monitoring enabled, but no live signal has been received yet.',
+      hasTelemetry: false
+    };
+  }
+
+  if (['online_in_use', 'online_idle', 'offline'].includes(requestedState)) {
+    return {
+      state: requestedState,
+      confidence: 'high',
+      reason: 'Derived from telemetry heartbeat/activity',
+      hasTelemetry: true
+    };
+  }
+
+  if (requestedState === 'not_monitored' || requestedState === 'insufficient_data') {
+    return {
+      state: requestedState,
+      confidence: 'low',
+      reason: 'Telemetry incomplete for reliable classification',
+      hasTelemetry
+    };
+  }
+
+  return {
+    state: 'unknown',
+    confidence: 'low',
+    reason: hasTelemetry ? 'Telemetry signals do not map to a supported live status' : 'Telemetry not connected',
+    hasTelemetry
+  };
 }
 
 function getSpecNumber(specs, keys, fallback = 0) {
@@ -287,8 +478,7 @@ function inferAssetQuality({ brand = '', version = '', specs = {}, type = '' } =
 }
 
 function getOperationalState(specs) {
-  const state = String(specs.operationalState || 'offline');
-  return OPERATIONAL_STATE_RATES[state] !== undefined ? state : 'offline';
+  return getTelemetryStatusMeta(specs).state;
 }
 
 function getEffectiveWorkingHours(specs) {
@@ -307,11 +497,24 @@ function getAssetProfile(asset) {
   const brand = String(specs.brand || specs.Brand || '').trim();
   const version = String(specs.version || specs.Version || specs.model || specs.Model || '').trim();
   const quality = String(specs.inferredQuality || specs.quality || inferAssetQuality({ brand, version, specs, type: asset?.type })).toLowerCase();
+  const telemetry = getTelemetryStatusMeta(specs);
   const workingHours = Math.max(0, getEffectiveWorkingHours(specs));
   const trackWorkingHours = toBoolean(specs.trackWorkingHours) && TRACKABLE_ASSET_TYPES.has(canonicalType(asset?.type));
-  const operationalState = getOperationalState(specs);
+  const operationalState = telemetry.state;
 
-  return { specs, brand, quality, version, workingHours, trackWorkingHours, operationalState };
+  return {
+    specs,
+    brand,
+    quality,
+    version,
+    workingHours,
+    trackWorkingHours,
+    operationalState,
+    telemetryStatus: telemetry.state,
+    telemetryConfidence: telemetry.confidence,
+    telemetryReason: telemetry.reason,
+    hasTelemetry: telemetry.hasTelemetry
+  };
 }
 
 function estimateSpecFactor(asset) {
@@ -379,14 +582,49 @@ function buildAssetLifespanPayload(asset, baseMetrics) {
   };
 }
 
+async function loadAssetAiJobStatuses() {
+  aiJobStatusCache.clear();
+  if (!currentAssets.length) return;
+
+  const assetIds = currentAssets
+    .map((asset) => String(asset?.customId || '').trim())
+    .filter(Boolean);
+  if (!assetIds.length) return;
+
+  try {
+    const response = await inventoryRequest(`/assets/ai-jobs/status?assetIds=${encodeURIComponent(assetIds.join(','))}`);
+    if (!response.ok) throw new Error('AI job status endpoint unavailable');
+    const payload = await response.json();
+    const summaries = (payload?.summaries && typeof payload.summaries === 'object')
+      ? payload.summaries
+      : {};
+
+    Object.entries(summaries).forEach(([assetId, summary]) => {
+      aiJobStatusCache.set(assetId, summary);
+    });
+  } catch (error) {
+    console.warn('Failed to load background AI job statuses:', error?.message || error);
+  }
+}
+
 async function loadAssetLifespanPredictions() {
   lifespanPredictionCache.clear();
   if (!currentAssets.length) return;
 
-  await Promise.all(currentAssets.map(async (asset) => {
+  await runWithConcurrency(currentAssets, PAGELOAD_AI_CONCURRENCY, async (asset) => {
+    const jobSummary = aiJobStatusCache.get(asset.customId);
+    if (jobSummary?.hasActiveJobs) {
+      const fallbackMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || { years: 5, cost: 500 };
+      const fallbackPrediction = predictAssetLifespan(asset, fallbackMetrics);
+      lifespanPredictionCache.set(asset.customId, {
+        ...fallbackPrediction,
+        source: 'background_processing'
+      });
+      return;
+    }
     const baseMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || { years: 5, cost: 500 };
     try {
-      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction`, {
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/lifespan-prediction?persist=false`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseLifespanYears: baseMetrics.years || 5 })
@@ -407,7 +645,26 @@ async function loadAssetLifespanPredictions() {
     } catch (error) {
       lifespanPredictionCache.set(asset.customId, predictAssetLifespan(asset, baseMetrics));
     }
-  }));
+  });
+}
+
+async function loadAssetEolAssessments() {
+  eolAssessmentCache.clear();
+  if (!currentAssets.length) return;
+
+  await runWithConcurrency(currentAssets, PAGELOAD_AI_CONCURRENCY, async (asset) => {
+    const jobSummary = aiJobStatusCache.get(asset.customId);
+    if (jobSummary?.hasActiveJobs) return;
+    try {
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}/eol-assessment`);
+      if (!response.ok) throw new Error('EOL assessment unavailable');
+      const payload = await response.json();
+      eolAssessmentCache.set(asset.customId, payload);
+    } catch (error) {
+      // Keep graceful fallback to client-side estimation when backend assessment fails.
+      console.warn(`EOL assessment fetch failed for ${asset.customId}:`, error?.message || error);
+    }
+  });
 }
 
 function showInventoryInsight(options = {}) {
@@ -537,27 +794,65 @@ document.addEventListener('DOMContentLoaded', () => {
   const form = document.getElementById('addAssetForm');
   if (form) form.addEventListener('submit', handleAddAsset);
 
-  const transferForm = document.getElementById('transferAssetForm');
-  if (transferForm) transferForm.addEventListener('submit', handleTransferAsset);
+  const transferForm = document.getElementById('transferForm');
+  if (transferForm) {
+    transferForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      window.submitTransfer();
+    });
+  }
 
   const exportBtn = document.getElementById('exportPdfBtn');
   if (exportBtn) exportBtn.addEventListener('click', exportAssetsToDetailedPDF);
+  const specRefreshBtn = document.getElementById('specVerificationRefreshBtn');
+  if (specRefreshBtn) specRefreshBtn.addEventListener('click', refreshSpecVerificationSnapshot);
+
+  const specApproveBtn = document.getElementById('specApproveBtn');
+  const specCorrectBtn = document.getElementById('specCorrectBtn');
+  const specRejectBtn = document.getElementById('specRejectBtn');
+  const bulkSpecApproveBtn = document.getElementById('bulkSpecApproveBtn');
+  const bulkSpecCorrectBtn = document.getElementById('bulkSpecCorrectBtn');
+  const bulkSpecRejectBtn = document.getElementById('bulkSpecRejectBtn');
+  if (specApproveBtn) specApproveBtn.addEventListener('click', () => submitSpecVerificationAction('approve'));
+  if (specCorrectBtn) specCorrectBtn.addEventListener('click', () => submitSpecVerificationAction('correct'));
+  if (specRejectBtn) specRejectBtn.addEventListener('click', () => submitSpecVerificationAction('reject'));
+  if (bulkSpecApproveBtn) bulkSpecApproveBtn.addEventListener('click', () => submitBulkSpecVerificationAction('approve'));
+  if (bulkSpecCorrectBtn) bulkSpecCorrectBtn.addEventListener('click', () => submitBulkSpecVerificationAction('correct'));
+  if (bulkSpecRejectBtn) bulkSpecRejectBtn.addEventListener('click', () => submitBulkSpecVerificationAction('reject'));
 
   const locSelect = document.getElementById('assetLocation');
   const deptSelect = document.getElementById('assetDepartment');
   const assetTypeSelect = document.getElementById('assetType');
   const brandInput = document.getElementById('assetBrand');
   const versionInput = document.getElementById('assetVersion');
+  const nameInput = document.getElementById('assetName');
   const specsInput = document.getElementById('assetSpecs');
+  const generateSpecsBtn = document.getElementById('assetGenerateSpecsBtn');
+  const searchTrustedSourcesBtn = document.getElementById('assetSearchTrustedSourcesBtn');
   if (locSelect) locSelect.value = 'Central Warehouse';
   if (deptSelect) deptSelect.value = 'Unassigned';
   if (assetTypeSelect) assetTypeSelect.addEventListener('change', () => {
+    invalidateSpecPreviewRequest();
     updateWorkingHoursAvailability();
+    applyAssetTypeSpecTemplate();
     updateInferredQualityPreview();
   });
-  [brandInput, versionInput, specsInput].forEach(input => {
+  [brandInput, versionInput, nameInput, specsInput].forEach(input => {
     if (input) input.addEventListener('input', updateInferredQualityPreview);
   });
+  [brandInput, versionInput, nameInput].forEach(input => {
+    if (input) input.addEventListener('input', invalidateSpecPreviewRequest);
+  });
+  if (specsInput) {
+    specsInput.addEventListener('input', () => {
+      if (specPreviewInFlight || specPreviewIsWriting) {
+        specPreviewUserIntervened = true;
+        invalidateSpecPreviewRequest();
+      }
+    });
+  }
+  if (generateSpecsBtn) generateSpecsBtn.addEventListener('click', handleGenerateSpecsPreview);
+  if (searchTrustedSourcesBtn) searchTrustedSourcesBtn.addEventListener('click', handleSearchTrustedSourcesPreview);
 
   const buildingFilter = document.getElementById('filterBuilding');
   const deptFilter = document.getElementById('filterDept');
@@ -568,7 +863,18 @@ document.addEventListener('DOMContentLoaded', () => {
   if (typeFilter) typeFilter.addEventListener('change', syncFilters);
 
   updateWorkingHoursAvailability();
+  applyAssetTypeSpecTemplate();
+  updateSpecPreviewButtonState();
+  setSpecPreviewStatus('Approve/Edit before Create.', 'muted');
   updateInferredQualityPreview();
+
+  const detailsModalElement = document.getElementById('detailsModal');
+  if (detailsModalElement) {
+    detailsModalElement.addEventListener('hidden.bs.modal', () => {
+      activeDetailsGroupName = null;
+      bulkSpecReviewContext = null;
+    });
+  }
 });
 
 async function initializePage() {
@@ -597,24 +903,38 @@ async function loadConfig() {
 }
 
 async function loadAssets() {
-  try {
-    const response = await inventoryRequest('/assets');
-    if (!response.ok) throw new Error('Failed to fetch assets');
+  if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
 
-    const assets = await response.json();
-    currentAssets = assets; 
-    await loadAssetLifespanPredictions();
+  loadAssetsInFlightPromise = (async () => {
+    try {
+      const response = await inventoryRequest('/assets');
+      if (!response.ok) throw new Error('Failed to fetch assets');
 
-    populateFilters();
-    renderTable();
-    checkGlobalEOLAlerts(); 
+      const assets = await response.json();
+      console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
+      currentAssets = assets;
+      await loadAssetAiJobStatuses();
+      await loadAssetLifespanPredictions();
+      await loadAssetEolAssessments();
 
-  } catch (error) {
-    console.error('Error:', error);
-    const tableBody = document.getElementById('inventoryTableBody');
-    if (tableBody) {
+      populateFilters();
+      renderTable();
+      updateDeleteAllAssetsButton();
+      checkGlobalEOLAlerts();
+      await refreshSpecVerificationSnapshot();
+    } catch (error) {
+      console.error('Error:', error);
+      const tableBody = document.getElementById('inventoryTableBody');
+      if (tableBody) {
         tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-4">Error loading assets. Check port 5000.</td></tr>`;
+      }
     }
+  })();
+
+  try {
+    await loadAssetsInFlightPromise;
+  } finally {
+    loadAssetsInFlightPromise = null;
   }
 }
 
@@ -624,11 +944,18 @@ function getEOLDetails(asset) {
   const lifecycle = getLifecycleSnapshot(asset);
   const startDate = lifecycle.commissionedAt || lifecycle.purchaseDate || toValidDate(asset.createdAt) || now;
   const outcomeDate = lifecycle.replacementDate || lifecycle.retiredAt || lifecycle.failureDate;
+  const backendAssessment = eolAssessmentCache.get(asset.customId) || null;
+  const jobSummary = aiJobStatusCache.get(asset.customId) || null;
+  const backgroundProcessing = Boolean(jobSummary?.hasActiveJobs);
 
   const defaultMetrics = { years: 5, cost: 500 };
   const baseMetrics = EOL_METRICS[canonicalType(asset.type)] || EOL_METRICS.default || defaultMetrics;
   const prediction = lifespanPredictionCache.get(asset.customId) || predictAssetLifespan(asset, baseMetrics);
-  const predictedYears = lifecycle.actualLifespanYears || prediction.years || baseMetrics.years || defaultMetrics.years;
+  const predictedYears = lifecycle.actualLifespanYears
+    || Number(backendAssessment?.predictedLifespanYears || 0)
+    || prediction.years
+    || baseMetrics.years
+    || defaultMetrics.years;
   const metrics = {
     ...baseMetrics,
     years: Math.max(0.5, Number(predictedYears) || defaultMetrics.years),
@@ -636,8 +963,11 @@ function getEOLDetails(asset) {
     prediction
   };
 
-  const expiryDate = outcomeDate ? new Date(outcomeDate) : new Date(startDate);
-  if (!outcomeDate) expiryDate.setDate(expiryDate.getDate() + Math.round(metrics.years * 365));
+  const backendEolDate = toValidDate(backendAssessment?.predictedEolDate);
+  const expiryDate = outcomeDate
+    ? new Date(outcomeDate)
+    : (backendEolDate ? new Date(backendEolDate) : new Date(startDate));
+  if (!outcomeDate && !backendEolDate) expiryDate.setDate(expiryDate.getDate() + Math.round(metrics.years * 365));
 
   const msRemaining = expiryDate - now;
   const daysRemaining = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
@@ -646,46 +976,177 @@ function getEOLDetails(asset) {
 
   let remainingText = '';
   let statusClass = 'bg-success';
+  let confidence = Number(backendAssessment?.confidence ?? NaN);
+  let reason = String(backendAssessment?.reason || '');
+  let eolStatus = String(backendAssessment?.status || '').toLowerCase();
 
-  if (closedOutcome && outcomeDate) {
-    remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+  if (!backendAssessment && backgroundProcessing) {
+    remainingText = 'Processing';
     statusClass = 'bg-secondary';
-  } else if (daysRemaining < 0) {
-    remainingText = `Expired ${Math.abs(daysRemaining)} days ago`;
-    statusClass = 'bg-danger';
-  } else if (daysRemaining <= 180) {
-    remainingText = `⚠️ ${daysRemaining} days left`;
-    statusClass = 'bg-warning text-dark';
-  } else if (daysRemaining < 365) {
-    const months = Math.floor(daysRemaining / 30);
-    remainingText = `${months} month${months > 1 ? 's' : ''} left`;
-    statusClass = 'bg-info text-dark';
+    eolStatus = 'processing';
+    reason = 'AI/EOL background processing is in progress.';
+  } else if (backendAssessment) {
+    const monthsRemaining = Number(backendAssessment.monthsRemaining);
+    if (closedOutcome && outcomeDate) {
+      remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+      statusClass = 'bg-secondary';
+    } else if (eolStatus === 'overdue') {
+      const overdueMonths = Number.isFinite(monthsRemaining) ? Math.abs(monthsRemaining).toFixed(1) : '0';
+      remainingText = `Overdue by ${overdueMonths} month(s)`;
+      statusClass = 'bg-danger';
+    } else if (eolStatus === 'due_soon') {
+      const soonMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `⚠️ ${soonMonths} month(s) left`;
+      statusClass = 'bg-warning text-dark';
+    } else if (eolStatus === 'watch') {
+      const watchMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `Watch window: ${watchMonths} month(s) left`;
+      statusClass = 'bg-info text-dark';
+    } else if (eolStatus === 'healthy') {
+      const healthyMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
+      remainingText = `Healthy: ${healthyMonths} month(s) left`;
+      statusClass = 'bg-success';
+    } else if (eolStatus === 'insufficient_data') {
+      remainingText = 'Insufficient data';
+      statusClass = 'bg-secondary';
+    } else {
+      remainingText = 'Unknown (low confidence)';
+      statusClass = 'bg-secondary';
+    }
   } else {
-    const years = Math.floor(daysRemaining / 365);
-    const months = Math.floor((daysRemaining % 365) / 30);
-    remainingText = `${years}y ${months}m left`;
-    statusClass = 'bg-success';
+    if (closedOutcome && outcomeDate) {
+      remainingText = `${capitalize(lifecycle.finalOutcome || 'retired')} on ${outcomeDate.toLocaleDateString()}`;
+      statusClass = 'bg-secondary';
+    } else if (daysRemaining < 0) {
+      remainingText = `Expired ${Math.abs(daysRemaining)} days ago`;
+      statusClass = 'bg-danger';
+    } else if (daysRemaining <= 180) {
+      remainingText = `⚠️ ${daysRemaining} days left`;
+      statusClass = 'bg-warning text-dark';
+    } else if (daysRemaining < 365) {
+      const months = Math.floor(daysRemaining / 30);
+      remainingText = `${months} month${months > 1 ? 's' : ''} left`;
+      statusClass = 'bg-info text-dark';
+    } else {
+      const years = Math.floor(daysRemaining / 365);
+      const months = Math.floor((daysRemaining % 365) / 30);
+      remainingText = `${years}y ${months}m left`;
+      statusClass = 'bg-success';
+    }
+
+    if (!closedOutcome && failureRisk >= 0.9) {
+      statusClass = 'bg-danger';
+      remainingText = `High failure risk (${Math.round(failureRisk * 100)}%)`;
+    } else if (!closedOutcome && failureRisk >= 0.75 && daysRemaining > 180) {
+      statusClass = 'bg-warning text-dark';
+      remainingText = `Elevated risk (${Math.round(failureRisk * 100)}%)`;
+    }
   }
 
-  if (!closedOutcome && failureRisk >= 0.9) {
-    statusClass = 'bg-danger';
-    remainingText = `High failure risk (${Math.round(failureRisk * 100)}%)`;
-  } else if (!closedOutcome && failureRisk >= 0.75 && daysRemaining > 180) {
-    statusClass = 'bg-warning text-dark';
-    remainingText = `Elevated risk (${Math.round(failureRisk * 100)}%)`;
-  }
+  const lowConfidence = Number.isFinite(confidence) ? confidence < 0.6 : true;
+  const procurementRecommended = Boolean(backendAssessment?.procurementRecommended) && !lowConfidence;
+  const shortAction = backgroundProcessing
+    ? 'Waiting for AI pipeline'
+    : procurementRecommended
+      ? 'Plan procurement'
+      : lowConfidence
+        ? 'Manual review recommended'
+        : 'Monitoring';
+  const whyDetails = {
+    reason: reason || 'No detailed explanation available.',
+    predictionSource: String(backendAssessment?.predictionSource || 'frontend_estimate'),
+    telemetryStatus: String(backendAssessment?.telemetryStatus || getAssetProfile(asset).telemetryStatus || 'unknown'),
+    specEvidenceStatus: String(backendAssessment?.specEvidenceStatus || getAssetSpecs(asset).aiSpecEvidenceStatus || 'insufficient_source_evidence'),
+    modelVersion: String(getAssetSpecs(asset).lifespanModelVersion || ''),
+    failureRisk: Number(failureRisk || 0),
+    aiLifespanYears: Number(metrics.years || 0),
+  };
 
-  return { remainingText, statusClass, daysRemaining, metrics, expiryDate, failureRisk, isClosedLifecycle: closedOutcome };
+  return {
+    remainingText,
+    statusClass,
+    daysRemaining,
+    metrics,
+    expiryDate,
+    failureRisk,
+    isClosedLifecycle: closedOutcome,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    reason: reason || '',
+    eolStatus: eolStatus || 'unknown',
+    procurementRecommended,
+    predictionSource: String(backendAssessment?.predictionSource || 'frontend_estimate'),
+    evidenceLevel: String(backendAssessment?.evidenceLevel || 'low'),
+    lowConfidence,
+    backgroundProcessing,
+    shortAction,
+    whyDetails,
+  };
 }
+
+window.showEolWhy = async function showEolWhy(assetId) {
+  const asset = currentAssets.find((entry) => String(entry.customId) === String(assetId));
+  if (!asset) {
+    showMessage('Asset not found for EOL details.', 'warning');
+    return;
+  }
+
+  const eol = getEOLDetails(asset);
+  const details = eol.whyDetails || {};
+  const reason = String(details.reason || 'No detailed explanation available.');
+  let message = [
+    `Status: ${eol.remainingText}`,
+    `Confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'}`,
+    `AI Lifespan: ${Number.isFinite(Number(details.aiLifespanYears)) ? `${details.aiLifespanYears} years` : 'N/A'}`,
+    `Failure Risk: ${Math.round((Number(details.failureRisk || 0) || 0) * 100)}%`,
+    `Telemetry: ${String(details.telemetryStatus || 'unknown')}`,
+    `Spec Evidence: ${String(details.specEvidenceStatus || 'insufficient_source_evidence')}`,
+    details.modelVersion ? `Model Version: ${details.modelVersion}` : '',
+    `Reason: ${reason}`,
+  ].filter(Boolean).join(' | ');
+
+  try {
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(assetId)}/eol-explanation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        telemetryStatus: details.telemetryStatus || 'unknown',
+        specEvidenceStatus: details.specEvidenceStatus || 'insufficient_source_evidence',
+        confidence: eol.confidence,
+        predictedLifespanYears: details.aiLifespanYears,
+        procurementSuitable: eol.procurementRecommended,
+      }),
+    });
+    if (response.ok) {
+      const explanation = await response.json();
+      const shortUser = String(explanation.shortUserExplanation || '').trim();
+      const technical = String(explanation.technicalExplanation || '').trim();
+      if (shortUser || technical) {
+        message = [shortUser, technical].filter(Boolean).join(' | ');
+      }
+    }
+  } catch (_error) {
+    // Keep deterministic fallback message when helper is unavailable.
+  }
+
+  await showInventoryInsight({
+    title: 'EOL Why',
+    message,
+    type: eol.lowConfidence ? 'warning' : 'info',
+    confirmText: 'Close',
+  });
+};
 
 function checkGlobalEOLAlerts() {
   const activeAssets = currentAssets.filter((asset) => !getEOLDetails(asset).isClosedLifecycle);
   const expiringCount = activeAssets.filter(a => {
     const eol = getEOLDetails(a);
-    return eol.daysRemaining >= 0 && eol.daysRemaining <= 180;
+    return !eol.lowConfidence && eol.daysRemaining >= 0 && eol.daysRemaining <= 180;
   }).length;
 
-  const expiredCount = activeAssets.filter(a => getEOLDetails(a).daysRemaining < 0).length;
+  const expiredCount = activeAssets.filter(a => {
+    const eol = getEOLDetails(a);
+    return !eol.lowConfidence && eol.daysRemaining < 0;
+  }).length;
   const banner = document.getElementById('eolAlertBanner');
   
   if (banner && (expiringCount > 0 || expiredCount > 0)) {
@@ -701,6 +1162,490 @@ function checkGlobalEOLAlerts() {
       banner.classList.remove('d-none');
   } else if (banner) {
       banner.classList.add('d-none');
+  }
+}
+
+function getSpecVerificationStatus(asset) {
+  const specs = getAssetSpecs(asset);
+  const explicitStatus = String(
+    specs.specVerificationStatus ||
+    specs.spec_status ||
+    specs?.specVerification?.status ||
+    ''
+  ).trim().toLowerCase();
+
+  if (explicitStatus) return explicitStatus;
+
+  const aiDetectedSpecs = (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object')
+    ? specs.aiDetectedSpecs
+    : {};
+  const hasAIDetectedSpecs = Object.keys(aiDetectedSpecs).length > 0;
+  if (!hasAIDetectedSpecs) return 'unchecked';
+
+  const confidence = Number(specs.aiSpecConfidence);
+  const lowConfidence = Number.isFinite(confidence) ? confidence < 0.85 : false;
+  const lookupMode = String(specs.aiSpecLookupMode || '').trim().toLowerCase();
+  const evidenceStatus = String(specs.aiSpecEvidenceStatus || '').trim().toLowerCase();
+  const weakEvidence = evidenceStatus === 'insufficient_source_evidence' || evidenceStatus === 'llm_or_heuristic_only';
+  const weakLookup = (
+    lookupMode.includes('heuristic')
+    || lookupMode.includes('fallback')
+    || lookupMode.includes('low_confidence')
+    || lookupMode.includes('llm')
+    || lookupMode.includes('no_source')
+  );
+
+  if (lowConfidence || weakLookup || weakEvidence) return 'pending';
+  return 'verified';
+}
+
+function getSpecVerificationBadge(status) {
+  if (status === 'pending') return '<span class="badge bg-warning text-dark">Spec Review Pending</span>';
+  if (status === 'corrected') return '<span class="badge bg-info text-dark">Spec Corrected</span>';
+  if (status === 'verified') return '<span class="badge bg-success">Spec Verified</span>';
+  if (status === 'rejected') return '<span class="badge bg-secondary">Spec Rejected</span>';
+  return '<span class="badge bg-light text-dark border">Spec Unchecked</span>';
+}
+
+function shouldShowSpecReviewButton(status) {
+  return status === 'pending' || status === 'unchecked';
+}
+
+function getPendingSpecReviewAssetsInGroup(groupAssets = []) {
+  return groupAssets.filter((asset) => {
+    const status = getSpecVerificationStatus(asset);
+    return status === 'pending' || status === 'unchecked';
+  });
+}
+
+function getAssetReviewSeedSpecs(asset) {
+  const specs = getAssetSpecs(asset);
+  if (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object' && Object.keys(specs.aiDetectedSpecs).length) {
+    return specs.aiDetectedSpecs;
+  }
+  return extractUserFacingSpecs(asset);
+}
+
+function extractUserFacingSpecs(asset) {
+  const specs = getAssetSpecs(asset);
+  const hiddenKeys = new Set([
+    'aidetectedspecs',
+    'aispecfieldconfidence',
+    'aispecconfidence',
+    'aispecsource',
+    'aispeclookupmode',
+    'aispecsourceurls',
+    'aispecruleversion',
+    'aispecvariant',
+    'aispecevidencestatus',
+    'aispecevidencereason',
+    'aispecdetectedat',
+    'specverificationstatus',
+    'specverificationupdatedat',
+    'specverificationreviewedby',
+    'specverificationreviewedat',
+    'specverificationaction',
+    'specverificationcorrections',
+    'telemetrystatus',
+    'telemetryconfidence',
+    'telemetryreason',
+    'trackworkinghours',
+    'operationalstate',
+    'operationalstateupdatedat',
+    'workinghours',
+    'workinghourssource',
+  ]);
+  const filtered = {};
+  Object.entries(specs || {}).forEach(([key, value]) => {
+    const normalized = normalizeValue(key);
+    if (!key || hiddenKeys.has(normalized)) return;
+    const safeValue = String(value ?? '').trim();
+    if (!safeValue) return;
+    filtered[key] = safeValue;
+  });
+  return filtered;
+}
+
+function getSpecsSignature(specs = {}) {
+  const normalizedEntries = Object.entries(specs || {})
+    .map(([key, value]) => [String(key || '').trim().toLowerCase(), String(value || '').trim()])
+    .filter(([key, value]) => key && value)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return JSON.stringify(normalizedEntries);
+}
+
+function buildBulkSpecReviewContext(groupName) {
+  const groupAssets = currentAssets.filter((asset) => asset.name === groupName);
+  const pendingAssets = getPendingSpecReviewAssetsInGroup(groupAssets);
+  const pendingUnits = pendingAssets.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
+
+  const specBuckets = new Map();
+  pendingAssets.forEach((asset) => {
+    const specs = getAssetReviewSeedSpecs(asset);
+    const signature = getSpecsSignature(specs);
+    if (!specBuckets.has(signature)) {
+      specBuckets.set(signature, { specs, assets: [] });
+    }
+    specBuckets.get(signature).assets.push(asset);
+  });
+
+  let dominantBucket = null;
+  specBuckets.forEach((bucket) => {
+    if (!dominantBucket || bucket.assets.length > dominantBucket.assets.length) dominantBucket = bucket;
+  });
+
+  const groupType = groupAssets.length ? formatType(groupAssets[0].type) : 'Unknown';
+  return {
+    groupName,
+    groupType,
+    groupAssets,
+    pendingAssets,
+    pendingUnits,
+    specBuckets,
+    dominantBucket,
+    specsDiffer: specBuckets.size > 1,
+    expectedGroupKey: `${normalizeValue(groupName)}::${normalizeValue(groupType)}`,
+  };
+}
+
+function setBulkSpecActionButtonsDisabled(disabled) {
+  ['bulkSpecApproveBtn', 'bulkSpecCorrectBtn', 'bulkSpecRejectBtn'].forEach((id) => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = Boolean(disabled);
+  });
+}
+
+function updateSpecVerificationSnapshotFromLocalAssets() {
+  const pendingCount = currentAssets.reduce((count, asset) => {
+    return count + (getSpecVerificationStatus(asset) === 'pending' ? getAssetQuantity(asset) : 0);
+  }, 0);
+  specVerificationSnapshot.pendingCount = pendingCount;
+
+  const badgeEl = document.getElementById('specVerificationPendingBadge');
+  if (badgeEl) {
+    badgeEl.className = `badge ${pendingCount > 0 ? 'bg-warning text-dark' : 'bg-success'}`;
+    badgeEl.textContent = `Pending: ${pendingCount}`;
+  }
+}
+
+function upsertAssetInLocalState(updatedAsset) {
+  if (!updatedAsset || !updatedAsset.customId) return null;
+  const index = currentAssets.findIndex((asset) => asset.customId === updatedAsset.customId);
+  if (index < 0) return null;
+  currentAssets[index] = {
+    ...currentAssets[index],
+    ...updatedAsset,
+    specifications: (updatedAsset.specifications && typeof updatedAsset.specifications === 'object')
+      ? updatedAsset.specifications
+      : currentAssets[index].specifications
+  };
+  return currentAssets[index];
+}
+
+function rerenderOpenDetailsModalIfNeeded() {
+  const detailsModalEl = document.getElementById('detailsModal');
+  if (!detailsModalEl || !detailsModalEl.classList.contains('show')) return;
+  if (!activeDetailsGroupName) return;
+
+  const hasGroupAssets = currentAssets.some((asset) => asset.name === activeDetailsGroupName);
+  if (!hasGroupAssets) return;
+  window.viewAssetDetails(activeDetailsGroupName);
+}
+
+async function refreshDerivedStateForAssets(assetIds = []) {
+  const uniqueIds = Array.from(new Set(
+    (assetIds || [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
+  ));
+  if (!uniqueIds.length) return;
+
+  await runWithConcurrency(uniqueIds, 3, async (assetId) => {
+    try {
+      const [jobRes, eolRes] = await Promise.all([
+        inventoryRequest(`/assets/${encodeURIComponent(assetId)}/ai-jobs`),
+        inventoryRequest(`/assets/${encodeURIComponent(assetId)}/eol-assessment`)
+      ]);
+
+      if (jobRes.ok) {
+        const jobPayload = await jobRes.json();
+        aiJobStatusCache.set(assetId, jobPayload);
+      }
+      if (eolRes.ok) {
+        const eolPayload = await eolRes.json();
+        eolAssessmentCache.set(assetId, eolPayload);
+      }
+    } catch (error) {
+      console.warn(`Failed to refresh derived AI state for ${assetId}:`, error?.message || error);
+    }
+  });
+
+  renderTable();
+  rerenderOpenDetailsModalIfNeeded();
+  checkGlobalEOLAlerts();
+}
+
+async function refreshSingleAssetDerivedState(assetId) {
+  if (!assetId) return;
+  await refreshDerivedStateForAssets([assetId]);
+}
+
+async function refreshSpecVerificationSnapshot() {
+  const summaryEl = document.getElementById('specVerificationSummary');
+  const badgeEl = document.getElementById('specVerificationPendingBadge');
+  try {
+    const [pendingRes, metricsRes] = await Promise.all([
+      fetch(`${API_URL}/assets/spec-verification/pending`),
+      fetch(`${API_URL}/assets/spec-verification/metrics`)
+    ]);
+
+    const pendingPayload = pendingRes.ok ? await pendingRes.json() : { count: 0, assets: [] };
+    const metricsPayload = metricsRes.ok ? await metricsRes.json() : null;
+
+    specVerificationSnapshot = {
+      pendingCount: Number(pendingPayload.count || 0),
+      metrics: metricsPayload
+    };
+
+    if (badgeEl) {
+      badgeEl.className = `badge ${specVerificationSnapshot.pendingCount > 0 ? 'bg-warning text-dark' : 'bg-success'}`;
+      badgeEl.textContent = `Pending: ${specVerificationSnapshot.pendingCount}`;
+    }
+
+    if (summaryEl) {
+      const evaluated = Number(metricsPayload?.evaluated_records || 0);
+      const ramPrecision = Number(metricsPayload?.precision_by_field?.RAM || 0);
+      summaryEl.textContent = `Reviewed records: ${evaluated}. RAM precision: ${(ramPrecision * 100).toFixed(0)}%.`;
+    }
+  } catch (error) {
+    console.error('Failed to refresh spec verification snapshot', error);
+    if (summaryEl) summaryEl.textContent = 'Could not load verification queue/metrics.';
+    if (badgeEl) {
+      badgeEl.className = 'badge bg-secondary';
+      badgeEl.textContent = 'Pending: --';
+    }
+  }
+}
+
+window.openSpecVerificationModal = (customId) => {
+  const asset = currentAssets.find(a => a.customId === customId);
+  if (!asset) {
+    showMessage('Asset not found.', 'error');
+    return;
+  }
+  const specs = getAssetSpecs(asset);
+  const predicted = (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object') ? specs.aiDetectedSpecs : {};
+  const correctedSeed = Object.keys(predicted).length ? predicted : specs;
+
+  const assetIdInput = document.getElementById('specVerificationAssetId');
+  const assetLabel = document.getElementById('specVerificationAssetLabel');
+  const predictedBox = document.getElementById('specVerificationPredicted');
+  const correctedBox = document.getElementById('specVerificationCorrected');
+  const meta = document.getElementById('specVerificationMeta');
+
+  if (assetIdInput) assetIdInput.value = customId;
+  if (assetLabel) assetLabel.textContent = `${asset.name || 'Asset'} (${customId})`;
+  if (predictedBox) predictedBox.value = formatSpecsObject(predicted) || 'No AI predicted specs stored.';
+  if (correctedBox) correctedBox.value = formatSpecsObject(correctedSeed);
+  if (meta) {
+    const conf = Number(specs.aiSpecConfidence || 0);
+    const source = String(specs.aiSpecSource || 'unknown');
+    const mode = String(specs.aiSpecLookupMode || 'unknown');
+    const evidenceReason = String(specs.aiSpecEvidenceReason || '').trim();
+    meta.textContent = evidenceReason
+      ? `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode} | ${evidenceReason}`
+      : `Confidence ${(conf * 100).toFixed(1)}% | Source: ${source} | Mode: ${mode}`;
+  }
+
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('specVerificationModal'));
+  modal.show();
+};
+
+window.openBulkSpecVerificationModal = () => {
+  if (!activeDetailsGroupName) {
+    showMessage('Open a group first to review pending specs.', 'warning');
+    return;
+  }
+
+  const context = buildBulkSpecReviewContext(activeDetailsGroupName);
+  if (!context.pendingAssets.length) {
+    showMessage('No pending spec-review assets in this group.', 'info');
+    return;
+  }
+  bulkSpecReviewContext = context;
+
+  const groupLabel = document.getElementById('bulkSpecVerificationGroupLabel');
+  const pendingCount = document.getElementById('bulkSpecVerificationPendingCount');
+  const predictedBox = document.getElementById('bulkSpecVerificationPredicted');
+  const correctedBox = document.getElementById('bulkSpecVerificationCorrected');
+  const warningBox = document.getElementById('bulkSpecVerificationWarning');
+
+  const sharedSpecs = context.dominantBucket?.specs || {};
+  if (groupLabel) groupLabel.textContent = `${context.groupName} (${context.groupType})`;
+  if (pendingCount) pendingCount.textContent = `${context.pendingUnits} unit(s) across ${context.pendingAssets.length} record(s)`;
+  if (predictedBox) {
+    predictedBox.value = formatSpecsObject(sharedSpecs) || 'No shared AI-predicted specs found.';
+  }
+  if (correctedBox) {
+    correctedBox.value = formatSpecsObject(sharedSpecs);
+  }
+  if (warningBox) {
+    if (context.specsDiffer) {
+      warningBox.classList.remove('d-none');
+      warningBox.textContent = 'Pending assets have different predicted specs. Review carefully before applying one correction to all.';
+    } else {
+      warningBox.classList.add('d-none');
+      warningBox.textContent = '';
+    }
+  }
+
+  setBulkSpecActionButtonsDisabled(false);
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('bulkSpecVerificationModal'));
+  modal.show();
+};
+
+async function submitBulkSpecVerificationAction(action) {
+  if (bulkSpecActionInFlight) return;
+  if (!bulkSpecReviewContext || !bulkSpecReviewContext.pendingAssets?.length) {
+    showMessage('No pending assets selected for bulk review.', 'warning');
+    return;
+  }
+
+  const correctedText = document.getElementById('bulkSpecVerificationCorrected')?.value || '';
+  const correctedSpecifications = parseSpecsText(correctedText);
+  if (action === 'correct' && !Object.keys(correctedSpecifications).length) {
+    showMessage('Please provide corrected specifications before choosing Correct All.', 'warning');
+    return;
+  }
+
+  if (bulkSpecReviewContext.specsDiffer && (action === 'approve' || action === 'correct')) {
+    const confirmMixed = await confirmInventoryAction({
+      title: 'Mixed Predicted Specs',
+      message: 'Pending assets in this group do not share identical predicted specs. Apply this bulk action anyway?',
+      confirmText: 'Apply to All Pending',
+      cancelText: 'Cancel',
+      confirmClass: 'inventory-insight-warning'
+    });
+    if (!confirmMixed) return;
+  }
+
+  bulkSpecActionInFlight = true;
+  setBulkSpecActionButtonsDisabled(true);
+
+  try {
+    const response = await fetch(`${API_URL}/assets/spec-verification/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        assetIds: bulkSpecReviewContext.pendingAssets.map((asset) => asset.customId),
+        action,
+        correctedSpecifications: action === 'correct' ? correctedSpecifications : {},
+        expectedGroupKey: bulkSpecReviewContext.expectedGroupKey,
+        reviewer: 'inventory-admin-ui-bulk'
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.message || 'Bulk spec verification failed.');
+    }
+
+    const updatedAssets = Array.isArray(payload.updatedAssets) ? payload.updatedAssets : [];
+    updatedAssets.forEach((entry) => {
+      const updatedAsset = entry?.asset || entry;
+      upsertAssetInLocalState(updatedAsset);
+    });
+
+    updateSpecVerificationSnapshotFromLocalAssets();
+    renderTable();
+    rerenderOpenDetailsModalIfNeeded();
+    checkGlobalEOLAlerts();
+    refreshSpecVerificationSnapshot().catch(() => {});
+
+    const updatedIds = updatedAssets
+      .map((entry) => String(entry?.assetId || entry?.customId || entry?.asset?.customId || '').trim())
+      .filter(Boolean);
+    if (updatedIds.length) {
+      refreshDerivedStateForAssets(updatedIds).catch(() => {});
+    }
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('bulkSpecVerificationModal'));
+    if (modal) modal.hide();
+
+    const updatedCount = Number(payload.updatedCount || updatedAssets.length || 0);
+    const skippedCount = Number(payload.skippedCount || 0);
+    if (action === 'approve') showMessage(`${updatedCount} specs approved${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+    else if (action === 'correct') showMessage(`${updatedCount} corrected specs saved${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+    else showMessage(`${updatedCount} specs rejected${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+  } catch (error) {
+    console.error(error);
+    showMessage(error.message || 'Failed to run bulk spec verification.', 'error');
+  } finally {
+    bulkSpecActionInFlight = false;
+    setBulkSpecActionButtonsDisabled(false);
+  }
+}
+
+async function submitSpecVerificationAction(action) {
+  const assetId = document.getElementById('specVerificationAssetId')?.value;
+  if (!assetId) {
+    showMessage('Missing asset ID for verification.', 'error');
+    return;
+  }
+
+  const correctedText = document.getElementById('specVerificationCorrected')?.value || '';
+  const correctedSpecifications = parseSpecsText(correctedText);
+
+  if (action === 'correct' && !Object.keys(correctedSpecifications).length) {
+    showMessage('Please provide corrected specifications before choosing Correct.', 'warning');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_URL}/assets/${encodeURIComponent(assetId)}/spec-verification`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        correctedSpecifications: action === 'correct' ? correctedSpecifications : {},
+        reviewer: 'inventory-admin-ui'
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'Verification update failed');
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    const updatedAsset = payload?.asset || payload;
+    const mergedAsset = upsertAssetInLocalState(updatedAsset);
+    if (!mergedAsset) {
+      throw new Error('Updated asset state could not be applied locally.');
+    }
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('specVerificationModal'));
+    if (modal) modal.hide();
+
+    updateSpecVerificationSnapshotFromLocalAssets();
+    renderTable();
+    rerenderOpenDetailsModalIfNeeded();
+    checkGlobalEOLAlerts();
+    refreshSpecVerificationSnapshot().catch(() => {});
+
+    const historyTitle = document.querySelector('#historyModal .modal-title');
+    const historyModalEl = document.getElementById('historyModal');
+    if (historyModalEl?.classList.contains('show') && historyTitle?.textContent?.includes(assetId)) {
+      window.viewTransferHistory(assetId).catch(() => {});
+    }
+
+    refreshSingleAssetDerivedState(assetId).catch(() => {});
+
+    if (action === 'approve') showMessage('Specs approved', 'success');
+    else if (action === 'correct') showMessage('Corrected specs saved', 'success');
+    else showMessage('Specs rejected', 'success');
+  } catch (error) {
+    console.error(error);
+    showMessage(error.message || 'Failed to submit specification review.', 'error');
   }
 }
 function populateFilters() {
@@ -768,6 +1713,7 @@ function renderTable() {
 
   if (!filteredAssets || filteredAssets.length === 0) {
     tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">No assets found matching filters.</td></tr>`;
+    updateDeleteAllAssetsButton();
     return;
   }
 
@@ -778,7 +1724,7 @@ function renderTable() {
   });
 
   tableBody.innerHTML = Object.entries(groupedByName).map(([assetName, assetGroup]) => {
-    const totalQty = assetGroup.length;
+    const totalQty = getAssetsTotalQuantity(assetGroup);
     const firstAsset = assetGroup[0];
     const typeObj = ASSET_TYPES.find(t => normalizeValue(t.value) === normalizeValue(canonicalType(firstAsset.type)));
     const typeLabel = typeObj ? typeObj.label : formatType(firstAsset.type);
@@ -812,6 +1758,15 @@ function renderTable() {
       </tr>
     `;
   }).join('');
+  updateDeleteAllAssetsButton();
+}
+
+function updateDeleteAllAssetsButton() {
+  const button = document.getElementById('deleteAllAssetsBtn');
+  if (!button) return;
+  const count = getAssetsTotalQuantity(currentAssets);
+  button.disabled = count === 0;
+  button.innerHTML = `<i class="bi bi-trash3"></i> Delete All${count ? ` (${count})` : ''}`;
 }
 
 async function handleAddAsset(e) {
@@ -821,18 +1776,36 @@ async function handleAddAsset(e) {
     showMessage('Only admins can create new assets.', 'error');
     return;
   }
+  if (specPreviewInFlight) {
+    showMessage('Please wait for AI specs generation to complete.', 'warning');
+    return;
+  }
 
   const submitBtn = e.target.querySelector('button[type="submit"]');
   const originalText = submitBtn.innerHTML;
   
   const name = document.getElementById('assetName').value;
-  const quantity = parseInt(document.getElementById('assetQuantity').value, 10);
+  const quantityRaw = document.getElementById('assetQuantity').value;
+  const quantity = parseInt(quantityRaw, 10);
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    showMessage('Quantity must be a positive integer.', 'warning');
+    return;
+  }
   const type = document.getElementById('assetType').value;
   const location = document.getElementById('assetLocation').value || 'Central Warehouse';
   const department = document.getElementById('assetDepartment').value || 'Unassigned';
   const brand = document.getElementById('assetBrand')?.value.trim() || '';
   const version = document.getElementById('assetVersion')?.value.trim() || '';
   const trackWorkingHours = Boolean(document.getElementById('assetTrackHours')?.checked);
+  const specConfirmationReviewed = Boolean(document.getElementById('assetSpecConfirmedOnCreate')?.checked);
+  const reviewerUser = AuthService.getUser();
+  const reviewerNameCandidate = `${reviewerUser?.firstName || ''} ${reviewerUser?.lastName || ''}`.trim();
+  const specConfirmationReviewedBy = String(
+    reviewerUser?.email
+    || reviewerUser?.name
+    || reviewerNameCandidate
+    || 'asset_creator'
+  ).trim();
   const manualSpecs = parseSpecsText(document.getElementById('assetSpecs')?.value || '');
   const inferredQuality = inferAssetQuality({ brand, version, specs: manualSpecs, type });
   const specifications = {
@@ -841,9 +1814,22 @@ async function handleAddAsset(e) {
     version,
     inferredQuality,
     trackWorkingHours,
+    telemetryEnabled: trackWorkingHours,
     workingHours: 0,
-    operationalState: trackWorkingHours ? 'offline' : undefined,
-    operationalStateUpdatedAt: trackWorkingHours ? new Date().toISOString() : undefined
+    operationalState: trackWorkingHours ? 'insufficient_data' : undefined,
+    telemetryStatus: trackWorkingHours ? 'insufficient_data' : 'not_monitored',
+    telemetryConfidence: 'low',
+    telemetryReason: trackWorkingHours
+      ? 'Telemetry monitoring enabled, but no live signal has been received yet.'
+      : 'Telemetry monitoring disabled for this asset.',
+    operationalStateUpdatedAt: trackWorkingHours ? new Date().toISOString() : undefined,
+    specVerificationStatus: specConfirmationReviewed ? 'verified' : 'pending',
+    specVerificationConfirmedOnCreate: specConfirmationReviewed,
+    specVerificationReviewedBy: specConfirmationReviewed ? specConfirmationReviewedBy : undefined,
+    specVerificationReviewedAt: specConfirmationReviewed ? new Date().toISOString() : undefined,
+    specVerificationAction: specConfirmationReviewed ? 'confirmed_on_create' : undefined,
+    aiSpecEvidenceStatus: 'insufficient_source_evidence',
+    aiSpecEvidenceReason: 'No trusted exact source evidence found. Manual review recommended.'
   };
 
   const idleAssets = currentAssets.filter(a =>
@@ -876,24 +1862,62 @@ async function handleAddAsset(e) {
       }
   }
 
+  const sanityCheck = await requestSpecSanityCheck({
+    assetType: type,
+    brand,
+    model: version,
+    normalizedSpecs: manualSpecs,
+    sourceType: lastSpecPreviewMeta.sourceType || '',
+    evidenceStatus: lastSpecPreviewMeta.evidenceStatus || specifications.aiSpecEvidenceStatus,
+  });
+  if (sanityCheck) {
+    const warnings = Array.isArray(sanityCheck.warnings) ? sanityCheck.warnings.filter(Boolean) : [];
+    const suspicious = Array.isArray(sanityCheck.suspiciousFields) ? sanityCheck.suspiciousFields.filter(Boolean) : [];
+    if (warnings.length > 0) {
+      setSpecPreviewStatus(`Spec sanity check: ${warnings[0]}`, 'warning');
+    }
+    if (Boolean(sanityCheck.requiresReview) && suspicious.length > 0) {
+      const proceedWithWarnings = await confirmInventoryAction({
+        title: 'Spec Sanity Warnings',
+        message: `${warnings.slice(0, 2).join(' ')} Continue creating assets with these warnings?`,
+        type: 'warning',
+        confirmText: 'Create Anyway',
+        cancelText: 'Review Specs',
+        confirmClass: 'inventory-insight-primary'
+      });
+      if (!proceedWithWarnings) return;
+    }
+  }
+
   submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
   submitBtn.disabled = true;
 
   function generateCustomId() { return `ASSET-${Date.now()}-${Math.floor(Math.random() * 10000)}`; }
 
   try {
-    for (let i = 0; i < quantity; i++) {
-      const customId = generateCustomId();
-      const assetData = { name, customId, type, location, department, status: 'active', quantity: 1, specifications };
+    const quantityToCreate = quantity;
+    const customId = generateCustomId();
+    const assetData = {
+      name,
+      customId,
+      type,
+      location,
+      department,
+      status: 'active',
+      quantity: quantityToCreate,
+      specifications,
+      specConfirmationReviewed,
+      specConfirmationReviewedBy,
+    };
 
-      const response = await inventoryRequest('/assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(assetData),
-      });
-
-      if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
-    }
+    const response = await inventoryRequest('/assets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(assetData),
+    });
+    if (!response.ok) throw new Error((await response.json()).message || 'Failed to create asset');
+    const payload = await response.json().catch(() => ({}));
+    const createdCount = Number(payload?.createdCount || quantityToCreate);
 
     const modalEl = document.getElementById('receiveOrderModal');
     if (modalEl) bootstrap.Modal.getInstance(modalEl).hide();
@@ -901,11 +1925,28 @@ async function handleAddAsset(e) {
     e.target.reset();
     document.getElementById('assetLocation').value = 'Central Warehouse';
     document.getElementById('assetDepartment').value = 'Unassigned';
+    const specConfirmedCheckbox = document.getElementById('assetSpecConfirmedOnCreate');
+    if (specConfirmedCheckbox) specConfirmedCheckbox.checked = false;
+    lastSpecPreviewMeta = {
+      sourceType: '',
+      evidenceStatus: '',
+      confidence: 0,
+      requiresReview: true,
+    };
     updateWorkingHoursAvailability();
+    applyAssetTypeSpecTemplate();
+    setSpecPreviewStatus('Approve/Edit before Create.', 'muted');
     updateInferredQualityPreview();
 
     await loadAssets();
-    showMessage(`Created ${quantity} asset${quantity === 1 ? '' : 's'} successfully.`, 'success');
+    const bgStatus = String(payload?.backgroundProcessing?.status || 'queued');
+    if (bgStatus === 'enqueue_failed') {
+      showMessage(`Created ${createdCount} asset unit(s), but background AI/EOL jobs failed to queue.`, 'warning');
+    } else if (bgStatus === 'partially_queued') {
+      showMessage(`Created ${createdCount} asset unit(s). AI/EOL processing is queued for most units.`, 'info');
+    } else {
+      showMessage(`Created ${createdCount} asset unit(s). AI/EOL processing in background.`, 'success');
+    }
 
   } catch (error) {
     console.error('Error:', error);
@@ -945,6 +1986,7 @@ function showAIModal(messageHtml) {
 
 // --- View Asset Group Details ---
 window.viewAssetDetails = (assetName) => {
+  activeDetailsGroupName = assetName;
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   
   if (!groupAssets.length) {
@@ -952,7 +1994,13 @@ window.viewAssetDetails = (assetName) => {
     return;
   }
 
-  document.getElementById('detailModalTitle').textContent = `${assetName} - ${groupAssets.length} Item(s)`;
+  const totalQty = getAssetsTotalQuantity(groupAssets);
+  const unitRows = getAssetUnitRows(groupAssets);
+  console.debug('[AssetCreateDebug] modal-render', { assetName, groupAssets: groupAssets.length, totalQty, renderedRows: unitRows.length });
+  const batchCount = groupAssets.length;
+  document.getElementById('detailModalTitle').textContent = `${assetName} - ${totalQty} Unit(s)`;
+  const detailSubtitle = document.getElementById('detailModalSubtitle');
+  if (detailSubtitle) detailSubtitle.textContent = `Showing ${totalQty} unit(s) across ${batchCount} backend batch(es)`;
   document.getElementById('innerSearchInput').value = '';
 
   const detailsBody = document.getElementById('detailsTableBody');
@@ -968,32 +2016,54 @@ window.viewAssetDetails = (assetName) => {
     aiBanner.id = 'aiSummaryBanner';
     aiBanner.className = 'alert w-100 d-flex align-items-center mb-3 mt-2 ai-summary-banner';
     
-    const failingCount = groupAssets.filter(a => { const eol = getEOLDetails(a); return !eol.isClosedLifecycle && eol.daysRemaining <= 180; }).length;
-    let aiText = `<strong>AI Prediction:</strong> Profile-based lifespan for a <strong>${formatType(sampleAsset.type)}</strong> is <strong>${eolData.metrics.years} years</strong>. `;
-    
-    if (failingCount > 0) {
-        aiText += `<span class="text-danger">Based on usage, <b>${failingCount} item(s)</b> in this group need replacement soon.</span>`;
+    const failingCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (!eol.isClosedLifecycle && eol.daysRemaining <= 180 ? getAssetQuantity(asset) : 0);
+    }, 0);
+    const lowConfidenceCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (eol.lowConfidence ? getAssetQuantity(asset) : 0);
+    }, 0);
+    const unknownCount = groupAssets.reduce((count, asset) => {
+      const eol = getEOLDetails(asset);
+      return count + (eol.eolStatus === 'unknown' || eol.eolStatus === 'insufficient_data' ? getAssetQuantity(asset) : 0);
+    }, 0);
+
+    let aiText = `<strong>AI Prediction:</strong>&nbsp;Profile-based lifespan for a&nbsp;<strong>${formatType(sampleAsset.type)}</strong>&nbsp;is&nbsp;<strong>${eolData.metrics.years} years</strong>.&nbsp;`;
+
+    if (unknownCount > 0) {
+      aiText += ` <span class="text-warning">` +
+        `${unknownCount} item${unknownCount === 1 ? '' : 's'} ha${unknownCount === 1 ? 's' : 've'} unknown EOL status due to insufficient evidence or missing telemetry.` +
+        `</span>`;
+    } else if (lowConfidenceCount > 0) {
+      aiText += ` <span class="text-warning">Backend EOL assessment is low confidence. Manual review recommended.</span>`;
+    } else if (failingCount > 0) {
+      aiText += ` <span class="text-danger">Based on backend EOL assessment, <b>${failingCount} item(s)</b> in this group need replacement planning soon.</span>`;
     } else {
-        aiText += `<span class="text-success">All items in this group currently have a healthy lifespan.</span>`;
+      aiText += ` <span class="text-success">All items in this group currently have a healthy EOL status.</span>`;
     }
 
     aiBanner.innerHTML = aiText;
     headerDiv.insertBefore(aiBanner, headerDiv.firstChild);
   }
 
-  detailsBody.innerHTML = groupAssets.map(asset => {
+  detailsBody.innerHTML = unitRows.map(({ asset, unitIndex, unitCount, unitLabel, isVirtualUnit }) => {
     const eol = getEOLDetails(asset);
     const profile = eol.metrics.prediction.profile;
+    const specStatus = getSpecVerificationStatus(asset);
     const isDeployed = normalizeValue(displayLocation(asset.location)) !== normalizeValue('Central Warehouse');
     const trackingLabel = profile.trackWorkingHours
-      ? `${OPERATIONAL_STATE_LABELS[profile.operationalState]} - ${Math.round(profile.workingHours).toLocaleString()}h`
-      : 'Hours not tracked';
+      ? `${getOperationalStateLabel(profile.telemetryStatus)} · ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` · ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
+      : 'Not monitored';
     return `
-    <tr>
-      <td class="ps-4">
-        <span class="font-monospace fw-bold">${asset.customId}</span>
-        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
-        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
+	    <tr>
+	      <td class="ps-4">
+	        <span class="font-monospace fw-bold">${unitLabel}</span>
+	        <div class="text-muted pred-lifespan-text">Batch ID: ${asset.customId}</div>
+	        ${isVirtualUnit ? `<div class="text-muted pred-lifespan-text">Unit ${unitIndex} of ${unitCount}</div>` : ''}
+	        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
+	        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
+        <div class="mt-1">${getSpecVerificationBadge(specStatus)}</div>
       </td>
       <td>
         <span class="badge ${getStatusBadgeClass(asset.status)}">
@@ -1002,49 +2072,69 @@ window.viewAssetDetails = (assetName) => {
       </td>
       <td>${displayLocation(asset.location)}</td>
       <td>${displayDepartment(asset.department)}</td>
-      <td>
-        <div class="mb-1">
-          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-magic inventory-ai-inline-icon"></i> AI Lifespan: ${eol.metrics.years}y
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-shield-exclamation inventory-ai-inline-icon"></i> Failure risk: ${Math.round((eol.failureRisk || 0) * 100)}%
-        </div>
-        <div class="text-muted pred-lifespan-text">
-          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
-        </div>
-      </td>
-      <td class="text-end pe-4">
-        ${profile.trackWorkingHours && isDeployed ? `
-        <button class="btn btn-sm btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Auto-detected Device State">
-          <i class="bi bi-activity"></i>
-        </button>` : ''}
-        <button class="btn btn-sm btn-outline-info" onclick="window.viewQRCode('${asset.customId}')" title="View QR">
-          <i class="bi bi-qr-code"></i>
-        </button>
-        <button class="btn btn-sm btn-outline-primary" onclick="window.viewTransferHistory('${asset.customId}')" title="History">
-          <i class="bi bi-clock-history"></i>
-        </button>
-        ${INVENTORY_ACCESS.canEditSpecs ? `
-        <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${asset.customId}', false)" title="Edit Specs">
-          <i class="bi bi-pencil"></i>
-        </button>` : ''}
-        ${INVENTORY_ACCESS.canTransferAsset ? `
-        <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer">
-          <i class="bi bi-arrow-left-right"></i>
-        </button>` : ''}
-        ${INVENTORY_ACCESS.canDeleteAsset ? `
-        <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete">
-          <i class="bi bi-trash"></i>
-        </button>` : ''}
-      </td>
-    </tr>
-  `}).join('');
+	      <td>
+	        <div class="mb-1">
+	          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-bar-chart-line inventory-ai-inline-icon"></i> EOL confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'} (${capitalize(eol.evidenceLevel || 'low')})
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-lightning-charge inventory-ai-inline-icon"></i> ${UI.escapeHTML(eol.shortAction)}
+	        </div>
+	        ${eol.lowConfidence ? `<div class="text-warning pred-lifespan-text"><i class="bi bi-exclamation-triangle-fill me-1"></i>Low confidence</div>` : ''}
+	        ${eol.procurementRecommended ? `<div class="text-danger pred-lifespan-text"><i class="bi bi-cart-check me-1"></i>Procurement recommended</div>` : ''}
+	        <div class="mt-1">
+	          <button class="btn btn-sm btn-outline-secondary" onclick="window.showEolWhy('${asset.customId}')" title="Why this EOL status">
+	            Why?
+	          </button>
+	        </div>
+	        <div class="text-muted pred-lifespan-text">
+	          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
+	        </div>
+	      </td>
+	      <td class="text-end pe-4">
+	        <div class="d-inline-flex flex-column align-items-end gap-1 inventory-row-actions">
+	          <div class="btn-group btn-group-sm" role="group" aria-label="Primary row actions">
+	            ${profile.trackWorkingHours && isDeployed ? `
+	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State">
+	              <i class="bi bi-activity"></i>
+	            </button>` : ''}
+	            <button class="btn btn-outline-info d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewQRCode('${asset.customId}')" title="View QR code">
+	              <i class="bi bi-qr-code"></i>
+	            </button>
+	            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewTransferHistory('${asset.customId}')" title="View history">
+	              <i class="bi bi-clock-history"></i>
+	            </button>
+	            ${INVENTORY_ACCESS.canEditSpecs ? `
+	            <button class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.editSpecs('${asset.customId}', false)" title="Edit specs/details">
+	              <i class="bi bi-pencil"></i>
+	            </button>` : ''}
+	          </div>
+	          <div class="d-flex gap-1 justify-content-end flex-wrap">
+	            ${INVENTORY_ACCESS.canEditSpecs && shouldShowSpecReviewButton(specStatus) ? `
+	            <button class="btn btn-sm btn-warning text-dark" onclick="window.openSpecVerificationModal('${asset.customId}')" title="Review AI-detected specifications">
+	              <i class="bi bi-shield-exclamation me-1"></i>Review
+	            </button>` : ''}
+	            ${INVENTORY_ACCESS.canTransferAsset ? `
+	            <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer asset">
+	              <i class="bi bi-arrow-left-right me-1"></i>Transfer
+	            </button>` : ''}
+	            ${INVENTORY_ACCESS.canDeleteAsset ? `
+	            <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete asset">
+	              <i class="bi bi-trash me-1"></i>Remove
+	            </button>` : ''}
+	          </div>
+	        </div>
+	      </td>
+	    </tr>
+	  `}).join('');
 
   const bulkTransferBtn = document.getElementById('bulkTransferBtn');
   const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
+  const bulkSpecReviewBtn = document.getElementById('bulkSpecReviewBtn');
+  const pendingAssetsForGroup = getPendingSpecReviewAssetsInGroup(groupAssets);
+  const pendingUnitsForGroup = pendingAssetsForGroup.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
 
   if (bulkTransferBtn) {
     bulkTransferBtn.style.display = INVENTORY_ACCESS.canTransferAsset ? '' : 'none';
@@ -1053,6 +2143,12 @@ window.viewAssetDetails = (assetName) => {
   if (bulkDeleteBtn) {
     bulkDeleteBtn.style.display = INVENTORY_ACCESS.canDeleteAsset ? '' : 'none';
     bulkDeleteBtn.onclick = () => window.bulkDeleteGroup(assetName);
+  }
+  if (bulkSpecReviewBtn) {
+    const canBulkReview = INVENTORY_ACCESS.canEditSpecs && pendingAssetsForGroup.length > 0;
+    bulkSpecReviewBtn.classList.toggle('d-none', !canBulkReview);
+    bulkSpecReviewBtn.textContent = `Review Specs (${pendingUnitsForGroup})`;
+    bulkSpecReviewBtn.onclick = () => window.openBulkSpecVerificationModal();
   }
 
   if (headerDiv) {
@@ -1100,11 +2196,14 @@ window.transferIndividual = (customId) => {
   const asset = currentAssets.find(a => a.customId === customId);
   if (!asset) return;
 
+  const availableQuantity = getAssetQuantity(asset);
+  const quantity = availableQuantity;
+  const displayLabel = asset.name || customId;
   selectedAssetCustomId = customId;
-  document.getElementById('transferAssetId').textContent = customId;
-  document.getElementById('maxTransferQty').textContent = '1';
-  document.getElementById('transferQty').value = '1';
-  document.getElementById('transferQty').max = 1;
+  document.getElementById('transferAssetId').textContent = `${displayLabel || customId} (${quantity} unit${quantity === 1 ? '' : 's'})`;
+  document.getElementById('maxTransferQty').textContent = quantity;
+  document.getElementById('transferQty').value = quantity;
+  document.getElementById('transferQty').max = quantity;
 
   document.getElementById('checkBuilding').checked = false;
   document.getElementById('checkDept').checked = false;
@@ -1165,11 +2264,12 @@ window.bulkTransferGroup = (assetName) => {
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
 
+  const totalQty = getAssetsTotalQuantity(groupAssets);
   selectedAssetCustomId = assetName; 
-  document.getElementById('transferAssetId').textContent = `${assetName} (${groupAssets.length} items)`;
-  document.getElementById('maxTransferQty').textContent = groupAssets.length;
-  document.getElementById('transferQty').value = groupAssets.length;
-  document.getElementById('transferQty').max = groupAssets.length;
+  document.getElementById('transferAssetId').textContent = `${assetName} (${totalQty} unit${totalQty === 1 ? '' : 's'})`;
+  document.getElementById('maxTransferQty').textContent = totalQty;
+  document.getElementById('transferQty').value = totalQty;
+  document.getElementById('transferQty').max = totalQty;
 
   document.getElementById('checkBuilding').checked = false;
   document.getElementById('checkDept').checked = false;
@@ -1190,10 +2290,11 @@ window.bulkDeleteGroup = async (assetName) => {
 
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   if (!groupAssets.length) return;
+  const totalQty = getAssetsTotalQuantity(groupAssets);
 
   const confirmed = await confirmInventoryAction({
     title: 'Delete Asset Group',
-    message: `Delete all ${groupAssets.length} items of "${assetName}"? This cannot be undone.`,
+    message: `Delete all ${totalQty} unit(s) of "${assetName}"? This cannot be undone.`,
     confirmText: 'Delete Group',
     confirmClass: 'inventory-insight-danger'
   });
@@ -1209,10 +2310,57 @@ window.bulkDeleteGroup = async (assetName) => {
     if (detailsModal) detailsModal.hide();
 
     await loadAssets();
-    showMessage(`Deleted all ${groupAssets.length} items of "${assetName}".`, 'success');
+    showMessage(`Deleted all ${totalQty} unit(s) of "${assetName}".`, 'success');
   } catch (error) {
     console.error(error);
     showMessage(error.message || 'Failed to delete asset group.', 'error');
+  }
+};
+
+window.deleteAllAssets = async () => {
+  const assetsToDelete = [...currentAssets];
+  const totalQty = getAssetsTotalQuantity(assetsToDelete);
+  if (!assetsToDelete.length) {
+    showMessage('No assets to delete.', 'warning');
+    return;
+  }
+
+  const confirmed = await confirmInventoryAction({
+    title: 'Delete All Assets',
+    message: `Delete all ${totalQty} asset unit(s)? This cannot be undone.`,
+    confirmText: 'Delete All',
+    confirmClass: 'inventory-insight-danger'
+  });
+  if (!confirmed) return;
+
+  const deleteButton = document.getElementById('deleteAllAssetsBtn');
+  const originalHtml = deleteButton?.innerHTML;
+  if (deleteButton) {
+    deleteButton.disabled = true;
+    deleteButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Deleting...';
+  }
+
+  try {
+    for (const asset of assetsToDelete) {
+      const response = await fetch(`${API_URL}/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || `Failed to delete ${asset.customId}`);
+      }
+    }
+
+    const detailsModal = bootstrap.Modal.getInstance(document.getElementById('detailsModal'));
+    if (detailsModal) detailsModal.hide();
+
+    await loadAssets();
+    showMessage(`Deleted ${totalQty} asset unit(s).`, 'success');
+  } catch (error) {
+    console.error(error);
+    if (deleteButton) {
+      deleteButton.disabled = false;
+      deleteButton.innerHTML = originalHtml || '<i class="bi bi-trash3"></i> Delete All';
+    }
+    showMessage(error.message || 'Failed to delete all assets.', 'error');
   }
 };
 
@@ -1325,6 +2473,9 @@ window.toggleWorkingHoursInput = function() {
 function updateWorkingHoursAvailability() {
   const type = canonicalType(document.getElementById('assetType')?.value || '');
   const checkbox = document.getElementById('assetTrackHours');
+  const label = document.querySelector('label[for="assetTrackHours"]');
+  const hint = document.getElementById('assetTrackHoursHint');
+  const telemetryCard = document.getElementById('assetTelemetryCard');
   if (!checkbox) return;
 
   const canTrack = TRACKABLE_ASSET_TYPES.has(type);
@@ -1332,6 +2483,379 @@ function updateWorkingHoursAvailability() {
   if (!canTrack) {
     checkbox.checked = false;
   }
+
+  if (label) {
+    label.textContent = canTrack
+      ? 'Enable automatic telemetry for lifespan prediction'
+      : 'Telemetry monitoring is not applicable for this asset type';
+  }
+
+  if (hint) {
+    hint.textContent = canTrack
+      ? 'When enabled, telemetry starts in waiting-for-signal mode until a real signal arrives.'
+      : 'Use inspection/condition updates for this asset type instead of online/offline telemetry.';
+  }
+
+  if (telemetryCard) {
+    telemetryCard.classList.toggle('telemetry-compact-info', Boolean(type) && !canTrack);
+  }
+}
+
+function applyAssetTypeSpecTemplate() {
+  const specsInput = document.getElementById('assetSpecs');
+  const type = document.getElementById('assetType')?.value || '';
+  if (!specsInput) return;
+
+  const template = getSpecTemplateForType(type);
+  specsInput.placeholder = formatSpecsObject(template);
+}
+
+function updateSpecPreviewButtonState() {
+  const generateBtn = document.getElementById('assetGenerateSpecsBtn');
+  const trustedBtn = document.getElementById('assetSearchTrustedSourcesBtn');
+
+  if (generateBtn) {
+    const loadingFast = specPreviewInFlight && specPreviewActiveMode === 'fast_preview';
+    generateBtn.disabled = specPreviewInFlight;
+    generateBtn.innerHTML = loadingFast
+      ? '<span class="spinner-border spinner-border-sm me-1"></span>Generating...'
+      : '<i class="bi bi-stars me-1"></i>Generate Specs with AI';
+  }
+
+  if (trustedBtn) {
+    const loadingTrusted = specPreviewInFlight && specPreviewActiveMode === 'trusted_lookup';
+    trustedBtn.disabled = specPreviewInFlight;
+    trustedBtn.innerHTML = loadingTrusted
+      ? '<span class="spinner-border spinner-border-sm me-1"></span>Searching...'
+      : '<i class="bi bi-globe2 me-1"></i>Search Trusted Sources';
+  }
+}
+
+function invalidateSpecPreviewRequest() {
+  specPreviewRequestNonce += 1;
+  lastSpecPreviewMeta = {
+    sourceType: '',
+    evidenceStatus: '',
+    confidence: 0,
+    requiresReview: true,
+  };
+}
+
+async function animateSpecsIntoTextarea(textarea, text, nonce) {
+  if (!textarea) return;
+  const safeText = String(text || '');
+  const lines = safeText.split('\n');
+  textarea.value = '';
+  specPreviewIsWriting = true;
+  specPreviewUserIntervened = false;
+
+  const charDelayMs = 22;
+  const lineDelayMs = 180;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    for (let i = 0; i < line.length; i += 1) {
+      if (nonce !== specPreviewRequestNonce || specPreviewUserIntervened) {
+        specPreviewIsWriting = false;
+        return;
+      }
+      textarea.value += line[i];
+      await new Promise((resolve) => setTimeout(resolve, charDelayMs));
+    }
+
+    if (lineIndex < lines.length - 1) {
+      if (nonce !== specPreviewRequestNonce || specPreviewUserIntervened) {
+        specPreviewIsWriting = false;
+        return;
+      }
+      textarea.value += '\n';
+      await new Promise((resolve) => setTimeout(resolve, lineDelayMs));
+    }
+  }
+  specPreviewIsWriting = false;
+}
+
+function buildSpecPreviewPayload() {
+  const type = document.getElementById('assetType')?.value || '';
+  const name = document.getElementById('assetName')?.value.trim() || '';
+  const brand = document.getElementById('assetBrand')?.value.trim() || '';
+  const model = document.getElementById('assetVersion')?.value.trim() || '';
+  const currentSpecsText = document.getElementById('assetSpecs')?.value || '';
+  const currentSpecs = parseSpecsText(currentSpecsText);
+
+  return {
+    name,
+    type,
+    brand,
+    model,
+    currentSpecsText,
+    currentSpecs
+  };
+}
+
+async function requestSpecNormalization(payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+  try {
+    const response = await inventoryRequest('/assets/spec-normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_error) {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function requestSpecSanityCheck(payload) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await inventoryRequest('/assets/spec-sanity-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (_error) {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function runSpecPreviewRequest(mode = 'cache_only') {
+  const specsInput = document.getElementById('assetSpecs');
+  const submitBtn = document.querySelector('#addAssetForm button[type="submit"]');
+  const payload = buildSpecPreviewPayload();
+  if (specPreviewInFlight) return;
+
+  if (!payload.type) {
+    showMessage('Please select an asset type before generating specs.', 'warning');
+    return;
+  }
+
+  if (!payload.brand && !payload.model && !payload.name) {
+    showMessage('Enter at least asset name, brand, or model before generating specs.', 'warning');
+    return;
+  }
+
+  const currentText = String(specsInput?.value || '').trim();
+  const currentPlaceholder = String(specsInput?.placeholder || '');
+  if (currentText && !isSpecsPlaceholderLike(currentText, currentPlaceholder)) {
+    const overwrite = window.confirm('Technical Specs already contain text. Replace with AI-generated specs?');
+    if (!overwrite) return;
+  }
+
+  const isTrustedLookup = mode === 'live_allowed';
+  const previewMode = isTrustedLookup ? 'trusted_lookup' : 'fast_preview';
+  const timeoutMs = isTrustedLookup ? 105000 : 9000;
+  const requestNonce = specPreviewRequestNonce + 1;
+  specPreviewRequestNonce = requestNonce;
+  specPreviewInFlight = true;
+  specPreviewActiveMode = previewMode;
+  specPreviewUserIntervened = false;
+  updateSpecPreviewButtonState();
+  if (submitBtn && !isTrustedLookup) submitBtn.disabled = true;
+  setSpecPreviewStatus(isTrustedLookup ? 'Searching trusted sources...' : 'Checking saved specs...', 'muted');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const progressTimers = [];
+  if (isTrustedLookup) {
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Ranking candidates...', 'muted');
+      }
+    }, 2500));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Fetching source page...', 'muted');
+      }
+    }, 9000));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Extracting specs from source...', 'muted');
+      }
+    }, 18000));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Saving result for future use...', 'muted');
+      }
+    }, 30000));
+  } else {
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Checking source cache...', 'muted');
+      }
+    }, 500));
+  }
+
+  try {
+    const endpoint = isTrustedLookup ? '/assets/spec-source-lookup' : '/assets/spec-preview';
+    const requestBody = isTrustedLookup
+      ? {
+        assetType: payload.type,
+        brand: payload.brand,
+        model: payload.model || payload.name,
+        forceRefresh: false,
+      }
+      : {
+        ...payload,
+        liveLookupMode: 'cache_only',
+      };
+    const response = await inventoryRequest(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.message || 'AI spec preview request failed');
+    }
+
+    const rawResponse = await response.json();
+    const preview = isTrustedLookup
+      ? {
+        ...rawResponse,
+        sourceUrls: rawResponse.sourceUrl ? [rawResponse.sourceUrl] : [],
+      }
+      : rawResponse;
+    if (requestNonce !== specPreviewRequestNonce) return;
+
+    if (isTrustedLookup && !preview.success) {
+      const reason = String(preview.message || preview.evidenceReason || 'No trusted source result was confirmed.').trim();
+      setSpecPreviewStatus(`${reason} You can continue with current specs or try again later.`, 'warning');
+      showMessage(reason, 'warning');
+      return;
+    }
+
+    const normalizedSpecs = (preview.normalizedSpecs && typeof preview.normalizedSpecs === 'object')
+      ? preview.normalizedSpecs
+      : {};
+    if (isTrustedLookup && !Object.keys(normalizedSpecs).length) {
+      const reason = String(preview.message || preview.evidenceReason || 'Trusted sources were found, but no usable specs were extracted.').trim();
+      setSpecPreviewStatus(`${reason} You can continue with the current specs.`, 'warning');
+      showMessage(reason, 'warning');
+      return;
+    }
+    const fallbackTemplate = getSpecTemplateForType(payload.type);
+    let specsText = String(preview.specsText || '').trim() || formatSpecsObject(
+      Object.keys(normalizedSpecs).length ? normalizedSpecs : fallbackTemplate
+    );
+    let normalizationWarnings = [];
+    const normalizeResponse = await requestSpecNormalization({
+      assetType: payload.type,
+      brand: payload.brand,
+      model: payload.model,
+      rawSpecsText: specsText,
+      currentSpecs: normalizedSpecs,
+    });
+    if (normalizeResponse && requestNonce === specPreviewRequestNonce) {
+      const normalizedText = String(normalizeResponse.normalizedSpecsText || '').trim();
+      if (normalizedText) {
+        specsText = normalizedText;
+      }
+      normalizationWarnings = Array.isArray(normalizeResponse.warnings) ? normalizeResponse.warnings.filter(Boolean) : [];
+    }
+
+    if (isTrustedLookup) {
+      setSpecPreviewStatus('Saving result for future use...', 'muted');
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+    setSpecPreviewStatus('Writing specs...', 'muted');
+    await animateSpecsIntoTextarea(specsInput, specsText, requestNonce);
+    if (specPreviewUserIntervened || requestNonce !== specPreviewRequestNonce) {
+      if (specPreviewUserIntervened) {
+        setSpecPreviewStatus('Stopped AI writing because you edited specs manually.', 'warning');
+      }
+      return;
+    }
+    updateInferredQualityPreview();
+
+    const confidencePercent = Math.round((Number(preview.confidence || 0) || 0) * 100);
+    const evidenceStatus = String(preview.evidenceStatus || '').toLowerCase();
+    const sourceEvidenceStatus = String(preview.sourceEvidenceStatus || '').toLowerCase();
+    const reason = String(preview.evidenceReason || preview.reason || '').trim();
+    const extraWarnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
+    const combinedWarnings = [...extraWarnings, ...normalizationWarnings].filter(Boolean);
+    const sourceType = String(preview.sourceType || '').trim();
+    const sourceDomain = String(preview.sourceDomain || '').trim();
+    const sourceUrl = Array.isArray(preview.sourceUrls) && preview.sourceUrls.length ? String(preview.sourceUrls[0] || '').trim() : '';
+    const cacheHit = Boolean(preview.cacheHit);
+    const warningText = combinedWarnings.length ? ` ${combinedWarnings[0]}` : '';
+    lastSpecPreviewMeta = {
+      sourceType,
+      evidenceStatus,
+      confidence: Number(preview.confidence || 0) || 0,
+      requiresReview: Boolean(preview.requiresReview),
+    };
+
+    if (evidenceStatus === 'trusted' || sourceEvidenceStatus === 'source_backed') {
+      const sourceLabel = sourceDomain || sourceType || 'trusted_source_lookup';
+      const sourceDetail = sourceUrl ? ` ${sourceUrl}` : '';
+      const cacheLabel = cacheHit ? 'cache hit' : 'live lookup';
+      setSpecPreviewStatus(
+        `Source-backed specs found (${confidencePercent}% confidence, ${cacheLabel}) via ${sourceLabel}.${sourceDetail} Review/edit before create.${warningText}`,
+        'success'
+      );
+    } else if (evidenceStatus === 'user_confirmed' && preview.requiresReview !== true) {
+      setSpecPreviewStatus(
+        `Using previously user-confirmed specs (${confidencePercent}% confidence). Source: ${sourceType || 'user_confirmed_previous_asset'}. Review/edit before create.${warningText}`,
+        'success'
+      );
+    } else {
+      const noSourceReason = normalizeValue(reason).includes('no trusted') || normalizeValue(reason).includes('cache') || normalizeValue(reason).includes('insufficient');
+      if (noSourceReason) {
+        setSpecPreviewStatus(
+          `No trusted source found; using safe fallback. ${reason || 'Please review and edit specs before create.'}${warningText}`,
+          'warning'
+        );
+        return;
+      }
+      setSpecPreviewStatus(
+        `AI generated specs require review (${confidencePercent}% confidence). ${reason || 'No trusted source evidence; please verify.'}${warningText}`,
+        'warning'
+      );
+    }
+  } catch (error) {
+    if (requestNonce === specPreviewRequestNonce) {
+      const isAbort = String(error?.name || '').toLowerCase() === 'aborterror';
+      if (isTrustedLookup && isAbort) {
+        setSpecPreviewStatus('Trusted source lookup is taking longer than expected. You can continue with the current specs or try again later.', 'warning');
+        showMessage('Trusted source lookup is taking longer than expected. You can continue with the current specs or try again later.', 'warning');
+      } else if (!isTrustedLookup && isAbort) {
+        setSpecPreviewStatus('Fast AI preview timed out. You can continue with current/manual specs.', 'warning');
+        showMessage('Fast AI preview timed out. You can continue with current/manual specs.', 'warning');
+      } else {
+        setSpecPreviewStatus('Spec preview is temporarily unavailable. You can still edit and create the asset.', 'warning');
+        showMessage(error.message || 'Failed to generate spec preview.', 'warning');
+      }
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    progressTimers.forEach((timer) => clearTimeout(timer));
+    specPreviewIsWriting = false;
+    specPreviewInFlight = false;
+    specPreviewActiveMode = 'idle';
+    updateSpecPreviewButtonState();
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+async function handleGenerateSpecsPreview() {
+  return runSpecPreviewRequest('cache_only');
+}
+
+async function handleSearchTrustedSourcesPreview() {
+  return runSpecPreviewRequest('live_allowed');
 }
 
 function updateInferredQualityPreview() {
@@ -1379,8 +2903,25 @@ window.submitTransfer = async () => {
     confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Transferring...';
 
     const isBulk = currentAssets.some(a => a.name === selectedAssetCustomId);
+    const transferAssetQuantity = async (assetId, destType, destination, quantityToMove, label) => {
+      const transferData = { destType, destination, quantityToMove };
+      const response = await fetch(`${API_URL}/assets/${assetId}/transfer`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(transferData),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.message || `${label} transfer failed for ${assetId}`);
+      }
+    };
 
     if (!isBulk) {
+      const selectedAsset = currentAssets.find(a => a.customId === selectedAssetCustomId);
+      const maxQuantity = getAssetQuantity(selectedAsset);
+      if (quantity > maxQuantity) {
+        throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
+      }
       if (buildingChecked) {
         const transferData = { destType: 'building', destination: buildingValue, quantityToMove: quantity };
         const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
@@ -1398,9 +2939,15 @@ window.submitTransfer = async () => {
       }
     } else {
       const groupAssets = currentAssets.filter(a => a.name === selectedAssetCustomId);
-      const assetsToTransfer = groupAssets.slice(0, quantity);
+      const maxQuantity = getAssetsTotalQuantity(groupAssets);
+      if (quantity > maxQuantity) {
+        throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
+      }
 
-      for (const asset of assetsToTransfer) {
+      let remainingQuantity = quantity;
+      for (const asset of groupAssets) {
+        if (remainingQuantity <= 0) break;
+        const quantityToMove = Math.min(remainingQuantity, getAssetQuantity(asset));
         if (buildingChecked) {
           const transferData = { destType: 'building', destination: buildingValue, quantityToMove: 1 };
           const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
@@ -1416,6 +2963,7 @@ window.submitTransfer = async () => {
           });
           if (!response.ok) throw new Error((await response.json()).message || `Department transfer failed for ${asset.customId}`);
         }
+        remainingQuantity -= quantityToMove;
       }
     }
 
@@ -1441,6 +2989,8 @@ window.viewOperationalTelemetry = async (customId) => {
   if (!asset) return;
 
   const profile = getAssetProfile(asset);
+  const statusLabel = getOperationalStateLabel(profile.telemetryStatus);
+  const telemetryReason = profile.telemetryReason || 'Telemetry not connected';
   const modalId = `operationalStateModal-${Date.now()}`;
   const modalHTML = `
     <div class="modal fade inventory-modal-stack-high" id="${modalId}" tabindex="-1" aria-hidden="true">
@@ -1451,12 +3001,15 @@ window.viewOperationalTelemetry = async (customId) => {
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
-            <p class="text-muted small mb-3">This state is auto-detected from device heartbeat and activity telemetry for <strong>${UI.escapeHTML(customId)}</strong>.</p>
+            <p class="text-muted small mb-3">Live status is computed from real telemetry when available for <strong>${UI.escapeHTML(customId)}</strong>.</p>
             <div class="inventory-ai-quality-preview mb-3">
-              Detected state: ${OPERATIONAL_STATE_LABELS[profile.operationalState]}
+              Detected state: ${statusLabel}
             </div>
             <div class="inventory-ai-quality-preview mt-3">
-              Current consumption-adjusted hours: ${Math.round(profile.workingHours).toLocaleString()}
+              Current consumption-adjusted hours: ${profile.hasTelemetry ? Math.round(profile.workingHours).toLocaleString() : 'Unavailable'}
+            </div>
+            <div class="inventory-ai-quality-preview mt-3">
+              Confidence: ${String(profile.telemetryConfidence || 'low').toUpperCase()} | Reason: ${UI.escapeHTML(telemetryReason)}
             </div>
           </div>
           <div class="modal-footer">
@@ -1720,7 +3273,7 @@ window.exportAssetsToDetailedPDF = function() {
       `Brand: ${profile.brand || 'N/A'}`,
       `Version: ${profile.version || 'N/A'}`,
       `Detected Quality: ${capitalize(profile.quality)}`,
-      `Device State: ${profile.trackWorkingHours ? OPERATIONAL_STATE_LABELS[profile.operationalState] : 'Not tracked'}`,
+      `Device State: ${profile.trackWorkingHours ? getOperationalStateLabel(profile.telemetryStatus) : 'Not monitored'}`,
       `AI Predicted Lifespan: ${eol.metrics.years} years`,
       `Consumption Hours: ${profile.trackWorkingHours ? Math.round(profile.workingHours).toLocaleString() : 'Not tracked'}`,
       `Barcode: ${asset.barcode || 'N/A'}`,
@@ -1790,7 +3343,7 @@ window.generateEOLReport = function() {
   currentAssets.forEach(asset => {
     const eol = getEOLDetails(asset);
 
-    if (!eol.isClosedLifecycle && eol.daysRemaining <= 365) {
+    if (!eol.isClosedLifecycle && eol.procurementRecommended && !eol.lowConfidence) {
       totalEstimatedBudget += eol.metrics.cost;
 
       reportData.push([

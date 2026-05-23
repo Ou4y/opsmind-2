@@ -8,10 +8,14 @@ services:
     container_name: notification-service
     ports:
       - "3000:3000"
-    env_file:
-      - .env
     environment:
       - RABBITMQ_URL=amqp://opsmind:opsmind@opsmind-rabbitmq:5672
+      - MONGO_URI=mongodb://mongodb:27017/notificationDB
+      - EMAIL_HOST=mailhog
+      - EMAIL_PORT=1025
+      - EMAIL_USER=noreply@opsmind.local
+      - EMAIL_PASS=
+      - INTERNAL_SECRET=supersecret
     networks:
       - opsmind-net
     restart: unless-stopped

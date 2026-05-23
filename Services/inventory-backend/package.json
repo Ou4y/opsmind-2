@@ -10,6 +10,10 @@
     "test": "jest",
     "db:generate": "prisma generate",
     "db:migrate:prod": "prisma migrate deploy",
+    "backfill:phase3:dry": "ts-node scripts/backfill_inventory_ai_phase3.ts",
+    "backfill:phase3:write": "ts-node scripts/backfill_inventory_ai_phase3.ts --write",
+    "readiness:report": "ts-node scripts/readiness_report.ts",
+    "warmup:source-cache": "ts-node scripts/warmup_source_specs_cache.ts",
     "dev": "concurrently \"npm run api\" \"npm run worker\" --names \"API,WORKER\" --prefix-colors \"blue,magenta\""
   },
   "dependencies": {

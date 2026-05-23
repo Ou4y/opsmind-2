@@ -34,6 +34,37 @@ export interface IAsset {
 
 // Asset service functions
 export class AssetService {
+  static async createAssets(data: Array<{
+    customId: string;
+    name: string;
+    type: AssetType;
+    status?: AssetStatus;
+    value?: number;
+    quantity?: number;
+    assignedUser?: string;
+    location: AssetLocation;
+    department: AssetDepartment;
+    specifications?: Record<string, any>;
+  }>): Promise<Asset[]> {
+    if (!Array.isArray(data) || data.length === 0) return [];
+    return await prisma.$transaction(
+      data.map((assetData) => prisma.asset.create({
+        data: {
+          customId: assetData.customId,
+          name: assetData.name,
+          type: assetData.type,
+          status: assetData.status || 'ACTIVE',
+          value: assetData.value || 0,
+          quantity: assetData.quantity || 1,
+          assignedUser: assetData.assignedUser,
+          location: assetData.location,
+          department: assetData.department,
+          specifications: assetData.specifications || {},
+        },
+      }))
+    );
+  }
+
   // Create a new asset
   static async createAsset(data: {
     customId: string;

@@ -28,3 +28,9 @@ Thumbs.db
 data/lifespan_training*.csv
 data/lifespan_bootstrap_summary.json
 data/external_datasets/
+data/lifecycle_outcomes_labels.csv
+data/lifecycle_outcomes_labels_seed_preprod.csv
+data/scheduler_state.json
+data/spec_feedback_cache.json
+data/spec_metrics_latest.json
+data/spec_variant_policy.json

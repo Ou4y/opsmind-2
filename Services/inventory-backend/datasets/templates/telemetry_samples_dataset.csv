@@ -1,0 +1,2 @@
+assetId,observedAt,source,rawSignalsJson,derivedStatus,activeHours,idleHours,offlineHours,consumptionScore,qualityImpactScore
+ASSET-EXAMPLE-0001,2026-05-22T09:45:00Z,device_agent,"{""isOnline"":true,""isActive"":true,""cpu"":0.67,""ram"":0.72}",online_in_use,5.5,1.2,0,0.64,0.41
