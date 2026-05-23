@@ -14,6 +14,7 @@ import UI from '/assets/js/ui.js';
 import TicketService from '/services/ticketService.js';
 import WorkflowService from '/services/workflowService.js';
 import OllamaService from '/services/ollamaService.js';
+import AgenticAiService from '/services/agenticAiService.js';
 import Router from '/assets/js/router.js';
 import AuthService from '/services/authService.js';
 import createSmoothTextStreamer from '/assets/js/components/smoothTextStreamer.js';
@@ -53,9 +54,13 @@ const state = {
 
 const ticketAiDetailsCache = new Map();
 
+const DEVICE_OPTION_MY_CURRENT = 'MY_CURRENT_DEVICE';
+const DEVICE_OPTION_OTHER_NOT_LISTED = 'OTHER_NOT_LISTED';
+const WEB_DEVICE_REGISTRATION_VERSION = 'web-registration-0.1.0';
+
 const DEVICE_NAME_BY_SELECTION = {
-    MY_CURRENT_DEVICE: 'My current device',
-    OTHER_NOT_LISTED: 'Other / Not listed'
+    [DEVICE_OPTION_MY_CURRENT]: 'My current device',
+    [DEVICE_OPTION_OTHER_NOT_LISTED]: 'Other / Not listed'
 };
 
 const ALLOWED_OS_TYPES = new Set(['WINDOWS', 'MACOS', 'LINUX', 'UNKNOWN']);
@@ -66,6 +71,13 @@ const ALLOWED_ISSUE_SCOPES = new Set([
     'BUILDING_WIDE',
     'UNKNOWN'
 ]);
+
+let createTicketEndpointDevices = [];
+let createTicketDevicesLoading = false;
+let pendingEndpointDeviceLoadOptions = null;
+let ticketEndpointDeviceStatusRequestId = 0;
+let selectedCreateTicketEndpointDeviceId = DEVICE_OPTION_OTHER_NOT_LISTED;
+let selectedCreateTicketEndpointDevice = null;
 
 let isAiHelpStreaming = false;
 let isEnhancementStreaming = false;
@@ -244,6 +256,11 @@ function setupEventListeners() {
     document.getElementById('manualLatitude')?.addEventListener('input', handleManualCoordinates);
     document.getElementById('manualLongitude')?.addEventListener('input', handleManualCoordinates);
 
+    document.getElementById('newTicketAffectedDevice')?.addEventListener('change', handleAffectedDeviceSelectionChange);
+    document.getElementById('registerEndpointDeviceBtn')?.addEventListener('click', toggleRegisterEndpointDevicePanel);
+    document.getElementById('registerEndpointDeviceSubmitBtn')?.addEventListener('click', handleRegisterEndpointDevice);
+    document.getElementById('registerEndpointDeviceCancelBtn')?.addEventListener('click', hideRegisterEndpointDevicePanel);
+
 }
 
 /**
@@ -403,14 +420,7 @@ async function loadTickets() {
         }
     } catch (error) {
         console.error('Failed to load tickets:', error);
-        
-        // Check if it's a network error
-        if (error.message.includes('fetch') || error.message.includes('Network')) {
-            // Use mock data for demo
-            useMockTickets();
-        } else {
-            showError(error.message);
-        }
+        showError(error?.message || 'Failed to load tickets from backend.');
     } finally {
         state.isLoading = false;
     }
@@ -446,6 +456,38 @@ function renderTickets() {
     }
 }
 
+function resolveTextValue(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined) continue;
+        const normalized = String(value).trim();
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return '';
+}
+
+function resolveRequesterDisplay(ticket) {
+    return resolveTextValue(
+        ticket?.requester_name,
+        ticket?.requesterName,
+        ticket?.requester,
+        ticket?.requester_id,
+        ticket?.requesterId
+    );
+}
+
+function resolveAssigneeDisplay(ticket) {
+    return resolveTextValue(
+        ticket?.assigned_to_name,
+        ticket?.assignedToName,
+        ticket?.assignee_name,
+        ticket?.assigneeName,
+        ticket?.assigned_to,
+        ticket?.assignedTo
+    );
+}
+
 /**
  * Render table view
  */
@@ -456,6 +498,9 @@ function renderTableView(tableBody) {
     const currentUser = AuthService.getCurrentUser();
 
     state.tickets.forEach(ticket => {
+        const requesterDisplay = resolveRequesterDisplay(ticket);
+        const assigneeDisplay = resolveAssigneeDisplay(ticket);
+
         // Determine button visibility based on role
         const canTriggerWorkflow = AuthService.isTechnician() || AuthService.isSenior() || AuthService.isSupervisor() || AuthService.isAdmin();
         const canUpdate = AuthService.isAdmin() || 
@@ -473,7 +518,10 @@ function renderTableView(tableBody) {
                     </div>
                 </td>
                 <td>
-                    <span class="text-muted">-</span>
+                    ${requesterDisplay
+                        ? UI.escapeHTML(requesterDisplay)
+                        : '<span class="text-muted">--</span>'
+                    }
                 </td>
                 <td>
                     <span class="badge ${getPriorityBadgeClass(ticket.priority)}">
@@ -486,9 +534,9 @@ function renderTableView(tableBody) {
                     </span>
                 </td>
                 <td>
-                    ${ticket.assigned_to ? 
-                        `<span class="badge bg-info text-dark">${UI.escapeHTML(ticket.assigned_to_name || ticket.assignedToName || `Technician #${ticket.assigned_to}`)}</span>` : 
-                        `<span class="text-muted">Unassigned</span>`
+                    ${assigneeDisplay
+                        ? `<span class="badge bg-info text-dark">${UI.escapeHTML(assigneeDisplay)}</span>`
+                        : `<span class="text-muted">Not assigned</span>`
                     }
                 </td>
                 <td>
@@ -752,20 +800,27 @@ function populateTicketModal(ticket) {
     typeBadge.textContent = formatType(ticket.type_of_request || ticket.type);
 
     // Details
-    document.getElementById('ticketRequester').textContent = ticket.requester_id || ticket.requesterName || ticket.requester || 'Unknown';
+    const requesterDisplay = resolveRequesterDisplay(ticket);
+    document.getElementById('ticketRequester').textContent = requesterDisplay || '--';
     
     // Assigned To
     const assignedToEl = document.getElementById('ticketAssignedTo');
-    if (ticket.assigned_to) {
-        const technicianDisplay = ticket.assigned_to_name || ticket.assignedToName || `Technician #${ticket.assigned_to}`;
-        assignedToEl.innerHTML = `<span class="badge bg-info text-dark">${UI.escapeHTML(technicianDisplay)}</span>`;
+    const assigneeDisplay = resolveAssigneeDisplay(ticket);
+    if (assigneeDisplay) {
+        assignedToEl.innerHTML = `<span class="badge bg-info text-dark">${UI.escapeHTML(assigneeDisplay)}</span>`;
     } else {
-        assignedToEl.innerHTML = `<span class="text-muted">Unassigned</span>`;
+        assignedToEl.innerHTML = `<span class="text-muted">Not assigned</span>`;
     }
     
-    document.getElementById('ticketAssignedLevel').textContent = ticket.assigned_to_level || 'L1';
-    document.getElementById('ticketSupportLevel').textContent = ticket.support_level || 'L1';
-    document.getElementById('ticketEscalationCount').textContent = ticket.escalation_count || 0;
+    document.getElementById('ticketAssignedLevel').textContent =
+        resolveTextValue(ticket.assigned_to_level, ticket.assignedToLevel) || '--';
+    document.getElementById('ticketSupportLevel').textContent =
+        resolveTextValue(ticket.support_level, ticket.supportLevel) || '--';
+    const escalationCount = ticket.escalation_count ?? ticket.escalationCount;
+    document.getElementById('ticketEscalationCount').textContent =
+        escalationCount !== null && escalationCount !== undefined && String(escalationCount).trim() !== ''
+            ? String(escalationCount)
+            : '--';
     
     // Display location as coordinates
     const locationEl = document.getElementById('ticketLocation');
@@ -786,7 +841,14 @@ function populateTicketModal(ticket) {
     document.getElementById('ticketCreatedAt').textContent = UI.formatDateTime(ticket.created_at || ticket.createdAt);
     document.getElementById('ticketUpdatedAt').textContent = UI.formatDateTime(ticket.updated_at || ticket.updatedAt);
     document.getElementById('ticketDescription').textContent = ticket.description || 'No description provided.';
+    renderTicketEndpointDeviceContext(ticket);
     renderTicketAiInsightControls(ticket);
+
+    const statusChangeSection = document.querySelector('.status-change-section');
+    const isRequesterView = isRequesterRole(normalizeRole(resolveCurrentUserRole()));
+    if (statusChangeSection) {
+        statusChangeSection.classList.toggle('d-none', isRequesterView);
+    }
 
     // Legacy AI explanation section is replaced by on-demand insight details.
     const aiRecommendationsSection = document.getElementById('aiRecommendationsSection');
@@ -794,12 +856,20 @@ function populateTicketModal(ticket) {
         UI.toggle(aiRecommendationsSection, false);
     }
 
-    // Set current status in dropdown
-    document.getElementById('newStatusSelect').value = ticket.status;
-    
-    // Show/hide resolution summary field based on status
+    const newStatusSelect = document.getElementById('newStatusSelect');
     const resolutionContainer = document.getElementById('resolutionSummaryContainer');
     const resolutionTextarea = document.getElementById('resolutionSummary');
+    if (isRequesterView || !newStatusSelect) {
+        if (resolutionContainer) {
+            resolutionContainer.style.display = 'none';
+        }
+        return;
+    }
+
+    // Set current status in dropdown
+    newStatusSelect.value = ticket.status;
+    
+    // Show/hide resolution summary field based on status
     if (ticket.status === 'RESOLVED' || ticket.status === 'CLOSED') {
         resolutionContainer.style.display = 'block';
         if (ticket.resolution_summary) {
@@ -810,13 +880,124 @@ function populateTicketModal(ticket) {
     }
     
     // Listen for status changes to show/hide resolution field
-    document.getElementById('newStatusSelect').addEventListener('change', function(e) {
+    newStatusSelect.addEventListener('change', function(e) {
         if (e.target.value === 'RESOLVED' || e.target.value === 'CLOSED') {
             resolutionContainer.style.display = 'block';
         } else {
             resolutionContainer.style.display = 'none';
         }
     });
+}
+
+function renderTicketEndpointDeviceContext(ticket) {
+    const affectedDeviceId = String(ticket?.affected_device_id || ticket?.affectedDeviceId || '').trim();
+    const affectedDeviceName = String(ticket?.affected_device_name || ticket?.affectedDeviceName || '').trim();
+    const osType = resolveTextValue(ticket?.os_type, ticket?.osType).toUpperCase();
+    const issueScope = resolveTextValue(ticket?.issue_scope, ticket?.issueScope).toUpperCase();
+    const remoteSupportConsentValue = ticket?.remote_support_consent ?? ticket?.remoteSupportConsent;
+    const aiAgentEligibleValue = ticket?.ai_agent_eligible ?? ticket?.aiAgentEligible;
+    const aiAgentEligibilityReason = String(
+        ticket?.ai_agent_eligibility_reason || ticket?.aiAgentEligibilityReason || ''
+    ).trim();
+
+    const summaryEl = document.getElementById('ticketEndpointDeviceSummary');
+    const affectedDeviceNameEl = document.getElementById('ticketAffectedDeviceName');
+    const affectedDeviceIdEl = document.getElementById('ticketAffectedDeviceId');
+    const osTypeEl = document.getElementById('ticketOsType');
+    const issueScopeEl = document.getElementById('ticketIssueScope');
+    const remoteSupportConsentEl = document.getElementById('ticketRemoteSupportConsent');
+    const agentStatusEl = document.getElementById('ticketEndpointAgentStatus');
+    const agentVersionEl = document.getElementById('ticketEndpointAgentVersion');
+    const lastSeenEl = document.getElementById('ticketEndpointLastSeenAt');
+    const enabledEl = document.getElementById('ticketEndpointEnabled');
+    const aiEligibleEl = document.getElementById('ticketAiAgentEligible');
+    const aiReasonEl = document.getElementById('ticketAiAgentEligibilityReason');
+    const aiEligibleWrap = document.getElementById('ticketAiEligibilityWrap');
+    const aiReasonWrap = document.getElementById('ticketAiEligibilityReasonWrap');
+
+    if (summaryEl) {
+        summaryEl.textContent = affectedDeviceId
+            ? 'Registered endpoint device linked to this ticket.'
+            : 'No registered endpoint device linked to this ticket.';
+    }
+
+    if (affectedDeviceNameEl) affectedDeviceNameEl.textContent = affectedDeviceName || '--';
+    if (affectedDeviceIdEl) affectedDeviceIdEl.textContent = affectedDeviceId || '--';
+    if (osTypeEl) osTypeEl.textContent = osType || '--';
+    if (issueScopeEl) issueScopeEl.textContent = issueScope || '--';
+    if (remoteSupportConsentEl) {
+        remoteSupportConsentEl.textContent =
+            remoteSupportConsentValue === true
+                ? 'Yes'
+                : remoteSupportConsentValue === false
+                    ? 'No'
+                    : '--';
+    }
+    if (agentStatusEl) agentStatusEl.textContent = '--';
+    if (agentVersionEl) agentVersionEl.textContent = '--';
+    if (lastSeenEl) lastSeenEl.textContent = '--';
+    if (enabledEl) enabledEl.textContent = '--';
+    if (aiEligibleEl) {
+        aiEligibleEl.textContent =
+            aiAgentEligibleValue === true
+                ? 'Yes'
+                : aiAgentEligibleValue === false
+                    ? 'No'
+                    : '--';
+    }
+    if (aiReasonEl) aiReasonEl.textContent = aiAgentEligibilityReason || '--';
+
+    const currentUserRole = normalizeRole(resolveCurrentUserRole());
+    const showDetailedAgenticContext = isOperationalRole(currentUserRole) && !isRequesterRole(currentUserRole);
+
+    if (aiEligibleWrap) aiEligibleWrap.classList.toggle('d-none', !showDetailedAgenticContext);
+    if (aiReasonWrap) aiReasonWrap.classList.toggle('d-none', !showDetailedAgenticContext);
+
+    if (affectedDeviceId) {
+        void loadLiveEndpointDeviceStatus(affectedDeviceId);
+    }
+}
+
+async function loadLiveEndpointDeviceStatus(deviceId) {
+    const normalizedDeviceId = String(deviceId || '').trim();
+    if (!normalizedDeviceId) {
+        return;
+    }
+
+    const requestId = ++ticketEndpointDeviceStatusRequestId;
+    const agentStatusEl = document.getElementById('ticketEndpointAgentStatus');
+    const agentVersionEl = document.getElementById('ticketEndpointAgentVersion');
+    const lastSeenEl = document.getElementById('ticketEndpointLastSeenAt');
+    const enabledEl = document.getElementById('ticketEndpointEnabled');
+
+    if (agentStatusEl) agentStatusEl.textContent = 'Loading...';
+
+    try {
+        const response = await AgenticAiService.getEndpointDeviceById(normalizedDeviceId);
+        if (requestId !== ticketEndpointDeviceStatusRequestId) {
+            return;
+        }
+
+        const device = response?.device || response || {};
+        const status = String(device.agent_status || device.agentStatus || '--').trim() || '--';
+        const version = String(device.agent_version || device.agentVersion || '--').trim() || '--';
+        const lastSeenValue = device.last_seen_at || device.lastSeenAt || null;
+        const isEnabled = device.is_agent_enabled === true || device.isAgentEnabled === true;
+
+        if (agentStatusEl) agentStatusEl.textContent = status;
+        if (agentVersionEl) agentVersionEl.textContent = version;
+        if (lastSeenEl) lastSeenEl.textContent = lastSeenValue ? UI.formatDateTime(lastSeenValue) : '--';
+        if (enabledEl) enabledEl.textContent = isEnabled ? 'Yes' : 'No';
+    } catch (_error) {
+        if (requestId !== ticketEndpointDeviceStatusRequestId) {
+            return;
+        }
+
+        if (agentStatusEl) agentStatusEl.textContent = 'Unavailable';
+        if (agentVersionEl) agentVersionEl.textContent = '--';
+        if (lastSeenEl) lastSeenEl.textContent = '--';
+        if (enabledEl) enabledEl.textContent = '--';
+    }
 }
 
 function resolveTicketId(ticket) {
@@ -857,6 +1038,556 @@ async function resolveFullTicketForAiDetails(ticket) {
     return mergedTicket;
 }
 
+function hasPlanInput(ticket) {
+    const title = String(ticket?.title || ticket?.subject || '').trim();
+    const description = String(ticket?.description || ticket?.descriptionPreview || '').trim();
+    return Boolean(title && description);
+}
+
+async function resolveFullTicketForAgenticPlan(ticket) {
+    const baseTicket = ticket || {};
+
+    if (hasPlanInput(baseTicket)) {
+        return baseTicket;
+    }
+
+    const ticketId = resolveTicketId(baseTicket);
+    if (!ticketId) {
+        return baseTicket;
+    }
+
+    if (ticketAiDetailsCache.has(ticketId)) {
+        const cachedTicket = {
+            ...baseTicket,
+            ...ticketAiDetailsCache.get(ticketId)
+        };
+        if (hasPlanInput(cachedTicket)) {
+            return cachedTicket;
+        }
+    }
+
+    const response = await TicketService.getTicketById(ticketId);
+    const fetchedTicket = response?.data?.ticket || response?.data || response?.ticket || response;
+
+    if (!fetchedTicket || typeof fetchedTicket !== 'object') {
+        return baseTicket;
+    }
+
+    const mergedTicket = {
+        ...baseTicket,
+        ...fetchedTicket
+    };
+    ticketAiDetailsCache.set(ticketId, mergedTicket);
+    return mergedTicket;
+}
+
+function formatBooleanText(value) {
+    return value === true ? 'Yes' : 'No';
+}
+
+function safePlanText(value) {
+    if (value === null || value === undefined || value === '') {
+        return '--';
+    }
+    return UI.escapeHTML(String(value));
+}
+
+function hasManualReviewStep(steps) {
+    const stepList = Array.isArray(steps) ? steps : [];
+    return stepList.some((step) => {
+        const actionKey = String(step?.actionKey || step?.action_key || '').trim().toUpperCase();
+        return actionKey === 'MANUAL_REVIEW_REQUIRED';
+    });
+}
+
+function resolveCurrentActor() {
+    const currentUser = AuthService.getCurrentUser?.() || AuthService.getUser?.() || {};
+    const userId =
+        currentUser?.id ??
+        currentUser?.userId ??
+        currentUser?.user_id ??
+        currentUser?.workflowUserId ??
+        null;
+    const role =
+        currentUser?.technicianLevel ??
+        currentUser?.level ??
+        currentUser?.role ??
+        (Array.isArray(currentUser?.roles) ? currentUser.roles[0] : null) ??
+        null;
+
+    return {
+        userId: userId !== null && userId !== undefined ? String(userId) : null,
+        role: role ? String(role).toUpperCase() : null
+    };
+}
+
+function normalizePlanResponse(planPayload) {
+    const rawPlan = planPayload?.rawPlan && typeof planPayload.rawPlan === 'object' ? planPayload.rawPlan : {};
+    const safePlan = planPayload?.safePlan && typeof planPayload.safePlan === 'object' ? planPayload.safePlan : {};
+    const planRecord = planPayload?.plan && typeof planPayload.plan === 'object' ? planPayload.plan : null;
+    const persistedSafePlan = planRecord?.safe_plan && typeof planRecord.safe_plan === 'object'
+        ? planRecord.safe_plan
+        : {};
+    const displayPlan = Object.keys(safePlan).length
+        ? safePlan
+        : (Object.keys(persistedSafePlan).length ? persistedSafePlan : rawPlan);
+    const execution = planPayload?.execution && typeof planPayload.execution === 'object' ? planPayload.execution : null;
+    const executions = Array.isArray(planPayload?.executions) ? planPayload.executions : [];
+    const latestExecution = execution || executions[0] || null;
+    const singleTask = planPayload?.task && typeof planPayload.task === 'object' ? planPayload.task : null;
+    const tasks = Array.isArray(planPayload?.tasks) ? planPayload.tasks : [];
+    const latestTask = singleTask || tasks[0] || null;
+
+    return {
+        rawPlan,
+        safePlan,
+        planRecord,
+        displayPlan,
+        latestExecution,
+        latestTask,
+        tasks
+    };
+}
+
+function renderAgenticPlan(planPayload) {
+    const { rawPlan, displayPlan, planRecord, latestExecution, latestTask, tasks } = normalizePlanResponse(planPayload);
+    const plan = Object.keys(displayPlan).length ? displayPlan : rawPlan;
+    const planId = planRecord?.id || '--';
+    const planStatus = planRecord?.status || 'PENDING_APPROVAL';
+    const normalizedPlanStatus = String(planStatus || '').toUpperCase();
+    const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+    const executionAvailable = plan?.executionAvailable === true || planRecord?.execution_available === true;
+    const resolvedDeviceId = String(
+        plan?.affectedDeviceId ||
+        plan?.affected_device_id ||
+        planRecord?.safe_plan?.affectedDeviceId ||
+        planRecord?.safe_plan?.affected_device_id ||
+        plan?.ticketContext?.affectedDeviceId ||
+        plan?.ticketContext?.affected_device_id ||
+        planRecord?.safe_plan?.ticketContext?.affectedDeviceId ||
+        planRecord?.safe_plan?.ticketContext?.affected_device_id ||
+        ''
+    ).trim();
+    const hasLinkedDevice = Boolean(resolvedDeviceId);
+    const hasManualReview = hasManualReviewStep(steps);
+    const executionBlockedReason = plan?.executionBlockedReason || planRecord?.execution_blocked_reason || '--';
+    const riskLevel = plan?.riskLevel || planRecord?.risk_level || '--';
+    const requiresApproval = plan?.requiresApproval === true || planRecord?.requires_approval === true;
+    const showPlanActions = normalizedPlanStatus === 'PENDING_APPROVAL' && planRecord?.id;
+    const showMockExecutionAction = normalizedPlanStatus === 'APPROVED' && planRecord?.id;
+    const showQueueTaskAction =
+        normalizedPlanStatus === 'APPROVED' &&
+        executionAvailable &&
+        hasLinkedDevice &&
+        !hasManualReview &&
+        planRecord?.id;
+    const executionSteps = Array.isArray(latestExecution?.steps) ? latestExecution.steps : [];
+    const taskSteps = Array.isArray(latestTask?.steps) ? latestTask.steps : [];
+    const executionStepsHtml = executionSteps.length
+        ? executionSteps.map((step) => `
+            <li class="list-group-item">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                    <span class="fw-semibold">Step ${safePlanText(step?.step_order ?? step?.stepOrder ?? '--')}</span>
+                    <span class="badge bg-primary-subtle text-primary">${safePlanText(step?.action_key ?? step?.actionKey ?? '--')}</span>
+                </div>
+                <div class="small mt-2 text-muted">Status: ${safePlanText(step?.status || '--')}</div>
+                <div class="small mt-2">${safePlanText(step?.output || '--')}</div>
+            </li>
+        `).join('')
+        : `<li class="list-group-item text-muted small">No mock execution steps are available.</li>`;
+
+    const taskStepsHtml = taskSteps.length
+        ? taskSteps.map((step) => `
+            <li class="list-group-item">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                    <span class="fw-semibold">Step ${safePlanText(step?.step_order ?? step?.stepOrder ?? '--')}</span>
+                    <span class="badge bg-secondary-subtle text-secondary">${safePlanText(step?.action_key ?? step?.actionKey ?? '--')}</span>
+                </div>
+                <div class="small mt-2 text-muted">Status: ${safePlanText(step?.status || '--')}</div>
+                <div class="small mt-2">${safePlanText(step?.description || '--')}</div>
+            </li>
+        `).join('')
+        : `<li class="list-group-item text-muted small">No agent task steps are available.</li>`;
+
+    const stepsHtml = steps.length
+        ? steps.map((step) => {
+            const params = step?.params && typeof step.params === 'object' ? step.params : {};
+            const softwareName = params?.softwareName ? safePlanText(params.softwareName) : null;
+            const softwareKey = params?.softwareKey ? safePlanText(params.softwareKey) : null;
+            const softwareDetails = softwareName || softwareKey
+                ? `<div class="small mt-1 text-muted">Software: ${softwareName || softwareKey}${softwareName && softwareKey ? ` (${softwareKey})` : ''}</div>`
+                : '';
+
+            return `
+            <li class="list-group-item">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                    <span class="fw-semibold">Step ${safePlanText(step?.stepOrder ?? '--')}</span>
+                    <span class="badge bg-secondary-subtle text-secondary">${safePlanText(step?.actionKey || '--')}</span>
+                </div>
+                <div class="small mt-2">${safePlanText(step?.description || '--')}</div>
+                ${softwareDetails}
+            </li>
+        `;
+        }).join('')
+        : `<li class="list-group-item text-muted small">No remediation steps were generated.</li>`;
+
+    return `
+        <div class="card border-success-subtle ai-plan-card">
+            <div class="card-header bg-white">
+                <h6 class="mb-0">AI Remediation Plan</h6>
+            </div>
+            <div class="card-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                        <div class="text-muted small">Plan ID</div>
+                        <div class="fw-semibold">${safePlanText(planId)}</div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-muted small">Plan Status</div>
+                        <div class="fw-semibold">${safePlanText(planStatus)}</div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-muted small">Summary</div>
+                        <div>${safePlanText(plan?.summary || '--')}</div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-muted small">Risk Level</div>
+                        <div class="fw-semibold">${safePlanText(riskLevel)}</div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-muted small">Requires Approval</div>
+                        <div class="fw-semibold">${safePlanText(formatBooleanText(requiresApproval))}</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-muted small">Execution Available</div>
+                        <div class="fw-semibold">${safePlanText(formatBooleanText(executionAvailable))}</div>
+                    </div>
+                    ${executionAvailable ? '' : `
+                        <div class="col-md-6">
+                            <div class="text-muted small">Execution Blocked Reason</div>
+                            <div>${safePlanText(executionBlockedReason)}</div>
+                        </div>
+                    `}
+                </div>
+                <div class="alert alert-warning small mb-3" role="alert">
+                    This plan is generated for technician review only. No actions are executed in this phase.
+                </div>
+                <div class="text-muted small mb-2">Steps</div>
+                <ul class="list-group list-group-flush border rounded">
+                    ${stepsHtml}
+                </ul>
+                ${showPlanActions ? `
+                    <div class="mt-3 d-flex gap-2 flex-wrap">
+                        <button
+                            type="button"
+                            class="btn btn-sm ai-action-btn ai-action-btn-safe"
+                            data-agentic-plan-approve="true"
+                            data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
+                        >
+                            <i class="bi bi-check2-circle me-1"></i>Approve AI Plan
+                        </button>
+                        <button
+                            type="button"
+                            class="btn btn-sm ai-action-btn ai-action-btn-danger"
+                            data-agentic-plan-reject="true"
+                            data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
+                        >
+                            <i class="bi bi-x-octagon me-1"></i>Reject AI Plan
+                        </button>
+                    </div>
+                ` : ''}
+                ${showMockExecutionAction ? `
+                    <div class="mt-3 d-flex gap-2 flex-wrap">
+                        <button
+                            type="button"
+                            class="btn btn-sm ai-action-btn ai-action-btn-secondary"
+                            data-agentic-plan-mock-execute="true"
+                            data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
+                        >
+                            <i class="bi bi-bezier2 me-1"></i>Run Mock Execution
+                        </button>
+                    </div>
+                ` : ''}
+                ${showQueueTaskAction ? `
+                    <div class="mt-3 d-flex gap-2 flex-wrap">
+                        <button
+                            type="button"
+                            class="btn btn-sm ai-action-btn ai-action-btn-operational"
+                            data-agentic-plan-queue-task="true"
+                            data-plan-id="${safePlanText(planRecord.id)}"
+                        >
+                            <i class="bi bi-cpu-fill me-1"></i>Queue Agent Task
+                        </button>
+                    </div>
+                ` : ''}
+                ${hasManualReview ? `
+                    <div class="alert alert-secondary small mt-3 mb-0" role="alert">
+                        This plan requires manual review and cannot be queued for endpoint execution.
+                    </div>
+                ` : ''}
+                ${latestTask ? `
+                    <div class="mt-3 ai-status-card">
+                        <div class="text-muted small mb-2">Agent Task Queue</div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-4">
+                                <div class="text-muted small">Task ID</div>
+                                <div class="fw-semibold">${safePlanText(latestTask?.id || '--')}</div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="text-muted small">Device ID</div>
+                                <div class="fw-semibold">${safePlanText(latestTask?.device_id || latestTask?.deviceId || resolvedDeviceId || '--')}</div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="text-muted small">Task Status</div>
+                                <div class="fw-semibold">${safePlanText(latestTask?.status || '--')}</div>
+                            </div>
+                        </div>
+                        <ul class="list-group list-group-flush border rounded">
+                            ${taskStepsHtml}
+                        </ul>
+                        <div class="alert alert-warning small mt-3 mb-0" role="alert">
+                            Task queued for future Endpoint Agent. No real execution has been performed.
+                        </div>
+                    </div>
+                ` : ''}
+                ${tasks.length > 1 ? `
+                    <div class="small text-muted mt-2">
+                        Additional queued tasks for this plan: ${safePlanText(tasks.length - 1)}
+                    </div>
+                ` : ''}
+                ${latestExecution ? `
+                    <div class="mt-3 ai-execution-card">
+                        <div class="text-muted small mb-2">Mock Execution</div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <div class="text-muted small">Execution ID</div>
+                                <div class="fw-semibold">${safePlanText(latestExecution?.id || '--')}</div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="text-muted small">Execution Status</div>
+                                <div class="fw-semibold">${safePlanText(latestExecution?.status || '--')}</div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="text-muted small">Completed At</div>
+                                <div class="fw-semibold">${safePlanText(formatDateTime(latestExecution?.completed_at || latestExecution?.completedAt))}</div>
+                            </div>
+                        </div>
+                        <ul class="list-group list-group-flush border rounded">
+                            ${executionStepsHtml}
+                        </ul>
+                        <div class="alert alert-info small mt-3 mb-0" role="alert">
+                            Mock execution only. No real device actions were performed.
+                        </div>
+                    </div>
+                ` : ''}
+                <div class="mt-2" data-agentic-plan-action-message="true"></div>
+            </div>
+        </div>
+    `;
+}
+
+function resolveAgenticPlanErrorMessage(error) {
+    if (error?.code === 'AI_MODEL_UNAVAILABLE') {
+        return 'AI model is unavailable. Please make sure Ollama and gemma3:4b are running.';
+    }
+
+    if (error?.code === 'AGENTIC_AI_SERVICE_UNAVAILABLE') {
+        return 'Agentic AI Service is unavailable. Please make sure the service is running.';
+    }
+
+    if (error?.code === 'VALIDATION_ERROR') {
+        return error.message || 'Ticket title and description are required to generate an AI fix plan.';
+    }
+
+    if (error?.code === 'INVALID_PLAN_STATUS_TRANSITION') {
+        return error.message || 'This plan cannot be changed from its current status.';
+    }
+
+    if (error?.code === 'PLAN_NOT_FOUND') {
+        return error.message || 'The selected remediation plan no longer exists.';
+    }
+
+    if (error?.code === 'PLAN_NOT_APPROVED' || error?.code === 'EXECUTION_CONFLICT') {
+        return error.message || 'This plan cannot be mock-executed from its current status.';
+    }
+
+    if (
+        error?.code === 'TASK_QUEUE_CONFLICT' ||
+        error?.code === 'TASK_STATUS_CONFLICT' ||
+        error?.code === 'PLAN_REQUIRES_MANUAL_REVIEW'
+    ) {
+        return error.message || 'This plan cannot be queued for endpoint task execution right now.';
+    }
+
+    if (error?.code === 'TASK_NOT_FOUND') {
+        return error.message || 'The selected agent task was not found.';
+    }
+
+    return error?.message || 'Unable to generate AI fix plan right now.';
+}
+
+function bindAgenticPlanDecisionHandlers(container) {
+    if (!container) return;
+
+    const approveButton = container.querySelector('[data-agentic-plan-approve=\"true\"]');
+    const rejectButton = container.querySelector('[data-agentic-plan-reject=\"true\"]');
+    const mockExecuteButton = container.querySelector('[data-agentic-plan-mock-execute=\"true\"]');
+    const queueTaskButton = container.querySelector('[data-agentic-plan-queue-task=\"true\"]');
+    const messageContainer = container.querySelector('[data-agentic-plan-action-message=\"true\"]');
+    const planId =
+        approveButton?.dataset?.planId ||
+        rejectButton?.dataset?.planId ||
+        mockExecuteButton?.dataset?.planId ||
+        queueTaskButton?.dataset?.planId ||
+        null;
+
+    if (!planId) return;
+
+    const setButtonsState = (isLoading, loadingLabel) => {
+        if (approveButton) {
+            approveButton.disabled = isLoading;
+            approveButton.innerHTML = isLoading && loadingLabel === 'approve'
+                ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Approving...'
+                : '<i class=\"bi bi-check2-circle me-1\"></i>Approve AI Plan';
+        }
+
+        if (rejectButton) {
+            rejectButton.disabled = isLoading;
+            rejectButton.innerHTML = isLoading && loadingLabel === 'reject'
+                ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Rejecting...'
+                : '<i class=\"bi bi-x-octagon me-1\"></i>Reject AI Plan';
+        }
+
+        if (mockExecuteButton) {
+            mockExecuteButton.disabled = isLoading;
+            mockExecuteButton.innerHTML = isLoading && loadingLabel === 'mock'
+                ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Running mock execution...'
+                : '<i class=\"bi bi-bezier2 me-1\"></i>Run Mock Execution';
+        }
+
+        if (queueTaskButton) {
+            queueTaskButton.disabled = isLoading;
+            queueTaskButton.innerHTML = isLoading && loadingLabel === 'queue'
+                ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Queueing task...'
+                : '<i class=\"bi bi-cpu-fill me-1\"></i>Queue Agent Task';
+        }
+    };
+
+    if (approveButton) {
+        approveButton.addEventListener('click', async () => {
+            setButtonsState(true, 'approve');
+            try {
+                const responsePayload = await AgenticAiService.approveRemediationPlan(planId, resolveCurrentActor());
+                container.innerHTML = renderAgenticPlan(responsePayload);
+                bindAgenticPlanDecisionHandlers(container);
+                UI.success(responsePayload?.message || 'Plan approved. Execution is not implemented yet.');
+            } catch (error) {
+                if (messageContainer) {
+                    messageContainer.innerHTML = `
+                        <div class=\"alert alert-danger py-2 px-3 mb-0\" role=\"alert\">
+                            ${UI.escapeHTML(resolveAgenticPlanErrorMessage(error))}
+                        </div>
+                    `;
+                }
+            } finally {
+                setButtonsState(false, '');
+            }
+        });
+    }
+
+    if (rejectButton) {
+        rejectButton.addEventListener('click', async () => {
+            const reasonInput = window.prompt('Optional rejection reason:', '');
+            if (reasonInput === null) {
+                return;
+            }
+
+            setButtonsState(true, 'reject');
+            try {
+                const responsePayload = await AgenticAiService.rejectRemediationPlan(
+                    planId,
+                    resolveCurrentActor(),
+                    reasonInput
+                );
+                container.innerHTML = renderAgenticPlan(responsePayload);
+                bindAgenticPlanDecisionHandlers(container);
+                UI.success(responsePayload?.message || 'Plan rejected. Continue with the normal manual workflow.');
+            } catch (error) {
+                if (messageContainer) {
+                    messageContainer.innerHTML = `
+                        <div class=\"alert alert-danger py-2 px-3 mb-0\" role=\"alert\">
+                            ${UI.escapeHTML(resolveAgenticPlanErrorMessage(error))}
+                        </div>
+                    `;
+                }
+            } finally {
+                setButtonsState(false, '');
+            }
+        });
+    }
+
+    if (mockExecuteButton) {
+        mockExecuteButton.addEventListener('click', async () => {
+            setButtonsState(true, 'mock');
+            try {
+                const executionPayload = await AgenticAiService.startMockExecution(planId, resolveCurrentActor());
+                const planPayload = await AgenticAiService.getRemediationPlanById(planId);
+                const mergedPayload = {
+                    ...planPayload,
+                    execution: executionPayload?.execution || null
+                };
+
+                container.innerHTML = renderAgenticPlan(mergedPayload);
+                bindAgenticPlanDecisionHandlers(container);
+                UI.success(executionPayload?.message || 'Mock execution completed. No real machine actions were performed.');
+            } catch (error) {
+                if (messageContainer) {
+                    messageContainer.innerHTML = `
+                        <div class=\"alert alert-danger py-2 px-3 mb-0\" role=\"alert\">
+                            ${UI.escapeHTML(resolveAgenticPlanErrorMessage(error))}
+                        </div>
+                    `;
+                }
+            } finally {
+                setButtonsState(false, '');
+            }
+        });
+    }
+
+    if (queueTaskButton) {
+        queueTaskButton.addEventListener('click', async () => {
+            setButtonsState(true, 'queue');
+            try {
+                const queuePayload = await AgenticAiService.queueAgentTaskFromPlan(planId, resolveCurrentActor());
+                const [planPayload, tasksPayload] = await Promise.all([
+                    AgenticAiService.getRemediationPlanById(planId),
+                    AgenticAiService.listAgentTasksByPlan(planId)
+                ]);
+
+                const mergedPayload = {
+                    ...planPayload,
+                    task: queuePayload?.task || null,
+                    tasks: Array.isArray(tasksPayload?.tasks) ? tasksPayload.tasks : []
+                };
+
+                container.innerHTML = renderAgenticPlan(mergedPayload);
+                bindAgenticPlanDecisionHandlers(container);
+                UI.success(queuePayload?.message || 'Task queued for future Endpoint Agent. No real execution has been performed.');
+            } catch (error) {
+                if (messageContainer) {
+                    messageContainer.innerHTML = `
+                        <div class=\"alert alert-danger py-2 px-3 mb-0\" role=\"alert\">
+                            ${UI.escapeHTML(resolveAgenticPlanErrorMessage(error))}
+                        </div>
+                    `;
+                }
+            } finally {
+                setButtonsState(false, '');
+            }
+        });
+    }
+}
+
 function renderTicketAiInsightControls(ticket) {
     const aiInsightContainer = document.getElementById('ticketAiPriorityInsight');
     if (!aiInsightContainer) return;
@@ -870,48 +1601,96 @@ function renderTicketAiInsightControls(ticket) {
     }
 
     aiInsightContainer.innerHTML = `
-        <div class="card mb-3 border-0 bg-light">
+        <div class="card mb-3 border-0 bg-light ai-status-card">
             <div class="card-body">
-                <button type="button" class="btn btn-outline-primary btn-sm" id="ticketAiInsightBtn">
+                <button type="button" class="btn btn-sm ai-action-btn ai-action-btn-secondary" id="ticketAiInsightBtn">
                     <i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}
                 </button>
                 <div class="mt-3 d-none" id="ticketAiInsightDetails"></div>
             </div>
         </div>
+        <div class="card mb-3 border-0 bg-light ai-status-card">
+            <div class="card-body">
+                <button type="button" class="btn btn-sm ai-action-btn ai-action-btn-primary" id="ticketAgenticPlanBtn">
+                    <i class="bi bi-wrench-adjustable-circle me-1"></i>Generate AI Fix Plan
+                </button>
+                <div class="mt-3 d-none" id="ticketAgenticPlanDetails"></div>
+            </div>
+        </div>
     `;
 
-    const button = document.getElementById('ticketAiInsightBtn');
-    const detailsContainer = document.getElementById('ticketAiInsightDetails');
-    if (!button || !detailsContainer) return;
+    const aiInsightButton = document.getElementById('ticketAiInsightBtn');
+    const aiInsightDetailsContainer = document.getElementById('ticketAiInsightDetails');
+    if (!aiInsightButton || !aiInsightDetailsContainer) return;
 
-    button.addEventListener('click', async () => {
-        if (detailsContainer.dataset.loaded === 'true') {
-            detailsContainer.classList.remove('d-none');
+    aiInsightButton.addEventListener('click', async () => {
+        if (aiInsightDetailsContainer.dataset.loaded === 'true') {
+            aiInsightDetailsContainer.classList.remove('d-none');
             return;
         }
 
-        button.disabled = true;
-        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading...';
+        aiInsightButton.disabled = true;
+        aiInsightButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Loading...';
 
         try {
             const enrichedTicket = await resolveFullTicketForAiDetails(ticket);
-            detailsContainer.innerHTML = renderAiPriorityInsight({
+            aiInsightDetailsContainer.innerHTML = renderAiPriorityInsight({
                 ticket: enrichedTicket,
                 currentUserRole
             });
-            detailsContainer.dataset.loaded = 'true';
-            detailsContainer.classList.remove('d-none');
+            aiInsightDetailsContainer.dataset.loaded = 'true';
+            aiInsightDetailsContainer.classList.remove('d-none');
         } catch (error) {
             console.error('[Tickets] Failed to load AI priority details:', error);
-            detailsContainer.innerHTML = `
+            aiInsightDetailsContainer.innerHTML = `
                 <div class="alert alert-warning mb-0" role="alert">
                     AI priority details could not be loaded right now.
                 </div>
             `;
-            detailsContainer.classList.remove('d-none');
+            aiInsightDetailsContainer.classList.remove('d-none');
         } finally {
-            button.disabled = false;
-            button.innerHTML = `<i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}`;
+            aiInsightButton.disabled = false;
+            aiInsightButton.innerHTML = `<i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}`;
+        }
+    });
+
+    const agenticPlanButton = document.getElementById('ticketAgenticPlanBtn');
+    const agenticPlanDetailsContainer = document.getElementById('ticketAgenticPlanDetails');
+    if (!agenticPlanButton || !agenticPlanDetailsContainer) return;
+
+    agenticPlanButton.addEventListener('click', async () => {
+        if (agenticPlanDetailsContainer.dataset.loaded === 'true') {
+            agenticPlanDetailsContainer.classList.remove('d-none');
+            return;
+        }
+
+        agenticPlanButton.disabled = true;
+        agenticPlanButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Generating AI fix plan...';
+
+        try {
+            const enrichedTicket = await resolveFullTicketForAgenticPlan(ticket);
+            if (!hasPlanInput(enrichedTicket)) {
+                const validationError = new Error('Ticket title and description are required to generate an AI fix plan.');
+                validationError.code = 'VALIDATION_ERROR';
+                throw validationError;
+            }
+
+            const planPayload = await AgenticAiService.generateRemediationPlan(enrichedTicket, resolveCurrentActor());
+            agenticPlanDetailsContainer.innerHTML = renderAgenticPlan(planPayload);
+            bindAgenticPlanDecisionHandlers(agenticPlanDetailsContainer);
+            agenticPlanDetailsContainer.dataset.loaded = 'true';
+            agenticPlanDetailsContainer.classList.remove('d-none');
+        } catch (error) {
+            console.error('[Tickets] Failed to generate AI remediation plan:', error);
+            agenticPlanDetailsContainer.innerHTML = `
+                <div class="alert alert-danger mb-0" role="alert">
+                    ${UI.escapeHTML(resolveAgenticPlanErrorMessage(error))}
+                </div>
+            `;
+            agenticPlanDetailsContainer.classList.remove('d-none');
+        } finally {
+            agenticPlanButton.disabled = false;
+            agenticPlanButton.innerHTML = '<i class="bi bi-wrench-adjustable-circle me-1"></i>Generate AI Fix Plan';
         }
     });
 }
@@ -1040,12 +1819,14 @@ async function openWorkflowModal() {
         const workflows = await WorkflowService.getWorkflowsForTicket(state.selectedTicket);
         renderWorkflowOptions(container, workflows);
     } catch (error) {
-        // Use mock workflows
-        renderWorkflowOptions(container, [
-            { id: 'wf-1', name: 'Auto-Assignment', description: 'Automatically assign to available technician' },
-            { id: 'wf-2', name: 'Escalation', description: 'Escalate to senior support' },
-            { id: 'wf-3', name: 'Notification', description: 'Send notification to stakeholders' }
-        ]);
+        console.error('Failed to load workflows:', error);
+        if (container) {
+            container.innerHTML = `
+                <div class="alert alert-danger mb-0" role="alert">
+                    Unable to load workflows from backend right now.
+                </div>
+            `;
+        }
     } finally {
         UI.toggle(loading, false);
     }
@@ -1112,6 +1893,8 @@ async function triggerWorkflow(workflowId) {
 function openCreateModal() {
     isAiHelpStreaming = false;
     isEnhancementStreaming = false;
+    selectedCreateTicketEndpointDeviceId = DEVICE_OPTION_OTHER_NOT_LISTED;
+    selectedCreateTicketEndpointDevice = null;
 
     const modal = document.getElementById('createTicketModal');
     const form = document.getElementById('createTicketForm');
@@ -1120,7 +1903,14 @@ function openCreateModal() {
     UI.resetFormValidation(form);
     form?.reset();
     const affectedDeviceSelect = document.getElementById('newTicketAffectedDevice');
-    if (affectedDeviceSelect) affectedDeviceSelect.value = 'MY_CURRENT_DEVICE';
+    if (affectedDeviceSelect) {
+        affectedDeviceSelect.innerHTML = `
+            <option value="${DEVICE_OPTION_MY_CURRENT}" selected>Loading your registered devices...</option>
+            <option value="${DEVICE_OPTION_OTHER_NOT_LISTED}">Other / Not listed</option>
+        `;
+        affectedDeviceSelect.value = DEVICE_OPTION_MY_CURRENT;
+        syncSelectedEndpointDeviceState(DEVICE_OPTION_MY_CURRENT);
+    }
     const osTypeSelect = document.getElementById('newTicketOsType');
     if (osTypeSelect) osTypeSelect.value = 'WINDOWS';
     const issueScopeSelect = document.getElementById('newTicketIssueScope');
@@ -1155,6 +1945,11 @@ function openCreateModal() {
     if (enhancedPreviewText) {
         enhancedPreviewText.textContent = '';
     }
+    setCreateTicketDeviceLoadMessage('Loading your registered devices...', 'muted');
+    setRegisterEndpointDeviceMessage('', 'muted');
+    hideRegisterEndpointDevicePanel();
+    prepareRegisterEndpointDevicePanelDefaults();
+    void loadRegisteredEndpointDevices();
     
     const modalInstance = new bootstrap.Modal(modal);
     modalInstance.show();
@@ -1320,14 +2115,302 @@ async function loadAssignees() {
         
         select.innerHTML = html;
     } catch (error) {
-        // Use mock data
-        select.innerHTML = `
-            <option value="">Unassigned</option>
-            <option value="1">John Smith</option>
-            <option value="2">Sarah Wilson</option>
-            <option value="3">Mike Johnson</option>
-            <option value="4">Lisa Chen</option>
-        `;
+        console.error('Failed to load assignees:', error);
+        select.innerHTML = '<option value="">Unassigned</option>';
+    }
+}
+
+function normalizeEndpointDeviceRecord(device) {
+    const source = device && typeof device === 'object' ? device : {};
+    const id = String(source.id || '').trim();
+    if (!id) return null;
+
+    const deviceName = String(source.device_name || source.deviceName || 'Unnamed device').trim() || 'Unnamed device';
+    const osTypeRaw = String(source.os_type || source.osType || 'UNKNOWN').trim().toUpperCase();
+    const agentStatusRaw = String(source.agent_status || source.agentStatus || 'OFFLINE').trim().toUpperCase();
+
+    return {
+        id,
+        deviceName,
+        osType: ALLOWED_OS_TYPES.has(osTypeRaw) ? osTypeRaw : 'UNKNOWN',
+        agentStatus: agentStatusRaw || 'OFFLINE'
+    };
+}
+
+function inferOsTypeFromBrowser() {
+    const platform = String(navigator.platform || '').toLowerCase();
+    const userAgent = String(navigator.userAgent || '').toLowerCase();
+    const fingerprint = `${platform} ${userAgent}`;
+
+    if (fingerprint.includes('mac')) return 'MACOS';
+    if (fingerprint.includes('win')) return 'WINDOWS';
+    if (fingerprint.includes('linux')) return 'LINUX';
+    return 'UNKNOWN';
+}
+
+function inferDeviceNameFromBrowser() {
+    const platform = String(navigator.platform || '').trim();
+    return platform ? `My ${platform} device` : 'My current device';
+}
+
+function normalizeTicketCategoryForSubmission(category) {
+    const raw = String(category || '').trim();
+    if (!raw) return 'OTHER';
+
+    const normalized = raw.toUpperCase().replace(/[\s-]+/g, '_');
+
+    if (
+        normalized === 'SOFTWARE' ||
+        normalized === 'SOFTWARE_APPLICATION' ||
+        normalized === 'APPLICATION' ||
+        normalized === 'APP'
+    ) {
+        return 'SOFTWARE';
+    }
+
+    if (
+        normalized.includes('SOFTWARE') ||
+        normalized.includes('APPLICATION') ||
+        normalized.includes('APP')
+    ) {
+        return 'SOFTWARE';
+    }
+
+    return normalized;
+}
+
+function getRegisteredEndpointDeviceById(deviceId) {
+    const normalizedDeviceId = String(deviceId || '').trim();
+    if (!normalizedDeviceId) return null;
+    return createTicketEndpointDevices.find((device) => device.id === normalizedDeviceId) || null;
+}
+
+function getSelectedEndpointDevice() {
+    const selectedValue = document.getElementById('newTicketAffectedDevice')?.value || '';
+    return getRegisteredEndpointDeviceById(selectedValue);
+}
+
+function syncSelectedEndpointDeviceState(selectedValue = null) {
+    const resolvedValue = String(
+        selectedValue ?? document.getElementById('newTicketAffectedDevice')?.value ?? DEVICE_OPTION_OTHER_NOT_LISTED
+    ).trim();
+
+    selectedCreateTicketEndpointDeviceId = resolvedValue || DEVICE_OPTION_OTHER_NOT_LISTED;
+    selectedCreateTicketEndpointDevice = getRegisteredEndpointDeviceById(selectedCreateTicketEndpointDeviceId);
+}
+
+function resolveSelectedDeviceLabel() {
+    const selectedValue = document.getElementById('newTicketAffectedDevice')?.value || DEVICE_OPTION_OTHER_NOT_LISTED;
+    const selectedRegisteredDevice = getRegisteredEndpointDeviceById(selectedValue);
+
+    if (selectedRegisteredDevice) {
+        return selectedRegisteredDevice.deviceName;
+    }
+
+    return DEVICE_NAME_BY_SELECTION[selectedValue] || 'Unknown';
+}
+
+function setCreateTicketDeviceLoadMessage(message, tone = 'muted') {
+    const loadMessage = document.getElementById('newTicketDeviceLoadMessage');
+    if (!loadMessage) return;
+
+    loadMessage.textContent = message || '';
+    loadMessage.classList.remove('text-muted', 'text-danger', 'text-success');
+
+    if (tone === 'danger') {
+        loadMessage.classList.add('text-danger');
+    } else if (tone === 'success') {
+        loadMessage.classList.add('text-success');
+    } else {
+        loadMessage.classList.add('text-muted');
+    }
+}
+
+function setRegisterEndpointDeviceMessage(message, tone = 'muted') {
+    const messageEl = document.getElementById('registerEndpointDeviceMessage');
+    if (!messageEl) return;
+
+    messageEl.textContent = message || '';
+    messageEl.classList.remove('text-muted', 'text-danger', 'text-success');
+
+    if (tone === 'danger') {
+        messageEl.classList.add('text-danger');
+    } else if (tone === 'success') {
+        messageEl.classList.add('text-success');
+    } else {
+        messageEl.classList.add('text-muted');
+    }
+}
+
+function renderEndpointDeviceOptions(selectedDeviceId = null) {
+    const select = document.getElementById('newTicketAffectedDevice');
+    if (!select) return;
+
+    select.innerHTML = '';
+
+    if (createTicketEndpointDevices.length === 0) {
+        const noDevicesOption = document.createElement('option');
+        noDevicesOption.value = DEVICE_OPTION_OTHER_NOT_LISTED;
+        noDevicesOption.textContent = 'Other / Not listed';
+        select.appendChild(noDevicesOption);
+        select.value = DEVICE_OPTION_OTHER_NOT_LISTED;
+        syncSelectedEndpointDeviceState(DEVICE_OPTION_OTHER_NOT_LISTED);
+        return;
+    }
+
+    createTicketEndpointDevices.forEach((device) => {
+        const option = document.createElement('option');
+        option.value = device.id;
+        option.textContent = `${device.deviceName} - ${device.osType} - ${device.agentStatus}`;
+        select.appendChild(option);
+    });
+
+    const otherOption = document.createElement('option');
+    otherOption.value = DEVICE_OPTION_OTHER_NOT_LISTED;
+    otherOption.textContent = 'Other / Not listed';
+    select.appendChild(otherOption);
+
+    const preferredId = selectedDeviceId && getRegisteredEndpointDeviceById(selectedDeviceId)
+        ? selectedDeviceId
+        : createTicketEndpointDevices[0]?.id;
+
+    select.value = preferredId || DEVICE_OPTION_OTHER_NOT_LISTED;
+    syncSelectedEndpointDeviceState(select.value);
+}
+
+function prepareRegisterEndpointDevicePanelDefaults() {
+    const osTypeInput = document.getElementById('registerEndpointDeviceOsType');
+    const deviceNameInput = document.getElementById('registerEndpointDeviceName');
+    if (osTypeInput) osTypeInput.value = inferOsTypeFromBrowser();
+    if (deviceNameInput) deviceNameInput.value = inferDeviceNameFromBrowser();
+}
+
+function hideRegisterEndpointDevicePanel() {
+    const panel = document.getElementById('registerEndpointDevicePanel');
+    if (!panel) return;
+    panel.classList.add('d-none');
+}
+
+function toggleRegisterEndpointDevicePanel() {
+    const panel = document.getElementById('registerEndpointDevicePanel');
+    if (!panel) return;
+
+    const shouldShow = panel.classList.contains('d-none');
+    if (shouldShow) {
+        prepareRegisterEndpointDevicePanelDefaults();
+        setRegisterEndpointDeviceMessage('', 'muted');
+        panel.classList.remove('d-none');
+    } else {
+        panel.classList.add('d-none');
+    }
+}
+
+function applySelectedDeviceDefaults() {
+    const selectedDevice = selectedCreateTicketEndpointDevice || getSelectedEndpointDevice();
+    if (!selectedDevice) {
+        return;
+    }
+
+    const osTypeSelect = document.getElementById('newTicketOsType');
+    const issueScopeSelect = document.getElementById('newTicketIssueScope');
+
+    if (osTypeSelect) {
+        osTypeSelect.value = ALLOWED_OS_TYPES.has(selectedDevice.osType) ? selectedDevice.osType : 'UNKNOWN';
+    }
+
+    if (issueScopeSelect) {
+        issueScopeSelect.value = 'MY_DEVICE';
+    }
+}
+
+function handleAffectedDeviceSelectionChange() {
+    syncSelectedEndpointDeviceState();
+    applySelectedDeviceDefaults();
+}
+
+async function loadRegisteredEndpointDevices(options = {}) {
+    if (createTicketDevicesLoading) {
+        pendingEndpointDeviceLoadOptions = {
+            ...(pendingEndpointDeviceLoadOptions || {}),
+            ...(options || {})
+        };
+        return;
+    }
+
+    const { autoSelectDeviceId = null } = options;
+    pendingEndpointDeviceLoadOptions = null;
+    createTicketDevicesLoading = true;
+    setCreateTicketDeviceLoadMessage('Loading your registered devices...', 'muted');
+
+    try {
+        const devices = await AgenticAiService.listMyEndpointDevices();
+        createTicketEndpointDevices = devices
+            .map(normalizeEndpointDeviceRecord)
+            .filter((device) => Boolean(device));
+
+        renderEndpointDeviceOptions(autoSelectDeviceId);
+        applySelectedDeviceDefaults();
+
+        if (createTicketEndpointDevices.length > 0) {
+            setCreateTicketDeviceLoadMessage('', 'muted');
+        } else {
+            setCreateTicketDeviceLoadMessage('No registered devices found. You can still create a normal ticket.', 'muted');
+        }
+    } catch (error) {
+        console.error('[Tickets] Failed to load endpoint devices:', error);
+        createTicketEndpointDevices = [];
+        renderEndpointDeviceOptions();
+        setCreateTicketDeviceLoadMessage(
+            'Could not load registered devices. You can still create a normal ticket.',
+            'danger'
+        );
+    } finally {
+        createTicketDevicesLoading = false;
+        if (pendingEndpointDeviceLoadOptions) {
+            const queuedOptions = pendingEndpointDeviceLoadOptions;
+            pendingEndpointDeviceLoadOptions = null;
+            void loadRegisteredEndpointDevices(queuedOptions);
+        }
+    }
+}
+
+async function handleRegisterEndpointDevice() {
+    const nameInput = document.getElementById('registerEndpointDeviceName');
+    const osTypeInput = document.getElementById('registerEndpointDeviceOsType');
+    const submitBtn = document.getElementById('registerEndpointDeviceSubmitBtn');
+
+    const deviceName = String(nameInput?.value || '').trim();
+    const osTypeRaw = String(osTypeInput?.value || 'UNKNOWN').trim().toUpperCase();
+    const osType = ALLOWED_OS_TYPES.has(osTypeRaw) ? osTypeRaw : 'UNKNOWN';
+
+    if (!deviceName) {
+        setRegisterEndpointDeviceMessage('Device name is required.', 'danger');
+        return;
+    }
+
+    UI.setButtonLoading(submitBtn, true);
+    setRegisterEndpointDeviceMessage('Registering device...', 'muted');
+
+    try {
+        const response = await AgenticAiService.registerEndpointDevice({
+            deviceName,
+            osType,
+            agentVersion: WEB_DEVICE_REGISTRATION_VERSION
+        });
+
+        const createdDevice = normalizeEndpointDeviceRecord(response?.device || response);
+        await loadRegisteredEndpointDevices({
+            autoSelectDeviceId: createdDevice?.id || null
+        });
+
+        setRegisterEndpointDeviceMessage('Device registered successfully.', 'success');
+        hideRegisterEndpointDevicePanel();
+        UI.success('Device registered successfully.');
+    } catch (error) {
+        console.error('[Tickets] Device registration failed:', error);
+        setRegisterEndpointDeviceMessage(error?.message || 'Could not register device right now.', 'danger');
+    } finally {
+        UI.setButtonLoading(submitBtn, false);
     }
 }
 
@@ -1360,15 +2443,48 @@ async function handleCreateTicket(e) {
     const title = document.getElementById('newTicketSubject').value.trim();
     const description = document.getElementById('newTicketDescription').value.trim();
     const type_of_request = document.getElementById('newTicketType')?.value || 'INCIDENT';
-    const category = document.getElementById('newTicketCategory')?.value || 'OTHER';
-    const deviceSelection = document.getElementById('newTicketAffectedDevice')?.value || 'MY_CURRENT_DEVICE';
-    const affectedDeviceId = null;
-    const affectedDeviceName = DEVICE_NAME_BY_SELECTION[deviceSelection] || null;
+    const category = normalizeTicketCategoryForSubmission(document.getElementById('newTicketCategory')?.value || 'OTHER');
+    const selectedEndpointDeviceId = String(
+        document.getElementById('newTicketAffectedDevice')?.value || DEVICE_OPTION_OTHER_NOT_LISTED
+    ).trim();
+    syncSelectedEndpointDeviceState(selectedEndpointDeviceId);
+    const selectedEndpointDevice =
+        selectedCreateTicketEndpointDevice &&
+        selectedCreateTicketEndpointDevice.id === selectedEndpointDeviceId
+            ? selectedCreateTicketEndpointDevice
+            : getRegisteredEndpointDeviceById(selectedEndpointDeviceId);
+    let affectedDeviceId = null;
+    let affectedDeviceName = null;
     const osTypeRaw = String(document.getElementById('newTicketOsType')?.value || 'UNKNOWN').toUpperCase();
     const issueScopeRaw = String(document.getElementById('newTicketIssueScope')?.value || 'UNKNOWN').toUpperCase();
-    const osType = ALLOWED_OS_TYPES.has(osTypeRaw) ? osTypeRaw : 'UNKNOWN';
-    const issueScope = ALLOWED_ISSUE_SCOPES.has(issueScopeRaw) ? issueScopeRaw : 'UNKNOWN';
+    let osType = ALLOWED_OS_TYPES.has(osTypeRaw) ? osTypeRaw : 'UNKNOWN';
+    let issueScope = ALLOWED_ISSUE_SCOPES.has(issueScopeRaw) ? issueScopeRaw : 'MY_DEVICE';
     const remoteSupportConsent = document.getElementById('newTicketRemoteSupportConsent')?.checked === true;
+
+    if (selectedEndpointDevice) {
+        affectedDeviceId = selectedEndpointDevice.id;
+        affectedDeviceName = selectedEndpointDevice.deviceName;
+        osType = selectedEndpointDevice.osType;
+        if (!ALLOWED_ISSUE_SCOPES.has(issueScope) || issueScope === 'UNKNOWN') {
+            issueScope = 'MY_DEVICE';
+        }
+    } else if (selectedEndpointDeviceId === DEVICE_OPTION_OTHER_NOT_LISTED) {
+        affectedDeviceId = null;
+        affectedDeviceName = 'Other / Not listed';
+    } else {
+        affectedDeviceId = null;
+        affectedDeviceName = DEVICE_NAME_BY_SELECTION[selectedEndpointDeviceId] || null;
+    }
+
+    console.log('[TicketCreate] Selected endpoint device state', {
+        selectedEndpointDeviceId,
+        selectedEndpointDevice,
+        affectedDeviceId,
+        affectedDeviceName,
+        osType,
+        issueScope,
+        remoteSupportConsent
+    });
     
     // Location data (required)
     const lat = parseFloat(latitude);
@@ -1396,12 +2512,15 @@ async function handleCreateTicket(e) {
         latitude: lat,
         longitude: lng,
         requester_id,
-        affectedDeviceId: affectedDeviceId,
-        affectedDeviceName: affectedDeviceName,
+        affectedDeviceId,
+        affectedDeviceName,
         osType,
         issueScope,
         remoteSupportConsent
     };
+
+    const payload = ticketData;
+    console.log('[TicketCreate] Final create ticket payload', payload);
 
     if (requester_role) {
         ticketData.requester_role = requester_role;
@@ -1410,7 +2529,7 @@ async function handleCreateTicket(e) {
     }
 
     try {
-        const createResponse = await TicketService.createTicket(ticketData);
+        const createResponse = await TicketService.createTicket(payload);
         const createdTicket = createResponse?.data?.ticket || createResponse?.data || createResponse;
         const finalPriority = String(createdTicket?.priority || 'MEDIUM').toUpperCase();
 
@@ -1600,8 +2719,7 @@ async function handleAIHelp() {
     const description = document.getElementById('newTicketDescription')?.value.trim() || '';
     const category = document.getElementById('newTicketCategory')?.value || '';
     const osType = document.getElementById('newTicketOsType')?.value || '';
-    const deviceSelection = document.getElementById('newTicketAffectedDevice')?.value || '';
-    const deviceType = DEVICE_NAME_BY_SELECTION[deviceSelection] || 'Unknown';
+    const deviceType = resolveSelectedDeviceLabel();
     
     // Check if user has enough data for AI help
     if (!title || !description || !category) {
@@ -1984,7 +3102,7 @@ function normalizePriorityValue(value) {
 }
 
 function resolveTicketCreatedAt(ticket) {
-    return ticket?.createdAt || ticket?.created_at || ticket?.updatedAt || ticket?.updated_at || new Date().toISOString();
+    return ticket?.createdAt || ticket?.created_at || ticket?.updatedAt || ticket?.updated_at || null;
 }
 
 /**

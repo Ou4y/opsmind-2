@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum RemediationPlanStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  EXECUTION_QUEUED
+  EXECUTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum RemediationPlanRisk {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum AgenticExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgenticExecutionStepStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+enum EndpointAgentStatus {
+  ONLINE
+  OFFLINE
+  DISABLED
+}
+
+enum AgentTaskStatus {
+  QUEUED
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentTaskStepStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+model AgenticRemediationPlan {
+  id String @id @default(uuid())
+
+  ticket_id       String
+  ticket_title    String?
+  ticket_category String?
+  ticket_priority String?
+
+  generated_by_user_id String?
+  generated_by_role    String?
+
+  raw_plan  Json
+  safe_plan Json
+
+  risk_level               RemediationPlanRisk
+  requires_approval        Boolean             @default(true)
+  execution_available      Boolean             @default(false)
+  execution_blocked_reason String?             @db.Text
+
+  status RemediationPlanStatus @default(PENDING_APPROVAL)
+
+  approved_by_user_id String?
+  approved_by_role    String?
+  approved_at         DateTime?
+
+  rejected_by_user_id String?
+  rejected_by_role    String?
+  rejected_at         DateTime?
+  rejection_reason    String?   @db.Text
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([ticket_id])
+  @@index([status])
+  @@index([created_at])
+}
+
+model AgenticMockExecution {
+  id        String                 @id @default(uuid())
+  plan_id   String
+  ticket_id String
+  status    AgenticExecutionStatus @default(PENDING)
+
+  started_by_user_id String?
+  started_by_role    String?
+  started_at         DateTime?
+  completed_at       DateTime?
+  failure_reason     String?   @db.Text
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  steps AgenticMockExecutionStep[]
+
+  @@index([plan_id])
+  @@index([ticket_id])
+  @@index([status])
+  @@index([created_at])
+}
+
+model AgenticMockExecutionStep {
+  id           String @id @default(uuid())
+  execution_id String
+
+  step_order  Int
+  action_key  String
+  description String?                    @db.Text
+  status      AgenticExecutionStepStatus @default(PENDING)
+
+  output        String? @db.Text
+  error_message String? @db.Text
+
+  started_at   DateTime?
+  completed_at DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  execution AgenticMockExecution @relation(fields: [execution_id], references: [id], onDelete: Cascade)
+
+  @@index([execution_id])
+  @@index([action_key])
+  @@index([status])
+}
+
+model EndpointDevice {
+  id               String              @id @default(uuid())
+  user_id          String
+  device_name      String
+  os_type          String              @default("UNKNOWN")
+  agent_version    String?
+  agent_status     EndpointAgentStatus @default(OFFLINE)
+  last_seen_at     DateTime?
+  registered_at    DateTime            @default(now())
+  updated_at       DateTime            @updatedAt
+  is_agent_enabled Boolean             @default(true)
+
+  @@index([user_id])
+  @@index([agent_status])
+  @@index([last_seen_at])
+}
+
+model AgentTask {
+  id        String          @id @default(uuid())
+  plan_id   String
+  ticket_id String
+  device_id String
+  status    AgentTaskStatus @default(QUEUED)
+
+  created_by_user_id String?
+  created_by_role    String?
+
+  claimed_at     DateTime?
+  started_at     DateTime?
+  completed_at   DateTime?
+  failure_reason String?   @db.Text
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  steps AgentTaskStep[]
+
+  @@index([plan_id])
+  @@index([ticket_id])
+  @@index([device_id])
+  @@index([status])
+  @@index([created_at])
+}
+
+model AgentTaskStep {
+  id      String @id @default(uuid())
+  task_id String
+
+  step_order  Int
+  action_key  String
+  description String? @db.Text
+  params      Json?
+
+  status        AgentTaskStepStatus @default(PENDING)
+  output        String?             @db.Text
+  error_message String?             @db.Text
+
+  started_at   DateTime?
+  completed_at DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  task AgentTask @relation(fields: [task_id], references: [id], onDelete: Cascade)
+
+  @@index([task_id])
+  @@index([action_key])
+  @@index([status])
+}

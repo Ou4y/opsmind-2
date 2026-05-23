@@ -291,7 +291,7 @@ function renderMissingAiState({ roleTier, finalPriority }) {
 
     if (roleTier === 'admin') {
         return `
-            <div class="card border-0 bg-light mb-0">
+            <div class="card border-0 bg-light ai-status-card mb-0">
                 <div class="card-body">
                     <h6 class="mb-2"><i class="bi bi-shield-exclamation me-2 text-warning"></i>AI audit is not available for this ticket.</h6>
                     <ul class="small mb-2">
@@ -310,7 +310,7 @@ function renderMissingAiState({ roleTier, finalPriority }) {
     }
 
     return `
-        <div class="card border-0 bg-light mb-0">
+        <div class="card border-0 bg-light ai-status-card mb-0">
             <div class="card-body">
                 <h6 class="mb-2"><i class="bi bi-info-circle me-2 text-secondary"></i>AI insight is not available for this ticket.</h6>
                 <p class="small text-muted mb-0">This ticket may have been created before AI analysis was enabled.</p>
@@ -343,7 +343,7 @@ export function AiPriorityInsight({ ticket, currentUserRole } = {}) {
 
     if (roleTier === 'junior') {
         return `
-            <div class="card border-0 bg-light mb-0">
+            <div class="card border-0 bg-light ai-status-card mb-0">
                 <div class="card-header bg-transparent">
                     <h6 class="mb-0"><i class="bi bi-cpu me-2 text-primary"></i>AI Priority Insight</h6>
                 </div>
@@ -365,7 +365,7 @@ export function AiPriorityInsight({ ticket, currentUserRole } = {}) {
 
     if (roleTier === 'senior_supervisor') {
         return `
-            <div class="card border-0 bg-light mb-0">
+            <div class="card border-0 bg-light ai-status-card mb-0">
                 <div class="card-header bg-transparent">
                     <h6 class="mb-0"><i class="bi bi-cpu me-2 text-primary"></i>AI Decision Details</h6>
                 </div>
@@ -406,7 +406,7 @@ export function AiPriorityInsight({ ticket, currentUserRole } = {}) {
     const predictedAt = formatDateTime(getField(sourceTicket, 'ai_predicted_at', 'aiPredictedAt'));
 
     return `
-        <div class="card border-0 bg-light mb-0">
+        <div class="card border-0 bg-light ai-status-card mb-0">
             <div class="card-header bg-transparent">
                 <h6 class="mb-0"><i class="bi bi-cpu me-2 text-primary"></i>AI Priority Audit</h6>
             </div>

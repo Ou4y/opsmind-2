@@ -763,7 +763,7 @@ window.viewTicketDetails = async function(ticketId) {
 /**
  * Render ticket details
  */
-function renderTicketDetails() {
+async function renderTicketDetails() {
     const detailsEl = document.getElementById('ticketDetailsContent');
     const details = state.selectedTicketDetails;
 
@@ -774,10 +774,16 @@ function renderTicketDetails() {
         return;
     }
 
-    renderTicketDetailsInto(detailsEl, {
-        ...details,
-        currentUserRole: resolveCurrentDashboardRole()
-    });
+    try {
+        await renderTicketDetailsInto(detailsEl, {
+            ...details,
+            currentUserRole: resolveCurrentDashboardRole()
+        });
+    } catch (error) {
+        console.error('[JuniorDashboard] Failed to render ticket details:', error);
+        detailsEl.innerHTML = '<p class="text-danger">Failed to render ticket details.</p>';
+        return;
+    }
 
     if (state.selectedTicket) {
         const actionsWrapper = document.createElement('div');

@@ -1,6 +1,7 @@
 -- Create databases
 CREATE DATABASE IF NOT EXISTS Tickets;
 CREATE DATABASE IF NOT EXISTS opsmind_ai;
+CREATE DATABASE IF NOT EXISTS agentic_ai_db;
 CREATE DATABASE IF NOT EXISTS authentication;
 CREATE DATABASE IF NOT EXISTS sla_db;
 
@@ -14,6 +15,9 @@ GRANT ALL PRIVILEGES ON *.* TO 'opsmind'@'localhost' WITH GRANT OPTION;
 
 -- Grant ALL privileges to opsmind user on ALL databases (remote)
 GRANT ALL PRIVILEGES ON *.* TO 'opsmind'@'%' WITH GRANT OPTION;
+
+-- Explicit grant for Agentic AI database (microservice ownership)
+GRANT ALL PRIVILEGES ON agentic_ai_db.* TO 'opsmind'@'%';
 
 -- Grant ALL privileges to root user on ALL databases (remote)
 GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;

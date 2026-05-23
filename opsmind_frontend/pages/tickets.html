@@ -77,26 +77,6 @@
             flex-shrink: 0;
         }
         
-        #aiHelpBtn {
-            border-color: #667eea;
-            color: #667eea;
-        }
-        
-        #aiHelpBtn:hover {
-            background: #667eea;
-            color: white;
-        }
-
-        #enhanceDescriptionBtn {
-            border-color: #22c55e;
-            color: #15803d;
-        }
-
-        #enhanceDescriptionBtn:hover {
-            background: #22c55e;
-            color: white;
-        }
-
         #newTicketDescription.description-enhancing {
             border-color: #22c55e;
             box-shadow: 0 0 0 0.2rem rgba(34, 197, 94, 0.2);
@@ -441,10 +421,10 @@
                         <!-- Ticket Info (hidden until loaded) -->
                         <div class="d-none" id="ticketDetailInfo">
                             <!-- Header Row -->
-                            <div class="row mb-4">
+                            <div class="row mb-4 ticket-detail-header">
                                 <div class="col-12">
                                     <h4 id="ticketSubject"></h4>
-                                    <div class="d-flex gap-2 flex-wrap">
+                                    <div class="d-flex gap-2 flex-wrap ticket-detail-badges">
                                         <span class="badge" id="ticketStatusBadge"></span>
                                         <span class="badge" id="ticketPriorityBadge"></span>
                                         <span class="badge bg-secondary" id="ticketCategoryBadge"></span>
@@ -453,7 +433,7 @@
                             </div>
 
                             <!-- Details Grid -->
-                            <div class="row g-3 mb-4">
+                            <div class="row g-3 mb-4 ticket-detail-grid">
                                 <div class="col-6 col-md-3">
                                     <label class="text-muted small">Requester</label>
                                     <p class="mb-0 fw-medium" id="ticketRequester"></p>
@@ -489,9 +469,66 @@
                             </div>
 
                             <!-- Description -->
-                            <div class="mb-4">
+                            <div class="mb-4 ticket-detail-description">
                                 <label class="text-muted small">Description</label>
                                 <div class="description-box" id="ticketDescription"></div>
+                            </div>
+
+                            <div class="mb-4">
+                                <div class="card border-secondary-subtle ai-status-card">
+                                    <div class="card-header bg-white">
+                                        <h6 class="mb-0">Endpoint Device Context</h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <p class="small text-muted mb-3" id="ticketEndpointDeviceSummary"></p>
+                                        <div class="row g-3" id="ticketEndpointDeviceDetails">
+                                            <div class="col-12 col-md-6">
+                                                <label class="text-muted small">Affected Device Name</label>
+                                                <p class="mb-0 fw-medium" id="ticketAffectedDeviceName"></p>
+                                            </div>
+                                            <div class="col-12 col-md-6">
+                                                <label class="text-muted small">Affected Device ID</label>
+                                                <p class="mb-0 fw-medium" id="ticketAffectedDeviceId"></p>
+                                            </div>
+                                            <div class="col-6 col-md-4">
+                                                <label class="text-muted small">OS Type</label>
+                                                <p class="mb-0 fw-medium" id="ticketOsType"></p>
+                                            </div>
+                                            <div class="col-6 col-md-4">
+                                                <label class="text-muted small">Issue Scope</label>
+                                                <p class="mb-0 fw-medium" id="ticketIssueScope"></p>
+                                            </div>
+                                            <div class="col-12 col-md-4">
+                                                <label class="text-muted small">Remote Support Consent</label>
+                                                <p class="mb-0 fw-medium" id="ticketRemoteSupportConsent"></p>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <label class="text-muted small">Agent Status</label>
+                                                <p class="mb-0 fw-medium" id="ticketEndpointAgentStatus">--</p>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <label class="text-muted small">Agent Version</label>
+                                                <p class="mb-0 fw-medium" id="ticketEndpointAgentVersion">--</p>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <label class="text-muted small">Last Seen</label>
+                                                <p class="mb-0 fw-medium" id="ticketEndpointLastSeenAt">--</p>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <label class="text-muted small">Agent Enabled</label>
+                                                <p class="mb-0 fw-medium" id="ticketEndpointEnabled">--</p>
+                                            </div>
+                                            <div class="col-6 col-md-6" id="ticketAiEligibilityWrap">
+                                                <label class="text-muted small">AI Agent Eligible</label>
+                                                <p class="mb-0 fw-medium" id="ticketAiAgentEligible"></p>
+                                            </div>
+                                            <div class="col-12 col-md-6" id="ticketAiEligibilityReasonWrap">
+                                                <label class="text-muted small">AI Agent Eligibility Reason</label>
+                                                <p class="mb-0 fw-medium" id="ticketAiAgentEligibilityReason"></p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             <div id="ticketAiPriorityInsight"></div>
@@ -513,7 +550,7 @@
                             </div>
 
                             <!-- Status Change -->
-                            <div class="status-change-section">
+                            <div class="status-change-section ticket-detail-actions">
                                 <h6 class="mb-3">Update Status</h6>
                                 <div class="row g-2">
                                     <div class="col-12 col-md-8">
@@ -607,9 +644,43 @@
                                             <div class="col-12 col-md-6">
                                                 <label for="newTicketAffectedDevice" class="form-label">Which device has the issue?</label>
                                                 <select class="form-select" id="newTicketAffectedDevice">
-                                                    <option value="MY_CURRENT_DEVICE" selected>My current device</option>
+                                                    <option value="MY_CURRENT_DEVICE" selected>Loading your registered devices...</option>
                                                     <option value="OTHER_NOT_LISTED">Other / Not listed</option>
                                                 </select>
+                                                <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+                                                    <small class="text-muted" id="newTicketDeviceLoadMessage"></small>
+                                                    <button type="button" class="btn btn-link btn-sm p-0" id="registerEndpointDeviceBtn">
+                                                        Register This Device
+                                                    </button>
+                                                </div>
+                                                <div class="border rounded p-3 mt-2 d-none" id="registerEndpointDevicePanel">
+                                                    <div class="small fw-semibold mb-2">Register This Device</div>
+                                                    <div class="row g-2">
+                                                        <div class="col-12">
+                                                            <label for="registerEndpointDeviceName" class="form-label small">Device Name</label>
+                                                            <input type="text" class="form-control form-control-sm" id="registerEndpointDeviceName" maxlength="120" placeholder="My current device">
+                                                        </div>
+                                                        <div class="col-12 col-md-6">
+                                                            <label for="registerEndpointDeviceOsType" class="form-label small">Operating System</label>
+                                                            <select class="form-select form-select-sm" id="registerEndpointDeviceOsType">
+                                                                <option value="WINDOWS">Windows</option>
+                                                                <option value="MACOS">macOS</option>
+                                                                <option value="LINUX">Linux</option>
+                                                                <option value="UNKNOWN">Unknown</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-12 col-md-6 d-flex align-items-end gap-2">
+                                                            <button type="button" class="btn btn-primary btn-sm" id="registerEndpointDeviceSubmitBtn">Register Device</button>
+                                                            <button type="button" class="btn btn-outline-secondary btn-sm" id="registerEndpointDeviceCancelBtn">Cancel</button>
+                                                        </div>
+                                                        <div class="col-12">
+                                                            <small class="text-muted d-block">
+                                                                Device registration links this device to your tickets. Real remote execution requires the future OpsMind Endpoint Agent.
+                                                            </small>
+                                                            <small class="d-block mt-1" id="registerEndpointDeviceMessage"></small>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             </div>
                                             <div class="col-12 col-md-6">
                                                 <label for="newTicketOsType" class="form-label">What operating system is on this device?</label>
@@ -704,7 +775,7 @@
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-outline-info" id="aiHelpBtn">
+                        <button type="button" class="btn ai-action-btn ai-action-btn-secondary" id="aiHelpBtn">
                             <i class="bi bi-magic me-1"></i>
                             <span class="btn-text">AI Help</span>
                             <span class="btn-loader d-none">
@@ -712,7 +783,7 @@
                                 AI is writing steps...
                             </span>
                         </button>
-                        <button type="button" class="btn btn-outline-success" id="enhanceDescriptionBtn">
+                        <button type="button" class="btn ai-action-btn ai-action-btn-secondary" id="enhanceDescriptionBtn">
                             <i class="bi bi-pencil-square me-1"></i>
                             <span class="btn-text">Enhance Description</span>
                             <span class="btn-loader d-none">
@@ -738,8 +809,8 @@
     <!-- AI Help Modal -->
     <div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header bg-gradient" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+            <div class="modal-content ai-modal-content">
+                <div class="modal-header ai-modal-header">
                     <h5 class="modal-title" id="aiHelpModalLabel">
                         <i class="bi bi-magic me-2"></i>AI Troubleshooting Suggestions
                     </h5>
