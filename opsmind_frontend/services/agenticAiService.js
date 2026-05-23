@@ -201,7 +201,11 @@ function mapHttpError(response, payload, defaultMessage) {
     }
 
     if (status === 409) {
-        if (backendCode === 'TASK_QUEUE_CONFLICT' || backendCode === 'TASK_STATUS_CONFLICT') {
+        if (
+            backendCode === 'TASK_QUEUE_CONFLICT' ||
+            backendCode === 'TASK_STATUS_CONFLICT' ||
+            backendCode === 'PLAN_REQUIRES_MANUAL_REVIEW'
+        ) {
             return createServiceError(
                 backendMessage || 'This agent task operation cannot be performed right now.',
                 backendCode,

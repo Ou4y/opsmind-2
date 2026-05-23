@@ -420,14 +420,7 @@ async function loadTickets() {
         }
     } catch (error) {
         console.error('Failed to load tickets:', error);
-        
-        // Check if it's a network error
-        if (error.message.includes('fetch') || error.message.includes('Network')) {
-            // Use mock data for demo
-            useMockTickets();
-        } else {
-            showError(error.message);
-        }
+        showError(error?.message || 'Failed to load tickets from backend.');
     } finally {
         state.isLoading = false;
     }
@@ -463,6 +456,38 @@ function renderTickets() {
     }
 }
 
+function resolveTextValue(...values) {
+    for (const value of values) {
+        if (value === null || value === undefined) continue;
+        const normalized = String(value).trim();
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return '';
+}
+
+function resolveRequesterDisplay(ticket) {
+    return resolveTextValue(
+        ticket?.requester_name,
+        ticket?.requesterName,
+        ticket?.requester,
+        ticket?.requester_id,
+        ticket?.requesterId
+    );
+}
+
+function resolveAssigneeDisplay(ticket) {
+    return resolveTextValue(
+        ticket?.assigned_to_name,
+        ticket?.assignedToName,
+        ticket?.assignee_name,
+        ticket?.assigneeName,
+        ticket?.assigned_to,
+        ticket?.assignedTo
+    );
+}
+
 /**
  * Render table view
  */
@@ -473,6 +498,9 @@ function renderTableView(tableBody) {
     const currentUser = AuthService.getCurrentUser();
 
     state.tickets.forEach(ticket => {
+        const requesterDisplay = resolveRequesterDisplay(ticket);
+        const assigneeDisplay = resolveAssigneeDisplay(ticket);
+
         // Determine button visibility based on role
         const canTriggerWorkflow = AuthService.isTechnician() || AuthService.isSenior() || AuthService.isSupervisor() || AuthService.isAdmin();
         const canUpdate = AuthService.isAdmin() || 
@@ -490,7 +518,10 @@ function renderTableView(tableBody) {
                     </div>
                 </td>
                 <td>
-                    <span class="text-muted">-</span>
+                    ${requesterDisplay
+                        ? UI.escapeHTML(requesterDisplay)
+                        : '<span class="text-muted">--</span>'
+                    }
                 </td>
                 <td>
                     <span class="badge ${getPriorityBadgeClass(ticket.priority)}">
@@ -503,9 +534,9 @@ function renderTableView(tableBody) {
                     </span>
                 </td>
                 <td>
-                    ${ticket.assigned_to ? 
-                        `<span class="badge bg-info text-dark">${UI.escapeHTML(ticket.assigned_to_name || ticket.assignedToName || `Technician #${ticket.assigned_to}`)}</span>` : 
-                        `<span class="text-muted">Unassigned</span>`
+                    ${assigneeDisplay
+                        ? `<span class="badge bg-info text-dark">${UI.escapeHTML(assigneeDisplay)}</span>`
+                        : `<span class="text-muted">Not assigned</span>`
                     }
                 </td>
                 <td>
@@ -769,20 +800,27 @@ function populateTicketModal(ticket) {
     typeBadge.textContent = formatType(ticket.type_of_request || ticket.type);
 
     // Details
-    document.getElementById('ticketRequester').textContent = ticket.requester_id || ticket.requesterName || ticket.requester || 'Unknown';
+    const requesterDisplay = resolveRequesterDisplay(ticket);
+    document.getElementById('ticketRequester').textContent = requesterDisplay || '--';
     
     // Assigned To
     const assignedToEl = document.getElementById('ticketAssignedTo');
-    if (ticket.assigned_to) {
-        const technicianDisplay = ticket.assigned_to_name || ticket.assignedToName || `Technician #${ticket.assigned_to}`;
-        assignedToEl.innerHTML = `<span class="badge bg-info text-dark">${UI.escapeHTML(technicianDisplay)}</span>`;
+    const assigneeDisplay = resolveAssigneeDisplay(ticket);
+    if (assigneeDisplay) {
+        assignedToEl.innerHTML = `<span class="badge bg-info text-dark">${UI.escapeHTML(assigneeDisplay)}</span>`;
     } else {
-        assignedToEl.innerHTML = `<span class="text-muted">Unassigned</span>`;
+        assignedToEl.innerHTML = `<span class="text-muted">Not assigned</span>`;
     }
     
-    document.getElementById('ticketAssignedLevel').textContent = ticket.assigned_to_level || 'L1';
-    document.getElementById('ticketSupportLevel').textContent = ticket.support_level || 'L1';
-    document.getElementById('ticketEscalationCount').textContent = ticket.escalation_count || 0;
+    document.getElementById('ticketAssignedLevel').textContent =
+        resolveTextValue(ticket.assigned_to_level, ticket.assignedToLevel) || '--';
+    document.getElementById('ticketSupportLevel').textContent =
+        resolveTextValue(ticket.support_level, ticket.supportLevel) || '--';
+    const escalationCount = ticket.escalation_count ?? ticket.escalationCount;
+    document.getElementById('ticketEscalationCount').textContent =
+        escalationCount !== null && escalationCount !== undefined && String(escalationCount).trim() !== ''
+            ? String(escalationCount)
+            : '--';
     
     // Display location as coordinates
     const locationEl = document.getElementById('ticketLocation');
@@ -806,18 +844,32 @@ function populateTicketModal(ticket) {
     renderTicketEndpointDeviceContext(ticket);
     renderTicketAiInsightControls(ticket);
 
+    const statusChangeSection = document.querySelector('.status-change-section');
+    const isRequesterView = isRequesterRole(normalizeRole(resolveCurrentUserRole()));
+    if (statusChangeSection) {
+        statusChangeSection.classList.toggle('d-none', isRequesterView);
+    }
+
     // Legacy AI explanation section is replaced by on-demand insight details.
     const aiRecommendationsSection = document.getElementById('aiRecommendationsSection');
     if (aiRecommendationsSection) {
         UI.toggle(aiRecommendationsSection, false);
     }
 
-    // Set current status in dropdown
-    document.getElementById('newStatusSelect').value = ticket.status;
-    
-    // Show/hide resolution summary field based on status
+    const newStatusSelect = document.getElementById('newStatusSelect');
     const resolutionContainer = document.getElementById('resolutionSummaryContainer');
     const resolutionTextarea = document.getElementById('resolutionSummary');
+    if (isRequesterView || !newStatusSelect) {
+        if (resolutionContainer) {
+            resolutionContainer.style.display = 'none';
+        }
+        return;
+    }
+
+    // Set current status in dropdown
+    newStatusSelect.value = ticket.status;
+    
+    // Show/hide resolution summary field based on status
     if (ticket.status === 'RESOLVED' || ticket.status === 'CLOSED') {
         resolutionContainer.style.display = 'block';
         if (ticket.resolution_summary) {
@@ -828,7 +880,7 @@ function populateTicketModal(ticket) {
     }
     
     // Listen for status changes to show/hide resolution field
-    document.getElementById('newStatusSelect').addEventListener('change', function(e) {
+    newStatusSelect.addEventListener('change', function(e) {
         if (e.target.value === 'RESOLVED' || e.target.value === 'CLOSED') {
             resolutionContainer.style.display = 'block';
         } else {
@@ -840,10 +892,10 @@ function populateTicketModal(ticket) {
 function renderTicketEndpointDeviceContext(ticket) {
     const affectedDeviceId = String(ticket?.affected_device_id || ticket?.affectedDeviceId || '').trim();
     const affectedDeviceName = String(ticket?.affected_device_name || ticket?.affectedDeviceName || '').trim();
-    const osType = String(ticket?.os_type || ticket?.osType || 'UNKNOWN').toUpperCase();
-    const issueScope = String(ticket?.issue_scope || ticket?.issueScope || 'UNKNOWN').toUpperCase();
-    const remoteSupportConsent = ticket?.remote_support_consent === true || ticket?.remoteSupportConsent === true;
-    const aiAgentEligible = ticket?.ai_agent_eligible === true || ticket?.aiAgentEligible === true;
+    const osType = resolveTextValue(ticket?.os_type, ticket?.osType).toUpperCase();
+    const issueScope = resolveTextValue(ticket?.issue_scope, ticket?.issueScope).toUpperCase();
+    const remoteSupportConsentValue = ticket?.remote_support_consent ?? ticket?.remoteSupportConsent;
+    const aiAgentEligibleValue = ticket?.ai_agent_eligible ?? ticket?.aiAgentEligible;
     const aiAgentEligibilityReason = String(
         ticket?.ai_agent_eligibility_reason || ticket?.aiAgentEligibilityReason || ''
     ).trim();
@@ -871,14 +923,28 @@ function renderTicketEndpointDeviceContext(ticket) {
 
     if (affectedDeviceNameEl) affectedDeviceNameEl.textContent = affectedDeviceName || '--';
     if (affectedDeviceIdEl) affectedDeviceIdEl.textContent = affectedDeviceId || '--';
-    if (osTypeEl) osTypeEl.textContent = osType || 'UNKNOWN';
-    if (issueScopeEl) issueScopeEl.textContent = issueScope || 'UNKNOWN';
-    if (remoteSupportConsentEl) remoteSupportConsentEl.textContent = remoteSupportConsent ? 'Yes' : 'No';
+    if (osTypeEl) osTypeEl.textContent = osType || '--';
+    if (issueScopeEl) issueScopeEl.textContent = issueScope || '--';
+    if (remoteSupportConsentEl) {
+        remoteSupportConsentEl.textContent =
+            remoteSupportConsentValue === true
+                ? 'Yes'
+                : remoteSupportConsentValue === false
+                    ? 'No'
+                    : '--';
+    }
     if (agentStatusEl) agentStatusEl.textContent = '--';
     if (agentVersionEl) agentVersionEl.textContent = '--';
     if (lastSeenEl) lastSeenEl.textContent = '--';
     if (enabledEl) enabledEl.textContent = '--';
-    if (aiEligibleEl) aiEligibleEl.textContent = aiAgentEligible ? 'Yes' : 'No';
+    if (aiEligibleEl) {
+        aiEligibleEl.textContent =
+            aiAgentEligibleValue === true
+                ? 'Yes'
+                : aiAgentEligibleValue === false
+                    ? 'No'
+                    : '--';
+    }
     if (aiReasonEl) aiReasonEl.textContent = aiAgentEligibilityReason || '--';
 
     const currentUserRole = normalizeRole(resolveCurrentUserRole());
@@ -1026,6 +1092,14 @@ function safePlanText(value) {
     return UI.escapeHTML(String(value));
 }
 
+function hasManualReviewStep(steps) {
+    const stepList = Array.isArray(steps) ? steps : [];
+    return stepList.some((step) => {
+        const actionKey = String(step?.actionKey || step?.action_key || '').trim().toUpperCase();
+        return actionKey === 'MANUAL_REVIEW_REQUIRED';
+    });
+}
+
 function resolveCurrentActor() {
     const currentUser = AuthService.getCurrentUser?.() || AuthService.getUser?.() || {};
     const userId =
@@ -1095,12 +1169,18 @@ function renderAgenticPlan(planPayload) {
         ''
     ).trim();
     const hasLinkedDevice = Boolean(resolvedDeviceId);
+    const hasManualReview = hasManualReviewStep(steps);
     const executionBlockedReason = plan?.executionBlockedReason || planRecord?.execution_blocked_reason || '--';
     const riskLevel = plan?.riskLevel || planRecord?.risk_level || '--';
     const requiresApproval = plan?.requiresApproval === true || planRecord?.requires_approval === true;
     const showPlanActions = normalizedPlanStatus === 'PENDING_APPROVAL' && planRecord?.id;
     const showMockExecutionAction = normalizedPlanStatus === 'APPROVED' && planRecord?.id;
-    const showQueueTaskAction = normalizedPlanStatus === 'APPROVED' && executionAvailable && hasLinkedDevice && planRecord?.id;
+    const showQueueTaskAction =
+        normalizedPlanStatus === 'APPROVED' &&
+        executionAvailable &&
+        hasLinkedDevice &&
+        !hasManualReview &&
+        planRecord?.id;
     const executionSteps = Array.isArray(latestExecution?.steps) ? latestExecution.steps : [];
     const taskSteps = Array.isArray(latestTask?.steps) ? latestTask.steps : [];
     const executionStepsHtml = executionSteps.length
@@ -1152,7 +1232,7 @@ function renderAgenticPlan(planPayload) {
         : `<li class="list-group-item text-muted small">No remediation steps were generated.</li>`;
 
     return `
-        <div class="card border-success-subtle">
+        <div class="card border-success-subtle ai-plan-card">
             <div class="card-header bg-white">
                 <h6 class="mb-0">AI Remediation Plan</h6>
             </div>
@@ -1200,19 +1280,19 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-success btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-safe"
                             data-agentic-plan-approve="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Approve Plan
+                            <i class="bi bi-check2-circle me-1"></i>Approve AI Plan
                         </button>
                         <button
                             type="button"
-                            class="btn btn-outline-danger btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-danger"
                             data-agentic-plan-reject="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Reject Plan
+                            <i class="bi bi-x-octagon me-1"></i>Reject AI Plan
                         </button>
                     </div>
                 ` : ''}
@@ -1220,11 +1300,11 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-primary btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-secondary"
                             data-agentic-plan-mock-execute="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Run Mock Execution
+                            <i class="bi bi-bezier2 me-1"></i>Run Mock Execution
                         </button>
                     </div>
                 ` : ''}
@@ -1232,16 +1312,21 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-warning btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-operational"
                             data-agentic-plan-queue-task="true"
                             data-plan-id="${safePlanText(planRecord.id)}"
                         >
-                            Queue Agent Task
+                            <i class="bi bi-cpu-fill me-1"></i>Queue Agent Task
                         </button>
                     </div>
                 ` : ''}
+                ${hasManualReview ? `
+                    <div class="alert alert-secondary small mt-3 mb-0" role="alert">
+                        This plan requires manual review and cannot be queued for endpoint execution.
+                    </div>
+                ` : ''}
                 ${latestTask ? `
-                    <div class="mt-3">
+                    <div class="mt-3 ai-status-card">
                         <div class="text-muted small mb-2">Agent Task Queue</div>
                         <div class="row g-3 mb-3">
                             <div class="col-md-4">
@@ -1271,7 +1356,7 @@ function renderAgenticPlan(planPayload) {
                     </div>
                 ` : ''}
                 ${latestExecution ? `
-                    <div class="mt-3">
+                    <div class="mt-3 ai-execution-card">
                         <div class="text-muted small mb-2">Mock Execution</div>
                         <div class="row g-3 mb-3">
                             <div class="col-md-6">
@@ -1326,7 +1411,11 @@ function resolveAgenticPlanErrorMessage(error) {
         return error.message || 'This plan cannot be mock-executed from its current status.';
     }
 
-    if (error?.code === 'TASK_QUEUE_CONFLICT' || error?.code === 'TASK_STATUS_CONFLICT') {
+    if (
+        error?.code === 'TASK_QUEUE_CONFLICT' ||
+        error?.code === 'TASK_STATUS_CONFLICT' ||
+        error?.code === 'PLAN_REQUIRES_MANUAL_REVIEW'
+    ) {
         return error.message || 'This plan cannot be queued for endpoint task execution right now.';
     }
 
@@ -1359,28 +1448,28 @@ function bindAgenticPlanDecisionHandlers(container) {
             approveButton.disabled = isLoading;
             approveButton.innerHTML = isLoading && loadingLabel === 'approve'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Approving...'
-                : 'Approve Plan';
+                : '<i class=\"bi bi-check2-circle me-1\"></i>Approve AI Plan';
         }
 
         if (rejectButton) {
             rejectButton.disabled = isLoading;
             rejectButton.innerHTML = isLoading && loadingLabel === 'reject'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Rejecting...'
-                : 'Reject Plan';
+                : '<i class=\"bi bi-x-octagon me-1\"></i>Reject AI Plan';
         }
 
         if (mockExecuteButton) {
             mockExecuteButton.disabled = isLoading;
             mockExecuteButton.innerHTML = isLoading && loadingLabel === 'mock'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Running mock execution...'
-                : 'Run Mock Execution';
+                : '<i class=\"bi bi-bezier2 me-1\"></i>Run Mock Execution';
         }
 
         if (queueTaskButton) {
             queueTaskButton.disabled = isLoading;
             queueTaskButton.innerHTML = isLoading && loadingLabel === 'queue'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Queueing task...'
-                : 'Queue Agent Task';
+                : '<i class=\"bi bi-cpu-fill me-1\"></i>Queue Agent Task';
         }
     };
 
@@ -1512,17 +1601,17 @@ function renderTicketAiInsightControls(ticket) {
     }
 
     aiInsightContainer.innerHTML = `
-        <div class="card mb-3 border-0 bg-light">
+        <div class="card mb-3 border-0 bg-light ai-status-card">
             <div class="card-body">
-                <button type="button" class="btn btn-outline-primary btn-sm" id="ticketAiInsightBtn">
+                <button type="button" class="btn btn-sm ai-action-btn ai-action-btn-secondary" id="ticketAiInsightBtn">
                     <i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}
                 </button>
                 <div class="mt-3 d-none" id="ticketAiInsightDetails"></div>
             </div>
         </div>
-        <div class="card mb-3 border-0 bg-light">
+        <div class="card mb-3 border-0 bg-light ai-status-card">
             <div class="card-body">
-                <button type="button" class="btn btn-outline-success btn-sm" id="ticketAgenticPlanBtn">
+                <button type="button" class="btn btn-sm ai-action-btn ai-action-btn-primary" id="ticketAgenticPlanBtn">
                     <i class="bi bi-wrench-adjustable-circle me-1"></i>Generate AI Fix Plan
                 </button>
                 <div class="mt-3 d-none" id="ticketAgenticPlanDetails"></div>
@@ -1730,12 +1819,14 @@ async function openWorkflowModal() {
         const workflows = await WorkflowService.getWorkflowsForTicket(state.selectedTicket);
         renderWorkflowOptions(container, workflows);
     } catch (error) {
-        // Use mock workflows
-        renderWorkflowOptions(container, [
-            { id: 'wf-1', name: 'Auto-Assignment', description: 'Automatically assign to available technician' },
-            { id: 'wf-2', name: 'Escalation', description: 'Escalate to senior support' },
-            { id: 'wf-3', name: 'Notification', description: 'Send notification to stakeholders' }
-        ]);
+        console.error('Failed to load workflows:', error);
+        if (container) {
+            container.innerHTML = `
+                <div class="alert alert-danger mb-0" role="alert">
+                    Unable to load workflows from backend right now.
+                </div>
+            `;
+        }
     } finally {
         UI.toggle(loading, false);
     }
@@ -2024,14 +2115,8 @@ async function loadAssignees() {
         
         select.innerHTML = html;
     } catch (error) {
-        // Use mock data
-        select.innerHTML = `
-            <option value="">Unassigned</option>
-            <option value="1">John Smith</option>
-            <option value="2">Sarah Wilson</option>
-            <option value="3">Mike Johnson</option>
-            <option value="4">Lisa Chen</option>
-        `;
+        console.error('Failed to load assignees:', error);
+        select.innerHTML = '<option value="">Unassigned</option>';
     }
 }
 
@@ -3017,7 +3102,7 @@ function normalizePriorityValue(value) {
 }
 
 function resolveTicketCreatedAt(ticket) {
-    return ticket?.createdAt || ticket?.created_at || ticket?.updatedAt || ticket?.updated_at || new Date().toISOString();
+    return ticket?.createdAt || ticket?.created_at || ticket?.updatedAt || ticket?.updated_at || null;
 }
 
 /**

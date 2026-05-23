@@ -1,8 +1,19 @@
 const APPROVED_SOFTWARE_CATALOG = Object.freeze({
   GOOGLE_CHROME: {
     displayName: "Google Chrome",
-    aliases: ["google chrome", "chrome", "browser chrome"],
-    supportedOs: ["MACOS", "WINDOWS"],
+    aliases: [
+      "chrome",
+      "google chrome",
+      "google chrom",
+      "chrom",
+      "googlechrome",
+      "chrome browser",
+      "download chrome",
+      "install chrome",
+      "download google chrome",
+      "install google chrome",
+    ],
+    supportedOs: ["MACOS"],
     downloadRiskLevel: "MEDIUM",
     installRiskLevel: "HIGH",
     macos: {
@@ -10,19 +21,49 @@ const APPROVED_SOFTWARE_CATALOG = Object.freeze({
       downloadStrategy: "APPROVED_CATALOG",
       installSupported: false,
     },
-    windows: {
-      fileType: "EXE",
+  },
+  RECTANGLE: {
+    displayName: "Rectangle",
+    description: "macOS window management app",
+    aliases: [
+      "rectangle",
+      "rectangle app",
+      "rectangle mac",
+      "rectangle macos",
+      "window manager",
+      "window management",
+      "window management app",
+      "mac window manager",
+      "macos window manager",
+      "install rectangle",
+      "download rectangle",
+      "install rectangle app",
+      "download rectangle app",
+    ],
+    supportedOs: ["MACOS"],
+    downloadRiskLevel: "MEDIUM",
+    installRiskLevel: "HIGH",
+    macos: {
+      fileType: "DMG",
       downloadStrategy: "APPROVED_CATALOG",
       installSupported: false,
     },
   },
 });
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function toTicketText(ticket) {
   const payload = ticket && typeof ticket === "object" && !Array.isArray(ticket) ? ticket : {};
-  const title = String(payload.title || "").trim();
-  const description = String(payload.description || "").trim();
-  return `${title} ${description}`.toLowerCase();
+  const title = payload.title || "";
+  const description = payload.description || "";
+  return normalizeText(`${title} ${description}`);
 }
 
 function findApprovedSoftwareFromTicket(ticket) {
@@ -33,7 +74,10 @@ function findApprovedSoftwareFromTicket(ticket) {
 
   for (const [softwareKey, software] of Object.entries(APPROVED_SOFTWARE_CATALOG)) {
     const aliases = Array.isArray(software.aliases) ? software.aliases : [];
-    const hasMatch = aliases.some((alias) => text.includes(String(alias || "").toLowerCase().trim()));
+    const hasMatch = aliases.some((alias) => {
+      const normalizedAlias = normalizeText(alias);
+      return normalizedAlias && text.includes(normalizedAlias);
+    });
 
     if (hasMatch) {
       return {

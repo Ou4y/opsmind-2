@@ -141,21 +141,21 @@ function renderAiInsightAction(ticket, currentUserRole) {
     const ticketId = resolveTicketId(ticket);
     const buttonLabel = getAiButtonLabel(role);
 
-    return `
-        <div class="card mb-3 border-0 bg-light">
-            <div class="card-body">
-                <button
-                    type="button"
-                    class="btn btn-outline-primary btn-sm"
-                    data-ai-insight-toggle="true"
-                    data-ticket-id="${UI.escapeHTML(ticketId)}"
-                >
-                    <i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}
-                </button>
-                <div class="mt-3 d-none" data-ai-insight-content="true"></div>
+        return `
+            <div class="card mb-3 border-0 bg-light ai-status-card">
+                <div class="card-body">
+                    <button
+                        type="button"
+                        class="btn btn-sm ai-action-btn ai-action-btn-secondary"
+                        data-ai-insight-toggle="true"
+                        data-ticket-id="${UI.escapeHTML(ticketId)}"
+                    >
+                        <i class="bi bi-cpu me-1"></i>${UI.escapeHTML(buttonLabel)}
+                    </button>
+                    <div class="mt-3 d-none" data-ai-insight-content="true"></div>
+                </div>
             </div>
-        </div>
-    `;
+        `;
 }
 
 function extractTicketFromServiceResponse(response) {
@@ -307,11 +307,11 @@ function renderAgenticPlanAction(ticket, currentUserRole) {
     const ticketId = resolveTicketId(ticket);
 
     return `
-        <div class="card mb-3 border-0 bg-light">
+        <div class="card mb-3 border-0 bg-light ai-status-card">
             <div class="card-body">
                 <button
                     type="button"
-                    class="btn btn-outline-success btn-sm"
+                    class="btn btn-sm ai-action-btn ai-action-btn-primary"
                     data-agentic-plan-toggle="true"
                     data-ticket-id="${UI.escapeHTML(ticketId)}"
                 >
@@ -380,6 +380,14 @@ function extractPlanDeviceId(planRecord, plan) {
     ).trim();
 }
 
+function hasManualReviewStep(steps) {
+    const stepList = Array.isArray(steps) ? steps : [];
+    return stepList.some((step) => {
+        const actionKey = String(step?.actionKey || step?.action_key || '').trim().toUpperCase();
+        return actionKey === 'MANUAL_REVIEW_REQUIRED';
+    });
+}
+
 function normalizeAgentTaskPayload(payload) {
     const singleTask = payload?.task && typeof payload.task === 'object' ? payload.task : null;
     const taskList = Array.isArray(payload?.tasks) ? payload.tasks : [];
@@ -424,12 +432,18 @@ function renderAgenticPlan(planPayload) {
     const executionAvailable = plan?.executionAvailable === true || planRecord?.execution_available === true;
     const resolvedDeviceId = extractPlanDeviceId(planRecord, plan);
     const hasLinkedDevice = Boolean(resolvedDeviceId);
+    const hasManualReview = hasManualReviewStep(steps);
     const executionBlockedReason = plan?.executionBlockedReason || planRecord?.execution_blocked_reason || '--';
     const riskLevel = plan?.riskLevel || planRecord?.risk_level || '--';
     const requiresApproval = plan?.requiresApproval === true || planRecord?.requires_approval === true;
     const showPlanActions = normalizedPlanStatus === 'PENDING_APPROVAL' && planRecord?.id;
     const showMockExecutionAction = normalizedPlanStatus === 'APPROVED' && planRecord?.id;
-    const showQueueTaskAction = normalizedPlanStatus === 'APPROVED' && executionAvailable && hasLinkedDevice && planRecord?.id;
+    const showQueueTaskAction =
+        normalizedPlanStatus === 'APPROVED' &&
+        executionAvailable &&
+        hasLinkedDevice &&
+        !hasManualReview &&
+        planRecord?.id;
     const executionSteps = Array.isArray(latestExecution?.steps) ? latestExecution.steps : [];
     const queuedTaskSteps = Array.isArray(latestTask?.steps) ? latestTask.steps : [];
     const executionStepsHtml = executionSteps.length
@@ -481,7 +495,7 @@ function renderAgenticPlan(planPayload) {
         : `<li class="list-group-item text-muted small">No remediation steps were generated.</li>`;
 
     return `
-        <div class="card border-success-subtle">
+        <div class="card border-success-subtle ai-plan-card">
             <div class="card-header bg-white">
                 <h6 class="mb-0">AI Remediation Plan</h6>
             </div>
@@ -532,19 +546,19 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-success btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-safe"
                             data-agentic-plan-approve="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Approve Plan
+                            <i class="bi bi-check2-circle me-1"></i>Approve AI Plan
                         </button>
                         <button
                             type="button"
-                            class="btn btn-outline-danger btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-danger"
                             data-agentic-plan-reject="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Reject Plan
+                            <i class="bi bi-x-octagon me-1"></i>Reject AI Plan
                         </button>
                     </div>
                 ` : ''}
@@ -552,11 +566,11 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-primary btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-secondary"
                             data-agentic-plan-mock-execute="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Run Mock Execution
+                            <i class="bi bi-bezier2 me-1"></i>Run Mock Execution
                         </button>
                     </div>
                 ` : ''}
@@ -564,16 +578,21 @@ function renderAgenticPlan(planPayload) {
                     <div class="mt-3 d-flex gap-2 flex-wrap">
                         <button
                             type="button"
-                            class="btn btn-warning btn-sm"
+                            class="btn btn-sm ai-action-btn ai-action-btn-operational"
                             data-agentic-plan-queue-task="true"
                             data-plan-id="${UI.escapeHTML(String(planRecord.id))}"
                         >
-                            Queue Agent Task
+                            <i class="bi bi-cpu-fill me-1"></i>Queue Agent Task
                         </button>
                     </div>
                 ` : ''}
+                ${hasManualReview ? `
+                    <div class="alert alert-secondary small mt-3 mb-0" role="alert">
+                        This plan requires manual review and cannot be queued for endpoint execution.
+                    </div>
+                ` : ''}
                 ${latestTask ? `
-                    <div class="mt-3">
+                    <div class="mt-3 ai-status-card">
                         <div class="text-muted small mb-2">Agent Task Queue</div>
                         <div class="row g-3 mb-3">
                             <div class="col-md-4">
@@ -604,7 +623,7 @@ function renderAgenticPlan(planPayload) {
                 ` : ''}
 
                 ${latestExecution ? `
-                    <div class="mt-3">
+                    <div class="mt-3 ai-execution-card">
                         <div class="text-muted small mb-2">Mock Execution</div>
                         <div class="row g-3 mb-3">
                             <div class="col-md-6">
@@ -667,7 +686,11 @@ function resolveAgenticPlanErrorMessage(error) {
         return error.message || 'This plan cannot be mock-executed from its current status.';
     }
 
-    if (error?.code === 'TASK_QUEUE_CONFLICT' || error?.code === 'TASK_STATUS_CONFLICT') {
+    if (
+        error?.code === 'TASK_QUEUE_CONFLICT' ||
+        error?.code === 'TASK_STATUS_CONFLICT' ||
+        error?.code === 'PLAN_REQUIRES_MANUAL_REVIEW'
+    ) {
         return error.message || 'This plan cannot be queued for endpoint task execution right now.';
     }
 
@@ -700,28 +723,28 @@ function bindAgenticPlanDecisionHandlers(output) {
             approveButton.disabled = isLoading;
             approveButton.innerHTML = isLoading && loadingLabel === 'approve'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Approving...'
-                : 'Approve Plan';
+                : '<i class=\"bi bi-check2-circle me-1\"></i>Approve AI Plan';
         }
 
         if (rejectButton) {
             rejectButton.disabled = isLoading;
             rejectButton.innerHTML = isLoading && loadingLabel === 'reject'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Rejecting...'
-                : 'Reject Plan';
+                : '<i class=\"bi bi-x-octagon me-1\"></i>Reject AI Plan';
         }
 
         if (mockExecuteButton) {
             mockExecuteButton.disabled = isLoading;
             mockExecuteButton.innerHTML = isLoading && loadingLabel === 'mock'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Running mock execution...'
-                : 'Run Mock Execution';
+                : '<i class=\"bi bi-bezier2 me-1\"></i>Run Mock Execution';
         }
 
         if (queueTaskButton) {
             queueTaskButton.disabled = isLoading;
             queueTaskButton.innerHTML = isLoading && loadingLabel === 'queue'
                 ? '<span class=\"spinner-border spinner-border-sm me-1\" role=\"status\"></span>Queueing task...'
-                : 'Queue Agent Task';
+                : '<i class=\"bi bi-cpu-fill me-1\"></i>Queue Agent Task';
         }
     };
 
@@ -982,130 +1005,130 @@ function renderTicketCore(ticket, currentUserRole) {
         ? 'Registered endpoint device linked to this ticket.'
         : 'No registered endpoint device linked to this ticket.';
 
-    return `
-        <div class="card mb-3">
-            <div class="card-header bg-white">
-                <h6 class="mb-0">Ticket</h6>
-            </div>
-            <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <div class="text-muted small">Ticket ID</div>
-                        <div class="fw-semibold">${safeText(ticket.id || ticket.ticketId)}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Status</div>
-                        <div>${safeText(ticket.status)}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Priority</div>
-                        <div class="d-flex align-items-center gap-2">
-                            ${priorityBadge}
-                            <span class="fw-semibold">${safeText(normalizedPriority)}</span>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Assigned To</div>
-                        <div>${safeText(assignedLabel)}</div>
-                        <div class="text-muted small">Level: ${safeText(ticket.assignedToLevel)}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Requester</div>
-                        <div>${safeText(requesterLabel)}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Location</div>
-                        <div>${safeText(locationLabel)}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Created</div>
-                        <div>${safeText(formatDateTime(ticket.createdAt || ticket.created_at))}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Updated</div>
-                        <div>${safeText(formatDateTime(ticket.updatedAt || ticket.updated_at))}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Closed</div>
-                        <div>${safeText(formatDateTime(ticket.closedAt || ticket.closed_at))}</div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="text-muted small">Escalations</div>
-                        <div>${safeText(ticket.escalationCount)}</div>
-                    </div>
+        return `
+            <div class="card mb-3">
+                <div class="card-header bg-white">
+                    <h6 class="mb-0">Ticket</h6>
                 </div>
-                <div class="mt-3">
-                    <div class="text-muted small">Title</div>
-                    <div class="fw-semibold">${safeText(ticket.title)}</div>
-                </div>
-                <div class="mt-3">
-                    <div class="text-muted small">Description</div>
-                    <div class="text-wrap">${safeText(ticket.description || ticket.descriptionPreview || 'No description provided')}</div>
-                </div>
-                <div class="mt-3 border rounded p-3 bg-light-subtle">
-                    <div class="text-muted small fw-semibold mb-2">Endpoint Device Context</div>
-                    <div class="small text-muted mb-2">${safeText(endpointSummary)}</div>
-                    <div class="row g-2">
-                        <div class="col-12 col-md-6">
-                            <div class="text-muted small">Affected Device Name</div>
-                            <div>${safeText(affectedDeviceName || '--')}</div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <div class="text-muted small">Ticket ID</div>
+                            <div class="fw-semibold">${safeText(ticket.id || ticket.ticketId)}</div>
                         </div>
-                        <div class="col-12 col-md-6">
-                            <div class="text-muted small">Affected Device ID</div>
-                            <div>${safeText(affectedDeviceId || '--')}</div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Status</div>
+                            <div>${safeText(ticket.status)}</div>
                         </div>
-                        <div class="col-6 col-md-4">
-                            <div class="text-muted small">OS Type</div>
-                            <div>${safeText(osType || 'UNKNOWN')}</div>
-                        </div>
-                        <div class="col-6 col-md-4">
-                            <div class="text-muted small">Issue Scope</div>
-                            <div>${safeText(issueScope || 'UNKNOWN')}</div>
-                        </div>
-                        <div class="col-12 col-md-4">
-                            <div class="text-muted small">Remote Support Consent</div>
-                            <div>${safeText(formatBooleanText(remoteSupportConsent))}</div>
-                        </div>
-                        ${showDetailedAgenticContext ? `
-                            <div class="col-6">
-                                <div class="text-muted small">AI Agent Eligible</div>
-                                <div>${safeText(formatBooleanText(aiAgentEligible))}</div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Priority</div>
+                            <div class="d-flex align-items-center gap-2">
+                                ${priorityBadge}
+                                <span class="fw-semibold">${safeText(normalizedPriority)}</span>
                             </div>
-                            <div class="col-6">
-                                <div class="text-muted small">AI Agent Eligibility Reason</div>
-                                <div>${safeText(aiAgentEligibilityReason || '--')}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Assigned To</div>
+                            <div>${safeText(assignedLabel)}</div>
+                            <div class="text-muted small">Level: ${safeText(ticket.assignedToLevel)}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Requester</div>
+                            <div>${safeText(requesterLabel)}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Location</div>
+                            <div>${safeText(locationLabel)}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Created</div>
+                            <div>${safeText(formatDateTime(ticket.createdAt || ticket.created_at))}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Updated</div>
+                            <div>${safeText(formatDateTime(ticket.updatedAt || ticket.updated_at))}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Closed</div>
+                            <div>${safeText(formatDateTime(ticket.closedAt || ticket.closed_at))}</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-muted small">Escalations</div>
+                            <div>${safeText(ticket.escalationCount)}</div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-muted small">Title</div>
+                        <div class="fw-semibold">${safeText(ticket.title)}</div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-muted small">Description</div>
+                        <div class="text-wrap">${safeText(ticket.description || ticket.descriptionPreview || 'No description provided')}</div>
+                    </div>
+                    <div class="mt-3 border rounded p-3 bg-light-subtle ai-status-card">
+                        <div class="text-muted small fw-semibold mb-2">Endpoint Device Context</div>
+                        <div class="small text-muted mb-2">${safeText(endpointSummary)}</div>
+                        <div class="row g-2">
+                            <div class="col-12 col-md-6">
+                                <div class="text-muted small">Affected Device Name</div>
+                                <div>${safeText(affectedDeviceName || '--')}</div>
                             </div>
-                        ` : ''}
-                        ${showDetailedAgenticContext && affectedDeviceId ? `
-                            <div class="col-12 mt-2">
-                                <div class="border rounded p-2 bg-white">
-                                    <div class="text-muted small fw-semibold mb-2">Live Endpoint Registry Status</div>
-                                    <div class="row g-2">
-                                        <div class="col-6 col-md-3">
-                                            <div class="text-muted small">Agent Status</div>
-                                            <div data-ticket-endpoint-agent-status="true">Loading...</div>
-                                        </div>
-                                        <div class="col-6 col-md-3">
-                                            <div class="text-muted small">Agent Version</div>
-                                            <div data-ticket-endpoint-agent-version="true">--</div>
-                                        </div>
-                                        <div class="col-6 col-md-3">
-                                            <div class="text-muted small">Last Seen</div>
-                                            <div data-ticket-endpoint-last-seen="true">--</div>
-                                        </div>
-                                        <div class="col-6 col-md-3">
-                                            <div class="text-muted small">Is Agent Enabled</div>
-                                            <div data-ticket-endpoint-enabled="true">--</div>
+                            <div class="col-12 col-md-6">
+                                <div class="text-muted small">Affected Device ID</div>
+                                <div>${safeText(affectedDeviceId || '--')}</div>
+                            </div>
+                            <div class="col-6 col-md-4">
+                                <div class="text-muted small">OS Type</div>
+                                <div>${safeText(osType || 'UNKNOWN')}</div>
+                            </div>
+                            <div class="col-6 col-md-4">
+                                <div class="text-muted small">Issue Scope</div>
+                                <div>${safeText(issueScope || 'UNKNOWN')}</div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <div class="text-muted small">Remote Support Consent</div>
+                                <div>${safeText(formatBooleanText(remoteSupportConsent))}</div>
+                            </div>
+                            ${showDetailedAgenticContext ? `
+                                <div class="col-6">
+                                    <div class="text-muted small">AI Agent Eligible</div>
+                                    <div>${safeText(formatBooleanText(aiAgentEligible))}</div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="text-muted small">AI Agent Eligibility Reason</div>
+                                    <div>${safeText(aiAgentEligibilityReason || '--')}</div>
+                                </div>
+                            ` : ''}
+                            ${showDetailedAgenticContext && affectedDeviceId ? `
+                                <div class="col-12 mt-2">
+                                    <div class="border rounded p-2 bg-white">
+                                        <div class="text-muted small fw-semibold mb-2">Live Endpoint Registry Status</div>
+                                        <div class="row g-2">
+                                            <div class="col-6 col-md-3">
+                                                <div class="text-muted small">Agent Status</div>
+                                                <div data-ticket-endpoint-agent-status="true">Loading...</div>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <div class="text-muted small">Agent Version</div>
+                                                <div data-ticket-endpoint-agent-version="true">--</div>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <div class="text-muted small">Last Seen</div>
+                                                <div data-ticket-endpoint-last-seen="true">--</div>
+                                            </div>
+                                            <div class="col-6 col-md-3">
+                                                <div class="text-muted small">Is Agent Enabled</div>
+                                                <div data-ticket-endpoint-enabled="true">--</div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                        ` : ''}
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    `;
+        `;
 }
 
 function renderHierarchy(hierarchy) {

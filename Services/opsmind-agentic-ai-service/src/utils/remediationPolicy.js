@@ -77,6 +77,7 @@ const UNSAFE_DESCRIPTION_PATTERNS = [
   /```/i,
   /https?:\/\//i,
   /\bwww\./i,
+  /\b[a-z0-9-]+\.[a-z]{2,}(\/\S*)?\b/i,
   /\b(powershell|bash|cmd|terminal|shell|script|curl|wget|sudo|regedit|gpedit|ipconfig|ifconfig|netsh|systemctl|ping|traceroute|nslookup)\b/i,
   /\b([a-z]+:\\|\\\\)\S+/i,
   /(^|\s)(\/usr|\/bin|\/etc|\/var|\/opt)\b/i,
@@ -406,6 +407,13 @@ function finalizeSteps(steps) {
   });
 }
 
+function hasManualReviewStep(steps) {
+  const normalizedSteps = Array.isArray(steps) ? steps : [];
+  return normalizedSteps.some(
+    (step) => normalizeActionKey(step?.actionKey ?? step?.action_key) === "MANUAL_REVIEW_REQUIRED"
+  );
+}
+
 function sanitizeRemediationPlan(rawPlan, ticket) {
   const normalizedTicket = normalizeTicket(ticket);
   const normalizedCategory = normalizeCategory(
@@ -458,7 +466,7 @@ function sanitizeRemediationPlan(rawPlan, ticket) {
   }
 
   const finalizedSteps = finalizeSteps(sanitizedSteps);
-  const executionAvailable = normalizedTicket.aiAgentEligible === true;
+  const executionAvailable = normalizedTicket.aiAgentEligible === true && !hasManualReviewStep(finalizedSteps);
   const ticketContext = buildSafeTicketContext(normalizedTicket);
 
   return {
@@ -547,7 +555,7 @@ function enrichSafePlan(safePlan, ticket) {
     const approvedSoftware = findApprovedSoftwareFromTicket(normalizedTicket);
     const normalizedOs = normalizeOsType(normalizedTicket.osType);
 
-    if (approvedSoftware && ["MACOS", "WINDOWS"].includes(normalizedOs)) {
+    if (approvedSoftware) {
       const catalogEntry = APPROVED_SOFTWARE_CATALOG[approvedSoftware.softwareKey];
       const supportedOs = Array.isArray(catalogEntry?.supportedOs) ? catalogEntry.supportedOs : [];
 
@@ -583,6 +591,8 @@ function enrichSafePlan(safePlan, ticket) {
 
   const finalizedSteps = finalizeSteps(resultSteps);
   const ticketContext = buildSafeTicketContext(normalizedTicket);
+  const baseExecutionAvailable = normalizedTicket.aiAgentEligible === true;
+  const executionAvailable = baseExecutionAvailable && !hasManualReviewStep(finalizedSteps);
 
   return {
     summary: toCleanString(
@@ -592,9 +602,9 @@ function enrichSafePlan(safePlan, ticket) {
     riskLevel: recalculateRisk(finalizedSteps),
     requiresApproval: true,
     steps: finalizedSteps,
-    executionAvailable: safePlan.executionAvailable === true,
+    executionAvailable,
     executionBlockedReason:
-      safePlan.executionAvailable === true
+      executionAvailable
         ? null
         : safePlan.executionBlockedReason || EXECUTION_BLOCKED_REASON,
     plannerService: safePlan.plannerService || "opsmind-agentic-ai-service",

@@ -13,6 +13,7 @@ import Router from './router.js';
 import UI from './ui.js';
 import AuthService from '/services/authService.js';
 import NotificationService from '/services/notificationService.js';
+import { initFloatingAiHelp, openFloatingAiHelp } from '/assets/js/components/floatingAiHelp.js';
 
 
 /**
@@ -48,6 +49,7 @@ const App = {
         this.initNavbar();
         this.initSidebar();
         this.initGlobalListeners();
+        initFloatingAiHelp();
         
         this.initialized = true;
         
@@ -396,7 +398,7 @@ const App = {
         // Help button (placeholder)
         const helpBtn = document.getElementById('helpBtn');
         helpBtn?.addEventListener('click', () => {
-            UI.info('Help documentation coming soon!');
+            openFloatingAiHelp();
         });
     },
 

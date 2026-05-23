@@ -10,6 +10,11 @@ const TASK_STATUS = Object.freeze({
 });
 
 const TASK_STEP_RESULT_STATUS = new Set(["SUCCESS", "FAILED", "SKIPPED"]);
+const NON_QUEUEABLE_ACTIONS = new Set([
+  "MANUAL_REVIEW_REQUIRED",
+  "OPEN_DOWNLOADED_INSTALLER",
+  "INSTALL_APPROVED_SOFTWARE",
+]);
 
 function toOptionalString(value) {
   if (value === null || value === undefined) {
@@ -57,6 +62,14 @@ function normalizeStepParams(params) {
   return { ...params };
 }
 
+function normalizeActionKey(actionKey) {
+  return String(actionKey || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
 function normalizeSafePlanSteps(safePlan) {
   const steps = Array.isArray(safePlan?.steps) ? safePlan.steps : [];
 
@@ -68,7 +81,7 @@ function normalizeSafePlanSteps(safePlan) {
 
       const rawStepOrder = Number(step.stepOrder ?? step.step_order);
       const stepOrder = Number.isInteger(rawStepOrder) && rawStepOrder > 0 ? rawStepOrder : index + 1;
-      const actionKey = toOptionalString(step.actionKey ?? step.action_key);
+      const actionKey = normalizeActionKey(step.actionKey ?? step.action_key);
 
       if (!actionKey) {
         return null;
@@ -87,6 +100,16 @@ function normalizeSafePlanSteps(safePlan) {
       ...step,
       step_order: index + 1,
     }));
+}
+
+function hasManualReviewStep(steps) {
+  const normalizedSteps = Array.isArray(steps) ? steps : [];
+  return normalizedSteps.some((step) => normalizeActionKey(step?.action_key) === "MANUAL_REVIEW_REQUIRED");
+}
+
+function filterQueueableSteps(steps) {
+  const normalizedSteps = Array.isArray(steps) ? steps : [];
+  return normalizedSteps.filter((step) => !NON_QUEUEABLE_ACTIONS.has(normalizeActionKey(step?.action_key)));
 }
 
 function resolvePlanSafePlan(plan) {
@@ -218,6 +241,11 @@ function buildTaskStatusConflict(message) {
   return createError("TASK_STATUS_CONFLICT", message, 409);
 }
 
+function logQueueBlock(planId, reason, context = {}) {
+  const safeContext = context && typeof context === "object" ? context : {};
+  console.warn(`[AgentTaskQueue] Queue blocked for plan ${planId}: ${reason}`, safeContext);
+}
+
 function ensureTaskCanTransition(task, allowedStatuses, operation) {
   if (!allowedStatuses.includes(task.status)) {
     throw buildTaskStatusConflict(
@@ -226,17 +254,18 @@ function ensureTaskCanTransition(task, allowedStatuses, operation) {
   }
 }
 
-async function queueTaskFromApprovedPlan(planId, actor) {
-  const normalizedPlanId = ensureId(planId, "planId");
-  const normalizedActor = normalizeActor(actor);
-  const plan = await getPlanOrThrow(normalizedPlanId);
+function assertPlanQueueable(plan, safePlan, normalizedSteps) {
+  const planId = toOptionalString(plan?.id) || "unknown-plan";
 
   if (plan.status !== "APPROVED") {
+    logQueueBlock(planId, "plan is not approved", { status: plan.status });
     throw buildQueueConflictForPlanStatus(plan.status);
   }
 
-  const safePlan = resolvePlanSafePlan(plan);
   if (safePlan.executionAvailable !== true) {
+    logQueueBlock(planId, "executionAvailable is false", {
+      executionAvailable: safePlan.executionAvailable,
+    });
     throw createError(
       "TASK_QUEUE_CONFLICT",
       "Cannot queue task because automatic execution is unavailable for this plan.",
@@ -244,8 +273,38 @@ async function queueTaskFromApprovedPlan(planId, actor) {
     );
   }
 
+  if (hasManualReviewStep(normalizedSteps)) {
+    logQueueBlock(planId, "plan contains MANUAL_REVIEW_REQUIRED step");
+    throw createError(
+      "PLAN_REQUIRES_MANUAL_REVIEW",
+      "This plan requires manual review and cannot be queued for endpoint execution.",
+      409
+    );
+  }
+
+  const queueableSteps = filterQueueableSteps(normalizedSteps);
+  if (queueableSteps.length < 1) {
+    logQueueBlock(planId, "no executable queueable steps after filtering", {
+      stepCount: normalizedSteps.length,
+    });
+    throw createError("TASK_QUEUE_CONFLICT", "Cannot queue task because the plan has no executable steps.", 409);
+  }
+
+  return queueableSteps;
+}
+
+async function queueTaskFromApprovedPlan(planId, actor) {
+  const normalizedPlanId = ensureId(planId, "planId");
+  const normalizedActor = normalizeActor(actor);
+  const plan = await getPlanOrThrow(normalizedPlanId);
+
+  const safePlan = resolvePlanSafePlan(plan);
+  const normalizedSteps = normalizeSafePlanSteps(safePlan);
+  const queueableSteps = assertPlanQueueable(plan, safePlan, normalizedSteps);
+
   const deviceId = resolveAffectedDeviceIdFromSafePlan(plan);
   if (!deviceId) {
+    logQueueBlock(normalizedPlanId, "no linked endpoint device on safe plan");
     throw createError(
       "TASK_QUEUE_CONFLICT",
       "Cannot queue task because no endpoint device is linked to this plan.",
@@ -258,24 +317,29 @@ async function queueTaskFromApprovedPlan(planId, actor) {
   });
 
   if (!device) {
+    logQueueBlock(normalizedPlanId, "linked endpoint device record was not found", { deviceId });
     throw createError("DEVICE_NOT_FOUND", "Endpoint device was not found.", 404);
   }
 
   if (device.is_agent_enabled === false || device.agent_status === "DISABLED") {
+    logQueueBlock(normalizedPlanId, "linked endpoint device is disabled", {
+      deviceId,
+      agent_status: device.agent_status,
+      is_agent_enabled: device.is_agent_enabled,
+    });
     throw createError("DEVICE_DISABLED", "Endpoint device is disabled.", 403);
   }
 
   if (device.agent_status !== "ONLINE") {
+    logQueueBlock(normalizedPlanId, "linked endpoint device is not online", {
+      deviceId,
+      agent_status: device.agent_status,
+    });
     throw createError(
       "TASK_QUEUE_CONFLICT",
       "Cannot queue task because the endpoint device is not online.",
       409
     );
-  }
-
-  const normalizedSteps = normalizeSafePlanSteps(safePlan);
-  if (normalizedSteps.length < 1) {
-    throw createError("TASK_QUEUE_CONFLICT", "Cannot queue task because the plan has no executable steps.", 409);
   }
 
   const createdTask = await prisma.$transaction(async (tx) => {
@@ -291,7 +355,7 @@ async function queueTaskFromApprovedPlan(planId, actor) {
     });
 
     await tx.agentTaskStep.createMany({
-      data: normalizedSteps.map((step) => ({
+      data: queueableSteps.map((step) => ({
         task_id: task.id,
         step_order: step.step_order,
         action_key: step.action_key,

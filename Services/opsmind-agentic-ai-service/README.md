@@ -191,6 +191,6 @@ No real endpoint execution is performed in this phase.
 ## SOFTWARE Planning Notes
 
 - `SOFTWARE` category planning is supported
-- Approved software catalog currently includes `GOOGLE_CHROME`
+- Approved software catalog currently includes `GOOGLE_CHROME` and `RECTANGLE`
 - Download/verify actions are planning and simulation only
 - No real software download/install execution in this phase

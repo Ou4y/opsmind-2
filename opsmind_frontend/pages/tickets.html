@@ -77,26 +77,6 @@
             flex-shrink: 0;
         }
         
-        #aiHelpBtn {
-            border-color: #667eea;
-            color: #667eea;
-        }
-        
-        #aiHelpBtn:hover {
-            background: #667eea;
-            color: white;
-        }
-
-        #enhanceDescriptionBtn {
-            border-color: #22c55e;
-            color: #15803d;
-        }
-
-        #enhanceDescriptionBtn:hover {
-            background: #22c55e;
-            color: white;
-        }
-
         #newTicketDescription.description-enhancing {
             border-color: #22c55e;
             box-shadow: 0 0 0 0.2rem rgba(34, 197, 94, 0.2);
@@ -441,10 +421,10 @@
                         <!-- Ticket Info (hidden until loaded) -->
                         <div class="d-none" id="ticketDetailInfo">
                             <!-- Header Row -->
-                            <div class="row mb-4">
+                            <div class="row mb-4 ticket-detail-header">
                                 <div class="col-12">
                                     <h4 id="ticketSubject"></h4>
-                                    <div class="d-flex gap-2 flex-wrap">
+                                    <div class="d-flex gap-2 flex-wrap ticket-detail-badges">
                                         <span class="badge" id="ticketStatusBadge"></span>
                                         <span class="badge" id="ticketPriorityBadge"></span>
                                         <span class="badge bg-secondary" id="ticketCategoryBadge"></span>
@@ -453,7 +433,7 @@
                             </div>
 
                             <!-- Details Grid -->
-                            <div class="row g-3 mb-4">
+                            <div class="row g-3 mb-4 ticket-detail-grid">
                                 <div class="col-6 col-md-3">
                                     <label class="text-muted small">Requester</label>
                                     <p class="mb-0 fw-medium" id="ticketRequester"></p>
@@ -489,13 +469,13 @@
                             </div>
 
                             <!-- Description -->
-                            <div class="mb-4">
+                            <div class="mb-4 ticket-detail-description">
                                 <label class="text-muted small">Description</label>
                                 <div class="description-box" id="ticketDescription"></div>
                             </div>
 
                             <div class="mb-4">
-                                <div class="card border-secondary-subtle">
+                                <div class="card border-secondary-subtle ai-status-card">
                                     <div class="card-header bg-white">
                                         <h6 class="mb-0">Endpoint Device Context</h6>
                                     </div>
@@ -570,7 +550,7 @@
                             </div>
 
                             <!-- Status Change -->
-                            <div class="status-change-section">
+                            <div class="status-change-section ticket-detail-actions">
                                 <h6 class="mb-3">Update Status</h6>
                                 <div class="row g-2">
                                     <div class="col-12 col-md-8">
@@ -795,7 +775,7 @@
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-outline-info" id="aiHelpBtn">
+                        <button type="button" class="btn ai-action-btn ai-action-btn-secondary" id="aiHelpBtn">
                             <i class="bi bi-magic me-1"></i>
                             <span class="btn-text">AI Help</span>
                             <span class="btn-loader d-none">
@@ -803,7 +783,7 @@
                                 AI is writing steps...
                             </span>
                         </button>
-                        <button type="button" class="btn btn-outline-success" id="enhanceDescriptionBtn">
+                        <button type="button" class="btn ai-action-btn ai-action-btn-secondary" id="enhanceDescriptionBtn">
                             <i class="bi bi-pencil-square me-1"></i>
                             <span class="btn-text">Enhance Description</span>
                             <span class="btn-loader d-none">
@@ -829,8 +809,8 @@
     <!-- AI Help Modal -->
     <div class="modal fade" id="aiHelpModal" tabindex="-1" aria-labelledby="aiHelpModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header bg-gradient" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+            <div class="modal-content ai-modal-content">
+                <div class="modal-header ai-modal-header">
                     <h5 class="modal-title" id="aiHelpModalLabel">
                         <i class="bi bi-magic me-2"></i>AI Troubleshooting Suggestions
                     </h5>

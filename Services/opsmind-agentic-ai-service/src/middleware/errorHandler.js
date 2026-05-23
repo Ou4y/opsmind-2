@@ -45,6 +45,11 @@ function errorHandler(error, _req, res, _next) {
   } else if (error?.code === "TASK_QUEUE_CONFLICT") {
     statusCode = 409;
     message = error.message || "Agent task queue conflict.";
+  } else if (error?.code === "PLAN_REQUIRES_MANUAL_REVIEW") {
+    statusCode = 409;
+    message =
+      error.message ||
+      "This plan requires manual review and cannot be queued for endpoint execution.";
   } else if (error?.code === "TASK_STATUS_CONFLICT") {
     statusCode = 409;
     message = error.message || "Invalid agent task status transition.";
