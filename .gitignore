@@ -1,3 +1,4 @@
 # Local environment files
 .env
 opsmind_frontend/.env
+Services/inventory-backend/.env

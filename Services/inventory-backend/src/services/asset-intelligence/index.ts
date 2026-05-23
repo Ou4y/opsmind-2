@@ -7,3 +7,4 @@ export * from './liveStatusClassifier';
 export * from './readinessService';
 export * from './specDatasetService';
 export * from './userConfirmedSpecsService';
+export * from './sourceLookupService';

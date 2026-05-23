@@ -76,13 +76,13 @@ Rules:
 - For suspicious contradictions (e.g., MacBook + Windows), keep value and warn.
 
 Required output:
-{
-  "normalized_specs": {},
+{{
+  "normalized_specs": {{}},
   "invalid_fields": [],
   "missing_important_fields": [],
   "warnings": [],
   "confidence": 0.0
-}
+}}
 
 Input:
 {payload_json}
@@ -99,12 +99,12 @@ Rules:
 - Do not block creation by yourself; only set requires_review flag.
 
 Required output:
-{
+{{
   "warnings": [],
   "suspicious_fields": [],
   "suggested_fixes": [],
   "requires_review": true
-}
+}}
 
 Input:
 {payload_json}
@@ -122,10 +122,35 @@ Rules:
 - technical_explanation: concise technical reason summary.
 
 Required output:
-{
+{{
   "short_user_explanation": "",
   "technical_explanation": ""
-}
+}}
+
+Input:
+{payload_json}
+"""
+
+
+SPEC_SOURCE_EXTRACTION_PROMPT = """You extract asset specs from provided source text only.
+Do not invent facts that are missing from the text.
+
+Rules:
+- Return ONLY JSON.
+- Use only fields relevant to the selected asset type.
+- If exact model is unclear, keep uncertain values as \"Unknown - verify exact configuration\".
+- Never mark missing values as known values.
+- Prefer concise, normalized key/value output.
+
+Required output:
+{{
+  "normalized_specs": {{}},
+  "warnings": [],
+  "missing_important_fields": [],
+  "confidence": 0.0,
+  "exact_model_matched": false,
+  "evidence_reason": ""
+}}
 
 Input:
 {payload_json}

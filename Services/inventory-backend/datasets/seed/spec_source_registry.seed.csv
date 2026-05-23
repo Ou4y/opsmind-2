@@ -1,0 +1,146 @@
+assetType,brand,sourceDomain,sourceUrl,sourceType,trustLevel,notes
+Laptop,Dell,dell.com,https://www.dell.com/support/home,manufacturer,high,Official Dell support and specifications
+Laptop,HP,hp.com,https://support.hp.com,manufacturer,high,Official HP support/spec pages
+Laptop,Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Lenovo support and PSREF references
+Laptop,Apple,apple.com,https://support.apple.com,manufacturer,high,Official Apple support docs
+Laptop,ASUS,asus.com,https://www.asus.com/support,manufacturer,medium,Official ASUS support pages
+Desktop PC,Dell,dell.com,https://www.dell.com/support/home,manufacturer,high,Official Dell desktop specs
+Desktop PC,HP,hp.com,https://support.hp.com,manufacturer,high,Official HP desktop specs
+Desktop PC,Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Official Lenovo desktop specs
+Desktop PC,Apple,apple.com,https://support.apple.com,manufacturer,high,Official Apple desktop support
+Desktop PC,ASUS,asus.com,https://www.asus.com/support,manufacturer,medium,Official ASUS desktop support
+Monitor,Dell,dell.com,https://www.dell.com/support/home,manufacturer,high,Official Dell monitor support
+Monitor,HP,hp.com,https://support.hp.com,manufacturer,high,Official HP monitor support
+Monitor,Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Official Lenovo monitor support
+Monitor,LG,lg.com,https://www.lg.com/support,manufacturer,medium,Official LG support
+Monitor,Samsung,samsung.com,https://www.samsung.com/support,manufacturer,medium,Official Samsung support
+Server,HPE,hpe.com,https://support.hpe.com,manufacturer,high,HPE server quickspecs and support
+Server,Dell,dell.com,https://www.dell.com/support/home,manufacturer,high,Dell PowerEdge specs/support
+Server,Cisco,cisco.com,https://www.cisco.com/c/en/us/support/index.html,manufacturer,high,Cisco UCS server support
+Server,Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Lenovo ThinkSystem specs/support
+Server,Supermicro,supermicro.com,https://www.supermicro.com/en/support,manufacturer,medium,Supermicro official support
+Tablet / iPad,Apple,apple.com,https://support.apple.com,manufacturer,high,Official iPad support docs
+Tablet / iPad,Samsung,samsung.com,https://www.samsung.com/support,manufacturer,medium,Official Samsung tablet support
+Tablet / iPad,Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Official Lenovo tablet support
+Tablet / iPad,Microsoft,microsoft.com,https://support.microsoft.com/surface,manufacturer,high,Surface support
+Tablet / iPad,HP,hp.com,https://support.hp.com,manufacturer,high,HP tablet support
+Peripheral (Keyboard/Mouse),Logitech,logitech.com,https://support.logi.com,manufacturer,high,Official Logitech support
+Peripheral (Keyboard/Mouse),Dell,dell.com,https://www.dell.com/support/home,manufacturer,high,Official Dell peripheral support
+Peripheral (Keyboard/Mouse),HP,hp.com,https://support.hp.com,manufacturer,high,Official HP peripheral support
+Peripheral (Keyboard/Mouse),Microsoft,microsoft.com,https://support.microsoft.com,manufacturer,high,Official Microsoft peripheral support
+Peripheral (Keyboard/Mouse),Lenovo,lenovo.com,https://support.lenovo.com,manufacturer,high,Official Lenovo peripheral support
+Projector,Epson,epson.com,https://epson.com/Support,manufacturer,high,Official Epson projector support
+Projector,BenQ,benq.com,https://www.benq.com/en-us/support,manufacturer,medium,Official BenQ support
+Projector,ViewSonic,viewsonic.com,https://www.viewsonic.com/us/support,manufacturer,medium,Official ViewSonic support
+Projector,Sony,sony.com,https://www.sony.com/electronics/support,manufacturer,high,Official Sony projector support
+Projector,Canon,canon.com,https://www.usa.canon.com/support,manufacturer,high,Official Canon projector support
+Smartboard,SMART,smarttech.com,https://support.smarttech.com,manufacturer,high,Official SMART support
+Smartboard,Promethean,prometheanworld.com,https://support.prometheanworld.com,manufacturer,high,Official Promethean support
+Smartboard,BenQ,benq.com,https://www.benq.com/en-us/support,manufacturer,medium,Official BenQ smartboard support
+Smartboard,ViewSonic,viewsonic.com,https://www.viewsonic.com/us/support,manufacturer,medium,Official ViewSonic smartboard support
+Smartboard,Samsung,samsung.com,https://www.samsung.com/support,manufacturer,medium,Samsung interactive display support
+Camera,Canon,canon.com,https://www.usa.canon.com/support,manufacturer,high,Official Canon support
+Camera,Nikon,nikon.com,https://www.nikonusa.com/en/nikon-products/support,manufacturer,high,Official Nikon support
+Camera,Sony,sony.com,https://www.sony.com/electronics/support,manufacturer,high,Official Sony support
+Camera,Logitech,logitech.com,https://support.logi.com,manufacturer,high,Official Logitech camera support
+Camera,Panasonic,panasonic.com,https://shop.panasonic.com/support,manufacturer,medium,Official Panasonic support
+Microphone,Shure,shure.com,https://www.shure.com/en-US/support,manufacturer,high,Official Shure support
+Microphone,Sennheiser,sennheiser.com,https://www.sennheiser.com/en-us/support,manufacturer,high,Official Sennheiser support
+Microphone,Audio-Technica,audio-technica.com,https://www.audio-technica.com/en-us/support,manufacturer,high,Official Audio-Technica support
+Microphone,Rode,rode.com,https://rode.com/en/support,manufacturer,medium,Official Rode support
+Microphone,Sony,sony.com,https://www.sony.com/electronics/support,manufacturer,high,Official Sony microphone support
+Speaker System,JBL,jbl.com,https://support.jbl.com,manufacturer,high,Official JBL support
+Speaker System,Yamaha,yamaha.com,https://usa.yamaha.com/support,manufacturer,high,Official Yamaha support
+Speaker System,Bose,bose.com,https://www.bose.com/en_us/support.html,manufacturer,high,Official Bose support
+Speaker System,Sony,sony.com,https://www.sony.com/electronics/support,manufacturer,high,Official Sony speaker support
+Speaker System,Logitech,logitech.com,https://support.logi.com,manufacturer,high,Official Logitech speaker support
+Router,Cisco,cisco.com,https://www.cisco.com/c/en/us/support/index.html,manufacturer,high,Official Cisco router support
+Router,TP-Link,tp-link.com,https://www.tp-link.com/support,manufacturer,medium,Official TP-Link support
+Router,Ubiquiti,ui.com,https://ui.com/download,manufacturer,high,Official Ubiquiti support
+Router,MikroTik,mikrotik.com,https://mikrotik.com/download,manufacturer,medium,Official MikroTik support
+Router,Netgear,netgear.com,https://www.netgear.com/support,manufacturer,medium,Official Netgear support
+Network Switch,Cisco,cisco.com,https://www.cisco.com/c/en/us/support/index.html,manufacturer,high,Official Cisco switch support
+Network Switch,TP-Link,tp-link.com,https://www.tp-link.com/support,manufacturer,medium,Official TP-Link switch support
+Network Switch,Ubiquiti,ui.com,https://ui.com/download,manufacturer,high,Official Ubiquiti support
+Network Switch,Aruba,arubanetworks.com,https://asp.arubanetworks.com,manufacturer,high,Official Aruba support
+Network Switch,Netgear,netgear.com,https://www.netgear.com/support,manufacturer,medium,Official Netgear support
+Access Point (WiFi),Cisco,cisco.com,https://www.cisco.com/c/en/us/support/index.html,manufacturer,high,Official Cisco AP support
+Access Point (WiFi),Ubiquiti,ui.com,https://ui.com/download,manufacturer,high,Official Ubiquiti AP support
+Access Point (WiFi),Ruckus,ruckusnetworks.com,https://support.ruckuswireless.com,manufacturer,high,Official Ruckus support
+Access Point (WiFi),Aruba,arubanetworks.com,https://asp.arubanetworks.com,manufacturer,high,Official Aruba AP support
+Access Point (WiFi),TP-Link,tp-link.com,https://www.tp-link.com/support,manufacturer,medium,Official TP-Link AP support
+Firewall Appliance,Cisco,cisco.com,https://www.cisco.com/c/en/us/support/index.html,manufacturer,high,Official Cisco firewall support
+Firewall Appliance,Fortinet,fortinet.com,https://www.fortinet.com/support,manufacturer,high,Official Fortinet support
+Firewall Appliance,Palo Alto,paloaltonetworks.com,https://support.paloaltonetworks.com,manufacturer,high,Official Palo Alto support
+Firewall Appliance,Sophos,sophos.com,https://support.sophos.com,manufacturer,high,Official Sophos support
+Firewall Appliance,Netgate,netgate.com,https://www.netgate.com/support,manufacturer,medium,Official Netgate support
+Printer,HP,hp.com,https://support.hp.com,manufacturer,high,Official HP printer support
+Printer,Epson,epson.com,https://epson.com/Support,manufacturer,high,Official Epson printer support
+Printer,Canon,canon.com,https://www.usa.canon.com/support,manufacturer,high,Official Canon printer support
+Printer,Brother,brother.com,https://support.brother.com,manufacturer,high,Official Brother printer support
+Printer,Xerox,xerox.com,https://www.support.xerox.com,manufacturer,high,Official Xerox support
+Scanner,HP,hp.com,https://support.hp.com,manufacturer,high,Official HP scanner support
+Scanner,Epson,epson.com,https://epson.com/Support,manufacturer,high,Official Epson scanner support
+Scanner,Canon,canon.com,https://www.usa.canon.com/support,manufacturer,high,Official Canon scanner support
+Scanner,Fujitsu,fujitsu.com,https://www.fujitsu.com/global/support/products/computing/peripheral/scanners,manufacturer,high,Official Fujitsu scanner support
+Scanner,Ricoh,ricoh.com,https://www.ricoh.com/support,manufacturer,high,Official Ricoh scanner support
+Desk,Steelcase,steelcase.com,https://www.steelcase.com/resources,manufacturer,medium,Official Steelcase resources
+Desk,Herman Miller,hermanmiller.com,https://www.hermanmiller.com/resources,manufacturer,medium,Official Herman Miller resources
+Desk,HON,hon.com,https://www.hon.com/resources,manufacturer,medium,Official HON resources
+Desk,IKEA,ikea.com,https://www.ikea.com/us/en/customer-service,manufacturer,low,Official IKEA support pages
+Desk,Haworth,haworth.com,https://www.haworth.com/na/en/resources.html,manufacturer,medium,Official Haworth resources
+Chair,Steelcase,steelcase.com,https://www.steelcase.com/resources,manufacturer,medium,Official Steelcase chair resources
+Chair,Herman Miller,hermanmiller.com,https://www.hermanmiller.com/resources,manufacturer,medium,Official Herman Miller chair resources
+Chair,HON,hon.com,https://www.hon.com/resources,manufacturer,medium,Official HON chair resources
+Chair,IKEA,ikea.com,https://www.ikea.com/us/en/customer-service,manufacturer,low,Official IKEA support pages
+Chair,Haworth,haworth.com,https://www.haworth.com/na/en/resources.html,manufacturer,medium,Official Haworth resources
+Filing Cabinet,Steelcase,steelcase.com,https://www.steelcase.com/resources,manufacturer,medium,Official Steelcase storage resources
+Filing Cabinet,HON,hon.com,https://www.hon.com/resources,manufacturer,medium,Official HON storage resources
+Filing Cabinet,IKEA,ikea.com,https://www.ikea.com/us/en/customer-service,manufacturer,low,Official IKEA support pages
+Filing Cabinet,Haworth,haworth.com,https://www.haworth.com/na/en/resources.html,manufacturer,medium,Official Haworth resources
+Filing Cabinet,Herman Miller,hermanmiller.com,https://www.hermanmiller.com/resources,manufacturer,medium,Official Herman Miller resources
+Whiteboard,SMART,smarttech.com,https://support.smarttech.com,manufacturer,high,Official SMART support
+Whiteboard,Quartet,quartet.com,https://www.quartet.com/support,manufacturer,medium,Official Quartet support
+Whiteboard,Ghent,ghent.com,https://ghent.com/resources,manufacturer,low,Official Ghent resources
+Whiteboard,IKEA,ikea.com,https://www.ikea.com/us/en/customer-service,manufacturer,low,Official IKEA support pages
+Whiteboard,MooreCo,moorecoinc.com,https://moorecoinc.com/resources,manufacturer,low,Official MooreCo resources
+Microscope,Evident,evidentscientific.com,https://www.evidentscientific.com/en/support,manufacturer,high,Official Evident/Olympus support
+Microscope,ZEISS,zeiss.com,https://www.zeiss.com/microscopy/us/service-support.html,manufacturer,high,Official ZEISS support
+Microscope,Leica,leica-microsystems.com,https://www.leica-microsystems.com/support,manufacturer,high,Official Leica support
+Microscope,Nikon,nikon.com,https://www.microscope.healthcare.nikon.com/support,manufacturer,high,Official Nikon microscopy support
+Microscope,Thermo Fisher,thermofisher.com,https://www.thermofisher.com/us/en/home/technical-resources.html,manufacturer,high,Official Thermo Fisher support
+Centrifuge,Eppendorf,eppendorf.com,https://www.eppendorf.com/support,manufacturer,high,Official Eppendorf support
+Centrifuge,Beckman Coulter,beckman.com,https://www.beckman.com/support,manufacturer,high,Official Beckman Coulter support
+Centrifuge,Thermo Fisher,thermofisher.com,https://www.thermofisher.com/us/en/home/technical-resources.html,manufacturer,high,Official Thermo Fisher support
+Centrifuge,Hettich,andreas-hettich.com,https://www.hettweb.com/en/service,manufacturer,medium,Official Hettich support
+Centrifuge,Sigma,sigmazentrifugen.de,https://www.sigma-zentrifugen.de/en/service-support,manufacturer,medium,Official Sigma support
+Oscilloscope,Tektronix,tektronix.com,https://www.tek.com/en/support,manufacturer,high,Official Tektronix support
+Oscilloscope,Keysight,keysight.com,https://www.keysight.com/us/en/support.html,manufacturer,high,Official Keysight support
+Oscilloscope,Rigol,rigolna.com,https://rigolna.com/support,manufacturer,medium,Official Rigol support
+Oscilloscope,Rohde & Schwarz,rohde-schwarz.com,https://www.rohde-schwarz.com/us/service-support,manufacturer,high,Official Rohde & Schwarz support
+Oscilloscope,Siglent,siglentna.com,https://siglentna.com/support,manufacturer,medium,Official Siglent support
+3D Printer,Prusa,prusa3d.com,https://help.prusa3d.com,manufacturer,high,Official Prusa support
+3D Printer,UltiMaker,ultimaker.com,https://support.ultimaker.com,manufacturer,high,Official UltiMaker support
+3D Printer,Bambu Lab,bambulab.com,https://wiki.bambulab.com,manufacturer,medium,Official Bambu Lab wiki
+3D Printer,Creality,creality.com,https://www.creality.com/support,manufacturer,medium,Official Creality support
+3D Printer,Formlabs,formlabs.com,https://support.formlabs.com,manufacturer,high,Official Formlabs support
+University Vehicle,Toyota,toyota.com,https://www.toyota.com/owners,manufacturer,high,Official Toyota owner docs
+University Vehicle,Ford,ford.com,https://www.ford.com/support,manufacturer,high,Official Ford support
+University Vehicle,Nissan,nissanusa.com,https://www.nissanusa.com/owners,manufacturer,high,Official Nissan owner docs
+University Vehicle,Hyundai,hyundai.com,https://owners.hyundaiusa.com,manufacturer,high,Official Hyundai owner docs
+University Vehicle,Honda,honda.com,https://owners.honda.com,manufacturer,high,Official Honda owner docs
+Generator,Cummins,cummins.com,https://www.cummins.com/support,manufacturer,high,Official Cummins support
+Generator,Caterpillar,cat.com,https://www.cat.com/en_US/support.html,manufacturer,high,Official CAT support
+Generator,Kohler,kohlerpower.com,https://kohlerpower.com/en/support,manufacturer,high,Official Kohler support
+Generator,Generac,generac.com,https://www.generac.com/service-support,manufacturer,high,Official Generac support
+Generator,MTU,mtu-solutions.com,https://www.mtu-solutions.com/support,manufacturer,medium,Official MTU support
+HVAC Unit,Carrier,carrier.com,https://www.carrier.com/residential/en/us/service-support,manufacturer,high,Official Carrier support
+HVAC Unit,Trane,trane.com,https://www.trane.com/residential/en/resources/support,manufacturer,high,Official Trane support
+HVAC Unit,Daikin,daikin.com,https://www.daikin.com/support-and-manuals,manufacturer,high,Official Daikin support
+HVAC Unit,Lennox,lennox.com,https://www.lennox.com/help,manufacturer,high,Official Lennox support
+HVAC Unit,Johnson Controls,johnsoncontrols.com,https://www.johnsoncontrols.com/support,manufacturer,high,Official Johnson Controls support
+Power Tool,Bosch,boschtools.com,https://www.boschtools.com/us/en/service,manufacturer,high,Official Bosch tools support
+Power Tool,DeWalt,dewalt.com,https://www.dewalt.com/support,manufacturer,high,Official DeWalt support
+Power Tool,Makita,makitatools.com,https://www.makitatools.com/service,manufacturer,high,Official Makita support
+Power Tool,Milwaukee,milwaukeetool.com,https://www.milwaukeetool.com/Support,manufacturer,high,Official Milwaukee support
+Power Tool,Hilti,hilti.com,https://www.hilti.com/content/hilti/W1/US/en/support.html,manufacturer,high,Official Hilti support

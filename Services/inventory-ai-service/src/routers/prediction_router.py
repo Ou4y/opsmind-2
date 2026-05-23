@@ -13,6 +13,8 @@ from src.schemas import (
     AssetLifespanResponse,
     EolExplanationRequest,
     EolExplanationResponse,
+    SourceSpecExtractionRequest,
+    SourceSpecExtractionResponse,
     AssetSpecFeedbackRequest,
     AssetSpecFeedbackResponse,
     AssetSpecInferenceRequest,
@@ -206,4 +208,32 @@ async def explain_eol_assessment(payload: EolExplanationRequest, request: Reques
             "inventory_ai_endpoint_seconds",
             time.perf_counter() - started,
             labels={"endpoint": "explain_eol_assessment"},
+        )
+
+
+@router.post(
+    "/extract-asset-specs-from-source",
+    response_model=SourceSpecExtractionResponse,
+    summary="Extract normalized asset specs strictly from fetched trusted source text",
+)
+async def extract_asset_specs_from_source(
+    payload: SourceSpecExtractionRequest,
+    request: Request,
+) -> SourceSpecExtractionResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.extract_specs_from_source(payload)
+    except Exception as exc:
+        logger.exception("Source spec extraction helper failed")
+        raise HTTPException(status_code=500, detail=f"Source extraction error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc(
+            "inventory_ai_endpoint_total",
+            labels={"endpoint": "extract_asset_specs_from_source"},
+        )
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "extract_asset_specs_from_source"},
         )

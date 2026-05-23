@@ -21,6 +21,7 @@ let specPreviewRequestNonce = 0;
 let specPreviewInFlight = false;
 let specPreviewIsWriting = false;
 let specPreviewUserIntervened = false;
+let specPreviewActiveMode = 'idle';
 let lastSpecPreviewMeta = {
   sourceType: '',
   evidenceStatus: '',
@@ -31,6 +32,9 @@ let specVerificationSnapshot = {
   pendingCount: 0,
   metrics: null
 };
+let activeDetailsGroupName = null;
+let bulkSpecReviewContext = null;
+let bulkSpecActionInFlight = false;
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -806,9 +810,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const specApproveBtn = document.getElementById('specApproveBtn');
   const specCorrectBtn = document.getElementById('specCorrectBtn');
   const specRejectBtn = document.getElementById('specRejectBtn');
+  const bulkSpecApproveBtn = document.getElementById('bulkSpecApproveBtn');
+  const bulkSpecCorrectBtn = document.getElementById('bulkSpecCorrectBtn');
+  const bulkSpecRejectBtn = document.getElementById('bulkSpecRejectBtn');
   if (specApproveBtn) specApproveBtn.addEventListener('click', () => submitSpecVerificationAction('approve'));
   if (specCorrectBtn) specCorrectBtn.addEventListener('click', () => submitSpecVerificationAction('correct'));
   if (specRejectBtn) specRejectBtn.addEventListener('click', () => submitSpecVerificationAction('reject'));
+  if (bulkSpecApproveBtn) bulkSpecApproveBtn.addEventListener('click', () => submitBulkSpecVerificationAction('approve'));
+  if (bulkSpecCorrectBtn) bulkSpecCorrectBtn.addEventListener('click', () => submitBulkSpecVerificationAction('correct'));
+  if (bulkSpecRejectBtn) bulkSpecRejectBtn.addEventListener('click', () => submitBulkSpecVerificationAction('reject'));
 
   const locSelect = document.getElementById('assetLocation');
   const deptSelect = document.getElementById('assetDepartment');
@@ -818,6 +828,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const nameInput = document.getElementById('assetName');
   const specsInput = document.getElementById('assetSpecs');
   const generateSpecsBtn = document.getElementById('assetGenerateSpecsBtn');
+  const searchTrustedSourcesBtn = document.getElementById('assetSearchTrustedSourcesBtn');
   if (locSelect) locSelect.value = 'Central Warehouse';
   if (deptSelect) deptSelect.value = 'Unassigned';
   if (assetTypeSelect) assetTypeSelect.addEventListener('change', () => {
@@ -841,6 +852,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   if (generateSpecsBtn) generateSpecsBtn.addEventListener('click', handleGenerateSpecsPreview);
+  if (searchTrustedSourcesBtn) searchTrustedSourcesBtn.addEventListener('click', handleSearchTrustedSourcesPreview);
 
   const buildingFilter = document.getElementById('filterBuilding');
   const deptFilter = document.getElementById('filterDept');
@@ -855,6 +867,14 @@ document.addEventListener('DOMContentLoaded', () => {
   updateSpecPreviewButtonState();
   setSpecPreviewStatus('Approve/Edit before Create.', 'muted');
   updateInferredQualityPreview();
+
+  const detailsModalElement = document.getElementById('detailsModal');
+  if (detailsModalElement) {
+    detailsModalElement.addEventListener('hidden.bs.modal', () => {
+      activeDetailsGroupName = null;
+      bulkSpecReviewContext = null;
+    });
+  }
 });
 
 async function initializePage() {
@@ -1188,7 +1208,186 @@ function getSpecVerificationBadge(status) {
 }
 
 function shouldShowSpecReviewButton(status) {
-  return status === 'pending' || status === 'unchecked' || status === 'rejected';
+  return status === 'pending' || status === 'unchecked';
+}
+
+function getPendingSpecReviewAssetsInGroup(groupAssets = []) {
+  return groupAssets.filter((asset) => {
+    const status = getSpecVerificationStatus(asset);
+    return status === 'pending' || status === 'unchecked';
+  });
+}
+
+function getAssetReviewSeedSpecs(asset) {
+  const specs = getAssetSpecs(asset);
+  if (specs.aiDetectedSpecs && typeof specs.aiDetectedSpecs === 'object' && Object.keys(specs.aiDetectedSpecs).length) {
+    return specs.aiDetectedSpecs;
+  }
+  return extractUserFacingSpecs(asset);
+}
+
+function extractUserFacingSpecs(asset) {
+  const specs = getAssetSpecs(asset);
+  const hiddenKeys = new Set([
+    'aidetectedspecs',
+    'aispecfieldconfidence',
+    'aispecconfidence',
+    'aispecsource',
+    'aispeclookupmode',
+    'aispecsourceurls',
+    'aispecruleversion',
+    'aispecvariant',
+    'aispecevidencestatus',
+    'aispecevidencereason',
+    'aispecdetectedat',
+    'specverificationstatus',
+    'specverificationupdatedat',
+    'specverificationreviewedby',
+    'specverificationreviewedat',
+    'specverificationaction',
+    'specverificationcorrections',
+    'telemetrystatus',
+    'telemetryconfidence',
+    'telemetryreason',
+    'trackworkinghours',
+    'operationalstate',
+    'operationalstateupdatedat',
+    'workinghours',
+    'workinghourssource',
+  ]);
+  const filtered = {};
+  Object.entries(specs || {}).forEach(([key, value]) => {
+    const normalized = normalizeValue(key);
+    if (!key || hiddenKeys.has(normalized)) return;
+    const safeValue = String(value ?? '').trim();
+    if (!safeValue) return;
+    filtered[key] = safeValue;
+  });
+  return filtered;
+}
+
+function getSpecsSignature(specs = {}) {
+  const normalizedEntries = Object.entries(specs || {})
+    .map(([key, value]) => [String(key || '').trim().toLowerCase(), String(value || '').trim()])
+    .filter(([key, value]) => key && value)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return JSON.stringify(normalizedEntries);
+}
+
+function buildBulkSpecReviewContext(groupName) {
+  const groupAssets = currentAssets.filter((asset) => asset.name === groupName);
+  const pendingAssets = getPendingSpecReviewAssetsInGroup(groupAssets);
+  const pendingUnits = pendingAssets.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
+
+  const specBuckets = new Map();
+  pendingAssets.forEach((asset) => {
+    const specs = getAssetReviewSeedSpecs(asset);
+    const signature = getSpecsSignature(specs);
+    if (!specBuckets.has(signature)) {
+      specBuckets.set(signature, { specs, assets: [] });
+    }
+    specBuckets.get(signature).assets.push(asset);
+  });
+
+  let dominantBucket = null;
+  specBuckets.forEach((bucket) => {
+    if (!dominantBucket || bucket.assets.length > dominantBucket.assets.length) dominantBucket = bucket;
+  });
+
+  const groupType = groupAssets.length ? formatType(groupAssets[0].type) : 'Unknown';
+  return {
+    groupName,
+    groupType,
+    groupAssets,
+    pendingAssets,
+    pendingUnits,
+    specBuckets,
+    dominantBucket,
+    specsDiffer: specBuckets.size > 1,
+    expectedGroupKey: `${normalizeValue(groupName)}::${normalizeValue(groupType)}`,
+  };
+}
+
+function setBulkSpecActionButtonsDisabled(disabled) {
+  ['bulkSpecApproveBtn', 'bulkSpecCorrectBtn', 'bulkSpecRejectBtn'].forEach((id) => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = Boolean(disabled);
+  });
+}
+
+function updateSpecVerificationSnapshotFromLocalAssets() {
+  const pendingCount = currentAssets.reduce((count, asset) => {
+    return count + (getSpecVerificationStatus(asset) === 'pending' ? getAssetQuantity(asset) : 0);
+  }, 0);
+  specVerificationSnapshot.pendingCount = pendingCount;
+
+  const badgeEl = document.getElementById('specVerificationPendingBadge');
+  if (badgeEl) {
+    badgeEl.className = `badge ${pendingCount > 0 ? 'bg-warning text-dark' : 'bg-success'}`;
+    badgeEl.textContent = `Pending: ${pendingCount}`;
+  }
+}
+
+function upsertAssetInLocalState(updatedAsset) {
+  if (!updatedAsset || !updatedAsset.customId) return null;
+  const index = currentAssets.findIndex((asset) => asset.customId === updatedAsset.customId);
+  if (index < 0) return null;
+  currentAssets[index] = {
+    ...currentAssets[index],
+    ...updatedAsset,
+    specifications: (updatedAsset.specifications && typeof updatedAsset.specifications === 'object')
+      ? updatedAsset.specifications
+      : currentAssets[index].specifications
+  };
+  return currentAssets[index];
+}
+
+function rerenderOpenDetailsModalIfNeeded() {
+  const detailsModalEl = document.getElementById('detailsModal');
+  if (!detailsModalEl || !detailsModalEl.classList.contains('show')) return;
+  if (!activeDetailsGroupName) return;
+
+  const hasGroupAssets = currentAssets.some((asset) => asset.name === activeDetailsGroupName);
+  if (!hasGroupAssets) return;
+  window.viewAssetDetails(activeDetailsGroupName);
+}
+
+async function refreshDerivedStateForAssets(assetIds = []) {
+  const uniqueIds = Array.from(new Set(
+    (assetIds || [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)
+  ));
+  if (!uniqueIds.length) return;
+
+  await runWithConcurrency(uniqueIds, 3, async (assetId) => {
+    try {
+      const [jobRes, eolRes] = await Promise.all([
+        inventoryRequest(`/assets/${encodeURIComponent(assetId)}/ai-jobs`),
+        inventoryRequest(`/assets/${encodeURIComponent(assetId)}/eol-assessment`)
+      ]);
+
+      if (jobRes.ok) {
+        const jobPayload = await jobRes.json();
+        aiJobStatusCache.set(assetId, jobPayload);
+      }
+      if (eolRes.ok) {
+        const eolPayload = await eolRes.json();
+        eolAssessmentCache.set(assetId, eolPayload);
+      }
+    } catch (error) {
+      console.warn(`Failed to refresh derived AI state for ${assetId}:`, error?.message || error);
+    }
+  });
+
+  renderTable();
+  rerenderOpenDetailsModalIfNeeded();
+  checkGlobalEOLAlerts();
+}
+
+async function refreshSingleAssetDerivedState(assetId) {
+  if (!assetId) return;
+  await refreshDerivedStateForAssets([assetId]);
 }
 
 async function refreshSpecVerificationSnapshot() {
@@ -1262,6 +1461,131 @@ window.openSpecVerificationModal = (customId) => {
   modal.show();
 };
 
+window.openBulkSpecVerificationModal = () => {
+  if (!activeDetailsGroupName) {
+    showMessage('Open a group first to review pending specs.', 'warning');
+    return;
+  }
+
+  const context = buildBulkSpecReviewContext(activeDetailsGroupName);
+  if (!context.pendingAssets.length) {
+    showMessage('No pending spec-review assets in this group.', 'info');
+    return;
+  }
+  bulkSpecReviewContext = context;
+
+  const groupLabel = document.getElementById('bulkSpecVerificationGroupLabel');
+  const pendingCount = document.getElementById('bulkSpecVerificationPendingCount');
+  const predictedBox = document.getElementById('bulkSpecVerificationPredicted');
+  const correctedBox = document.getElementById('bulkSpecVerificationCorrected');
+  const warningBox = document.getElementById('bulkSpecVerificationWarning');
+
+  const sharedSpecs = context.dominantBucket?.specs || {};
+  if (groupLabel) groupLabel.textContent = `${context.groupName} (${context.groupType})`;
+  if (pendingCount) pendingCount.textContent = `${context.pendingUnits} unit(s) across ${context.pendingAssets.length} record(s)`;
+  if (predictedBox) {
+    predictedBox.value = formatSpecsObject(sharedSpecs) || 'No shared AI-predicted specs found.';
+  }
+  if (correctedBox) {
+    correctedBox.value = formatSpecsObject(sharedSpecs);
+  }
+  if (warningBox) {
+    if (context.specsDiffer) {
+      warningBox.classList.remove('d-none');
+      warningBox.textContent = 'Pending assets have different predicted specs. Review carefully before applying one correction to all.';
+    } else {
+      warningBox.classList.add('d-none');
+      warningBox.textContent = '';
+    }
+  }
+
+  setBulkSpecActionButtonsDisabled(false);
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('bulkSpecVerificationModal'));
+  modal.show();
+};
+
+async function submitBulkSpecVerificationAction(action) {
+  if (bulkSpecActionInFlight) return;
+  if (!bulkSpecReviewContext || !bulkSpecReviewContext.pendingAssets?.length) {
+    showMessage('No pending assets selected for bulk review.', 'warning');
+    return;
+  }
+
+  const correctedText = document.getElementById('bulkSpecVerificationCorrected')?.value || '';
+  const correctedSpecifications = parseSpecsText(correctedText);
+  if (action === 'correct' && !Object.keys(correctedSpecifications).length) {
+    showMessage('Please provide corrected specifications before choosing Correct All.', 'warning');
+    return;
+  }
+
+  if (bulkSpecReviewContext.specsDiffer && (action === 'approve' || action === 'correct')) {
+    const confirmMixed = await confirmInventoryAction({
+      title: 'Mixed Predicted Specs',
+      message: 'Pending assets in this group do not share identical predicted specs. Apply this bulk action anyway?',
+      confirmText: 'Apply to All Pending',
+      cancelText: 'Cancel',
+      confirmClass: 'inventory-insight-warning'
+    });
+    if (!confirmMixed) return;
+  }
+
+  bulkSpecActionInFlight = true;
+  setBulkSpecActionButtonsDisabled(true);
+
+  try {
+    const response = await fetch(`${API_URL}/assets/spec-verification/bulk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        assetIds: bulkSpecReviewContext.pendingAssets.map((asset) => asset.customId),
+        action,
+        correctedSpecifications: action === 'correct' ? correctedSpecifications : {},
+        expectedGroupKey: bulkSpecReviewContext.expectedGroupKey,
+        reviewer: 'inventory-admin-ui-bulk'
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.message || 'Bulk spec verification failed.');
+    }
+
+    const updatedAssets = Array.isArray(payload.updatedAssets) ? payload.updatedAssets : [];
+    updatedAssets.forEach((entry) => {
+      const updatedAsset = entry?.asset || entry;
+      upsertAssetInLocalState(updatedAsset);
+    });
+
+    updateSpecVerificationSnapshotFromLocalAssets();
+    renderTable();
+    rerenderOpenDetailsModalIfNeeded();
+    checkGlobalEOLAlerts();
+    refreshSpecVerificationSnapshot().catch(() => {});
+
+    const updatedIds = updatedAssets
+      .map((entry) => String(entry?.assetId || entry?.customId || entry?.asset?.customId || '').trim())
+      .filter(Boolean);
+    if (updatedIds.length) {
+      refreshDerivedStateForAssets(updatedIds).catch(() => {});
+    }
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('bulkSpecVerificationModal'));
+    if (modal) modal.hide();
+
+    const updatedCount = Number(payload.updatedCount || updatedAssets.length || 0);
+    const skippedCount = Number(payload.skippedCount || 0);
+    if (action === 'approve') showMessage(`${updatedCount} specs approved${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+    else if (action === 'correct') showMessage(`${updatedCount} corrected specs saved${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+    else showMessage(`${updatedCount} specs rejected${skippedCount ? ` (${skippedCount} skipped)` : ''}`, 'success');
+  } catch (error) {
+    console.error(error);
+    showMessage(error.message || 'Failed to run bulk spec verification.', 'error');
+  } finally {
+    bulkSpecActionInFlight = false;
+    setBulkSpecActionButtonsDisabled(false);
+  }
+}
+
 async function submitSpecVerificationAction(action) {
   const assetId = document.getElementById('specVerificationAssetId')?.value;
   if (!assetId) {
@@ -1283,7 +1607,7 @@ async function submitSpecVerificationAction(action) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action,
-        correctedSpecifications,
+        correctedSpecifications: action === 'correct' ? correctedSpecifications : {},
         reviewer: 'inventory-admin-ui'
       })
     });
@@ -1292,11 +1616,33 @@ async function submitSpecVerificationAction(action) {
       throw new Error(err.message || 'Verification update failed');
     }
 
+    const payload = await response.json().catch(() => ({}));
+    const updatedAsset = payload?.asset || payload;
+    const mergedAsset = upsertAssetInLocalState(updatedAsset);
+    if (!mergedAsset) {
+      throw new Error('Updated asset state could not be applied locally.');
+    }
+
     const modal = bootstrap.Modal.getInstance(document.getElementById('specVerificationModal'));
     if (modal) modal.hide();
-    await loadAssets();
-    await refreshSpecVerificationSnapshot();
-    showMessage(`Specification review saved (${action}).`, 'success');
+
+    updateSpecVerificationSnapshotFromLocalAssets();
+    renderTable();
+    rerenderOpenDetailsModalIfNeeded();
+    checkGlobalEOLAlerts();
+    refreshSpecVerificationSnapshot().catch(() => {});
+
+    const historyTitle = document.querySelector('#historyModal .modal-title');
+    const historyModalEl = document.getElementById('historyModal');
+    if (historyModalEl?.classList.contains('show') && historyTitle?.textContent?.includes(assetId)) {
+      window.viewTransferHistory(assetId).catch(() => {});
+    }
+
+    refreshSingleAssetDerivedState(assetId).catch(() => {});
+
+    if (action === 'approve') showMessage('Specs approved', 'success');
+    else if (action === 'correct') showMessage('Corrected specs saved', 'success');
+    else showMessage('Specs rejected', 'success');
   } catch (error) {
     console.error(error);
     showMessage(error.message || 'Failed to submit specification review.', 'error');
@@ -1640,6 +1986,7 @@ function showAIModal(messageHtml) {
 
 // --- View Asset Group Details ---
 window.viewAssetDetails = (assetName) => {
+  activeDetailsGroupName = assetName;
   const groupAssets = currentAssets.filter(a => a.name === assetName);
   
   if (!groupAssets.length) {
@@ -1746,39 +2093,48 @@ window.viewAssetDetails = (assetName) => {
 	          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
 	        </div>
 	      </td>
-      <td class="text-end pe-4">
-        ${profile.trackWorkingHours && isDeployed ? `
-        <button class="btn btn-sm btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Auto-detected Device State">
-          <i class="bi bi-activity"></i>
-        </button>` : ''}
-        <button class="btn btn-sm btn-outline-info" onclick="window.viewQRCode('${asset.customId}')" title="View QR">
-          <i class="bi bi-qr-code"></i>
-        </button>
-        <button class="btn btn-sm btn-outline-primary" onclick="window.viewTransferHistory('${asset.customId}')" title="History">
-          <i class="bi bi-clock-history"></i>
-        </button>
-        ${INVENTORY_ACCESS.canEditSpecs ? `
-        ${shouldShowSpecReviewButton(specStatus) ? `
-        <button class="btn btn-sm btn-warning text-dark" onclick="window.openSpecVerificationModal('${asset.customId}')" title="Review AI-detected specifications">
-          <i class="bi bi-shield-exclamation"></i>
-        </button>` : ''}
-        <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${asset.customId}', false)" title="Edit Specs">
-          <i class="bi bi-pencil"></i>
-        </button>` : ''}
-        ${INVENTORY_ACCESS.canTransferAsset ? `
-        <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer">
-          <i class="bi bi-arrow-left-right"></i>
-        </button>` : ''}
-        ${INVENTORY_ACCESS.canDeleteAsset ? `
-        <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete">
-          <i class="bi bi-trash"></i>
-        </button>` : ''}
-      </td>
-    </tr>
-  `}).join('');
+	      <td class="text-end pe-4">
+	        <div class="d-inline-flex flex-column align-items-end gap-1 inventory-row-actions">
+	          <div class="btn-group btn-group-sm" role="group" aria-label="Primary row actions">
+	            ${profile.trackWorkingHours && isDeployed ? `
+	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State">
+	              <i class="bi bi-activity"></i>
+	            </button>` : ''}
+	            <button class="btn btn-outline-info d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewQRCode('${asset.customId}')" title="View QR code">
+	              <i class="bi bi-qr-code"></i>
+	            </button>
+	            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewTransferHistory('${asset.customId}')" title="View history">
+	              <i class="bi bi-clock-history"></i>
+	            </button>
+	            ${INVENTORY_ACCESS.canEditSpecs ? `
+	            <button class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.editSpecs('${asset.customId}', false)" title="Edit specs/details">
+	              <i class="bi bi-pencil"></i>
+	            </button>` : ''}
+	          </div>
+	          <div class="d-flex gap-1 justify-content-end flex-wrap">
+	            ${INVENTORY_ACCESS.canEditSpecs && shouldShowSpecReviewButton(specStatus) ? `
+	            <button class="btn btn-sm btn-warning text-dark" onclick="window.openSpecVerificationModal('${asset.customId}')" title="Review AI-detected specifications">
+	              <i class="bi bi-shield-exclamation me-1"></i>Review
+	            </button>` : ''}
+	            ${INVENTORY_ACCESS.canTransferAsset ? `
+	            <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer asset">
+	              <i class="bi bi-arrow-left-right me-1"></i>Transfer
+	            </button>` : ''}
+	            ${INVENTORY_ACCESS.canDeleteAsset ? `
+	            <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete asset">
+	              <i class="bi bi-trash me-1"></i>Remove
+	            </button>` : ''}
+	          </div>
+	        </div>
+	      </td>
+	    </tr>
+	  `}).join('');
 
   const bulkTransferBtn = document.getElementById('bulkTransferBtn');
   const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
+  const bulkSpecReviewBtn = document.getElementById('bulkSpecReviewBtn');
+  const pendingAssetsForGroup = getPendingSpecReviewAssetsInGroup(groupAssets);
+  const pendingUnitsForGroup = pendingAssetsForGroup.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
 
   if (bulkTransferBtn) {
     bulkTransferBtn.style.display = INVENTORY_ACCESS.canTransferAsset ? '' : 'none';
@@ -1787,6 +2143,12 @@ window.viewAssetDetails = (assetName) => {
   if (bulkDeleteBtn) {
     bulkDeleteBtn.style.display = INVENTORY_ACCESS.canDeleteAsset ? '' : 'none';
     bulkDeleteBtn.onclick = () => window.bulkDeleteGroup(assetName);
+  }
+  if (bulkSpecReviewBtn) {
+    const canBulkReview = INVENTORY_ACCESS.canEditSpecs && pendingAssetsForGroup.length > 0;
+    bulkSpecReviewBtn.classList.toggle('d-none', !canBulkReview);
+    bulkSpecReviewBtn.textContent = `Review Specs (${pendingUnitsForGroup})`;
+    bulkSpecReviewBtn.onclick = () => window.openBulkSpecVerificationModal();
   }
 
   if (headerDiv) {
@@ -2113,6 +2475,7 @@ function updateWorkingHoursAvailability() {
   const checkbox = document.getElementById('assetTrackHours');
   const label = document.querySelector('label[for="assetTrackHours"]');
   const hint = document.getElementById('assetTrackHoursHint');
+  const telemetryCard = document.getElementById('assetTelemetryCard');
   if (!checkbox) return;
 
   const canTrack = TRACKABLE_ASSET_TYPES.has(type);
@@ -2132,6 +2495,10 @@ function updateWorkingHoursAvailability() {
       ? 'When enabled, telemetry starts in waiting-for-signal mode until a real signal arrives.'
       : 'Use inspection/condition updates for this asset type instead of online/offline telemetry.';
   }
+
+  if (telemetryCard) {
+    telemetryCard.classList.toggle('telemetry-compact-info', Boolean(type) && !canTrack);
+  }
 }
 
 function applyAssetTypeSpecTemplate() {
@@ -2144,12 +2511,24 @@ function applyAssetTypeSpecTemplate() {
 }
 
 function updateSpecPreviewButtonState() {
-  const button = document.getElementById('assetGenerateSpecsBtn');
-  if (!button) return;
-  button.disabled = specPreviewInFlight;
-  button.innerHTML = specPreviewInFlight
-    ? '<span class="spinner-border spinner-border-sm me-1"></span>Generating...'
-    : '<i class="bi bi-stars me-1"></i>Generate Specs with AI';
+  const generateBtn = document.getElementById('assetGenerateSpecsBtn');
+  const trustedBtn = document.getElementById('assetSearchTrustedSourcesBtn');
+
+  if (generateBtn) {
+    const loadingFast = specPreviewInFlight && specPreviewActiveMode === 'fast_preview';
+    generateBtn.disabled = specPreviewInFlight;
+    generateBtn.innerHTML = loadingFast
+      ? '<span class="spinner-border spinner-border-sm me-1"></span>Generating...'
+      : '<i class="bi bi-stars me-1"></i>Generate Specs with AI';
+  }
+
+  if (trustedBtn) {
+    const loadingTrusted = specPreviewInFlight && specPreviewActiveMode === 'trusted_lookup';
+    trustedBtn.disabled = specPreviewInFlight;
+    trustedBtn.innerHTML = loadingTrusted
+      ? '<span class="spinner-border spinner-border-sm me-1"></span>Searching...'
+      : '<i class="bi bi-globe2 me-1"></i>Search Trusted Sources';
+  }
 }
 
 function invalidateSpecPreviewRequest() {
@@ -2251,7 +2630,7 @@ async function requestSpecSanityCheck(payload) {
   }
 }
 
-async function handleGenerateSpecsPreview() {
+async function runSpecPreviewRequest(mode = 'cache_only') {
   const specsInput = document.getElementById('assetSpecs');
   const submitBtn = document.querySelector('#addAssetForm button[type="submit"]');
   const payload = buildSpecPreviewPayload();
@@ -2274,21 +2653,66 @@ async function handleGenerateSpecsPreview() {
     if (!overwrite) return;
   }
 
+  const isTrustedLookup = mode === 'live_allowed';
+  const previewMode = isTrustedLookup ? 'trusted_lookup' : 'fast_preview';
+  const timeoutMs = isTrustedLookup ? 105000 : 9000;
   const requestNonce = specPreviewRequestNonce + 1;
   specPreviewRequestNonce = requestNonce;
   specPreviewInFlight = true;
+  specPreviewActiveMode = previewMode;
   specPreviewUserIntervened = false;
   updateSpecPreviewButtonState();
-  if (submitBtn) submitBtn.disabled = true;
-  setSpecPreviewStatus('AI is preparing specs...', 'muted');
+  if (submitBtn && !isTrustedLookup) submitBtn.disabled = true;
+  setSpecPreviewStatus(isTrustedLookup ? 'Searching trusted sources...' : 'Checking saved specs...', 'muted');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const progressTimers = [];
+  if (isTrustedLookup) {
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Ranking candidates...', 'muted');
+      }
+    }, 2500));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Fetching source page...', 'muted');
+      }
+    }, 9000));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Extracting specs from source...', 'muted');
+      }
+    }, 18000));
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Saving result for future use...', 'muted');
+      }
+    }, 30000));
+  } else {
+    progressTimers.push(setTimeout(() => {
+      if (requestNonce === specPreviewRequestNonce && specPreviewInFlight) {
+        setSpecPreviewStatus('Checking source cache...', 'muted');
+      }
+    }, 500));
+  }
 
   try {
-    const response = await inventoryRequest('/assets/spec-preview', {
+    const endpoint = isTrustedLookup ? '/assets/spec-source-lookup' : '/assets/spec-preview';
+    const requestBody = isTrustedLookup
+      ? {
+        assetType: payload.type,
+        brand: payload.brand,
+        model: payload.model || payload.name,
+        forceRefresh: false,
+      }
+      : {
+        ...payload,
+        liveLookupMode: 'cache_only',
+      };
+    const response = await inventoryRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestBody),
       signal: controller.signal
     });
 
@@ -2297,12 +2721,31 @@ async function handleGenerateSpecsPreview() {
       throw new Error(err.message || 'AI spec preview request failed');
     }
 
-    const preview = await response.json();
+    const rawResponse = await response.json();
+    const preview = isTrustedLookup
+      ? {
+        ...rawResponse,
+        sourceUrls: rawResponse.sourceUrl ? [rawResponse.sourceUrl] : [],
+      }
+      : rawResponse;
     if (requestNonce !== specPreviewRequestNonce) return;
+
+    if (isTrustedLookup && !preview.success) {
+      const reason = String(preview.message || preview.evidenceReason || 'No trusted source result was confirmed.').trim();
+      setSpecPreviewStatus(`${reason} You can continue with current specs or try again later.`, 'warning');
+      showMessage(reason, 'warning');
+      return;
+    }
 
     const normalizedSpecs = (preview.normalizedSpecs && typeof preview.normalizedSpecs === 'object')
       ? preview.normalizedSpecs
       : {};
+    if (isTrustedLookup && !Object.keys(normalizedSpecs).length) {
+      const reason = String(preview.message || preview.evidenceReason || 'Trusted sources were found, but no usable specs were extracted.').trim();
+      setSpecPreviewStatus(`${reason} You can continue with the current specs.`, 'warning');
+      showMessage(reason, 'warning');
+      return;
+    }
     const fallbackTemplate = getSpecTemplateForType(payload.type);
     let specsText = String(preview.specsText || '').trim() || formatSpecsObject(
       Object.keys(normalizedSpecs).length ? normalizedSpecs : fallbackTemplate
@@ -2323,6 +2766,10 @@ async function handleGenerateSpecsPreview() {
       normalizationWarnings = Array.isArray(normalizeResponse.warnings) ? normalizeResponse.warnings.filter(Boolean) : [];
     }
 
+    if (isTrustedLookup) {
+      setSpecPreviewStatus('Saving result for future use...', 'muted');
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
     setSpecPreviewStatus('Writing specs...', 'muted');
     await animateSpecsIntoTextarea(specsInput, specsText, requestNonce);
     if (specPreviewUserIntervened || requestNonce !== specPreviewRequestNonce) {
@@ -2335,10 +2782,14 @@ async function handleGenerateSpecsPreview() {
 
     const confidencePercent = Math.round((Number(preview.confidence || 0) || 0) * 100);
     const evidenceStatus = String(preview.evidenceStatus || '').toLowerCase();
+    const sourceEvidenceStatus = String(preview.sourceEvidenceStatus || '').toLowerCase();
     const reason = String(preview.evidenceReason || preview.reason || '').trim();
     const extraWarnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
     const combinedWarnings = [...extraWarnings, ...normalizationWarnings].filter(Boolean);
     const sourceType = String(preview.sourceType || '').trim();
+    const sourceDomain = String(preview.sourceDomain || '').trim();
+    const sourceUrl = Array.isArray(preview.sourceUrls) && preview.sourceUrls.length ? String(preview.sourceUrls[0] || '').trim() : '';
+    const cacheHit = Boolean(preview.cacheHit);
     const warningText = combinedWarnings.length ? ` ${combinedWarnings[0]}` : '';
     lastSpecPreviewMeta = {
       sourceType,
@@ -2347,14 +2798,28 @@ async function handleGenerateSpecsPreview() {
       requiresReview: Boolean(preview.requiresReview),
     };
 
-    if (evidenceStatus === 'trusted') {
-      setSpecPreviewStatus(`Trusted source evidence found (${confidencePercent}% confidence). Source: ${sourceType || 'verified_dataset'}. Review/edit before create.${warningText}`, 'success');
+    if (evidenceStatus === 'trusted' || sourceEvidenceStatus === 'source_backed') {
+      const sourceLabel = sourceDomain || sourceType || 'trusted_source_lookup';
+      const sourceDetail = sourceUrl ? ` ${sourceUrl}` : '';
+      const cacheLabel = cacheHit ? 'cache hit' : 'live lookup';
+      setSpecPreviewStatus(
+        `Source-backed specs found (${confidencePercent}% confidence, ${cacheLabel}) via ${sourceLabel}.${sourceDetail} Review/edit before create.${warningText}`,
+        'success'
+      );
     } else if (evidenceStatus === 'user_confirmed' && preview.requiresReview !== true) {
       setSpecPreviewStatus(
         `Using previously user-confirmed specs (${confidencePercent}% confidence). Source: ${sourceType || 'user_confirmed_previous_asset'}. Review/edit before create.${warningText}`,
         'success'
       );
     } else {
+      const noSourceReason = normalizeValue(reason).includes('no trusted') || normalizeValue(reason).includes('cache') || normalizeValue(reason).includes('insufficient');
+      if (noSourceReason) {
+        setSpecPreviewStatus(
+          `No trusted source found; using safe fallback. ${reason || 'Please review and edit specs before create.'}${warningText}`,
+          'warning'
+        );
+        return;
+      }
       setSpecPreviewStatus(
         `AI generated specs require review (${confidencePercent}% confidence). ${reason || 'No trusted source evidence; please verify.'}${warningText}`,
         'warning'
@@ -2363,16 +2828,34 @@ async function handleGenerateSpecsPreview() {
   } catch (error) {
     if (requestNonce === specPreviewRequestNonce) {
       const isAbort = String(error?.name || '').toLowerCase() === 'aborterror';
-      setSpecPreviewStatus('AI preview unavailable. You can still enter specs manually.', 'danger');
-      showMessage(isAbort ? 'AI spec preview timed out. You can continue with manual specs.' : (error.message || 'Failed to generate AI spec preview.'), 'error');
+      if (isTrustedLookup && isAbort) {
+        setSpecPreviewStatus('Trusted source lookup is taking longer than expected. You can continue with the current specs or try again later.', 'warning');
+        showMessage('Trusted source lookup is taking longer than expected. You can continue with the current specs or try again later.', 'warning');
+      } else if (!isTrustedLookup && isAbort) {
+        setSpecPreviewStatus('Fast AI preview timed out. You can continue with current/manual specs.', 'warning');
+        showMessage('Fast AI preview timed out. You can continue with current/manual specs.', 'warning');
+      } else {
+        setSpecPreviewStatus('Spec preview is temporarily unavailable. You can still edit and create the asset.', 'warning');
+        showMessage(error.message || 'Failed to generate spec preview.', 'warning');
+      }
     }
   } finally {
     clearTimeout(timeoutId);
+    progressTimers.forEach((timer) => clearTimeout(timer));
     specPreviewIsWriting = false;
     specPreviewInFlight = false;
+    specPreviewActiveMode = 'idle';
     updateSpecPreviewButtonState();
     if (submitBtn) submitBtn.disabled = false;
   }
+}
+
+async function handleGenerateSpecsPreview() {
+  return runSpecPreviewRequest('cache_only');
+}
+
+async function handleSearchTrustedSourcesPreview() {
+  return runSpecPreviewRequest('live_allowed');
 }
 
 function updateInferredQualityPreview() {

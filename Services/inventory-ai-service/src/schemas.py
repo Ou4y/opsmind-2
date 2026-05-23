@@ -221,6 +221,31 @@ class SpecSanityCheckResponse(BaseModel):
     llm_used: bool = False
 
 
+class SourceSpecExtractionRequest(BaseModel):
+    asset_type: str = Field(..., validation_alias=AliasChoices("asset_type", "assetType", "type"))
+    brand: Optional[str] = None
+    model: Optional[str] = Field(None, validation_alias=AliasChoices("model", "version"))
+    source_url: str = Field("", validation_alias=AliasChoices("source_url", "sourceUrl"))
+    source_domain: str = Field("", validation_alias=AliasChoices("source_domain", "sourceDomain"))
+    source_text: str = Field("", validation_alias=AliasChoices("source_text", "sourceText"))
+    expected_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("expected_fields", "expectedFields"))
+    not_applicable_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("not_applicable_fields", "notApplicableFields"))
+
+    model_config = {"extra": "allow"}
+
+
+class SourceSpecExtractionResponse(BaseModel):
+    normalized_specs: dict[str, str] = Field(default_factory=dict)
+    specs_text: str = ""
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    extracted_fields: list[str] = Field(default_factory=list)
+    missing_important_fields: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    evidence_reason: str = ""
+    exact_model_matched: bool = False
+    llm_used: bool = False
+
+
 class EolExplanationRequest(BaseModel):
     assessment: dict = Field(default_factory=dict)
     telemetry_status: Optional[str] = Field(None, validation_alias=AliasChoices("telemetry_status", "telemetryStatus"))

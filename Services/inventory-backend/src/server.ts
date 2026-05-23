@@ -26,6 +26,7 @@ import {
 } from './services/asset-ai-canonical';
 import { getAssetTypeSpecProfile, lookupVerifiedSpecs } from './services/asset-intelligence/specDatasetService';
 import { lookupUserConfirmedSpecs } from './services/asset-intelligence/userConfirmedSpecsService';
+import { lookupTrustedSourceSpecs } from './services/asset-intelligence/sourceLookupService';
 import { enqueueInitialAssetCreatedJobs, readAssetPipelineSummary, InventoryAiJobQueue } from './services/asset-ai-jobs';
 import { Asset, AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
 import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
@@ -1459,8 +1460,52 @@ async function enrichAssetSpecificationsWithAI(params: {
     const existing = params.existingSpecs || {};
     const brand = String(existing.brand || existing.Brand || '').trim();
     const model = String(existing.version || existing.Version || existing.model || existing.Model || '').trim();
+    const typeKey = canonicalAssetType(params.type);
 
     if (!brand && !model && !params.name) return existing;
+
+    if (brand && model && typeKey) {
+        try {
+            const sourceLookup = await lookupTrustedSourceSpecs({
+                assetType: typeKey,
+                brand,
+                model,
+                forceRefresh: false,
+            });
+
+            if (sourceLookup.success && Object.keys(sourceLookup.normalizedSpecs || {}).length > 0) {
+                const inferred = stripLifecycleManagedSpecFields(sourceLookup.normalizedSpecs);
+                const merged: Record<string, any> = { ...inferred, ...existing };
+                merged.aiDetectedSpecs = inferred;
+                merged.aiSpecFieldConfidence = {};
+                merged.aiSpecConfidence = Number(sourceLookup.confidence || 0);
+                merged.aiSpecSource = sourceLookup.sourceType || 'trusted_source_lookup';
+                merged.aiSpecLookupMode = sourceLookup.lookupMode || 'trusted_source_live_lookup';
+                merged.aiSpecSourceUrls = sourceLookup.sourceUrl ? [sourceLookup.sourceUrl] : [];
+                merged.aiSpecRuleVersion = 'source-lookup-v1';
+                merged.aiSpecVariant = sourceLookup.cacheHit ? 'source-cache' : 'source-live';
+                merged.aiSpecEvidenceStatus = (
+                    sourceLookup.evidenceStatus === 'source_backed'
+                    && sourceLookup.exactModelMatched
+                    && Number(sourceLookup.confidence || 0) >= SPEC_VERIFICATION_CONFIDENCE_THRESHOLD
+                ) ? 'trusted' : 'insufficient_source_evidence';
+                merged.aiSpecEvidenceReason = String(
+                    sourceLookup.evidenceReason
+                    || (
+                        merged.aiSpecEvidenceStatus === 'trusted'
+                            ? 'Trusted source evidence available.'
+                            : 'Source lookup result requires manual verification.'
+                    )
+                );
+                merged.aiSpecDetectedAt = new Date().toISOString();
+                merged.specVerificationStatus = requiresHumanSpecVerification(merged) ? 'pending' : 'verified';
+                merged.specVerificationUpdatedAt = new Date().toISOString();
+                return merged;
+            }
+        } catch (error: any) {
+            console.warn(`[InventoryAI] trusted source lookup failed for ${brand} ${model}: ${error.message}`);
+        }
+    }
 
     try {
         const response = await fetch(`${INVENTORY_AI_SERVICE_URL}/infer-asset-specs`, {
@@ -1468,7 +1513,7 @@ async function enrichAssetSpecificationsWithAI(params: {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 name: params.name,
-                type: canonicalAssetType(params.type),
+                type: typeKey,
                 brand,
                 model,
                 specifications: existing
@@ -1906,6 +1951,54 @@ app.post('/api/assets/spec-sanity-check', inventoryAdminGuard, async (req: Reque
     }
 });
 
+app.post('/api/assets/spec-source-lookup', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const assetType = canonicalAssetType(String(req.body?.assetType || req.body?.type || '').trim());
+        const brand = String(req.body?.brand || '').trim();
+        const model = String(req.body?.model || req.body?.version || '').trim();
+        const forceRefresh = parseBooleanFlag(req.body?.forceRefresh);
+
+        if (!assetType || !brand || !model) {
+            return res.status(400).json({
+                success: false,
+                message: 'assetType, brand, and model are required.',
+            });
+        }
+
+        const result = await lookupTrustedSourceSpecs({
+            assetType,
+            brand,
+            model,
+            forceRefresh,
+        });
+
+        return res.json({
+            success: result.success,
+            cacheHit: result.cacheHit,
+            sourceType: result.sourceType,
+            sourceUrl: result.sourceUrl,
+            sourceDomain: result.sourceDomain,
+            specsText: result.specsText,
+            normalizedSpecs: result.normalizedSpecs,
+            confidence: result.confidence,
+            evidenceStatus: result.evidenceStatus,
+            evidenceReason: result.evidenceReason,
+            requiresReview: result.requiresReview,
+            warnings: result.warnings,
+            candidates: result.candidates,
+            exactModelMatched: result.exactModelMatched,
+            lookupMode: result.lookupMode,
+            message: result.message || result.evidenceReason || '',
+        });
+    } catch (error: any) {
+        return res.status(500).json({
+            success: false,
+            message: 'Trusted source lookup failed.',
+            error: error.message,
+        });
+    }
+});
+
 app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
         const {
@@ -1915,6 +2008,7 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             model = '',
             currentSpecsText = '',
             currentSpecs = {},
+            liveLookupMode = 'cache_only',
         } = req.body || {};
 
         if (!String(type || '').trim()) {
@@ -1930,6 +2024,10 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
 
         const previewBrand = String(brand || '').trim();
         const previewModel = String(model || '').trim() || String(name || '').trim();
+        const normalizedLookupMode = String(liveLookupMode || 'cache_only').trim().toLowerCase() === 'live_allowed'
+            ? 'live_allowed'
+            : 'cache_only';
+        const allowLiveLookup = normalizedLookupMode === 'live_allowed';
         const verifiedMatch = lookupVerifiedSpecs({
             brand: previewBrand,
             model: previewModel,
@@ -1940,6 +2038,15 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             model: previewModel,
             assetType: normalizedType,
         });
+        const sourceLookup = (previewBrand && previewModel)
+            ? await lookupTrustedSourceSpecs({
+                assetType: normalizedType,
+                brand: previewBrand,
+                model: previewModel,
+                forceRefresh: false,
+                allowLiveLookup,
+            })
+            : null;
 
         let generatedSpecs: Record<string, string> = {};
         let confidence = 0.45;
@@ -1947,6 +2054,9 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
         let sourceType = 'asset_type_profile';
         let sourceUrls: string[] = [];
         let sourceDomain = '';
+        let cacheHit = false;
+        let exactModelMatched = false;
+        let sourceEvidenceStatus: 'source_backed' | 'source_candidate_or_family_level' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' = 'llm_or_heuristic_only';
         let evidenceStatus: 'trusted' | 'insufficient_source_evidence' | 'llm_or_heuristic_only' | 'user_confirmed' = 'insufficient_source_evidence';
         let evidenceReason = 'No trusted source evidence found. Profile-based template only; manual verification required.';
         let requiresReview = true;
@@ -1967,6 +2077,7 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             sourceType = 'verified_dataset';
             sourceUrls = verifiedMatch.row.sourceUrl ? [verifiedMatch.row.sourceUrl] : [];
             sourceDomain = verifiedMatch.row.sourceDomain || '';
+            sourceEvidenceStatus = 'source_backed';
             lookupMode = 'verified_dataset_exact';
             warnings.push(...verifiedMatch.warnings);
             confidence = clampNumber(Number(verifiedMatch.row.confidence || 0.9), 0.85, 0.95);
@@ -1986,11 +2097,41 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
                 ? `Specs reused from a previous asset confirmed by user/admin "${userConfirmedMatch.reviewedBy}".`
                 : 'Specs reused from a previous asset confirmed by a user/admin.';
             requiresReview = Boolean(userConfirmedMatch.requiresReview);
+            sourceEvidenceStatus = 'insufficient_source_evidence';
+        } else if (sourceLookup?.success && Object.keys(sourceLookup.normalizedSpecs || {}).length > 0) {
+            generatedSpecs = mergeSpecMaps(sourceLookup.normalizedSpecs || {});
+            sourceType = sourceLookup.sourceType || (sourceLookup.cacheHit ? 'source_lookup_cache' : 'trusted_source_lookup');
+            sourceUrls = sourceLookup.sourceUrl ? [sourceLookup.sourceUrl] : [];
+            sourceDomain = sourceLookup.sourceDomain || '';
+            cacheHit = Boolean(sourceLookup.cacheHit);
+            exactModelMatched = Boolean(sourceLookup.exactModelMatched);
+            sourceEvidenceStatus = sourceLookup.evidenceStatus;
+            lookupMode = sourceLookup.lookupMode || (sourceLookup.cacheHit ? 'source_lookup_cache_hit' : 'trusted_source_live_lookup');
+            warnings.push(...(sourceLookup.warnings || []));
+            confidence = clampNumber(Number(sourceLookup.confidence || 0.65), 0.5, 0.95);
+            if (sourceLookup.evidenceStatus === 'source_backed' && sourceLookup.exactModelMatched) {
+                evidenceStatus = 'trusted';
+                evidenceReason = String(sourceLookup.evidenceReason || 'Source-backed specs extracted from trusted domain.');
+                requiresReview = Boolean(sourceLookup.requiresReview);
+            } else {
+                evidenceStatus = 'insufficient_source_evidence';
+                evidenceReason = String(
+                    sourceLookup.evidenceReason
+                    || 'Source candidate was generic/weak. Manual verification is still required.'
+                );
+                requiresReview = true;
+            }
+            if (sourceLookup.cacheHit) {
+                warnings.push('Using cached source-backed specs (no live SerpAPI search was required).');
+            }
+        } else if (sourceLookup && normalizedLookupMode === 'cache_only' && !sourceLookup.success) {
+            warnings.push('No cached trusted source specs found; using safe profile-based fallback.');
         } else if (verifiedMatch) {
             generatedSpecs = mergeSpecMaps(verifiedMatch.row.verifiedSpecsJson);
             sourceType = 'verified_dataset';
             sourceUrls = verifiedMatch.row.sourceUrl ? [verifiedMatch.row.sourceUrl] : [];
             sourceDomain = verifiedMatch.row.sourceDomain || '';
+            sourceEvidenceStatus = 'insufficient_source_evidence';
             lookupMode = verifiedMatch.quality === 'exact'
                 ? 'verified_dataset_exact_weak'
                 : 'verified_dataset_family';
@@ -2010,6 +2151,7 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             sourceType = 'asset_type_profile';
             sourceUrls = [];
             sourceDomain = '';
+            sourceEvidenceStatus = 'llm_or_heuristic_only';
             evidenceStatus = 'insufficient_source_evidence';
             evidenceReason = 'No trusted exact source evidence found. Profile-based safe template only.';
             requiresReview = true;
@@ -2024,6 +2166,7 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             sourceType = 'asset_type_profile';
             sourceUrls = [];
             sourceDomain = '';
+            sourceEvidenceStatus = 'llm_or_heuristic_only';
             evidenceStatus = 'llm_or_heuristic_only';
             evidenceReason = 'Insufficient data to infer reliable specs. Manual entry required.';
             requiresReview = true;
@@ -2060,13 +2203,17 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
             specsText: formatSpecsForTextarea(effectiveSpecs),
             normalizedSpecs: effectiveSpecs,
             confidence,
+            liveLookupMode: normalizedLookupMode,
             lookupMode,
             sourceType,
+            cacheHit,
             sourceUrls,
             sourceDomain,
             evidenceStatus,
+            sourceEvidenceStatus,
             evidenceReason,
             requiresReview,
+            exactModelMatched,
             warnings,
         });
     } catch (error: any) {
@@ -2077,79 +2224,278 @@ app.post('/api/assets/spec-preview', inventoryAdminGuard, async (req: Request, r
     }
 });
 
+type SpecVerificationAction = 'approve' | 'correct' | 'reject';
+
+function normalizeSpecVerificationAction(action: unknown): SpecVerificationAction | null {
+    const normalizedAction = String(action || '').toLowerCase();
+    if (normalizedAction === 'approve' || normalizedAction === 'correct' || normalizedAction === 'reject') {
+        return normalizedAction;
+    }
+    return null;
+}
+
+function coerceCorrectedSpecs(input: unknown): Record<string, any> {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+    return input as Record<string, any>;
+}
+
+function buildSpecVerificationApiPayload(params: {
+    assetId: string;
+    updated: Asset;
+    specifications: Record<string, any>;
+    action: SpecVerificationAction;
+}) {
+    const verificationStatus = String(params.specifications.specVerificationStatus || '').toLowerCase();
+    const requiresReview = verificationStatus === 'pending' || verificationStatus === 'unchecked' || verificationStatus === 'rejected';
+    return {
+        ...params.updated,
+        success: true,
+        asset: params.updated,
+        assetId: params.assetId,
+        specVerificationStatus: params.specifications.specVerificationStatus,
+        specVerificationAction: params.action,
+        specVerificationReviewedAt: params.specifications.specVerificationReviewedAt,
+        specVerificationReviewedBy: params.specifications.specVerificationReviewedBy,
+        specifications: params.specifications,
+        aiSpecEvidenceStatus: params.specifications.aiSpecEvidenceStatus || 'insufficient_source_evidence',
+        requiresReview,
+        auditEventCreated: true,
+    };
+}
+
+async function applySpecVerificationActionForAsset(params: {
+    assetId: string;
+    action: SpecVerificationAction;
+    reviewer: string;
+    correctedSpecifications?: Record<string, any>;
+    existingAsset?: Asset | null;
+    historyContext?: string;
+}) {
+    const { assetId, action, reviewer } = params;
+    const correctedSpecifications = coerceCorrectedSpecs(params.correctedSpecifications || {});
+    const asset = params.existingAsset ?? await AssetService.getAssetByCustomId(assetId);
+    if (!asset) {
+        return { notFound: true as const };
+    }
+
+    const specs = ((asset.specifications as Record<string, any>) || {});
+    const nextSpecs = { ...specs };
+    if (action === 'approve') {
+        nextSpecs.specVerificationStatus = 'verified';
+    } else if (action === 'correct') {
+        Object.assign(nextSpecs, correctedSpecifications || {});
+        nextSpecs.specVerificationStatus = 'corrected';
+    } else {
+        nextSpecs.specVerificationStatus = 'rejected';
+    }
+    nextSpecs.specVerificationReviewedBy = reviewer;
+    nextSpecs.specVerificationReviewedAt = new Date().toISOString();
+    nextSpecs.specVerificationAction = action;
+    if (action === 'correct') {
+        nextSpecs.specVerificationCorrections = correctedSpecifications || {};
+    }
+
+    const updated = await AssetService.updateAsset(assetId, { specifications: nextSpecs });
+    try {
+        await persistSpecSnapshot({
+            assetId,
+            specifications: nextSpecs,
+            context: params.historyContext || 'spec_verification_patch',
+            reviewer,
+            reviewedAt: new Date(),
+        });
+    } catch (error: any) {
+        console.warn(`[InventoryAI] canonical spec verification snapshot persistence failed for ${assetId}: ${error.message}`);
+    }
+
+    const detailsSuffix = params.historyContext ? ` (${params.historyContext})` : '';
+    await HistoryService.createHistory({
+        assetId,
+        action: 'Spec Verification',
+        details: `Action: ${action} by ${reviewer}${detailsSuffix}`
+    });
+
+    await submitSpecVerificationFeedback({
+        assetId,
+        action,
+        name: String(asset.name || ''),
+        type: canonicalAssetType(asset.type),
+        brand: String(specs.brand || specs.Brand || ''),
+        model: String(specs.version || specs.Version || specs.model || specs.Model || ''),
+        predicted_specifications: specs.aiDetectedSpecs || {},
+        corrected_specifications: action === 'correct' ? (correctedSpecifications || {}) : (specs.aiDetectedSpecs || {}),
+        field_confidence: (specs.aiSpecFieldConfidence && typeof specs.aiSpecFieldConfidence === 'object')
+            ? specs.aiSpecFieldConfidence
+            : {},
+        confidence: Number(specs.aiSpecConfidence || 0),
+        source: String(specs.aiSpecSource || ''),
+        source_urls: Array.isArray(specs.aiSpecSourceUrls) ? specs.aiSpecSourceUrls : [],
+        lookup_mode: String(specs.aiSpecLookupMode || ''),
+        variant: String(specs.aiSpecVariant || 'control'),
+        rule_version: String(specs.aiSpecRuleVersion || 'spec-rules-v1'),
+        submitted_by: reviewer,
+        submitted_at: new Date().toISOString()
+    });
+
+    return {
+        notFound: false as const,
+        asset,
+        updated,
+        specifications: nextSpecs,
+    };
+}
+
 app.patch('/api/assets/:id/spec-verification', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const { action, correctedSpecifications = {}, reviewer = 'inventory-admin' } = req.body;
-        const asset = await AssetService.getAssetByCustomId(id);
-        if (!asset) return res.status(404).json({ message: 'Asset not found' });
-
-        const specs = ((asset.specifications as Record<string, any>) || {});
-        const normalizedAction = String(action || '').toLowerCase();
-        if (!['approve', 'correct', 'reject'].includes(normalizedAction)) {
+        const normalizedAction = normalizeSpecVerificationAction(action);
+        if (!normalizedAction) {
             return res.status(400).json({ message: 'action must be approve, correct, or reject' });
         }
 
-        const nextSpecs = { ...specs };
-        if (normalizedAction === 'approve') {
-            nextSpecs.specVerificationStatus = 'verified';
-        } else if (normalizedAction === 'correct') {
-            Object.assign(nextSpecs, correctedSpecifications || {});
-            nextSpecs.specVerificationStatus = 'corrected';
-        } else {
-            nextSpecs.specVerificationStatus = 'rejected';
-        }
-        nextSpecs.specVerificationReviewedBy = reviewer;
-        nextSpecs.specVerificationReviewedAt = new Date().toISOString();
-        nextSpecs.specVerificationAction = normalizedAction;
-        if (normalizedAction === 'correct') {
-            nextSpecs.specVerificationCorrections = correctedSpecifications || {};
-        }
-
-        const updated = await AssetService.updateAsset(id, { specifications: nextSpecs });
-        try {
-            await persistSpecSnapshot({
-                assetId: id,
-                specifications: nextSpecs,
-                context: 'spec_verification_patch',
-                reviewer,
-                reviewedAt: new Date(),
-            });
-        } catch (error: any) {
-            console.warn(`[InventoryAI] canonical spec verification snapshot persistence failed for ${id}: ${error.message}`);
-        }
-
-        await HistoryService.createHistory({
-            assetId: id,
-            action: 'Spec Verification',
-            details: `Action: ${normalizedAction} by ${reviewer}`
-        });
-
-        await submitSpecVerificationFeedback({
+        const result = await applySpecVerificationActionForAsset({
             assetId: id,
             action: normalizedAction,
-            name: String(asset.name || ''),
-            type: canonicalAssetType(asset.type),
-            brand: String(specs.brand || specs.Brand || ''),
-            model: String(specs.version || specs.Version || specs.model || specs.Model || ''),
-            predicted_specifications: specs.aiDetectedSpecs || {},
-            corrected_specifications: normalizedAction === 'correct' ? (correctedSpecifications || {}) : (specs.aiDetectedSpecs || {}),
-            field_confidence: (specs.aiSpecFieldConfidence && typeof specs.aiSpecFieldConfidence === 'object')
-                ? specs.aiSpecFieldConfidence
-                : {},
-            confidence: Number(specs.aiSpecConfidence || 0),
-            source: String(specs.aiSpecSource || ''),
-            source_urls: Array.isArray(specs.aiSpecSourceUrls) ? specs.aiSpecSourceUrls : [],
-            lookup_mode: String(specs.aiSpecLookupMode || ''),
-            variant: String(specs.aiSpecVariant || 'control'),
-            rule_version: String(specs.aiSpecRuleVersion || 'spec-rules-v1'),
-            submitted_by: reviewer,
-            submitted_at: new Date().toISOString()
+            reviewer: String(reviewer || 'inventory-admin'),
+            correctedSpecifications,
+            historyContext: 'single_review',
         });
-
-        res.json(updated);
+        if (result.notFound) return res.status(404).json({ message: 'Asset not found' });
+        res.json(buildSpecVerificationApiPayload({
+            assetId: id,
+            updated: result.updated,
+            specifications: result.specifications,
+            action: normalizedAction,
+        }));
     } catch (error: any) {
         res.status(500).json({ message: 'Failed to update spec verification status', error: error.message });
+    }
+});
+
+app.post('/api/assets/spec-verification/bulk', async (req: Request, res: Response) => {
+    try {
+        const {
+            assetIds = [],
+            action,
+            correctedSpecifications = {},
+            correctedSpecsText = '',
+            reviewer = 'inventory-admin',
+            expectedGroupKey = '',
+        } = req.body || {};
+
+        const normalizedAction = normalizeSpecVerificationAction(action);
+        if (!normalizedAction) {
+            return res.status(400).json({ message: 'action must be approve, correct, or reject' });
+        }
+
+        const normalizedAssetIds = Array.from(new Set(
+            (Array.isArray(assetIds) ? assetIds : [])
+                .map((value) => String(value || '').trim())
+                .filter(Boolean)
+        ));
+        if (!normalizedAssetIds.length) {
+            return res.status(400).json({ message: 'assetIds must be a non-empty array' });
+        }
+
+        let correctedPayload = coerceCorrectedSpecs(correctedSpecifications);
+        if (!Object.keys(correctedPayload).length && String(correctedSpecsText || '').trim()) {
+            correctedPayload = parseSpecTextToObject(correctedSpecsText);
+        }
+        if (normalizedAction === 'correct' && !Object.keys(correctedPayload).length) {
+            return res.status(400).json({ message: 'corrected specifications are required for action=correct' });
+        }
+
+        const loadedAssets = await Promise.all(
+            normalizedAssetIds.map(async (assetId) => {
+                const asset = await AssetService.getAssetByCustomId(assetId);
+                return { assetId, asset };
+            })
+        );
+
+        const skipped: Array<{ assetId: string; reason: string }> = [];
+        const foundAssets: Asset[] = [];
+        loadedAssets.forEach(({ assetId, asset }) => {
+            if (!asset) {
+                skipped.push({ assetId, reason: 'asset_not_found' });
+                return;
+            }
+            foundAssets.push(asset);
+        });
+
+        if (!foundAssets.length) {
+            return res.json({
+                success: true,
+                updatedCount: 0,
+                skippedCount: skipped.length,
+                skipped,
+                updatedAssets: [],
+            });
+        }
+
+        const groupKeys = new Set(
+            foundAssets.map((asset) => `${normalizeValue(asset.name)}::${normalizeValue(canonicalAssetType(asset.type))}`)
+        );
+        if (groupKeys.size > 1) {
+            return res.status(400).json({ message: 'bulk spec verification requires all assets to belong to the same group/type' });
+        }
+
+        const resolvedGroupKey = Array.from(groupKeys)[0];
+        if (String(expectedGroupKey || '').trim()) {
+            const normalizedExpected = normalizeValue(expectedGroupKey);
+            const normalizedResolved = normalizeValue(resolvedGroupKey);
+            if (normalizedExpected !== normalizedResolved) {
+                return res.status(409).json({
+                    message: 'group changed while reviewing; reopen the group and retry',
+                    expectedGroupKey,
+                    actualGroupKey: resolvedGroupKey,
+                });
+            }
+        }
+
+        const updatedAssets: Array<ReturnType<typeof buildSpecVerificationApiPayload>> = [];
+        for (const asset of foundAssets) {
+            const assetId = String(asset.customId || '').trim();
+            if (!assetId) continue;
+            const currentStatus = String((((asset.specifications as Record<string, any>) || {}).specVerificationStatus || '')).toLowerCase();
+            if (currentStatus && currentStatus !== 'pending' && currentStatus !== 'unchecked') {
+                skipped.push({ assetId, reason: `status_${currentStatus}_not_pending` });
+                continue;
+            }
+
+            try {
+                const result = await applySpecVerificationActionForAsset({
+                    assetId,
+                    action: normalizedAction,
+                    reviewer: String(reviewer || 'inventory-admin'),
+                    correctedSpecifications: normalizedAction === 'correct' ? correctedPayload : {},
+                    existingAsset: asset,
+                    historyContext: 'bulk_review',
+                });
+                if (result.notFound) {
+                    skipped.push({ assetId, reason: 'asset_not_found' });
+                    continue;
+                }
+                updatedAssets.push(buildSpecVerificationApiPayload({
+                    assetId,
+                    updated: result.updated,
+                    specifications: result.specifications,
+                    action: normalizedAction,
+                }));
+            } catch (error: any) {
+                skipped.push({ assetId, reason: `update_failed:${error.message}` });
+            }
+        }
+
+        return res.json({
+            success: true,
+            updatedCount: updatedAssets.length,
+            skippedCount: skipped.length,
+            skipped,
+            updatedAssets,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run bulk spec verification', error: error.message });
     }
 });
 
