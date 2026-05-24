@@ -54,6 +54,35 @@ enum AssetStatus {
   MAINTENANCE @map("maintenance")
 }
 
+enum AssetCategory {
+  ASSET      @map("asset")
+  COMPONENT  @map("component")
+  ACCESSORY  @map("accessory")
+  CONSUMABLE @map("consumable")
+  LICENSE    @map("license")
+  SPARE_PART @map("spare_part")
+}
+
+enum AssetLifecycleStatus {
+  IN_STOCK          @map("in_stock")
+  ASSIGNED          @map("assigned")
+  IN_USE            @map("in_use")
+  UNDER_MAINTENANCE @map("under_maintenance")
+  PENDING_REPAIR    @map("pending_repair")
+  IN_TRANSIT        @map("in_transit")
+  RESERVED          @map("reserved")
+  RETIRED           @map("retired")
+  DISPOSED          @map("disposed")
+  LOST_STOLEN       @map("lost_stolen")
+  EOL_EXPIRED       @map("eol_expired")
+}
+
+enum AssetCustodyStatus {
+  UNASSIGNED @map("unassigned")
+  CHECKED_OUT @map("checked_out")
+  RETURNED   @map("returned")
+}
+
 enum AssetLocation {
   CENTRAL_WAREHOUSE @map("Central Warehouse")
   MAIN_BUILDING     @map("Main Building")
@@ -105,11 +134,31 @@ model Asset {
   name           String
   type           AssetType
   status         AssetStatus     @default(ACTIVE)
+  lifecycleStatus AssetLifecycleStatus @default(IN_STOCK)
+  category       AssetCategory   @default(ASSET)
   value          Decimal         @default(0)
   quantity       Int             @default(1)
   assignedUser   String?
+  serialNumber   String?
+  assetTag       String?
+  manufacturerPartNumber String?
   location       AssetLocation
   department     AssetDepartment
+  assignedToName String?
+  assignedToUserId String?
+  assignedDepartment String?
+  checkoutDate DateTime?
+  expectedReturnDate DateTime?
+  returnedDate DateTime?
+  custodyStatus AssetCustodyStatus @default(UNASSIGNED)
+  purchaseDate DateTime?
+  vendor String?
+  purchaseCost Decimal?
+  invoiceNumber String?
+  purchaseOrderNumber String?
+  warrantyStartDate DateTime?
+  warrantyEndDate DateTime?
+  replacementCost Decimal?
   specifications Json            @default("{}")
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
@@ -126,8 +175,159 @@ model Asset {
   eolAssessments        AssetEolAssessment[]
   procurementCandidates AssetProcurementCandidate[]
   aiJobs                InventoryAiJob[]
+  componentsAsParent    AssetComponent[]      @relation("AssetComponentParent")
+  componentsAsChild     AssetComponent[]      @relation("AssetComponentChildAsset")
+  lifecycleEvents       AssetLifecycleEvent[]
+  maintenanceRecords    AssetMaintenanceRecord[]
+  custodyEvents         AssetCustodyEvent[]
+  relationshipsFrom     AssetRelationship[]   @relation("AssetRelationshipFrom")
+  relationshipsTo       AssetRelationship[]   @relation("AssetRelationshipTo")
 
   @@map("assets")
+}
+
+model AssetComponent {
+  id                     String   @id @default(uuid())
+  parentAssetId          String
+  childAssetId           String?
+  componentName          String
+  componentType          String
+  brand                  String?
+  model                  String?
+  serialNumber           String?
+  partNumber             String?
+  status                 String   @default("installed")
+  condition              String?
+  installedAt            DateTime?
+  removedAt              DateTime?
+  reason                 String?
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  parentAsset            Asset    @relation("AssetComponentParent", fields: [parentAssetId], references: [customId], onDelete: Cascade)
+  childAsset             Asset?   @relation("AssetComponentChildAsset", fields: [childAssetId], references: [customId], onDelete: SetNull)
+  lifecycleEvents        AssetLifecycleEvent[]
+  maintenanceRecords     AssetMaintenanceRecord[]
+
+  @@index([parentAssetId, status])
+  @@index([childAssetId])
+  @@index([serialNumber])
+  @@map("asset_components")
+}
+
+model AssetLifecycleEvent {
+  id            String   @id @default(uuid())
+  assetId       String
+  componentId   String?
+  eventType     String
+  oldValue      Json?
+  newValue      Json?
+  reason        String?
+  notes         String?
+  actor         String?
+  createdAt     DateTime @default(now())
+
+  asset         Asset          @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  component     AssetComponent? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, createdAt])
+  @@index([componentId, createdAt])
+  @@index([eventType, createdAt])
+  @@map("asset_lifecycle_events")
+}
+
+model AssetMaintenanceRecord {
+  id                  String   @id @default(uuid())
+  assetId             String
+  componentId         String?
+  maintenanceType     String
+  status              String   @default("completed")
+  performedBy         String?
+  performedAt         DateTime?
+  nextMaintenanceDate DateTime?
+  cost                Decimal?
+  reason              String?
+  notes               String?
+  linkedTicketId      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  asset               Asset          @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  component           AssetComponent? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, createdAt])
+  @@index([componentId, createdAt])
+  @@index([status, nextMaintenanceDate])
+  @@map("asset_maintenance_records")
+}
+
+model AssetCustodyEvent {
+  id                String   @id @default(uuid())
+  assetId           String
+  action            String
+  assignedToName    String?
+  assignedToUserId  String?
+  assignedDepartment String?
+  checkoutDate      DateTime?
+  expectedReturnDate DateTime?
+  returnedDate      DateTime?
+  conditionOut      String?
+  conditionIn       String?
+  reason            String?
+  notes             String?
+  actor             String?
+  createdAt         DateTime @default(now())
+
+  asset             Asset    @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, createdAt])
+  @@index([action, createdAt])
+  @@map("asset_custody_events")
+}
+
+model AssetRelationship {
+  id             String   @id @default(uuid())
+  assetId        String
+  relatedAssetId String
+  relationshipType String
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  asset          Asset    @relation("AssetRelationshipFrom", fields: [assetId], references: [customId], onDelete: Cascade)
+  relatedAsset   Asset    @relation("AssetRelationshipTo", fields: [relatedAssetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, relationshipType])
+  @@index([relatedAssetId, relationshipType])
+  @@unique([assetId, relatedAssetId, relationshipType])
+  @@map("asset_relationships")
+}
+
+model SpareStockItem {
+  id                     String   @id @default(uuid())
+  partName               String
+  componentType          String
+  category               String?
+  brand                  String?
+  model                  String?
+  partNumber             String?
+  quantityAvailable      Int      @default(0)
+  minimumStockLevel      Int      @default(0)
+  reorderPoint           Int?
+  location               String?
+  vendor                 String?
+  unitCost               Decimal?
+  compatibleAssetTypes   Json?
+  compatibleBrandsModels Json?
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([componentType])
+  @@index([partNumber])
+  @@index([quantityAvailable, minimumStockLevel])
+  @@map("spare_stock_items")
 }
 
 model AssetSpecSnapshot {

@@ -28,7 +28,17 @@ import { getAssetTypeSpecProfile, lookupVerifiedSpecs } from './services/asset-i
 import { lookupUserConfirmedSpecs } from './services/asset-intelligence/userConfirmedSpecsService';
 import { lookupTrustedSourceSpecs } from './services/asset-intelligence/sourceLookupService';
 import { enqueueInitialAssetCreatedJobs, readAssetPipelineSummary, InventoryAiJobQueue } from './services/asset-ai-jobs';
-import { Asset, AssetType, AssetStatus, AssetLocation, AssetDepartment } from '@prisma/client';
+import {
+    Asset,
+    AssetType,
+    AssetStatus,
+    AssetLocation,
+    AssetDepartment,
+    AssetCategory,
+    AssetLifecycleStatus,
+    AssetCustodyStatus,
+    Prisma,
+} from '@prisma/client';
 import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
 
 const app = express();
@@ -133,6 +143,47 @@ function mapToAssetStatus(value: string): AssetStatus {
     return statusMap[value] || 'ACTIVE';
 }
 
+function mapToLifecycleStatus(value: unknown): AssetLifecycleStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const lifecycleMap: Record<string, AssetLifecycleStatus> = {
+        in_stock: 'IN_STOCK',
+        assigned: 'ASSIGNED',
+        in_use: 'IN_USE',
+        under_maintenance: 'UNDER_MAINTENANCE',
+        pending_repair: 'PENDING_REPAIR',
+        in_transit: 'IN_TRANSIT',
+        reserved: 'RESERVED',
+        retired: 'RETIRED',
+        disposed: 'DISPOSED',
+        lost_stolen: 'LOST_STOLEN',
+        eol_expired: 'EOL_EXPIRED',
+    };
+    return lifecycleMap[normalized] || 'IN_STOCK';
+}
+
+function mapToAssetCategory(value: unknown): AssetCategory {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const categoryMap: Record<string, AssetCategory> = {
+        asset: 'ASSET',
+        component: 'COMPONENT',
+        accessory: 'ACCESSORY',
+        consumable: 'CONSUMABLE',
+        license: 'LICENSE',
+        spare_part: 'SPARE_PART',
+    };
+    return categoryMap[normalized] || 'ASSET';
+}
+
+function mapToCustodyStatus(value: unknown): AssetCustodyStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const custodyMap: Record<string, AssetCustodyStatus> = {
+        unassigned: 'UNASSIGNED',
+        checked_out: 'CHECKED_OUT',
+        returned: 'RETURNED',
+    };
+    return custodyMap[normalized] || 'UNASSIGNED';
+}
+
 function mapToAssetLocation(value: string): AssetLocation {
     const locationMap: Record<string, AssetLocation> = {
         'Central Warehouse': 'CENTRAL_WAREHOUSE',
@@ -179,6 +230,117 @@ function parseBooleanFlag(value: unknown): boolean {
     if (value === true) return true;
     const normalized = String(value || '').trim().toLowerCase();
     return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseOptionalDateInput(value: unknown): Date | null {
+    if (value === null || typeof value === 'undefined') return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseOptionalNumberInput(value: unknown): number | null {
+    if (value === null || typeof value === 'undefined' || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeSerialValue(value: unknown): string | null {
+    const serial = String(value || '').trim();
+    return serial ? serial : null;
+}
+
+function parseSerialValues(rawList: unknown): string[] {
+    if (Array.isArray(rawList)) {
+        return rawList
+            .map((value) => normalizeSerialValue(value))
+            .filter((value): value is string => Boolean(value));
+    }
+    const text = String(rawList || '').trim();
+    if (!text) return [];
+    return text
+        .split(/\r?\n|,/)
+        .map((value) => normalizeSerialValue(value))
+        .filter((value): value is string => Boolean(value));
+}
+
+function parseOptionalIntegerInput(value: unknown): number | null {
+    if (value === null || typeof value === 'undefined' || value === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.trunc(parsed);
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback = 0): number {
+    const parsed = parseOptionalIntegerInput(value);
+    if (parsed === null || parsed < 0) return fallback;
+    return parsed;
+}
+
+function parseJsonArrayInput(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value
+            .map((entry) => String(entry || '').trim())
+            .filter(Boolean);
+    }
+    const raw = String(value || '').trim();
+    if (!raw) return [];
+    return raw
+        .split(/\r?\n|,/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+}
+
+function normalizeComponentStatus(value: unknown, fallback = 'installed'): string {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const allowed = new Set([
+        'in_stock',
+        'installed',
+        'under_repair',
+        'failed',
+        'removed',
+        'replaced',
+        'retired',
+        'disposed',
+    ]);
+    if (!normalized) return fallback;
+    return allowed.has(normalized) ? normalized : fallback;
+}
+
+function isLowStock(item: { quantityAvailable: number; minimumStockLevel: number; reorderPoint: number | null }): boolean {
+    const threshold = item.reorderPoint !== null && item.reorderPoint >= 0
+        ? item.reorderPoint
+        : item.minimumStockLevel;
+    return item.quantityAvailable <= threshold;
+}
+
+function mapComponentTypeToAssetType(componentType: unknown): AssetType {
+    const normalized = String(componentType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (['monitor'].includes(normalized)) return 'MONITOR';
+    if (['keyboard'].includes(normalized)) return 'KEYBOARD';
+    if (['router'].includes(normalized)) return 'ROUTER';
+    if (['switch'].includes(normalized)) return 'SWITCH';
+    if (['access_point', 'wifi_adapter', 'network_card', 'nic'].includes(normalized)) return 'ACCESS_POINT';
+    if (['firewall'].includes(normalized)) return 'FIREWALL';
+    if (['printer'].includes(normalized)) return 'PRINTER';
+    if (['scanner'].includes(normalized)) return 'SCANNER';
+    return 'ELECTRONICS';
+}
+
+async function generateComponentAssetCustomId(parentAssetId: string, componentType: string): Promise<string> {
+    const prefix = String(componentType || 'component')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '')
+        .slice(0, 8) || 'COMP';
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        const suffix = Math.floor(10000 + (Math.random() * 90000));
+        const candidate = `${parentAssetId}-${prefix}-${suffix}`;
+        const existing = await prisma.asset.findUnique({ where: { customId: candidate }, select: { customId: true } });
+        if (!existing) return candidate;
+    }
+    return `${parentAssetId}-${prefix}-${Date.now()}`;
 }
 
 function buildUnitAssetIds(baseId: string, quantity: number): string[] {
@@ -1333,6 +1495,46 @@ async function publishLowStockEvent(params: {
     });
 }
 
+async function recordLifecycleEvent(params: {
+    assetId: string;
+    componentId?: string | null;
+    eventType: string;
+    oldValue?: Record<string, any> | null;
+    newValue?: Record<string, any> | null;
+    reason?: string | null;
+    notes?: string | null;
+    actor?: string | null;
+}) {
+    try {
+        await prisma.assetLifecycleEvent.create({
+            data: {
+                assetId: params.assetId,
+                componentId: params.componentId || null,
+                eventType: params.eventType,
+                oldValue: params.oldValue || undefined,
+                newValue: params.newValue || undefined,
+                reason: params.reason || undefined,
+                notes: params.notes || undefined,
+                actor: params.actor || undefined,
+            }
+        });
+    } catch (error: any) {
+        console.warn(`[AssetLifecycleEvent] failed: ${error?.message || error}`);
+    }
+}
+
+async function recordHistoryEvent(params: { assetId: string; action: string; details: string }) {
+    try {
+        await HistoryService.createHistory({
+            assetId: params.assetId,
+            action: params.action,
+            details: params.details,
+        });
+    } catch (error: any) {
+        console.warn(`[AssetHistory] failed: ${error?.message || error}`);
+    }
+}
+
 type LifecycleOutcomePayload = {
     purchaseDate?: string | null;
     commissionedAt?: string | null;
@@ -1569,6 +1771,7 @@ async function enrichAssetSpecificationsWithAI(params: {
 // --- MOUNT ROUTERS ---
 app.use('/api/config', inventoryReadGuard);
 app.use('/api/assets', inventoryReadGuard);
+app.use('/api/inventory', inventoryReadGuard);
 app.use('/api/inventory-ai', inventoryReadGuard);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/config', configRoutes);
@@ -1765,11 +1968,290 @@ app.post('/internal/inventory-ai/assets/:id/procurement-refresh', internalWorker
     }
 });
 
+// --- SPARE STOCK ROUTES ---
+app.get('/api/inventory/spare-stock/low-stock', async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.spareStockItem.findMany({
+            where: {
+                OR: [
+                    {
+                        reorderPoint: {
+                            not: null,
+                        }
+                    },
+                    {
+                        minimumStockLevel: {
+                            gt: 0,
+                        }
+                    }
+                ]
+            },
+            orderBy: [
+                { quantityAvailable: 'asc' },
+                { updatedAt: 'desc' },
+            ],
+        });
+        const filtered = rows.filter((row) => isLowStock(row));
+        res.json({
+            count: filtered.length,
+            items: filtered.map((row) => ({
+                ...row,
+                lowStock: true,
+            })),
+        });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch low stock items', error: error.message });
+    }
+});
+
+app.get('/api/inventory/spare-stock', async (req: Request, res: Response) => {
+    try {
+        const q = String(req.query.q || '').trim();
+        const componentType = String(req.query.componentType || '').trim();
+        const lowStockOnly = parseBooleanFlag(req.query.lowStockOnly);
+        const where: Prisma.SpareStockItemWhereInput = {};
+        const andClauses: Prisma.SpareStockItemWhereInput[] = [];
+
+        if (componentType) {
+            andClauses.push({
+                componentType: {
+                    contains: componentType,
+                    mode: 'insensitive',
+                }
+            });
+        }
+
+        if (q) {
+            andClauses.push({
+                OR: [
+                    { partName: { contains: q, mode: 'insensitive' } },
+                    { componentType: { contains: q, mode: 'insensitive' } },
+                    { brand: { contains: q, mode: 'insensitive' } },
+                    { model: { contains: q, mode: 'insensitive' } },
+                    { partNumber: { contains: q, mode: 'insensitive' } },
+                    { location: { contains: q, mode: 'insensitive' } },
+                    { vendor: { contains: q, mode: 'insensitive' } },
+                ]
+            });
+        }
+
+        if (andClauses.length) where.AND = andClauses;
+
+        const rows = await prisma.spareStockItem.findMany({
+            where,
+            orderBy: [
+                { updatedAt: 'desc' },
+                { partName: 'asc' },
+            ]
+        });
+        const normalized = rows.map((row) => ({
+            ...row,
+            lowStock: isLowStock(row),
+        }));
+        const result = lowStockOnly
+            ? normalized.filter((row) => row.lowStock)
+            : normalized;
+        res.json({
+            count: result.length,
+            items: result,
+        });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch spare stock items', error: error.message });
+    }
+});
+
+app.post('/api/inventory/spare-stock', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const partName = String(req.body?.partName || '').trim();
+        const componentType = String(req.body?.componentType || '').trim();
+        if (!partName) return res.status(400).json({ message: 'partName is required' });
+        if (!componentType) return res.status(400).json({ message: 'componentType is required' });
+
+        const row = await prisma.spareStockItem.create({
+            data: {
+                partName,
+                componentType,
+                category: normalizeSerialValue(req.body?.category),
+                brand: normalizeSerialValue(req.body?.brand),
+                model: normalizeSerialValue(req.body?.model),
+                partNumber: normalizeSerialValue(req.body?.partNumber),
+                quantityAvailable: normalizeNonNegativeInteger(req.body?.quantityAvailable, 0),
+                minimumStockLevel: normalizeNonNegativeInteger(req.body?.minimumStockLevel, 0),
+                reorderPoint: parseOptionalIntegerInput(req.body?.reorderPoint),
+                location: normalizeSerialValue(req.body?.location),
+                vendor: normalizeSerialValue(req.body?.vendor),
+                unitCost: parseOptionalNumberInput(req.body?.unitCost),
+                compatibleAssetTypes: parseJsonArrayInput(req.body?.compatibleAssetTypes),
+                compatibleBrandsModels: parseJsonArrayInput(req.body?.compatibleBrandsModels),
+                notes: normalizeSerialValue(req.body?.notes),
+            }
+        });
+        res.status(201).json({
+            ...row,
+            lowStock: isLowStock(row),
+        });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to create spare stock item', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/spare-stock/:id', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const existing = await prisma.spareStockItem.findUnique({ where: { id: req.params.id } });
+        if (!existing) return res.status(404).json({ message: 'Spare stock item not found' });
+
+        const payload = req.body || {};
+        const updateData: Prisma.SpareStockItemUpdateInput = {};
+        if (typeof payload.partName !== 'undefined') updateData.partName = String(payload.partName || '').trim() || existing.partName;
+        if (typeof payload.componentType !== 'undefined') updateData.componentType = String(payload.componentType || '').trim() || existing.componentType;
+        if (typeof payload.category !== 'undefined') updateData.category = normalizeSerialValue(payload.category);
+        if (typeof payload.brand !== 'undefined') updateData.brand = normalizeSerialValue(payload.brand);
+        if (typeof payload.model !== 'undefined') updateData.model = normalizeSerialValue(payload.model);
+        if (typeof payload.partNumber !== 'undefined') updateData.partNumber = normalizeSerialValue(payload.partNumber);
+        if (typeof payload.quantityAvailable !== 'undefined') updateData.quantityAvailable = normalizeNonNegativeInteger(payload.quantityAvailable, existing.quantityAvailable);
+        if (typeof payload.minimumStockLevel !== 'undefined') updateData.minimumStockLevel = normalizeNonNegativeInteger(payload.minimumStockLevel, existing.minimumStockLevel);
+        if (typeof payload.reorderPoint !== 'undefined') updateData.reorderPoint = parseOptionalIntegerInput(payload.reorderPoint);
+        if (typeof payload.location !== 'undefined') updateData.location = normalizeSerialValue(payload.location);
+        if (typeof payload.vendor !== 'undefined') updateData.vendor = normalizeSerialValue(payload.vendor);
+        if (typeof payload.unitCost !== 'undefined') updateData.unitCost = parseOptionalNumberInput(payload.unitCost);
+        if (typeof payload.compatibleAssetTypes !== 'undefined') updateData.compatibleAssetTypes = parseJsonArrayInput(payload.compatibleAssetTypes);
+        if (typeof payload.compatibleBrandsModels !== 'undefined') updateData.compatibleBrandsModels = parseJsonArrayInput(payload.compatibleBrandsModels);
+        if (typeof payload.notes !== 'undefined') updateData.notes = normalizeSerialValue(payload.notes);
+
+        const updated = await prisma.spareStockItem.update({
+            where: { id: req.params.id },
+            data: updateData,
+        });
+        res.json({
+            ...updated,
+            lowStock: isLowStock(updated),
+        });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to update spare stock item', error: error.message });
+    }
+});
+
+app.post('/api/inventory/spare-stock/:id/adjust', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const delta = parseOptionalIntegerInput(req.body?.delta);
+        if (delta === null || delta === 0) {
+            return res.status(400).json({ message: 'delta must be a non-zero integer' });
+        }
+        const updated = await prisma.$transaction(async (tx) => {
+            const existing = await tx.spareStockItem.findUnique({ where: { id: req.params.id } });
+            if (!existing) throw new RequestValidationError('Spare stock item not found');
+            const nextQty = existing.quantityAvailable + delta;
+            if (nextQty < 0) throw new RequestValidationError('Adjustment would make quantity negative');
+            return tx.spareStockItem.update({
+                where: { id: req.params.id },
+                data: {
+                    quantityAvailable: nextQty,
+                    notes: normalizeSerialValue(req.body?.note) || existing.notes,
+                }
+            });
+        });
+        res.json({
+            ...updated,
+            lowStock: isLowStock(updated),
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to adjust spare stock quantity', error: error.message });
+    }
+});
+
 // --- ASSET ROUTES ---
 
 app.get('/api/assets', async (req: Request, res: Response) => {
     try {
-        const assets = await AssetService.getAssets();
+        const where: Prisma.AssetWhereInput = {};
+        const andClauses: Prisma.AssetWhereInput[] = [];
+        const orClauses: Prisma.AssetWhereInput[] = [];
+        const statusRaw = String(req.query.status || '').trim();
+        const lifecycleRaw = String(req.query.lifecycleStatus || '').trim();
+        const categoryRaw = String(req.query.category || '').trim();
+        const locationRaw = String(req.query.location || '').trim();
+        const departmentRaw = String(req.query.department || '').trim();
+        const assignedToRaw = String(req.query.assignedTo || '').trim();
+        const searchRaw = String(req.query.q || req.query.query || '').trim();
+        const serialMissing = parseBooleanFlag(req.query.serialMissing);
+        const underMaintenance = parseBooleanFlag(req.query.underMaintenance);
+        const warrantyExpiringDays = Number(req.query.warrantyExpiringDays || 0);
+
+        if (statusRaw) where.status = mapToAssetStatus(statusRaw);
+        if (lifecycleRaw) where.lifecycleStatus = mapToLifecycleStatus(lifecycleRaw);
+        if (categoryRaw) where.category = mapToAssetCategory(categoryRaw);
+        if (locationRaw) where.location = mapToAssetLocation(locationRaw);
+        if (departmentRaw) where.department = mapToAssetDepartment(departmentRaw);
+
+        if (assignedToRaw) {
+            orClauses.push(
+                { assignedToName: { contains: assignedToRaw, mode: 'insensitive' } },
+                { assignedToUserId: { contains: assignedToRaw, mode: 'insensitive' } },
+                { assignedUser: { contains: assignedToRaw, mode: 'insensitive' } },
+            );
+        }
+
+        if (serialMissing) {
+            andClauses.push(
+                {
+                    OR: [
+                        { serialNumber: null },
+                        { serialNumber: '' },
+                    ]
+                }
+            );
+        }
+
+        if (underMaintenance) {
+            andClauses.push(
+                {
+                    OR: [
+                        { status: 'MAINTENANCE' },
+                        { status: 'REPAIR' },
+                        { lifecycleStatus: 'UNDER_MAINTENANCE' },
+                        { lifecycleStatus: 'PENDING_REPAIR' },
+                    ]
+                }
+            );
+        }
+
+        if (Number.isFinite(warrantyExpiringDays) && warrantyExpiringDays > 0) {
+            const now = new Date();
+            const upper = new Date(now.getTime() + (warrantyExpiringDays * 24 * 60 * 60 * 1000));
+            andClauses.push(
+                {
+                    warrantyEndDate: {
+                        gte: now,
+                        lte: upper,
+                    }
+                }
+            );
+        }
+
+        if (searchRaw) {
+            orClauses.push(
+                { customId: { contains: searchRaw, mode: 'insensitive' } },
+                { name: { contains: searchRaw, mode: 'insensitive' } },
+                { serialNumber: { contains: searchRaw, mode: 'insensitive' } },
+                { assetTag: { contains: searchRaw, mode: 'insensitive' } },
+                { manufacturerPartNumber: { contains: searchRaw, mode: 'insensitive' } },
+            );
+        }
+
+        if (orClauses.length) {
+            andClauses.push({ OR: orClauses });
+        }
+        if (andClauses.length) {
+            where.AND = andClauses;
+        }
+
+        const assets = await prisma.asset.findMany({
+            where,
+            orderBy: { createdAt: 'desc' },
+        });
         res.json(assets.map((asset) => annotateAssetWithTruthfulSignals(asset)));
     } catch (err) { 
         res.status(500).json({ error: 'Failed to fetch assets' }); 
@@ -1798,11 +2280,15 @@ app.get('/api/assets/single/:id', async (req: Request, res: Response) => {
 app.get('/api/assets/search', async (req: Request, res: Response) => {
     const { query } = req.query;
     try {
+        const q = String(query || '').trim();
         const results = await prisma.asset.findMany({
             where: {
                 OR: [
-                    { customId: { contains: query as string, mode: 'insensitive' } },
-                    { name: { contains: query as string, mode: 'insensitive' } }
+                    { customId: { contains: q, mode: 'insensitive' } },
+                    { name: { contains: q, mode: 'insensitive' } },
+                    { serialNumber: { contains: q, mode: 'insensitive' } },
+                    { assetTag: { contains: q, mode: 'insensitive' } },
+                    { manufacturerPartNumber: { contains: q, mode: 'insensitive' } },
                 ]
             },
             take: 50
@@ -2511,6 +2997,1144 @@ app.get('/api/assets/:id/history', async (req: Request, res: Response) => {
     }
 });
 
+app.get('/api/assets/:id/lifecycle-events', async (req: Request, res: Response) => {
+    try {
+        const rows = await prisma.assetLifecycleEvent.findMany({
+            where: { assetId: req.params.id },
+            orderBy: { createdAt: 'desc' },
+            take: 300,
+        });
+        res.json(rows);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch lifecycle events', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/components', async (req: Request, res: Response) => {
+    try {
+        const includeRemoved = parseBooleanFlag(req.query.includeRemoved);
+        const components = await prisma.assetComponent.findMany({
+            where: {
+                parentAssetId: req.params.id,
+                ...(includeRemoved ? {} : { removedAt: null }),
+            },
+            include: {
+                childAsset: {
+                    select: {
+                        customId: true,
+                        name: true,
+                        type: true,
+                        category: true,
+                        lifecycleStatus: true,
+                        serialNumber: true,
+                        assetTag: true,
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(components);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch components', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const componentName = String(req.body?.componentName || '').trim() || String(req.body?.name || '').trim();
+        const componentType = String(req.body?.componentType || '').trim() || 'component';
+        if (!componentName) return res.status(400).json({ message: 'componentName is required' });
+
+        const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+        const requestedChildAssetId = normalizeSerialValue(req.body?.childAssetId);
+        const componentSerial = normalizeSerialValue(req.body?.serialNumber);
+        const componentTag = normalizeSerialValue(req.body?.assetTag);
+
+        const component = await prisma.$transaction(async (tx) => {
+            let linkedAssetId: string | null = requestedChildAssetId;
+            let linkedAsset: Asset | null = null;
+
+            if (requestedChildAssetId) {
+                linkedAsset = await tx.asset.findUnique({ where: { customId: requestedChildAssetId } });
+                if (!linkedAsset) {
+                    throw new RequestValidationError('childAssetId does not exist');
+                }
+                linkedAsset = await tx.asset.update({
+                    where: { customId: linkedAsset.customId },
+                    data: {
+                        category: 'COMPONENT',
+                        lifecycleStatus: 'IN_USE',
+                        status: 'ACTIVE',
+                        serialNumber: componentSerial || linkedAsset.serialNumber,
+                        assetTag: componentTag || linkedAsset.assetTag,
+                        manufacturerPartNumber: normalizeSerialValue(req.body?.partNumber) || linkedAsset.manufacturerPartNumber,
+                    }
+                });
+            } else if (createAsAsset) {
+                if (componentSerial) {
+                    linkedAsset = await tx.asset.findFirst({
+                        where: { serialNumber: componentSerial },
+                        orderBy: { createdAt: 'desc' },
+                    });
+                }
+                if (!linkedAsset) {
+                    const requestedAssetType = normalizeSerialValue(req.body?.assetType);
+                    const resolvedAssetType = requestedAssetType
+                        ? mapToAssetType(requestedAssetType)
+                        : mapComponentTypeToAssetType(componentType);
+                    const generatedCustomId = normalizeSerialValue(req.body?.childAssetCustomId)
+                        || await generateComponentAssetCustomId(req.params.id, componentType);
+                    linkedAsset = await tx.asset.create({
+                        data: {
+                            customId: generatedCustomId,
+                            name: componentName,
+                            type: resolvedAssetType,
+                            status: 'ACTIVE',
+                            lifecycleStatus: 'IN_USE',
+                            category: 'COMPONENT',
+                            value: parseOptionalNumberInput(req.body?.componentValue) || 0,
+                            quantity: 1,
+                            assignedUser: null,
+                            serialNumber: componentSerial,
+                            assetTag: componentTag,
+                            manufacturerPartNumber: normalizeSerialValue(req.body?.partNumber),
+                            location: asset.location,
+                            department: asset.department,
+                            assignedToName: null,
+                            assignedToUserId: null,
+                            assignedDepartment: null,
+                            custodyStatus: 'UNASSIGNED',
+                            specifications: {
+                                parentAssetId: req.params.id,
+                                componentType,
+                                createdFrom: 'component_create_as_asset',
+                            },
+                        }
+                    });
+                } else {
+                    linkedAsset = await tx.asset.update({
+                        where: { customId: linkedAsset.customId },
+                        data: {
+                            category: 'COMPONENT',
+                            lifecycleStatus: 'IN_USE',
+                            status: 'ACTIVE',
+                            serialNumber: componentSerial || linkedAsset.serialNumber,
+                            assetTag: componentTag || linkedAsset.assetTag,
+                            manufacturerPartNumber: normalizeSerialValue(req.body?.partNumber) || linkedAsset.manufacturerPartNumber,
+                        }
+                    });
+                }
+                linkedAssetId = linkedAsset.customId;
+            }
+
+            const createdComponent = await tx.assetComponent.create({
+                data: {
+                    parentAssetId: req.params.id,
+                    childAssetId: linkedAssetId,
+                    componentName,
+                    componentType,
+                    brand: normalizeSerialValue(req.body?.brand),
+                    model: normalizeSerialValue(req.body?.model),
+                    serialNumber: componentSerial,
+                    partNumber: normalizeSerialValue(req.body?.partNumber),
+                    status: normalizeComponentStatus(req.body?.status, 'installed'),
+                    condition: normalizeSerialValue(req.body?.condition),
+                    installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
+                    reason: normalizeSerialValue(req.body?.reason),
+                    notes: normalizeSerialValue(req.body?.notes),
+                },
+                include: {
+                    childAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            type: true,
+                            category: true,
+                            lifecycleStatus: true,
+                            serialNumber: true,
+                            assetTag: true,
+                        }
+                    }
+                }
+            });
+            return createdComponent;
+        });
+
+        if (component.childAssetId) {
+            const duplicateLink = await prisma.assetComponent.findFirst({
+                where: {
+                    parentAssetId: req.params.id,
+                    childAssetId: component.childAssetId,
+                    removedAt: null,
+                    id: { not: component.id },
+                },
+                select: { id: true },
+            });
+            if (duplicateLink) {
+                await prisma.assetComponent.delete({ where: { id: component.id } });
+                return res.status(409).json({ message: 'This component asset is already installed on the parent asset.' });
+            }
+        }
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_added',
+            newValue: {
+                componentName: component.componentName,
+                componentType: component.componentType,
+                serialNumber: component.serialNumber,
+                status: component.status,
+                childAssetId: component.childAssetId || null,
+            },
+            reason: component.reason || undefined,
+            notes: component.notes || undefined,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Added',
+            details: `${component.componentName} (${component.componentType}) installed`,
+        });
+
+        res.status(201).json(component);
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to add component', error: error.message });
+    }
+});
+
+app.put('/api/assets/:id/components/:componentId', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const updated = await prisma.assetComponent.update({
+            where: { id: req.params.componentId },
+            data: {
+                componentName: String(req.body?.componentName || component.componentName).trim(),
+                componentType: String(req.body?.componentType || component.componentType).trim(),
+                brand: typeof req.body?.brand !== 'undefined' ? normalizeSerialValue(req.body?.brand) : component.brand,
+                model: typeof req.body?.model !== 'undefined' ? normalizeSerialValue(req.body?.model) : component.model,
+                serialNumber: typeof req.body?.serialNumber !== 'undefined' ? normalizeSerialValue(req.body?.serialNumber) : component.serialNumber,
+                partNumber: typeof req.body?.partNumber !== 'undefined' ? normalizeSerialValue(req.body?.partNumber) : component.partNumber,
+                status: typeof req.body?.status !== 'undefined' ? String(req.body.status || '').trim() || component.status : component.status,
+                condition: typeof req.body?.condition !== 'undefined' ? normalizeSerialValue(req.body?.condition) : component.condition,
+                installedAt: typeof req.body?.installedAt !== 'undefined' ? parseOptionalDateInput(req.body?.installedAt) : component.installedAt,
+                removedAt: typeof req.body?.removedAt !== 'undefined' ? parseOptionalDateInput(req.body?.removedAt) : component.removedAt,
+                reason: typeof req.body?.reason !== 'undefined' ? normalizeSerialValue(req.body?.reason) : component.reason,
+                notes: typeof req.body?.notes !== 'undefined' ? normalizeSerialValue(req.body?.notes) : component.notes,
+            },
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_updated',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: updated as unknown as Record<string, any>,
+            reason: normalizeSerialValue(req.body?.reason),
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Updated',
+            details: `${updated.componentName} updated`,
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to update component', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/components/:componentId/history', async (req: Request, res: Response) => {
+    try {
+        const rows = await prisma.assetLifecycleEvent.findMany({
+            where: {
+                assetId: req.params.id,
+                componentId: req.params.componentId,
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(rows);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch component history', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/remove', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const reason = normalizeSerialValue(req.body?.reason) || 'removed';
+        const updated = await prisma.assetComponent.update({
+            where: { id: component.id },
+            data: {
+                status: normalizeComponentStatus(req.body?.status, 'removed'),
+                removedAt: parseOptionalDateInput(req.body?.removedAt) || new Date(),
+                reason,
+                notes: normalizeSerialValue(req.body?.notes),
+            }
+        });
+        if (updated.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: updated.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: 'IN_STOCK',
+                    status: 'ACTIVE',
+                }
+            });
+        }
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_removed',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: updated as unknown as Record<string, any>,
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Removed',
+            details: `${updated.componentName} removed (${reason})`,
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to remove component', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/replace', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const reason = normalizeSerialValue(req.body?.reason) || 'replaced';
+        const newComponentInput = req.body?.newComponent || {};
+        const [oldComponent, newComponent] = await prisma.$transaction([
+            prisma.assetComponent.update({
+                where: { id: component.id },
+                data: {
+                    status: normalizeComponentStatus(req.body?.oldStatus, 'replaced'),
+                    removedAt: new Date(),
+                    reason,
+                },
+            }),
+            prisma.assetComponent.create({
+                data: {
+                    parentAssetId: req.params.id,
+                    childAssetId: normalizeSerialValue(newComponentInput.childAssetId),
+                    componentName: String(newComponentInput.componentName || component.componentName).trim(),
+                    componentType: String(newComponentInput.componentType || component.componentType).trim(),
+                    brand: normalizeSerialValue(newComponentInput.brand) || component.brand,
+                    model: normalizeSerialValue(newComponentInput.model) || component.model,
+                    serialNumber: normalizeSerialValue(newComponentInput.serialNumber),
+                    partNumber: normalizeSerialValue(newComponentInput.partNumber),
+                    status: normalizeComponentStatus(newComponentInput.status, 'installed'),
+                    condition: normalizeSerialValue(newComponentInput.condition),
+                    installedAt: parseOptionalDateInput(newComponentInput.installedAt) || new Date(),
+                    notes: normalizeSerialValue(newComponentInput.notes),
+                    reason,
+                },
+            }),
+        ]);
+        if (oldComponent.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: oldComponent.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: 'IN_STOCK',
+                    status: 'ACTIVE',
+                }
+            });
+        }
+        if (newComponent.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: newComponent.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: 'IN_USE',
+                    status: 'ACTIVE',
+                }
+            });
+        }
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_replaced_out',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: oldComponent as unknown as Record<string, any>,
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: newComponent.id,
+            eventType: 'component_replaced_in',
+            newValue: newComponent as unknown as Record<string, any>,
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Replaced',
+            details: `${component.componentName} replaced (${reason})`,
+        });
+        res.json({ replaced: oldComponent, installed: newComponent });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to replace component', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/install-from-stock', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const spareStockItemId = String(req.body?.spareStockItemId || '').trim();
+        if (!spareStockItemId) return res.status(400).json({ message: 'spareStockItemId is required' });
+        const reason = normalizeSerialValue(req.body?.reason) || 'installed_from_stock';
+
+        const result = await prisma.$transaction(async (tx) => {
+            const stock = await tx.spareStockItem.findUnique({ where: { id: spareStockItemId } });
+            if (!stock) throw new RequestValidationError('Spare stock item not found');
+            if (stock.quantityAvailable <= 0) throw new RequestValidationError('Spare stock quantity is 0');
+
+            const updatedStock = await tx.spareStockItem.update({
+                where: { id: stock.id },
+                data: { quantityAvailable: stock.quantityAvailable - 1 },
+            });
+
+            const componentName = normalizeSerialValue(req.body?.componentName) || stock.partName;
+            const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType;
+            const serialNumber = normalizeSerialValue(req.body?.serialNumber);
+            const partNumber = normalizeSerialValue(req.body?.partNumber) || stock.partNumber;
+            const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+
+            let childAssetId: string | null = normalizeSerialValue(req.body?.childAssetId);
+            if (!childAssetId && createAsAsset) {
+                const componentAssetCustomId = normalizeSerialValue(req.body?.childAssetCustomId)
+                    || await generateComponentAssetCustomId(req.params.id, componentType || 'component');
+                const createdChildAsset = await tx.asset.create({
+                    data: {
+                        customId: componentAssetCustomId,
+                        name: componentName || stock.partName,
+                        type: mapComponentTypeToAssetType(componentType),
+                        status: 'ACTIVE',
+                        lifecycleStatus: 'IN_USE',
+                        category: 'COMPONENT',
+                        value: parseOptionalNumberInput(req.body?.componentValue) || Number(stock.unitCost || 0),
+                        quantity: 1,
+                        serialNumber,
+                        assetTag: normalizeSerialValue(req.body?.assetTag),
+                        manufacturerPartNumber: partNumber,
+                        location: asset.location,
+                        department: asset.department,
+                        custodyStatus: 'UNASSIGNED',
+                        specifications: {
+                            parentAssetId: req.params.id,
+                            stockItemId: stock.id,
+                            componentType,
+                            createdFrom: 'stock_install',
+                        },
+                    }
+                });
+                childAssetId = createdChildAsset.customId;
+            }
+
+            const installed = await tx.assetComponent.create({
+                data: {
+                    parentAssetId: req.params.id,
+                    childAssetId,
+                    componentName: componentName || stock.partName,
+                    componentType: componentType || stock.componentType,
+                    brand: normalizeSerialValue(req.body?.brand) || stock.brand,
+                    model: normalizeSerialValue(req.body?.model) || stock.model,
+                    serialNumber,
+                    partNumber,
+                    status: normalizeComponentStatus(req.body?.status, 'installed'),
+                    condition: normalizeSerialValue(req.body?.condition) || 'new',
+                    installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
+                    reason,
+                    notes: normalizeSerialValue(req.body?.notes),
+                },
+                include: {
+                    childAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            type: true,
+                            category: true,
+                            lifecycleStatus: true,
+                        }
+                    }
+                }
+            });
+
+            if (installed.childAssetId) {
+                await tx.asset.update({
+                    where: { customId: installed.childAssetId },
+                    data: {
+                        category: 'COMPONENT',
+                        lifecycleStatus: 'IN_USE',
+                        status: 'ACTIVE',
+                    }
+                });
+            }
+
+            return {
+                stockBefore: stock,
+                stockAfter: updatedStock,
+                installed,
+            };
+        });
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: result.installed.id,
+            eventType: 'component_installed_from_stock',
+            newValue: {
+                componentName: result.installed.componentName,
+                componentType: result.installed.componentType,
+                serialNumber: result.installed.serialNumber,
+                partNumber: result.installed.partNumber,
+                stockItemId: spareStockItemId,
+            },
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Installed From Stock',
+            details: `${result.installed.componentName} installed from spare stock`,
+        });
+
+        res.status(201).json({
+            installed: result.installed,
+            stock: result.stockAfter,
+            lowStockWarning: isLowStock(result.stockAfter),
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to install component from stock', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+
+        const spareStockItemId = String(req.body?.spareStockItemId || '').trim();
+        if (!spareStockItemId) return res.status(400).json({ message: 'spareStockItemId is required' });
+
+        const result = await prisma.$transaction(async (tx) => {
+            const existing = await tx.assetComponent.findUnique({ where: { id: req.params.componentId } });
+            if (!existing || existing.parentAssetId !== req.params.id) {
+                throw new RequestValidationError('Component not found');
+            }
+            const stock = await tx.spareStockItem.findUnique({ where: { id: spareStockItemId } });
+            if (!stock) throw new RequestValidationError('Spare stock item not found');
+            if (stock.quantityAvailable <= 0) throw new RequestValidationError('Spare stock quantity is 0');
+
+            const reason = normalizeSerialValue(req.body?.reason) || 'replaced_from_stock';
+            const failedStatus = normalizeComponentStatus(req.body?.oldStatus, 'replaced');
+            const oldComponent = await tx.assetComponent.update({
+                where: { id: existing.id },
+                data: {
+                    status: failedStatus,
+                    removedAt: parseOptionalDateInput(req.body?.removedAt) || new Date(),
+                    reason,
+                    notes: normalizeSerialValue(req.body?.oldNotes) || existing.notes,
+                }
+            });
+
+            if (oldComponent.childAssetId) {
+                await tx.asset.update({
+                    where: { customId: oldComponent.childAssetId },
+                    data: {
+                        category: 'COMPONENT',
+                        lifecycleStatus: failedStatus === 'failed' ? 'PENDING_REPAIR' : 'IN_STOCK',
+                        status: failedStatus === 'failed' ? 'REPAIR' : 'ACTIVE',
+                    }
+                });
+            }
+
+            const updatedStock = await tx.spareStockItem.update({
+                where: { id: stock.id },
+                data: {
+                    quantityAvailable: stock.quantityAvailable - 1,
+                }
+            });
+
+            const componentName = normalizeSerialValue(req.body?.componentName) || stock.partName || oldComponent.componentName;
+            const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType || oldComponent.componentType;
+            const serialNumber = normalizeSerialValue(req.body?.serialNumber);
+            const partNumber = normalizeSerialValue(req.body?.partNumber) || stock.partNumber || oldComponent.partNumber;
+            const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+            let childAssetId: string | null = normalizeSerialValue(req.body?.childAssetId);
+
+            if (!childAssetId && createAsAsset) {
+                const componentAssetCustomId = normalizeSerialValue(req.body?.childAssetCustomId)
+                    || await generateComponentAssetCustomId(req.params.id, componentType || 'component');
+                const createdChildAsset = await tx.asset.create({
+                    data: {
+                        customId: componentAssetCustomId,
+                        name: componentName || oldComponent.componentName,
+                        type: mapComponentTypeToAssetType(componentType),
+                        status: 'ACTIVE',
+                        lifecycleStatus: 'IN_USE',
+                        category: 'COMPONENT',
+                        value: parseOptionalNumberInput(req.body?.componentValue) || Number(stock.unitCost || 0),
+                        quantity: 1,
+                        serialNumber,
+                        assetTag: normalizeSerialValue(req.body?.assetTag),
+                        manufacturerPartNumber: partNumber,
+                        location: asset.location,
+                        department: asset.department,
+                        custodyStatus: 'UNASSIGNED',
+                        specifications: {
+                            parentAssetId: req.params.id,
+                            stockItemId: stock.id,
+                            replacedComponentId: oldComponent.id,
+                            componentType,
+                            createdFrom: 'stock_replace',
+                        },
+                    }
+                });
+                childAssetId = createdChildAsset.customId;
+            }
+
+            const installed = await tx.assetComponent.create({
+                data: {
+                    parentAssetId: req.params.id,
+                    childAssetId,
+                    componentName: componentName || oldComponent.componentName,
+                    componentType: componentType || oldComponent.componentType,
+                    brand: normalizeSerialValue(req.body?.brand) || stock.brand || oldComponent.brand,
+                    model: normalizeSerialValue(req.body?.model) || stock.model || oldComponent.model,
+                    serialNumber,
+                    partNumber,
+                    status: normalizeComponentStatus(req.body?.newStatus, 'installed'),
+                    condition: normalizeSerialValue(req.body?.condition) || 'new',
+                    installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
+                    reason,
+                    notes: normalizeSerialValue(req.body?.notes),
+                },
+                include: {
+                    childAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            type: true,
+                            category: true,
+                            lifecycleStatus: true,
+                        }
+                    }
+                }
+            });
+
+            if (installed.childAssetId) {
+                await tx.asset.update({
+                    where: { customId: installed.childAssetId },
+                    data: {
+                        category: 'COMPONENT',
+                        lifecycleStatus: 'IN_USE',
+                        status: 'ACTIVE',
+                    }
+                });
+            }
+
+            const maintenance = parseBooleanFlag(req.body?.createMaintenanceRecord)
+                ? await tx.assetMaintenanceRecord.create({
+                    data: {
+                        assetId: req.params.id,
+                        componentId: oldComponent.id,
+                        maintenanceType: String(req.body?.maintenanceType || 'component_replacement'),
+                        status: String(req.body?.maintenanceStatus || 'completed'),
+                        performedBy: normalizeSerialValue(req.body?.performedBy),
+                        performedAt: parseOptionalDateInput(req.body?.performedAt) || new Date(),
+                        reason: normalizeSerialValue(req.body?.reason) || 'replaced_from_stock',
+                        notes: normalizeSerialValue(req.body?.notes),
+                    }
+                })
+                : null;
+
+            return {
+                oldComponent,
+                installed,
+                stockAfter: updatedStock,
+                maintenance,
+            };
+        });
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: result.oldComponent.id,
+            eventType: 'component_replaced_out_stock',
+            oldValue: result.oldComponent as unknown as Record<string, any>,
+            newValue: {
+                status: result.oldComponent.status,
+                removedAt: result.oldComponent.removedAt,
+            },
+            reason: normalizeSerialValue(req.body?.reason) || 'replaced_from_stock',
+            actor: String(req.body?.actor || ''),
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: result.installed.id,
+            eventType: 'component_replaced_in_stock',
+            newValue: {
+                componentName: result.installed.componentName,
+                componentType: result.installed.componentType,
+                serialNumber: result.installed.serialNumber,
+                partNumber: result.installed.partNumber,
+                stockItemId: spareStockItemId,
+            },
+            reason: normalizeSerialValue(req.body?.reason) || 'replaced_from_stock',
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Replaced From Stock',
+            details: `${result.oldComponent.componentName} replaced from spare stock`,
+        });
+
+        res.json({
+            replaced: result.oldComponent,
+            installed: result.installed,
+            maintenance: result.maintenance,
+            stock: result.stockAfter,
+            lowStockWarning: isLowStock(result.stockAfter),
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to replace component from stock', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/repair', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const reason = normalizeSerialValue(req.body?.reason) || 'repair';
+        const repairedStatus = String(req.body?.status || 'under_repair').trim();
+        const updated = await prisma.assetComponent.update({
+            where: { id: component.id },
+            data: {
+                status: normalizeComponentStatus(repairedStatus, 'under_repair'),
+                notes: normalizeSerialValue(req.body?.notes) || component.notes,
+                reason,
+            },
+        });
+        if (updated.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: updated.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed'
+                        ? 'IN_USE'
+                        : 'PENDING_REPAIR',
+                    status: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed' ? 'ACTIVE' : 'REPAIR',
+                }
+            });
+        }
+        const maintenance = await prisma.assetMaintenanceRecord.create({
+            data: {
+                assetId: req.params.id,
+                componentId: component.id,
+                maintenanceType: String(req.body?.maintenanceType || 'component_repair'),
+                status: String(req.body?.maintenanceStatus || 'completed'),
+                performedBy: normalizeSerialValue(req.body?.performedBy),
+                performedAt: parseOptionalDateInput(req.body?.performedAt) || new Date(),
+                nextMaintenanceDate: parseOptionalDateInput(req.body?.nextMaintenanceDate),
+                cost: parseOptionalNumberInput(req.body?.cost),
+                reason,
+                notes: normalizeSerialValue(req.body?.notes),
+                linkedTicketId: normalizeSerialValue(req.body?.linkedTicketId),
+            },
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_repaired',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: updated as unknown as Record<string, any>,
+            reason,
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Repaired',
+            details: `${component.componentName} repaired (${reason})`,
+        });
+        res.json({ component: updated, maintenance });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to repair component', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/mark-failed', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const reason = normalizeSerialValue(req.body?.reason) || 'failed';
+        const updated = await prisma.assetComponent.update({
+            where: { id: component.id },
+            data: {
+                status: 'failed',
+                reason,
+                notes: normalizeSerialValue(req.body?.notes) || component.notes,
+            }
+        });
+        if (updated.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: updated.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: 'PENDING_REPAIR',
+                    status: 'REPAIR',
+                }
+            });
+        }
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: 'component_marked_failed',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: updated as unknown as Record<string, any>,
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Component Failed',
+            details: `${component.componentName} marked failed (${reason})`,
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to mark component failed', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/components/:componentId/retire', async (req: Request, res: Response) => {
+    try {
+        const component = await prisma.assetComponent.findUnique({ where: { id: req.params.componentId } });
+        if (!component || component.parentAssetId !== req.params.id) {
+            return res.status(404).json({ message: 'Component not found' });
+        }
+        const nextStatus = normalizeComponentStatus(req.body?.status, 'retired');
+        const reason = normalizeSerialValue(req.body?.reason) || 'retired';
+        const updated = await prisma.assetComponent.update({
+            where: { id: component.id },
+            data: {
+                status: nextStatus,
+                removedAt: parseOptionalDateInput(req.body?.removedAt) || new Date(),
+                reason,
+                notes: normalizeSerialValue(req.body?.notes) || component.notes,
+            }
+        });
+        if (updated.childAssetId) {
+            await prisma.asset.update({
+                where: { customId: updated.childAssetId },
+                data: {
+                    category: 'COMPONENT',
+                    lifecycleStatus: nextStatus === 'disposed' ? 'DISPOSED' : 'RETIRED',
+                    status: 'RETIRED',
+                }
+            });
+        }
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: component.id,
+            eventType: nextStatus === 'disposed' ? 'component_disposed' : 'component_retired',
+            oldValue: component as unknown as Record<string, any>,
+            newValue: updated as unknown as Record<string, any>,
+            reason,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: nextStatus === 'disposed' ? 'Component Disposed' : 'Component Retired',
+            details: `${component.componentName} ${nextStatus} (${reason})`,
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to retire component', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/maintenance', async (req: Request, res: Response) => {
+    try {
+        const rows = await prisma.assetMaintenanceRecord.findMany({
+            where: { assetId: req.params.id },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(rows);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch maintenance records', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/maintenance', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const row = await prisma.assetMaintenanceRecord.create({
+            data: {
+                assetId: req.params.id,
+                componentId: normalizeSerialValue(req.body?.componentId),
+                maintenanceType: String(req.body?.maintenanceType || '').trim() || 'general',
+                status: String(req.body?.status || 'completed').trim(),
+                performedBy: normalizeSerialValue(req.body?.performedBy),
+                performedAt: parseOptionalDateInput(req.body?.performedAt) || new Date(),
+                nextMaintenanceDate: parseOptionalDateInput(req.body?.nextMaintenanceDate),
+                cost: parseOptionalNumberInput(req.body?.cost),
+                reason: normalizeSerialValue(req.body?.reason),
+                notes: normalizeSerialValue(req.body?.notes),
+                linkedTicketId: normalizeSerialValue(req.body?.linkedTicketId),
+            },
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            componentId: row.componentId || undefined,
+            eventType: 'maintenance_record_added',
+            newValue: row as unknown as Record<string, any>,
+            reason: row.reason || undefined,
+            notes: row.notes || undefined,
+            actor: String(req.body?.actor || ''),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Maintenance Record Added',
+            details: `${row.maintenanceType} (${row.status})`,
+        });
+        res.status(201).json(row);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to add maintenance record', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/custody', async (req: Request, res: Response) => {
+    try {
+        const rows = await prisma.assetCustodyEvent.findMany({
+            where: { assetId: req.params.id },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(rows);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch custody history', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/assign', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const assignedTo = normalizeSerialValue(req.body?.assignedToName);
+        const assignedUserId = normalizeSerialValue(req.body?.assignedToUserId);
+        const assignedDept = normalizeSerialValue(req.body?.assignedDepartment);
+        const checkoutAt = parseOptionalDateInput(req.body?.checkoutDate) || new Date();
+        const expectedAt = parseOptionalDateInput(req.body?.expectedReturnDate);
+        const updated = await AssetService.updateAsset(req.params.id, {
+            assignedToName: assignedTo,
+            assignedToUserId: assignedUserId,
+            assignedDepartment: assignedDept,
+            checkoutDate: checkoutAt,
+            expectedReturnDate: expectedAt,
+            returnedDate: null,
+            custodyStatus: 'CHECKED_OUT',
+            assignedUser: assignedTo || assignedUserId,
+            status: 'ASSIGNED',
+            lifecycleStatus: 'ASSIGNED',
+        });
+        const custodyEvent = await prisma.assetCustodyEvent.create({
+            data: {
+                assetId: req.params.id,
+                action: 'assign',
+                assignedToName: assignedTo,
+                assignedToUserId: assignedUserId,
+                assignedDepartment: assignedDept,
+                checkoutDate: checkoutAt,
+                expectedReturnDate: expectedAt,
+                conditionOut: normalizeSerialValue(req.body?.conditionOut),
+                reason: normalizeSerialValue(req.body?.reason),
+                notes: normalizeSerialValue(req.body?.notes),
+                actor: normalizeSerialValue(req.body?.actor),
+            },
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'asset_assigned',
+            newValue: {
+                assignedToName: assignedTo,
+                assignedToUserId: assignedUserId,
+                checkoutDate: checkoutAt.toISOString(),
+                expectedReturnDate: expectedAt?.toISOString() || null,
+            },
+            reason: normalizeSerialValue(req.body?.reason),
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Asset Assigned',
+            details: `Assigned to ${assignedTo || assignedUserId || 'unknown'}`,
+        });
+        res.json({ asset: updated, custodyEvent });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to assign asset', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/check-in', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const returnedAt = parseOptionalDateInput(req.body?.returnedDate) || new Date();
+        const updated = await AssetService.updateAsset(req.params.id, {
+            returnedDate: returnedAt,
+            custodyStatus: 'RETURNED',
+            assignedUser: null,
+            assignedToName: null,
+            assignedToUserId: null,
+            status: 'ACTIVE',
+            lifecycleStatus: 'IN_STOCK',
+        });
+        const custodyEvent = await prisma.assetCustodyEvent.create({
+            data: {
+                assetId: req.params.id,
+                action: 'check_in',
+                returnedDate: returnedAt,
+                conditionIn: normalizeSerialValue(req.body?.conditionIn),
+                reason: normalizeSerialValue(req.body?.reason),
+                notes: normalizeSerialValue(req.body?.notes),
+                actor: normalizeSerialValue(req.body?.actor),
+            },
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'asset_checked_in',
+            oldValue: {
+                assignedToName: (asset as any).assignedToName || null,
+                assignedToUserId: (asset as any).assignedToUserId || null,
+            },
+            newValue: {
+                returnedDate: returnedAt.toISOString(),
+                custodyStatus: 'RETURNED',
+            },
+            reason: normalizeSerialValue(req.body?.reason),
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Asset Checked In',
+            details: `Returned at ${returnedAt.toISOString()}`,
+        });
+        res.json({ asset: updated, custodyEvent });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to check in asset', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/relationships', async (req: Request, res: Response) => {
+    try {
+        const outgoing = await prisma.assetRelationship.findMany({
+            where: { assetId: req.params.id },
+            orderBy: { createdAt: 'desc' },
+        });
+        const incoming = await prisma.assetRelationship.findMany({
+            where: { relatedAssetId: req.params.id },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json({ outgoing, incoming });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to fetch relationships', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/relationships', async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const relatedAssetId = normalizeSerialValue(req.body?.relatedAssetId);
+        const relationshipType = String(req.body?.relationshipType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+        if (!relatedAssetId || !relationshipType) {
+            return res.status(400).json({ message: 'relatedAssetId and relationshipType are required' });
+        }
+        const [source, target] = await Promise.all([
+            AssetService.getAssetByCustomId(assetId),
+            AssetService.getAssetByCustomId(relatedAssetId),
+        ]);
+        if (!source || !target) return res.status(404).json({ message: 'One or both assets not found' });
+
+        const row = await prisma.assetRelationship.create({
+            data: {
+                assetId,
+                relatedAssetId,
+                relationshipType,
+                notes: normalizeSerialValue(req.body?.notes),
+            },
+        });
+        await recordLifecycleEvent({
+            assetId,
+            eventType: 'relationship_added',
+            newValue: row as unknown as Record<string, any>,
+            notes: row.notes || undefined,
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId,
+            action: 'Relationship Added',
+            details: `${assetId} ${relationshipType} ${relatedAssetId}`,
+        });
+        res.status(201).json(row);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to add relationship', error: error.message });
+    }
+});
+
+app.delete('/api/assets/:id/relationships/:relationshipId', async (req: Request, res: Response) => {
+    try {
+        const row = await prisma.assetRelationship.findUnique({ where: { id: req.params.relationshipId } });
+        if (!row || row.assetId !== req.params.id) {
+            return res.status(404).json({ message: 'Relationship not found' });
+        }
+        await prisma.assetRelationship.delete({ where: { id: row.id } });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'relationship_removed',
+            oldValue: row as unknown as Record<string, any>,
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Relationship Removed',
+            details: `${row.assetId} ${row.relationshipType} ${row.relatedAssetId}`,
+        });
+        res.json({ success: true });
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to remove relationship', error: error.message });
+    }
+});
+
 app.get('/api/assets/:id/eol-assessment', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -2638,6 +4262,29 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
             admin,
             specConfirmationReviewed,
             specConfirmationReviewedBy,
+            serialNumber,
+            serialNumbers,
+            serialNumbersText,
+            assetTag,
+            assetTags,
+            manufacturerPartNumber,
+            category,
+            lifecycleStatus,
+            assignedToName,
+            assignedToUserId,
+            assignedDepartment,
+            checkoutDate,
+            expectedReturnDate,
+            returnedDate,
+            custodyStatus,
+            purchaseDate,
+            vendor,
+            purchaseCost,
+            invoiceNumber,
+            purchaseOrderNumber,
+            warrantyStartDate,
+            warrantyEndDate,
+            replacementCost,
         } = req.body;
         if (!String(name || '').trim()) {
             return res.status(400).json({ message: 'Asset name is required.' });
@@ -2704,17 +4351,79 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
         const qty = parseRequestedQuantity(quantity ?? 1);
         const assetGroupId = String(customId || `ASSET-${Date.now()}`).trim();
         const unitIds = buildUnitAssetIds(assetGroupId, qty);
+        const normalizedCategory = mapToAssetCategory(category);
+        const normalizedLifecycleStatus = mapToLifecycleStatus(lifecycleStatus || (assignedToName || assignedToUserId ? 'assigned' : 'in_stock'));
+        const normalizedCustodyStatus = mapToCustodyStatus(custodyStatus || (assignedToName || assignedToUserId ? 'checked_out' : 'unassigned'));
+
+        const parsedSerials = qty > 1
+            ? parseSerialValues(serialNumbers ?? serialNumbersText)
+            : [normalizeSerialValue(serialNumber)].filter((value): value is string => Boolean(value));
+        const parsedAssetTags = qty > 1
+            ? parseSerialValues(assetTags)
+            : [normalizeSerialValue(assetTag)].filter((value): value is string => Boolean(value));
+
+        const duplicateSerialsInPayload = Array.from(
+            parsedSerials.reduce((dups, rawSerial, _idx, arr) => {
+                const key = rawSerial.toLowerCase();
+                if (arr.filter((entry) => entry.toLowerCase() === key).length > 1) dups.add(rawSerial);
+                return dups;
+            }, new Set<string>())
+        );
+        const uniqueSerialInputs = Array.from(new Set(parsedSerials.map((serial) => serial.toLowerCase())));
+        const existingSerialMatches = uniqueSerialInputs.length
+            ? await prisma.asset.findMany({
+                where: {
+                    OR: uniqueSerialInputs.map((serialLower) => ({
+                        serialNumber: { equals: serialLower }
+                    })),
+                },
+                select: { customId: true, serialNumber: true },
+                take: 100,
+            })
+            : [];
+        const duplicateSerialsExisting = existingSerialMatches.map((entry) => String(entry.serialNumber || '').trim()).filter(Boolean);
+        const serialWarnings: string[] = [];
+        if (duplicateSerialsInPayload.length) {
+            serialWarnings.push(`Duplicate serials in request: ${duplicateSerialsInPayload.join(', ')}`);
+        }
+        if (duplicateSerialsExisting.length) {
+            serialWarnings.push(`Serials already exist on assets: ${duplicateSerialsExisting.join(', ')}`);
+        }
+        if (qty > 1 && parsedSerials.length > 0 && parsedSerials.length < qty) {
+            serialWarnings.push(`Only ${parsedSerials.length}/${qty} serial numbers were provided. Remaining units were created without serial numbers.`);
+        }
+
         console.log(`[AssetCreateDebug] quantityRequested=${qty} generatedUnitIds=${unitIds.length}`);
 
         const createdAssets = await AssetService.createAssets(
-            unitIds.map((unitId) => ({
+            unitIds.map((unitId, index) => ({
                 customId: unitId,
                 name: String(name),
                 type: mapToAssetType(type),
                 status: 'ACTIVE',
+                lifecycleStatus: normalizedLifecycleStatus,
+                category: normalizedCategory,
                 value: value || 0,
+                serialNumber: parsedSerials[index] || null,
+                assetTag: parsedAssetTags[index] || (qty === 1 ? normalizeSerialValue(assetTag) : null),
+                manufacturerPartNumber: normalizeSerialValue(manufacturerPartNumber),
                 location: mapToAssetLocation(location || 'Central Warehouse'),
                 department: mapToAssetDepartment(department || 'Unassigned'),
+                assignedToName: normalizeSerialValue(assignedToName),
+                assignedToUserId: normalizeSerialValue(assignedToUserId),
+                assignedDepartment: normalizeSerialValue(assignedDepartment),
+                checkoutDate: parseOptionalDateInput(checkoutDate),
+                expectedReturnDate: parseOptionalDateInput(expectedReturnDate),
+                returnedDate: parseOptionalDateInput(returnedDate),
+                custodyStatus: normalizedCustodyStatus,
+                purchaseDate: parseOptionalDateInput(purchaseDate),
+                vendor: normalizeSerialValue(vendor),
+                purchaseCost: parseOptionalNumberInput(purchaseCost),
+                invoiceNumber: normalizeSerialValue(invoiceNumber),
+                purchaseOrderNumber: normalizeSerialValue(purchaseOrderNumber),
+                warrantyStartDate: parseOptionalDateInput(warrantyStartDate),
+                warrantyEndDate: parseOptionalDateInput(warrantyEndDate),
+                replacementCost: parseOptionalNumberInput(replacementCost),
                 quantity: 1,
                 specifications: enrichedSpecifications,
             }))
@@ -2772,6 +4481,23 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
                 })
             )
         );
+        await Promise.all(
+            createdAssets.map((createdAsset) =>
+                recordLifecycleEvent({
+                    assetId: createdAsset.customId,
+                    eventType: 'asset_created',
+                    newValue: {
+                        status: createdAsset.status,
+                        lifecycleStatus: createdAsset.lifecycleStatus,
+                        category: createdAsset.category,
+                        serialNumber: createdAsset.serialNumber,
+                        assetTag: createdAsset.assetTag,
+                    },
+                    notes: 'Asset created',
+                    actor: String(admin?.email || admin?.name || 'inventory-admin'),
+                })
+            )
+        );
 
         res.status(201).json({
             message: `Successfully created ${createdAssets.length} asset unit(s).`,
@@ -2792,6 +4518,12 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
             specConfirmation: {
                 reviewed: reviewedOnCreate,
                 reviewedBy: reviewedOnCreate ? reviewedBy : null,
+            },
+            serialNumberSummary: {
+                provided: parsedSerials.length,
+                duplicatesInPayload: duplicateSerialsInPayload,
+                duplicatesExisting: duplicateSerialsExisting,
+                warnings: serialWarnings,
             },
         });
 
@@ -2821,11 +4553,18 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
             updateData.location = mapToAssetLocation(destination);
             updateData.status = 'ACTIVE';
             updateData.assignedUser = null;
+            updateData.lifecycleStatus = 'IN_TRANSIT';
+            updateData.custodyStatus = 'UNASSIGNED';
         } else if (destType === 'department') {
             updateData.department = mapToAssetDepartment(destination);
+            updateData.lifecycleStatus = 'IN_USE';
         } else if (destType === 'user') {
             updateData.assignedUser = destination;
             updateData.status = 'ASSIGNED';
+            updateData.assignedToName = destination;
+            updateData.checkoutDate = new Date();
+            updateData.custodyStatus = 'CHECKED_OUT';
+            updateData.lifecycleStatus = 'ASSIGNED';
         }
 
         const parsedMoveQty = Number(quantityToMove);
@@ -2837,6 +4576,22 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
 
         if (moveQty === asset.quantity) {
             const updated = await AssetService.updateAsset(req.params.id, updateData);
+            await recordLifecycleEvent({
+                assetId: updated.customId,
+                eventType: 'asset_transferred',
+                oldValue: {
+                    location: String(asset.location),
+                    department: String(asset.department),
+                    assignedUser: asset.assignedUser || null,
+                },
+                newValue: {
+                    location: String(updated.location),
+                    department: String(updated.department),
+                    assignedUser: updated.assignedUser || null,
+                    lifecycleStatus: String(updated.lifecycleStatus || ''),
+                },
+                reason: `transfer_${destType}`,
+            });
             await EventBus.publish(TOPICS.ASSET_TRANSFERRED, {
                 customId: updated.customId,
                 quantityMoved: moveQty,
@@ -2952,13 +4707,32 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
 // --- STATUS & DETAILS UPDATE ---
 app.patch('/api/assets/:id/status', async (req: Request, res: Response) => {
     try {
-        const { status } = req.body;
+        const { status, lifecycleStatus, actor, reason } = req.body;
+        const existing = await AssetService.getAssetByCustomId(req.params.id);
+        if (!existing) return res.status(404).json({ message: "Asset not found" });
+        const mappedStatus = mapToAssetStatus(status);
+        const mappedLifecycle = lifecycleStatus ? mapToLifecycleStatus(lifecycleStatus) : undefined;
         const updated = await AssetService.updateAsset(req.params.id, {
-            status: mapToAssetStatus(status)
+            status: mappedStatus,
+            ...(mappedLifecycle ? { lifecycleStatus: mappedLifecycle } : {})
+        });
+        await recordLifecycleEvent({
+            assetId: updated.customId,
+            eventType: 'status_changed',
+            oldValue: {
+                status: String(existing.status),
+                lifecycleStatus: String((existing as any).lifecycleStatus || ''),
+            },
+            newValue: {
+                status: String(updated.status),
+                lifecycleStatus: String((updated as any).lifecycleStatus || ''),
+            },
+            reason: String(reason || ''),
+            actor: String(actor || ''),
         });
         await EventBus.publish(TOPICS.ASSET_UPDATED, {
             customId: updated.customId,
-            fields: ['status'],
+            fields: mappedLifecycle ? ['status', 'lifecycleStatus'] : ['status'],
             status: String(updated.status),
             timestamp: new Date().toISOString(),
             source: 'inventory-backend',
@@ -2968,6 +4742,62 @@ app.patch('/api/assets/:id/status', async (req: Request, res: Response) => {
         res.json(updated);
     } catch (err) {
         res.status(500).json({ message: "Status update failed" });
+    }
+});
+
+app.post('/api/assets/:id/retire', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const updated = await AssetService.updateAsset(req.params.id, {
+            status: 'RETIRED',
+            lifecycleStatus: 'RETIRED',
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'asset_retired',
+            oldValue: { status: String(asset.status), lifecycleStatus: String((asset as any).lifecycleStatus || '') },
+            newValue: { status: String(updated.status), lifecycleStatus: String((updated as any).lifecycleStatus || '') },
+            reason: normalizeSerialValue(req.body?.reason),
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Asset Retired',
+            details: normalizeSerialValue(req.body?.reason) || 'Retired by user action',
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to retire asset', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/dispose', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const updated = await AssetService.updateAsset(req.params.id, {
+            status: 'RETIRED',
+            lifecycleStatus: 'DISPOSED',
+        });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'asset_disposed',
+            oldValue: { status: String(asset.status), lifecycleStatus: String((asset as any).lifecycleStatus || '') },
+            newValue: { status: String(updated.status), lifecycleStatus: String((updated as any).lifecycleStatus || '') },
+            reason: normalizeSerialValue(req.body?.reason),
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: normalizeSerialValue(req.body?.actor),
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Asset Disposed',
+            details: normalizeSerialValue(req.body?.reason) || 'Disposed by user action',
+        });
+        res.json(updated);
+    } catch (error: any) {
+        res.status(500).json({ message: 'Failed to dispose asset', error: error.message });
     }
 });
 
@@ -3190,7 +5020,36 @@ app.post('/api/assets/:id/lifespan-prediction', async (req: Request, res: Respon
 
 app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
     try {
-        const { name, type, department, quantity, specifications, admin } = req.body;
+        const {
+            name,
+            type,
+            department,
+            quantity,
+            specifications,
+            admin,
+            serialNumber,
+            assetTag,
+            manufacturerPartNumber,
+            category,
+            lifecycleStatus,
+            assignedToName,
+            assignedToUserId,
+            assignedDepartment,
+            checkoutDate,
+            expectedReturnDate,
+            returnedDate,
+            custodyStatus,
+            purchaseDate,
+            vendor,
+            purchaseCost,
+            invoiceNumber,
+            purchaseOrderNumber,
+            warrantyStartDate,
+            warrantyEndDate,
+            replacementCost,
+        } = req.body;
+        const existing = await AssetService.getAssetByCustomId(req.params.id);
+        if (!existing) return res.status(404).json({ message: "Asset not found" });
 
         const updateData: any = {};
         if (name) updateData.name = name;
@@ -3206,9 +5065,98 @@ app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
             updateData.quantity = 1;
         }
         if (specifications) updateData.specifications = specifications;
+        if (typeof serialNumber !== 'undefined') updateData.serialNumber = normalizeSerialValue(serialNumber);
+        if (typeof assetTag !== 'undefined') updateData.assetTag = normalizeSerialValue(assetTag);
+        if (typeof manufacturerPartNumber !== 'undefined') updateData.manufacturerPartNumber = normalizeSerialValue(manufacturerPartNumber);
+        if (typeof category !== 'undefined') updateData.category = mapToAssetCategory(category);
+        if (typeof lifecycleStatus !== 'undefined') updateData.lifecycleStatus = mapToLifecycleStatus(lifecycleStatus);
+        if (typeof assignedToName !== 'undefined') updateData.assignedToName = normalizeSerialValue(assignedToName);
+        if (typeof assignedToUserId !== 'undefined') updateData.assignedToUserId = normalizeSerialValue(assignedToUserId);
+        if (typeof assignedDepartment !== 'undefined') updateData.assignedDepartment = normalizeSerialValue(assignedDepartment);
+        if (typeof checkoutDate !== 'undefined') updateData.checkoutDate = parseOptionalDateInput(checkoutDate);
+        if (typeof expectedReturnDate !== 'undefined') updateData.expectedReturnDate = parseOptionalDateInput(expectedReturnDate);
+        if (typeof returnedDate !== 'undefined') updateData.returnedDate = parseOptionalDateInput(returnedDate);
+        if (typeof custodyStatus !== 'undefined') updateData.custodyStatus = mapToCustodyStatus(custodyStatus);
+        if (typeof purchaseDate !== 'undefined') updateData.purchaseDate = parseOptionalDateInput(purchaseDate);
+        if (typeof vendor !== 'undefined') updateData.vendor = normalizeSerialValue(vendor);
+        if (typeof purchaseCost !== 'undefined') updateData.purchaseCost = parseOptionalNumberInput(purchaseCost);
+        if (typeof invoiceNumber !== 'undefined') updateData.invoiceNumber = normalizeSerialValue(invoiceNumber);
+        if (typeof purchaseOrderNumber !== 'undefined') updateData.purchaseOrderNumber = normalizeSerialValue(purchaseOrderNumber);
+        if (typeof warrantyStartDate !== 'undefined') updateData.warrantyStartDate = parseOptionalDateInput(warrantyStartDate);
+        if (typeof warrantyEndDate !== 'undefined') updateData.warrantyEndDate = parseOptionalDateInput(warrantyEndDate);
+        if (typeof replacementCost !== 'undefined') updateData.replacementCost = parseOptionalNumberInput(replacementCost);
 
         const updatedAsset = await AssetService.updateAsset(req.params.id, updateData);
         if (!updatedAsset) return res.status(404).json({ message: "Asset not found" });
+
+        if (Object.prototype.hasOwnProperty.call(updateData, 'serialNumber')) {
+            await recordHistoryEvent({
+                assetId: updatedAsset.customId,
+                action: 'Serial Number Updated',
+                details: `Serial changed from "${existing.serialNumber || 'empty'}" to "${updatedAsset.serialNumber || 'empty'}"`,
+            });
+            await recordLifecycleEvent({
+                assetId: updatedAsset.customId,
+                eventType: 'serial_number_changed',
+                oldValue: { serialNumber: existing.serialNumber || null },
+                newValue: { serialNumber: updatedAsset.serialNumber || null },
+                actor: String(admin?.email || admin?.name || ''),
+            });
+        }
+        if (Object.prototype.hasOwnProperty.call(updateData, 'lifecycleStatus')) {
+            await recordLifecycleEvent({
+                assetId: updatedAsset.customId,
+                eventType: 'lifecycle_status_changed',
+                oldValue: { lifecycleStatus: String((existing as any).lifecycleStatus || '') },
+                newValue: { lifecycleStatus: String((updatedAsset as any).lifecycleStatus || '') },
+                actor: String(admin?.email || admin?.name || ''),
+            });
+        }
+        if (
+            Object.prototype.hasOwnProperty.call(updateData, 'assignedToName')
+            || Object.prototype.hasOwnProperty.call(updateData, 'assignedToUserId')
+            || Object.prototype.hasOwnProperty.call(updateData, 'checkoutDate')
+            || Object.prototype.hasOwnProperty.call(updateData, 'returnedDate')
+            || Object.prototype.hasOwnProperty.call(updateData, 'custodyStatus')
+        ) {
+            await recordLifecycleEvent({
+                assetId: updatedAsset.customId,
+                eventType: 'custody_updated',
+                oldValue: {
+                    assignedToName: (existing as any).assignedToName || null,
+                    assignedToUserId: (existing as any).assignedToUserId || null,
+                    custodyStatus: String((existing as any).custodyStatus || ''),
+                },
+                newValue: {
+                    assignedToName: (updatedAsset as any).assignedToName || null,
+                    assignedToUserId: (updatedAsset as any).assignedToUserId || null,
+                    custodyStatus: String((updatedAsset as any).custodyStatus || ''),
+                },
+                actor: String(admin?.email || admin?.name || ''),
+            });
+        }
+        if (
+            Object.prototype.hasOwnProperty.call(updateData, 'vendor')
+            || Object.prototype.hasOwnProperty.call(updateData, 'purchaseDate')
+            || Object.prototype.hasOwnProperty.call(updateData, 'warrantyEndDate')
+            || Object.prototype.hasOwnProperty.call(updateData, 'purchaseCost')
+        ) {
+            await recordLifecycleEvent({
+                assetId: updatedAsset.customId,
+                eventType: 'purchase_warranty_updated',
+                oldValue: {
+                    vendor: (existing as any).vendor || null,
+                    purchaseDate: (existing as any).purchaseDate || null,
+                    warrantyEndDate: (existing as any).warrantyEndDate || null,
+                },
+                newValue: {
+                    vendor: (updatedAsset as any).vendor || null,
+                    purchaseDate: (updatedAsset as any).purchaseDate || null,
+                    warrantyEndDate: (updatedAsset as any).warrantyEndDate || null,
+                },
+                actor: String(admin?.email || admin?.name || ''),
+            });
+        }
 
         await EventBus.publish(TOPICS.ASSET_UPDATED, {
             customId: updatedAsset.customId,
