@@ -343,6 +343,431 @@ async function generateComponentAssetCustomId(parentAssetId: string, componentTy
     return `${parentAssetId}-${prefix}-${Date.now()}`;
 }
 
+type ImportRecordType =
+    | 'parent_asset'
+    | 'component_asset'
+    | 'embedded_component'
+    | 'spare_stock'
+    | 'accessory'
+    | 'consumable'
+    | 'license';
+
+type NormalizedImportRow = {
+    rowNumber: number;
+    recordType: ImportRecordType | '';
+    assetName: string;
+    category: string;
+    assetType: string;
+    brand: string;
+    model: string;
+    serialNumber: string;
+    assetTag: string;
+    manufacturerPartNumber: string;
+    location: string;
+    department: string;
+    status: string;
+    lifecycleStatus: string;
+    parentAssetTag: string;
+    componentType: string;
+    condition: string;
+    quantity: number | null;
+    minimumStockLevel: number | null;
+    reorderPoint: number | null;
+    vendor: string;
+    purchaseDate: string;
+    warrantyStartDate: string;
+    warrantyEndDate: string;
+    purchaseCost: number | null;
+    assignedTo: string;
+    notes: string;
+    proposedAction: string;
+    errors: string[];
+    warnings: string[];
+    statusLabel: 'valid' | 'warning' | 'error';
+    canImport: boolean;
+};
+
+const IMPORT_RECORD_TYPES: ImportRecordType[] = [
+    'parent_asset',
+    'component_asset',
+    'embedded_component',
+    'spare_stock',
+    'accessory',
+    'consumable',
+    'license',
+];
+
+const IMPORT_LIFECYCLE_ALLOWED = new Set([
+    'in_stock',
+    'assigned',
+    'in_use',
+    'under_maintenance',
+    'pending_repair',
+    'in_transit',
+    'reserved',
+    'retired',
+    'disposed',
+    'lost_stolen',
+    'eol_expired',
+]);
+
+const IMPORT_CATEGORY_ALLOWED = new Set([
+    'asset',
+    'component',
+    'accessory',
+    'consumable',
+    'license',
+    'spare_part',
+]);
+
+const IMPORT_HEADER_MAP: Record<string, keyof Omit<NormalizedImportRow, 'rowNumber' | 'proposedAction' | 'errors' | 'warnings' | 'statusLabel' | 'canImport'>> = {
+    recordtype: 'recordType',
+    assetname: 'assetName',
+    category: 'category',
+    assettype: 'assetType',
+    brand: 'brand',
+    model: 'model',
+    serialnumber: 'serialNumber',
+    assettag: 'assetTag',
+    manufacturerpartnumber: 'manufacturerPartNumber',
+    location: 'location',
+    department: 'department',
+    status: 'status',
+    lifestatus: 'lifecycleStatus',
+    lifecyclestatus: 'lifecycleStatus',
+    parentassettag: 'parentAssetTag',
+    componenttype: 'componentType',
+    condition: 'condition',
+    quantity: 'quantity',
+    minimumstocklevel: 'minimumStockLevel',
+    reorderpoint: 'reorderPoint',
+    vendor: 'vendor',
+    purchasedate: 'purchaseDate',
+    warrantystartdate: 'warrantyStartDate',
+    warrantyenddate: 'warrantyEndDate',
+    purchasecost: 'purchaseCost',
+    assignedto: 'assignedTo',
+    notes: 'notes',
+};
+
+function normalizeImportHeader(value: string): string {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function parseCsvContent(content: string): string[][] {
+    const rows: string[][] = [];
+    let currentField = '';
+    let currentRow: string[] = [];
+    let inQuotes = false;
+
+    for (let i = 0; i < content.length; i += 1) {
+        const char = content[i];
+        const nextChar = content[i + 1];
+        if (char === '"') {
+            if (inQuotes && nextChar === '"') {
+                currentField += '"';
+                i += 1;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+        if (char === ',' && !inQuotes) {
+            currentRow.push(currentField.trim());
+            currentField = '';
+            continue;
+        }
+        if ((char === '\n' || char === '\r') && !inQuotes) {
+            if (char === '\r' && nextChar === '\n') i += 1;
+            currentRow.push(currentField.trim());
+            if (currentRow.some((field) => String(field || '').trim() !== '')) {
+                rows.push(currentRow);
+            }
+            currentRow = [];
+            currentField = '';
+            continue;
+        }
+        currentField += char;
+    }
+    currentRow.push(currentField.trim());
+    if (currentRow.some((field) => String(field || '').trim() !== '')) {
+        rows.push(currentRow);
+    }
+    return rows;
+}
+
+function normalizeImportRecordType(value: unknown): ImportRecordType | '' {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return IMPORT_RECORD_TYPES.includes(normalized as ImportRecordType)
+        ? (normalized as ImportRecordType)
+        : '';
+}
+
+function normalizeImportRows(rawRows: Array<Record<string, any>>): NormalizedImportRow[] {
+    return rawRows.map((raw, index) => {
+        const recordType = normalizeImportRecordType(raw.recordType);
+        const quantity = parseOptionalIntegerInput(raw.quantity);
+        const minimumStockLevel = parseOptionalIntegerInput(raw.minimumStockLevel);
+        const reorderPoint = parseOptionalIntegerInput(raw.reorderPoint);
+        const purchaseCost = parseOptionalNumberInput(raw.purchaseCost);
+        return {
+            rowNumber: index + 1,
+            recordType,
+            assetName: String(raw.assetName || '').trim(),
+            category: String(raw.category || '').trim(),
+            assetType: String(raw.assetType || '').trim(),
+            brand: String(raw.brand || '').trim(),
+            model: String(raw.model || '').trim(),
+            serialNumber: String(raw.serialNumber || '').trim(),
+            assetTag: String(raw.assetTag || '').trim(),
+            manufacturerPartNumber: String(raw.manufacturerPartNumber || '').trim(),
+            location: String(raw.location || '').trim(),
+            department: String(raw.department || '').trim(),
+            status: String(raw.status || '').trim(),
+            lifecycleStatus: String(raw.lifecycleStatus || '').trim(),
+            parentAssetTag: String(raw.parentAssetTag || '').trim(),
+            componentType: String(raw.componentType || '').trim(),
+            condition: String(raw.condition || '').trim(),
+            quantity: quantity === null ? null : quantity,
+            minimumStockLevel: minimumStockLevel === null ? null : minimumStockLevel,
+            reorderPoint: reorderPoint === null ? null : reorderPoint,
+            vendor: String(raw.vendor || '').trim(),
+            purchaseDate: String(raw.purchaseDate || '').trim(),
+            warrantyStartDate: String(raw.warrantyStartDate || '').trim(),
+            warrantyEndDate: String(raw.warrantyEndDate || '').trim(),
+            purchaseCost,
+            assignedTo: String(raw.assignedTo || '').trim(),
+            notes: String(raw.notes || '').trim(),
+            proposedAction: '',
+            errors: [],
+            warnings: [],
+            statusLabel: 'valid',
+            canImport: true,
+        };
+    });
+}
+
+async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
+    normalizedRows: NormalizedImportRow[];
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    warnings: string[];
+    errors: string[];
+    canImport: boolean;
+}> {
+    const normalizedRows: NormalizedImportRow[] = rows.map((row) => ({
+        ...row,
+        errors: Array.isArray(row.errors) ? [...row.errors] : [],
+        warnings: Array.isArray(row.warnings) ? [...row.warnings] : [],
+    }));
+    const topWarnings: string[] = [];
+    const topErrors: string[] = [];
+
+    const serialToRows = new Map<string, number[]>();
+    const tagToRows = new Map<string, number[]>();
+    const parentTagSet = new Set<string>();
+    const parentTagsDefinedInFile = new Set<string>();
+
+    normalizedRows.forEach((row) => {
+        if (row.assetTag && row.recordType === 'parent_asset') parentTagsDefinedInFile.add(row.assetTag.toLowerCase());
+        if (row.parentAssetTag) parentTagSet.add(row.parentAssetTag.toLowerCase());
+        if (row.serialNumber) {
+            const key = row.serialNumber.toLowerCase();
+            serialToRows.set(key, [...(serialToRows.get(key) || []), row.rowNumber]);
+        }
+        if (row.assetTag) {
+            const key = row.assetTag.toLowerCase();
+            tagToRows.set(key, [...(tagToRows.get(key) || []), row.rowNumber]);
+        }
+    });
+
+    serialToRows.forEach((rowNumbers, serial) => {
+        if (rowNumbers.length > 1) {
+            normalizedRows.forEach((row) => {
+                if (row.serialNumber.toLowerCase() === serial) {
+                    row.errors.push(`Duplicate serial number in file (${row.serialNumber})`);
+                }
+            });
+        }
+    });
+    tagToRows.forEach((rowNumbers, tag) => {
+        if (rowNumbers.length > 1) {
+            normalizedRows.forEach((row) => {
+                if (row.assetTag.toLowerCase() === tag) {
+                    row.errors.push(`Duplicate asset tag in file (${row.assetTag})`);
+                }
+            });
+        }
+    });
+
+    const serials = Array.from(serialToRows.keys());
+    const tags = Array.from(tagToRows.keys());
+    const existingSerials = serials.length
+        ? await prisma.asset.findMany({
+            where: {
+                OR: serials.map((serial) => ({
+                    serialNumber: { equals: serial }
+                })),
+            },
+            select: { serialNumber: true, customId: true },
+            take: 500,
+        })
+        : [];
+    const existingTags = tags.length
+        ? await prisma.asset.findMany({
+            where: {
+                OR: tags.map((tag) => ({
+                    assetTag: { equals: tag }
+                })),
+            },
+            select: { assetTag: true, customId: true },
+            take: 500,
+        })
+        : [];
+    const existingParents = parentTagSet.size
+        ? await prisma.asset.findMany({
+            where: {
+                OR: Array.from(parentTagSet).map((tag) => ({
+                    assetTag: { equals: tag }
+                })),
+            },
+            select: { assetTag: true, customId: true },
+            take: 500,
+        })
+        : [];
+    const existingParentTags = new Set(existingParents.map((entry) => String(entry.assetTag || '').toLowerCase()).filter(Boolean));
+    const existingSerialSet = new Set(existingSerials.map((entry) => String(entry.serialNumber || '').toLowerCase()).filter(Boolean));
+    const existingTagSet = new Set(existingTags.map((entry) => String(entry.assetTag || '').toLowerCase()).filter(Boolean));
+
+    normalizedRows.forEach((row) => {
+        if (!row.recordType) row.errors.push('Invalid Record Type');
+        if (row.serialNumber && existingSerialSet.has(row.serialNumber.toLowerCase())) {
+            row.errors.push(`Serial number already exists in DB (${row.serialNumber})`);
+        }
+        if (row.assetTag && existingTagSet.has(row.assetTag.toLowerCase())) {
+            row.errors.push(`Asset tag already exists in DB (${row.assetTag})`);
+        }
+        if (row.lifecycleStatus) {
+            const lifecycle = String(row.lifecycleStatus).trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (!IMPORT_LIFECYCLE_ALLOWED.has(lifecycle)) {
+                row.errors.push(`Invalid lifecycle status (${row.lifecycleStatus})`);
+            }
+        }
+        if (row.category) {
+            const category = String(row.category).trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (!IMPORT_CATEGORY_ALLOWED.has(category)) {
+                row.errors.push(`Invalid category (${row.category})`);
+            }
+        }
+
+        if ((row.recordType === 'parent_asset' || row.recordType === 'accessory' || row.recordType === 'consumable' || row.recordType === 'license' || row.recordType === 'component_asset') && !row.assetName) {
+            row.errors.push('Asset Name is required');
+        }
+        if (row.recordType === 'embedded_component' && !row.assetName) row.errors.push('Asset Name is required for embedded component');
+        if (row.recordType === 'embedded_component' && !row.parentAssetTag) row.errors.push('Parent Asset Tag is required for embedded component');
+        if (row.recordType === 'embedded_component' && !row.componentType) row.errors.push('Component Type is required for embedded component');
+        if (row.recordType === 'component_asset' && !row.componentType) row.warnings.push('Component Type is empty; defaulting to component');
+
+        if (row.recordType === 'spare_stock') {
+            if (!row.assetName) row.errors.push('Asset Name (part name) is required for spare stock');
+            if (!row.componentType) row.errors.push('Component Type is required for spare stock');
+            if (row.quantity === null || row.quantity < 0) row.errors.push('Spare stock quantity is missing or invalid');
+            if (row.minimumStockLevel !== null && row.minimumStockLevel < 0) row.errors.push('Minimum stock level must be >= 0');
+            if (row.reorderPoint !== null && row.reorderPoint < 0) row.errors.push('Reorder point must be >= 0');
+        }
+
+        if (row.quantity !== null && row.quantity <= 0 && row.recordType !== 'spare_stock') {
+            row.errors.push('Quantity must be a positive integer');
+        }
+
+        if ((row.recordType === 'embedded_component' || (row.recordType === 'component_asset' && row.parentAssetTag)) && row.parentAssetTag) {
+            const key = row.parentAssetTag.toLowerCase();
+            if (!existingParentTags.has(key) && !parentTagsDefinedInFile.has(key)) {
+                row.errors.push(`Unknown Parent Asset Tag (${row.parentAssetTag})`);
+            }
+        }
+
+        switch (row.recordType) {
+            case 'parent_asset':
+                row.proposedAction = 'create_parent_asset';
+                break;
+            case 'embedded_component':
+                row.proposedAction = 'create_embedded_component';
+                break;
+            case 'component_asset':
+                row.proposedAction = row.parentAssetTag ? 'create_component_asset_and_link' : 'create_component_asset';
+                break;
+            case 'spare_stock':
+                row.proposedAction = 'create_or_update_spare_stock';
+                break;
+            case 'accessory':
+            case 'consumable':
+            case 'license':
+                row.proposedAction = 'create_asset';
+                break;
+            default:
+                row.proposedAction = 'skip';
+                break;
+        }
+
+        if (row.errors.length > 0) {
+            row.statusLabel = 'error';
+            row.canImport = false;
+        } else if (row.warnings.length > 0) {
+            row.statusLabel = 'warning';
+            row.canImport = true;
+        } else {
+            row.statusLabel = 'valid';
+            row.canImport = true;
+        }
+    });
+
+    const invalidRows = normalizedRows.filter((row) => row.statusLabel === 'error').length;
+    const validRows = normalizedRows.length - invalidRows;
+    if (invalidRows > 0) {
+        topErrors.push(`${invalidRows} row(s) contain validation errors.`);
+    }
+
+    const warningCount = normalizedRows.reduce((sum, row) => sum + row.warnings.length, 0);
+    if (warningCount > 0) {
+        topWarnings.push(`${warningCount} warning(s) detected.`);
+    }
+
+    return {
+        normalizedRows,
+        totalRows: normalizedRows.length,
+        validRows,
+        invalidRows,
+        warnings: topWarnings,
+        errors: topErrors,
+        canImport: invalidRows === 0 && normalizedRows.length > 0,
+    };
+}
+
+function parseImportFileRows(filename: string, fileContent: string): Array<Record<string, any>> {
+    const lower = String(filename || '').toLowerCase();
+    if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+        throw new RequestValidationError('XLSX import is not enabled yet. CSV is supported now. XLSX support is planned for Slice 2.1.');
+    }
+    const rows = parseCsvContent(fileContent);
+    if (!rows.length) return [];
+    const headerRow = rows[0] || [];
+    const headerMap = headerRow.map((header) => IMPORT_HEADER_MAP[normalizeImportHeader(header)] || null);
+    const result: Array<Record<string, any>> = [];
+
+    for (let index = 1; index < rows.length; index += 1) {
+        const row = rows[index];
+        const parsed: Record<string, any> = {};
+        headerMap.forEach((mappedKey, columnIndex) => {
+            if (!mappedKey) return;
+            parsed[mappedKey] = String(row[columnIndex] || '').trim();
+        });
+        result.push(parsed);
+    }
+    return result;
+}
+
 function buildUnitAssetIds(baseId: string, quantity: number): string[] {
     if (quantity <= 1) return [baseId];
     const padding = Math.max(3, String(quantity).length);
@@ -2159,6 +2584,444 @@ app.post('/api/inventory/spare-stock/:id/adjust', inventoryAdminGuard, async (re
             return res.status(400).json({ message: error.message });
         }
         res.status(500).json({ message: 'Failed to adjust spare stock quantity', error: error.message });
+    }
+});
+
+app.post('/api/assets/import/preview', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const filename = String(req.body?.filename || '').trim();
+        let rawRows: Array<Record<string, any>> = [];
+
+        if (Array.isArray(req.body?.rows)) {
+            rawRows = req.body.rows as Array<Record<string, any>>;
+        } else if (String(req.body?.fileContent || '').trim()) {
+            rawRows = parseImportFileRows(filename || 'upload.csv', String(req.body.fileContent || ''));
+        } else {
+            return res.status(400).json({ message: 'Provide rows[] or fileContent for import preview.' });
+        }
+
+        const normalizedRows = normalizeImportRows(rawRows);
+        const result = await validateImportRows(normalizedRows);
+        res.json({
+            filename: filename || null,
+            ...result,
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to preview import', error: error.message });
+    }
+});
+
+app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const filename = String(req.body?.filename || '').trim() || 'unknown.csv';
+        const sourceName = String(req.body?.sourceName || '').trim() || filename;
+        const inputRows = Array.isArray(req.body?.normalizedRows)
+            ? (req.body.normalizedRows as Array<Record<string, any>>)
+            : (Array.isArray(req.body?.rows) ? (req.body.rows as Array<Record<string, any>>) : []);
+        if (!inputRows.length) {
+            return res.status(400).json({ message: 'No rows provided for import commit.' });
+        }
+
+        const normalizedRows = normalizeImportRows(inputRows);
+        const revalidated = await validateImportRows(normalizedRows);
+        if (!revalidated.canImport) {
+            return res.status(400).json({
+                message: 'Import commit rejected due to validation errors.',
+                ...revalidated,
+            });
+        }
+
+        const importBatchId = `IMPORT-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+        const warnings: string[] = [...revalidated.warnings];
+        const errors: string[] = [];
+        const skippedRows: Array<{ rowNumber: number; reason: string }> = [];
+
+        const result = await prisma.$transaction(async (tx) => {
+            const createdAssets: string[] = [];
+            const createdComponents: string[] = [];
+            const createdSpareStockItems: string[] = [];
+            const parentTagToCustomId = new Map<string, string>();
+            const parentRows = revalidated.normalizedRows.filter((row) => row.recordType === 'parent_asset');
+
+            const parentTags = Array.from(new Set(
+                revalidated.normalizedRows
+                    .map((row) => String(row.parentAssetTag || '').trim())
+                    .filter(Boolean)
+            ));
+            if (parentTags.length) {
+                const existingParents = await tx.asset.findMany({
+                    where: {
+                        OR: parentTags.map((tag) => ({
+                            assetTag: { equals: tag }
+                        })),
+                    },
+                    select: { customId: true, assetTag: true },
+                    take: 500,
+                });
+                existingParents.forEach((entry) => {
+                    const key = String(entry.assetTag || '').trim().toLowerCase();
+                    if (key) parentTagToCustomId.set(key, entry.customId);
+                });
+            }
+
+            for (const row of parentRows) {
+                const qty = Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
+                    ? Math.trunc(Number(row.quantity))
+                    : 1;
+                const baseId = normalizeSerialValue(row.assetTag) || `IMPORTED-${Date.now()}-${row.rowNumber}`;
+                const unitIds = buildUnitAssetIds(baseId, qty);
+                const firstUnit = unitIds[0];
+                for (let unitIdx = 0; unitIdx < unitIds.length; unitIdx += 1) {
+                    const unitId = unitIds[unitIdx];
+                    const created = await tx.asset.create({
+                        data: {
+                            customId: unitId,
+                            name: row.assetName,
+                            type: mapToAssetType(row.assetType || row.componentType || 'electronics'),
+                            status: mapToAssetStatus(row.status || 'active'),
+                            lifecycleStatus: mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
+                            category: mapToAssetCategory(row.category || 'asset'),
+                            value: row.purchaseCost || 0,
+                            quantity: 1,
+                            assignedUser: normalizeSerialValue(row.assignedTo),
+                            serialNumber: unitIdx === 0 ? normalizeSerialValue(row.serialNumber) : null,
+                            assetTag: unitIdx === 0 ? normalizeSerialValue(row.assetTag) : null,
+                            manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                            location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                            department: mapToAssetDepartment(row.department || 'Unassigned'),
+                            assignedToName: normalizeSerialValue(row.assignedTo),
+                            custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
+                            purchaseDate: parseOptionalDateInput(row.purchaseDate),
+                            vendor: normalizeSerialValue(row.vendor),
+                            purchaseCost: row.purchaseCost,
+                            warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
+                            warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
+                            specifications: {
+                                brand: row.brand || undefined,
+                                version: row.model || undefined,
+                                importBatchId,
+                                importedFrom: sourceName,
+                            },
+                        }
+                    });
+                    createdAssets.push(created.customId);
+                    await tx.assetHistory.create({
+                        data: {
+                            assetId: created.customId,
+                            event: 'Imported',
+                            details: `Imported from file: ${sourceName}`,
+                        }
+                    });
+                    await tx.assetLifecycleEvent.create({
+                        data: {
+                            assetId: created.customId,
+                            eventType: 'asset_imported',
+                            newValue: {
+                                importBatchId,
+                                filename: sourceName,
+                                rowNumber: row.rowNumber,
+                            },
+                            reason: 'bulk_import',
+                            notes: `Imported from file: ${sourceName}`,
+                            actor: 'inventory-import',
+                        }
+                    });
+                }
+                if (row.assetTag) {
+                    parentTagToCustomId.set(row.assetTag.toLowerCase(), firstUnit);
+                }
+            }
+
+            for (const row of revalidated.normalizedRows) {
+                if (row.recordType === 'parent_asset') continue;
+                try {
+                    if (row.recordType === 'embedded_component') {
+                        const parentId = parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase());
+                        if (!parentId) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
+                            continue;
+                        }
+                        const component = await tx.assetComponent.create({
+                            data: {
+                                parentAssetId: parentId,
+                                componentName: row.assetName,
+                                componentType: row.componentType || 'component',
+                                brand: normalizeSerialValue(row.brand),
+                                model: normalizeSerialValue(row.model),
+                                serialNumber: normalizeSerialValue(row.serialNumber),
+                                partNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                status: normalizeComponentStatus(row.status, 'installed'),
+                                condition: normalizeSerialValue(row.condition),
+                                installedAt: new Date(),
+                                reason: `Imported from file: ${sourceName}`,
+                                notes: normalizeSerialValue(row.notes),
+                            },
+                        });
+                        createdComponents.push(component.id);
+                        await tx.assetHistory.create({
+                            data: {
+                                assetId: parentId,
+                                event: 'Component Imported',
+                                details: `Imported component ${row.assetName} from file: ${sourceName}`,
+                            }
+                        });
+                        await tx.assetLifecycleEvent.create({
+                            data: {
+                                assetId: parentId,
+                                componentId: component.id,
+                                eventType: 'component_imported',
+                                newValue: {
+                                    importBatchId,
+                                    filename: sourceName,
+                                    rowNumber: row.rowNumber,
+                                    componentName: row.assetName,
+                                },
+                                reason: 'bulk_import',
+                                actor: 'inventory-import',
+                            }
+                        });
+                        continue;
+                    }
+
+                    if (row.recordType === 'component_asset') {
+                        const parentId = row.parentAssetTag
+                            ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
+                            : null;
+                        const customId = normalizeSerialValue(row.assetTag) || `IMPORTED-COMP-${Date.now()}-${row.rowNumber}`;
+                        const child = await tx.asset.create({
+                            data: {
+                                customId,
+                                name: row.assetName,
+                                type: mapToAssetType(row.assetType || row.componentType || 'electronics'),
+                                status: mapToAssetStatus(row.status || 'active'),
+                                lifecycleStatus: parentId ? 'IN_USE' : mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
+                                category: 'COMPONENT',
+                                value: row.purchaseCost || 0,
+                                quantity: 1,
+                                serialNumber: normalizeSerialValue(row.serialNumber),
+                                assetTag: normalizeSerialValue(row.assetTag),
+                                manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                                department: mapToAssetDepartment(row.department || 'Unassigned'),
+                                assignedToName: normalizeSerialValue(row.assignedTo),
+                                custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
+                                purchaseDate: parseOptionalDateInput(row.purchaseDate),
+                                vendor: normalizeSerialValue(row.vendor),
+                                purchaseCost: row.purchaseCost,
+                                warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
+                                warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
+                                specifications: {
+                                    brand: row.brand || undefined,
+                                    version: row.model || undefined,
+                                    importBatchId,
+                                    importedFrom: sourceName,
+                                },
+                            }
+                        });
+                        createdAssets.push(child.customId);
+                        await tx.assetHistory.create({
+                            data: {
+                                assetId: child.customId,
+                                event: 'Imported',
+                                details: `Imported from file: ${sourceName}`,
+                            }
+                        });
+                        await tx.assetLifecycleEvent.create({
+                            data: {
+                                assetId: child.customId,
+                                eventType: 'asset_imported',
+                                newValue: {
+                                    importBatchId,
+                                    filename: sourceName,
+                                    rowNumber: row.rowNumber,
+                                },
+                                reason: 'bulk_import',
+                                actor: 'inventory-import',
+                            }
+                        });
+
+                        if (parentId) {
+                            const componentLink = await tx.assetComponent.create({
+                                data: {
+                                    parentAssetId: parentId,
+                                    childAssetId: child.customId,
+                                    componentName: row.assetName,
+                                    componentType: row.componentType || 'component',
+                                    brand: normalizeSerialValue(row.brand),
+                                    model: normalizeSerialValue(row.model),
+                                    serialNumber: normalizeSerialValue(row.serialNumber),
+                                    partNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                    status: normalizeComponentStatus(row.status, 'installed'),
+                                    condition: normalizeSerialValue(row.condition),
+                                    installedAt: new Date(),
+                                    reason: `Imported from file: ${sourceName}`,
+                                    notes: normalizeSerialValue(row.notes),
+                                }
+                            });
+                            createdComponents.push(componentLink.id);
+                            await tx.assetLifecycleEvent.create({
+                                data: {
+                                    assetId: parentId,
+                                    componentId: componentLink.id,
+                                    eventType: 'component_imported_linked_asset',
+                                    newValue: {
+                                        importBatchId,
+                                        childAssetId: child.customId,
+                                        filename: sourceName,
+                                    },
+                                    reason: 'bulk_import',
+                                    actor: 'inventory-import',
+                                }
+                            });
+                        }
+                        continue;
+                    }
+
+                    if (row.recordType === 'spare_stock') {
+                        const qty = Number.isFinite(Number(row.quantity)) ? Math.max(0, Math.trunc(Number(row.quantity))) : 0;
+                        const existingStock = await tx.spareStockItem.findFirst({
+                            where: {
+                                OR: [
+                                    ...(row.manufacturerPartNumber ? [{ partNumber: row.manufacturerPartNumber }] : []),
+                                    { AND: [{ partName: row.assetName }, { componentType: row.componentType || 'component' }] }
+                                ]
+                            },
+                            orderBy: { updatedAt: 'desc' },
+                        });
+                        if (existingStock) {
+                            const updated = await tx.spareStockItem.update({
+                                where: { id: existingStock.id },
+                                data: {
+                                    quantityAvailable: existingStock.quantityAvailable + qty,
+                                    minimumStockLevel: row.minimumStockLevel !== null ? row.minimumStockLevel : existingStock.minimumStockLevel,
+                                    reorderPoint: row.reorderPoint !== null ? row.reorderPoint : existingStock.reorderPoint,
+                                    location: normalizeSerialValue(row.location) || existingStock.location,
+                                    vendor: normalizeSerialValue(row.vendor) || existingStock.vendor,
+                                    brand: normalizeSerialValue(row.brand) || existingStock.brand,
+                                    model: normalizeSerialValue(row.model) || existingStock.model,
+                                    notes: normalizeSerialValue(row.notes) || existingStock.notes,
+                                }
+                            });
+                            createdSpareStockItems.push(updated.id);
+                        } else {
+                            const created = await tx.spareStockItem.create({
+                                data: {
+                                    partName: row.assetName,
+                                    componentType: row.componentType || 'component',
+                                    category: normalizeSerialValue(row.category) || 'spare_part',
+                                    brand: normalizeSerialValue(row.brand),
+                                    model: normalizeSerialValue(row.model),
+                                    partNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                    quantityAvailable: qty,
+                                    minimumStockLevel: row.minimumStockLevel !== null ? row.minimumStockLevel : 0,
+                                    reorderPoint: row.reorderPoint,
+                                    location: normalizeSerialValue(row.location),
+                                    vendor: normalizeSerialValue(row.vendor),
+                                    unitCost: row.purchaseCost,
+                                    compatibleBrandsModels: row.notes ? [row.notes] : [],
+                                    notes: normalizeSerialValue(row.notes),
+                                }
+                            });
+                            createdSpareStockItems.push(created.id);
+                        }
+                        continue;
+                    }
+
+                    if (row.recordType === 'accessory' || row.recordType === 'consumable' || row.recordType === 'license') {
+                        const qty = Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
+                            ? Math.trunc(Number(row.quantity))
+                            : 1;
+                        const baseId = normalizeSerialValue(row.assetTag) || `IMPORTED-${Date.now()}-${row.rowNumber}`;
+                        const unitIds = buildUnitAssetIds(baseId, qty);
+                        for (let unitIdx = 0; unitIdx < unitIds.length; unitIdx += 1) {
+                            const unitId = unitIds[unitIdx];
+                            const created = await tx.asset.create({
+                                data: {
+                                    customId: unitId,
+                                    name: row.assetName,
+                                    type: mapToAssetType(row.assetType || 'electronics'),
+                                    status: mapToAssetStatus(row.status || 'active'),
+                                    lifecycleStatus: mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
+                                    category: mapToAssetCategory(row.recordType),
+                                    value: row.purchaseCost || 0,
+                                    quantity: 1,
+                                    serialNumber: unitIdx === 0 ? normalizeSerialValue(row.serialNumber) : null,
+                                    assetTag: unitIdx === 0 ? normalizeSerialValue(row.assetTag) : null,
+                                    manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                    location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                                    department: mapToAssetDepartment(row.department || 'Unassigned'),
+                                    assignedToName: normalizeSerialValue(row.assignedTo),
+                                    custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
+                                    purchaseDate: parseOptionalDateInput(row.purchaseDate),
+                                    vendor: normalizeSerialValue(row.vendor),
+                                    purchaseCost: row.purchaseCost,
+                                    warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
+                                    warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
+                                    specifications: {
+                                        brand: row.brand || undefined,
+                                        version: row.model || undefined,
+                                        importBatchId,
+                                        importedFrom: sourceName,
+                                    },
+                                }
+                            });
+                            createdAssets.push(created.customId);
+                            await tx.assetHistory.create({
+                                data: {
+                                    assetId: created.customId,
+                                    event: 'Imported',
+                                    details: `Imported from file: ${sourceName}`,
+                                }
+                            });
+                            await tx.assetLifecycleEvent.create({
+                                data: {
+                                    assetId: created.customId,
+                                    eventType: 'asset_imported',
+                                    newValue: {
+                                        importBatchId,
+                                        filename: sourceName,
+                                        rowNumber: row.rowNumber,
+                                    },
+                                    reason: 'bulk_import',
+                                    actor: 'inventory-import',
+                                }
+                            });
+                        }
+                        continue;
+                    }
+
+                    skippedRows.push({ rowNumber: row.rowNumber, reason: `Unsupported record type (${row.recordType})` });
+                } catch (rowError: any) {
+                    errors.push(`Row ${row.rowNumber}: ${rowError?.message || rowError}`);
+                }
+            }
+
+            return {
+                createdAssets,
+                createdComponents,
+                createdSpareStockItems,
+            };
+        });
+
+        const success = errors.length === 0;
+        res.json({
+            success,
+            importBatchId,
+            createdAssets: result.createdAssets.length,
+            createdComponents: result.createdComponents.length,
+            createdSpareStockItems: result.createdSpareStockItems.length,
+            skippedRows,
+            errors,
+            warnings,
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        res.status(500).json({ message: 'Failed to commit import', error: error.message });
     }
 });
 

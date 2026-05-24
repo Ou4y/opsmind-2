@@ -42,6 +42,7 @@ let cmdbState = {
   assetId: null,
   activeTab: 'components',
 };
+let importPreviewCache = null;
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -955,6 +956,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   if (spareStockAddBtn) spareStockAddBtn.addEventListener('click', () => window.addSpareStockItem());
   if (spareStockSearchInput) spareStockSearchInput.addEventListener('input', () => window.renderSpareStockTable());
+  const openImportAssetsBtn = document.getElementById('openImportAssetsBtn');
+  const previewImportBtn = document.getElementById('previewImportBtn');
+  const commitImportBtn = document.getElementById('commitImportBtn');
+  const downloadImportTemplateBtn = document.getElementById('downloadImportTemplateBtn');
+  if (openImportAssetsBtn) openImportAssetsBtn.addEventListener('click', () => window.openImportAssetsModal());
+  if (previewImportBtn) previewImportBtn.addEventListener('click', () => window.previewImportAssets());
+  if (commitImportBtn) commitImportBtn.addEventListener('click', () => window.commitImportAssets());
+  if (downloadImportTemplateBtn) downloadImportTemplateBtn.addEventListener('click', () => window.copyImportTemplateCsv());
 
   updateWorkingHoursAvailability();
   applyAssetTypeSpecTemplate();
@@ -3211,6 +3220,136 @@ window.adjustSpareStockItem = async (id) => {
     await window.loadSpareStock();
   } catch (error) {
     showMessage(error.message || 'Failed to adjust spare stock item.', 'error');
+  }
+};
+
+function renderImportPreviewRows(rows = []) {
+  const tableBody = document.getElementById('importPreviewTableBody');
+  if (!tableBody) return;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    tableBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-4">No rows in preview.</td></tr>';
+    return;
+  }
+  tableBody.innerHTML = rows.map((row) => {
+    const message = [...(row.errors || []), ...(row.warnings || [])].join(' | ') || 'OK';
+    const status = row.statusLabel || 'valid';
+    const statusBadge = status === 'error'
+      ? '<span class="badge bg-danger">Error</span>'
+      : (status === 'warning' ? '<span class="badge bg-warning text-dark">Warning</span>' : '<span class="badge bg-success">Valid</span>');
+    return `
+      <tr>
+        <td>${UI.escapeHTML(String(row.rowNumber || '-'))}</td>
+        <td>${UI.escapeHTML(row.recordType || '-')}</td>
+        <td>${UI.escapeHTML(row.assetName || '-')}</td>
+        <td>${UI.escapeHTML(row.serialNumber || '-')}</td>
+        <td>${UI.escapeHTML(row.assetTag || '-')}</td>
+        <td>${UI.escapeHTML(row.parentAssetTag || '-')}</td>
+        <td>${UI.escapeHTML(row.proposedAction || '-')}</td>
+        <td>${statusBadge}</td>
+        <td class="small">${UI.escapeHTML(message)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+window.openImportAssetsModal = async () => {
+  importPreviewCache = null;
+  const summary = document.getElementById('importPreviewSummary');
+  const commitSummary = document.getElementById('importCommitSummary');
+  const commitBtn = document.getElementById('commitImportBtn');
+  if (summary) summary.textContent = 'No preview yet.';
+  if (commitSummary) commitSummary.textContent = '';
+  if (commitBtn) commitBtn.disabled = true;
+  renderImportPreviewRows([]);
+  const modalEl = document.getElementById('importAssetsModal');
+  if (!modalEl) return;
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+};
+
+window.copyImportTemplateCsv = async () => {
+  const template = [
+    'Record Type,Asset Name,Category,Asset Type,Brand,Model,Serial Number,Asset Tag,Manufacturer Part Number,Location,Department,Status,Lifecycle Status,Parent Asset Tag,Component Type,Condition,Quantity,Minimum Stock Level,Reorder Point,Vendor,Purchase Date,Warranty Start Date,Warranty End Date,Purchase Cost,Assigned To,Notes',
+    'parent_asset,Dell OptiPlex Lab PC,Asset,Desktop,Dell,OptiPlex 7090,PC-SN-001,UNI-PC-LAB-A-001,LAT7090,Main Building,Computer Science,active,in_use,,,,1,,,Dell,2024-01-15,2024-01-15,2027-01-15,25000,IT Lab,Main PC',
+    'embedded_component,RAM 16GB DDR4,Component,Electronics,Kingston,16GB DDR4,RAM-SN-001,UNI-RAM-001,KVR16GB,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,RAM,Good,1,,,,,,,,Initial RAM',
+    'embedded_component,SSD 512GB,Component,Electronics,Samsung,512GB SSD,SSD-SN-001,UNI-SSD-001,SAM512,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,Storage,Good,1,,,,,,,,Initial SSD',
+    'spare_stock,Samsung 512GB SSD,Spare Part,Electronics,Samsung,512GB SSD,,SPARE-SSD-512,SAM512,Central Warehouse,Computer Science,active,in_stock,,Storage,New,3,1,1,Dell,,,,1500,,Compatible with Dell OptiPlex',
+  ].join('\n');
+  try {
+    await navigator.clipboard.writeText(template);
+    showMessage('Import template CSV copied to clipboard.', 'success');
+  } catch (_error) {
+    showMessage('Could not copy template automatically. Please copy manually from the docs text.', 'warning');
+  }
+};
+
+window.previewImportAssets = async () => {
+  const fileInput = document.getElementById('importAssetsFile');
+  const summary = document.getElementById('importPreviewSummary');
+  const commitSummary = document.getElementById('importCommitSummary');
+  const commitBtn = document.getElementById('commitImportBtn');
+  if (!fileInput || !fileInput.files || !fileInput.files.length) {
+    showMessage('Please choose a CSV or XLSX file.', 'warning');
+    return;
+  }
+  const file = fileInput.files[0];
+  const name = String(file.name || '');
+  const lower = name.toLowerCase();
+
+  if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+    showMessage('XLSX preview is not enabled yet. Please use CSV for now.', 'warning');
+    return;
+  }
+  const text = await file.text();
+  try {
+    const preview = await postInventoryJson('/assets/import/preview', {
+      filename: name,
+      fileContent: text,
+    });
+    importPreviewCache = preview;
+    renderImportPreviewRows(preview.normalizedRows || []);
+    if (summary) {
+      summary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
+    }
+    if (commitSummary) {
+      const msg = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
+      commitSummary.textContent = msg || '';
+      commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
+    }
+    if (commitBtn) commitBtn.disabled = !preview.canImport;
+  } catch (error) {
+    showMessage(error.message || 'Failed to preview import.', 'error');
+  }
+};
+
+window.commitImportAssets = async () => {
+  const summary = document.getElementById('importCommitSummary');
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows)) {
+    showMessage('Run preview first.', 'warning');
+    return;
+  }
+  if (!importPreviewCache.canImport) {
+    showMessage('Import cannot proceed while preview has errors.', 'error');
+    return;
+  }
+  try {
+    const filename = importPreviewCache.filename || (document.getElementById('importAssetsFile')?.files?.[0]?.name || 'import.csv');
+    const result = await postInventoryJson('/assets/import/commit', {
+      filename,
+      normalizedRows: importPreviewCache.normalizedRows,
+    });
+    if (summary) {
+      summary.textContent = `Import complete. Assets: ${result.createdAssets || 0}, Components: ${result.createdComponents || 0}, Spare Stock: ${result.createdSpareStockItems || 0}, Skipped: ${(result.skippedRows || []).length}.`;
+      summary.className = `small mt-2 ${result.success ? 'text-success' : 'text-danger'}`;
+    }
+    showMessage(result.success ? 'Import completed successfully.' : 'Import finished with errors.', result.success ? 'success' : 'warning');
+    await loadAssets();
+    await window.loadSpareStock();
+    if (cmdbState.assetId) {
+      await refreshCmdbModal(cmdbState.assetId, cmdbState.activeTab || 'components');
+    }
+  } catch (error) {
+    showMessage(error.message || 'Failed to commit import.', 'error');
   }
 };
 

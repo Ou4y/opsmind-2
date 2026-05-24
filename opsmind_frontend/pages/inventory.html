@@ -145,6 +145,10 @@
                         <i class="bi bi-box-seam"></i> Spare Stock
                     </button>
 
+                    <button class="btn btn-outline-secondary mb-3" id="openImportAssetsBtn">
+                        <i class="bi bi-upload"></i> Import Assets
+                    </button>
+
                     <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
                         <i class="bi bi-plus-lg"></i> Create Asset
                     </button>
@@ -230,6 +234,61 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <div class="modal fade" id="importAssetsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">Import Assets (CSV/XLSX)</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info py-2">
+                        <div class="fw-semibold">Template columns</div>
+                        <div class="small">Record Type, Asset Name, Category, Asset Type, Brand, Model, Serial Number, Asset Tag, Manufacturer Part Number, Location, Department, Status, Lifecycle Status, Parent Asset Tag, Component Type, Condition, Quantity, Minimum Stock Level, Reorder Point, Vendor, Purchase Date, Warranty Start Date, Warranty End Date, Purchase Cost, Assigned To, Notes.</div>
+                    </div>
+                    <div class="alert alert-secondary py-2 small">
+                        PDF assisted import coming later. PDF imports will require AI extraction and manual review before committing.
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-8">
+                            <input type="file" id="importAssetsFile" class="form-control" accept=".csv,.xlsx,.xls" />
+                        </div>
+                        <div class="col-md-4 d-flex gap-2">
+                            <button type="button" class="btn btn-outline-secondary w-100" id="downloadImportTemplateBtn">Copy Template</button>
+                            <button type="button" class="btn btn-primary w-100" id="previewImportBtn">Preview</button>
+                        </div>
+                    </div>
+                    <div id="importPreviewSummary" class="small text-muted mb-2">No preview yet.</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Row</th>
+                                    <th>Record Type</th>
+                                    <th>Name</th>
+                                    <th>Serial</th>
+                                    <th>Asset Tag</th>
+                                    <th>Parent Asset Tag</th>
+                                    <th>Proposed Action</th>
+                                    <th>Status</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody id="importPreviewTableBody">
+                                <tr><td colspan="9" class="text-muted text-center py-4">Upload a file and click Preview.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="importCommitSummary" class="small mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-success" id="commitImportBtn" disabled>Confirm Import</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="modal fade" id="spareStockModal" tabindex="-1" aria-hidden="true">
