@@ -141,6 +141,10 @@
                         <i class="bi bi-trash3"></i> Delete All
                     </button>
 
+                    <button class="btn btn-outline-primary mb-3" id="openSpareStockBtn">
+                        <i class="bi bi-box-seam"></i> Spare Stock
+                    </button>
+
                     <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
                         <i class="bi bi-plus-lg"></i> Create Asset
                     </button>
@@ -169,6 +173,22 @@
                             </select>
                         </div>
                         <div class="col-md-2">
+                            <select id="filterLifecycle" class="form-select form-select-sm" onchange="syncFilters()">
+                                <option value="all">All Lifecycle</option>
+                                <option value="in_stock">In Stock</option>
+                                <option value="assigned">Assigned</option>
+                                <option value="in_use">In Use</option>
+                                <option value="under_maintenance">Under Maintenance</option>
+                                <option value="pending_repair">Pending Repair</option>
+                                <option value="in_transit">In Transit</option>
+                                <option value="reserved">Reserved</option>
+                                <option value="retired">Retired</option>
+                                <option value="disposed">Disposed</option>
+                                <option value="lost_stolen">Lost/Stolen</option>
+                                <option value="eol_expired">EOL / Expired</option>
+                            </select>
+                        </div>
+                        <div class="col-md-1">
                             <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()">Reset</button>
                         </div>
                     </div>
@@ -212,6 +232,59 @@
         </main>
     </div>
 
+    <div class="modal fade" id="spareStockModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">Spare Stock</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+                        <div class="input-group input-group-sm" style="max-width: 360px;">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" id="spareStockSearchInput" class="form-control" placeholder="Search part/type/part no..." />
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-warning" id="spareStockLowOnlyBtn">
+                                <i class="bi bi-exclamation-triangle"></i> Low Stock
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="spareStockRefreshBtn">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                            <button type="button" class="btn btn-sm btn-primary" id="spareStockAddBtn">
+                                <i class="bi bi-plus-lg"></i> Add Stock Item
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Part Name</th>
+                                    <th>Type</th>
+                                    <th>Brand/Model</th>
+                                    <th>Part No.</th>
+                                    <th>Quantity</th>
+                                    <th>Min Stock</th>
+                                    <th>Location</th>
+                                    <th>Compatible With</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="spareStockTableBody">
+                                <tr><td colspan="9" class="text-muted text-center py-4">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="receiveOrderModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-scrollable inventory-create-modal-dialog">
             <div class="modal-content inventory-create-modal-content">
@@ -232,6 +305,25 @@
                                     <div class="mb-2">
                                         <label for="assetQuantity" class="form-label">Quantity</label>
                                         <input type="number" id="assetQuantity" placeholder="1" class="form-control" min="1" required />
+                                    </div>
+                                    <div class="mb-2">
+                                        <label for="assetSerialNumber" class="form-label">Serial Number</label>
+                                        <input type="text" id="assetSerialNumber" placeholder="Manufacturer serial number" class="form-control" />
+                                        <div class="form-text small">For quantity > 1, use the multi-serial field below.</div>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label for="assetSerialNumbers" class="form-label">Serial Numbers (Bulk)</label>
+                                        <textarea id="assetSerialNumbers" class="form-control" rows="3" placeholder="One serial per line for bulk create"></textarea>
+                                    </div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label for="assetTag" class="form-label">Asset Tag</label>
+                                            <input type="text" id="assetTag" placeholder="Optional internal asset tag" class="form-control" />
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="assetManufacturerPartNumber" class="form-label">Manufacturer Part Number</label>
+                                            <input type="text" id="assetManufacturerPartNumber" placeholder="Optional part number" class="form-control" />
+                                        </div>
                                     </div>
                                     <div class="row g-2 mb-2">
                                         <div class="col-md-6">
@@ -363,6 +455,82 @@
                                         </div>
                                         <div id="assetTrackHoursHint" class="form-text small text-muted mb-0">When enabled, telemetry starts in waiting-for-signal mode until a real signal arrives.</div>
                                     </div>
+                                    <div class="accordion mt-3" id="assetAdvancedAccordion">
+                                        <div class="accordion-item">
+                                            <h2 class="accordion-header" id="assetPurchaseHeading">
+                                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#assetPurchaseCollapse" aria-expanded="false" aria-controls="assetPurchaseCollapse">
+                                                    Purchase & Warranty
+                                                </button>
+                                            </h2>
+                                            <div id="assetPurchaseCollapse" class="accordion-collapse collapse" aria-labelledby="assetPurchaseHeading" data-bs-parent="#assetAdvancedAccordion">
+                                                <div class="accordion-body p-2">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <label for="assetVendor" class="form-label">Vendor</label>
+                                                            <input type="text" id="assetVendor" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseDate" class="form-label">Purchase Date</label>
+                                                            <input type="date" id="assetPurchaseDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseCost" class="form-label">Purchase Cost</label>
+                                                            <input type="number" id="assetPurchaseCost" class="form-control" min="0" step="0.01" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetInvoiceNumber" class="form-label">Invoice Number</label>
+                                                            <input type="text" id="assetInvoiceNumber" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseOrderNumber" class="form-label">PO Number</label>
+                                                            <input type="text" id="assetPurchaseOrderNumber" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetWarrantyStartDate" class="form-label">Warranty Start</label>
+                                                            <input type="date" id="assetWarrantyStartDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetWarrantyEndDate" class="form-label">Warranty End</label>
+                                                            <input type="date" id="assetWarrantyEndDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetReplacementCost" class="form-label">Replacement Cost</label>
+                                                            <input type="number" id="assetReplacementCost" class="form-control" min="0" step="0.01" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="accordion-item">
+                                            <h2 class="accordion-header" id="assetAssignmentHeading">
+                                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#assetAssignmentCollapse" aria-expanded="false" aria-controls="assetAssignmentCollapse">
+                                                    Assignment & Custody
+                                                </button>
+                                            </h2>
+                                            <div id="assetAssignmentCollapse" class="accordion-collapse collapse" aria-labelledby="assetAssignmentHeading" data-bs-parent="#assetAdvancedAccordion">
+                                                <div class="accordion-body p-2">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedToName" class="form-label">Assigned To</label>
+                                                            <input type="text" id="assetAssignedToName" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedToUserId" class="form-label">Assigned User ID</label>
+                                                            <input type="text" id="assetAssignedToUserId" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedDepartment" class="form-label">Assigned Department</label>
+                                                            <input type="text" id="assetAssignedDepartment" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetExpectedReturnDate" class="form-label">Expected Return Date</label>
+                                                            <input type="date" id="assetExpectedReturnDate" class="form-control" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -390,6 +558,10 @@
                     <form id="editSpecsForm">
                         <input type="hidden" id="editSpecTargetId">
                         <div class="mb-3">
+                            <label class="form-label fw-bold small">Serial Number</label>
+                            <input id="editSpecSerialNumber" class="form-control mb-2" placeholder="Update serial number (single asset edit)" />
+                            <label class="form-label fw-bold small">Asset Tag</label>
+                            <input id="editSpecAssetTag" class="form-control mb-2" placeholder="Update asset tag (single asset edit)" />
                             <label class="form-label fw-bold small">Specifications (Key: Value)</label>
                             <textarea id="editSpecTextArea" class="form-control font-monospace" rows="6" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen"></textarea>
                             <div class="form-text small">Update details one per line. Format: <strong>Key: Value</strong></div>
@@ -451,6 +623,7 @@
                             <thead class="table-light sticky-top">
                                 <tr>
                                     <th class="ps-4">Unique ID</th>
+                                    <th>Serial</th>
                                     <th>Status</th>
                                     <th>Location</th>
                                     <th>Department</th>
