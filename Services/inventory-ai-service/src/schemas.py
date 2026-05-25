@@ -263,6 +263,145 @@ class EolExplanationResponse(BaseModel):
     llm_used: bool = False
 
 
+class AssetHealthSummaryRequest(BaseModel):
+    asset: dict = Field(default_factory=dict)
+    eol_assessment: dict = Field(default_factory=dict, validation_alias=AliasChoices("eol_assessment", "eolAssessment"))
+    include_related: bool = Field(True, validation_alias=AliasChoices("include_related", "includeRelated"))
+    history_events: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("history_events", "historyEvents"))
+    components: list[dict] = Field(default_factory=list)
+    maintenance_count: int = Field(0, ge=0, validation_alias=AliasChoices("maintenance_count", "maintenanceCount"))
+
+    model_config = {"extra": "allow"}
+
+
+class AssetHealthSummaryResponse(BaseModel):
+    summary: str
+    risks: list[str] = Field(default_factory=list)
+    recent_changes: list[str] = Field(default_factory=list)
+    component_issues: list[str] = Field(default_factory=list)
+    warranty_eol_concerns: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+
+
+class InventoryAssistantRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    deterministic_result: dict = Field(default_factory=dict, validation_alias=AliasChoices("deterministic_result", "deterministicResult"))
+    context_summary: dict = Field(default_factory=dict, validation_alias=AliasChoices("context_summary", "contextSummary"))
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryAssistantResponse(BaseModel):
+    answer: str
+    suggested_actions: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+
+
+class ImportColumnMappingRequest(BaseModel):
+    filename: Optional[str] = None
+    headers: list[str] = Field(default_factory=list)
+    sample_rows: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("sample_rows", "sampleRows"))
+    expected_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("expected_fields", "expectedFields"))
+    deterministic_mappings: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("deterministic_mappings", "deterministicMappings"))
+
+    model_config = {"extra": "allow"}
+
+
+class ImportColumnMappingResponse(BaseModel):
+    mappings: list[dict] = Field(default_factory=list)
+    unmapped_columns: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+
+
+class MissingDataDetectorRequest(BaseModel):
+    report: dict = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+class MissingDataDetectorResponse(BaseModel):
+    summary: str
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class MaintenanceRecommendationRequest(BaseModel):
+    recommendations: list[dict] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
+class MaintenanceRecommendationResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class ProcurementRecommendationRequest(BaseModel):
+    recommended_purchases: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("recommended_purchases", "recommendedPurchases"))
+
+    model_config = {"extra": "allow"}
+
+
+class ProcurementRecommendationResponse(BaseModel):
+    summary: str
+    missing_data: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class DuplicateExplanationRequest(BaseModel):
+    duplicate_groups: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("duplicate_groups", "duplicateGroups"))
+    summary: str = ""
+
+    model_config = {"extra": "allow"}
+
+
+class DuplicateExplanationResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class NaturalLanguageInventorySearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    interpreted_filters: dict = Field(default_factory=dict, validation_alias=AliasChoices("interpreted_filters", "interpretedFilters"))
+    candidate_results: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("candidate_results", "candidateResults"))
+    fallback_answer: str = Field("", validation_alias=AliasChoices("fallback_answer", "fallbackAnswer"))
+
+    model_config = {"extra": "allow"}
+
+
+class NaturalLanguageInventorySearchResponse(BaseModel):
+    answer: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class DocumentExtractionRequest(BaseModel):
+    filename: Optional[str] = None
+    document_text: str = Field("", validation_alias=AliasChoices("document_text", "documentText"))
+    deterministic_rows: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("deterministic_rows", "deterministicRows"))
+
+    model_config = {"extra": "allow"}
+
+
+class DocumentExtractionResponse(BaseModel):
+    source_document_summary: str
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    extracted_rows: list[dict] = Field(default_factory=list)
+    llm_used: bool = False
+
+
 class HealthResponse(BaseModel):
     """Schema for the health-check endpoint."""
 

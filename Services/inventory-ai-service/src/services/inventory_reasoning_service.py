@@ -14,15 +14,42 @@ import anyio
 from src.config import AppSettings
 from src.llm.client_protocol import LLMClientProtocol
 from src.llm.prompts import (
+    ASSET_HEALTH_SUMMARY_PROMPT,
+    DOCUMENT_EXTRACTION_PROMPT,
+    DUPLICATE_EXPLANATION_PROMPT,
     EOL_EXPLANATION_PROMPT,
+    IMPORT_COLUMN_MAPPING_PROMPT,
+    INVENTORY_ASSISTANT_PROMPT,
+    MAINTENANCE_RECOMMENDATION_PROMPT,
+    MISSING_DATA_DETECTOR_PROMPT,
+    NATURAL_LANGUAGE_SEARCH_PROMPT,
+    PROCUREMENT_RECOMMENDATION_PROMPT,
     SPEC_SOURCE_EXTRACTION_PROMPT,
     SPEC_NORMALIZATION_PROMPT,
     SPEC_SANITY_PROMPT,
 )
 from src.llm.validators import clamp_confidence
 from src.schemas import (
+    AssetHealthSummaryRequest,
+    AssetHealthSummaryResponse,
+    DocumentExtractionRequest,
+    DocumentExtractionResponse,
+    DuplicateExplanationRequest,
+    DuplicateExplanationResponse,
     EolExplanationRequest,
     EolExplanationResponse,
+    ImportColumnMappingRequest,
+    ImportColumnMappingResponse,
+    InventoryAssistantRequest,
+    InventoryAssistantResponse,
+    MaintenanceRecommendationRequest,
+    MaintenanceRecommendationResponse,
+    MissingDataDetectorRequest,
+    MissingDataDetectorResponse,
+    NaturalLanguageInventorySearchRequest,
+    NaturalLanguageInventorySearchResponse,
+    ProcurementRecommendationRequest,
+    ProcurementRecommendationResponse,
     SourceSpecExtractionRequest,
     SourceSpecExtractionResponse,
     SpecNormalizationRequest,
@@ -567,6 +594,495 @@ class InventoryReasoningService:
         return EolExplanationResponse(
             short_user_explanation=short_user,
             technical_explanation=technical,
+            llm_used=llm_used,
+        )
+
+    async def summarize_asset_health(self, payload: AssetHealthSummaryRequest) -> AssetHealthSummaryResponse:
+        asset = payload.asset or {}
+        eol = payload.eol_assessment or {}
+        events = list(payload.history_events or [])
+        components = list(payload.components or [])
+
+        asset_name = str(asset.get("name") or "Asset")
+        asset_id = str(asset.get("customId") or asset.get("assetId") or "").strip()
+        lifecycle = str(asset.get("lifecycleStatus") or "unknown").replace("_", " ").lower()
+        eol_status = str(eol.get("status") or "unknown").replace("_", " ").lower()
+        eol_confidence = float(eol.get("confidence") or 0.0)
+        eol_confidence_pct = int(round(max(0.0, min(1.0, eol_confidence)) * 100))
+
+        missing_data: list[str] = []
+        if not asset.get("purchaseDate"):
+            missing_data.append("purchaseDate")
+        if not asset.get("warrantyEndDate"):
+            missing_data.append("warrantyEndDate")
+        if not asset.get("serialNumber"):
+            missing_data.append("serialNumber")
+        if not events:
+            missing_data.append("historyEvents")
+        telemetry_enabled = bool((asset.get("specifications") or {}).get("telemetryEnabled"))
+        if not telemetry_enabled:
+            missing_data.append("telemetrySignals")
+
+        recent_changes = []
+        for row in events[:8]:
+            event_label = str(row.get("event") or row.get("eventType") or "Event").strip()
+            source_name = str(row.get("sourceItemName") or row.get("sourceItemCustomId") or "Related item").strip()
+            reason = str(row.get("reason") or "").strip()
+            line = f"{source_name}: {event_label}"
+            if reason:
+                line += f" — Reason: {reason}"
+            recent_changes.append(line)
+
+        component_issues = []
+        for row in events:
+            source_type = str(row.get("sourceItemType") or "").strip().lower()
+            event_key = str(row.get("eventType") or row.get("event") or "").strip().lower()
+            if source_type == "component" and any(token in event_key for token in ("fail", "repair", "replace", "retire", "dispose")):
+                source_name = str(row.get("sourceItemName") or "Component").strip()
+                component_issues.append(f"{source_name}: {str(row.get('event') or row.get('eventType') or 'issue')}")
+        component_issues = component_issues[:8]
+
+        warranty_eol_concerns = []
+        if asset.get("warrantyEndDate"):
+            warranty_eol_concerns.append(f"Warranty end date: {asset.get('warrantyEndDate')}")
+        else:
+            warranty_eol_concerns.append("Warranty end date is missing.")
+        warranty_eol_concerns.append(f"EOL status: {eol_status} ({eol_confidence_pct}% confidence)")
+        if str(eol.get("reason") or "").strip():
+            warranty_eol_concerns.append(f"EOL reason: {str(eol.get('reason') or '').strip()}")
+
+        risks: list[str] = []
+        if eol_status in {"at risk", "expired", "eol expired"}:
+            risks.append(f"EOL risk is elevated ({eol_status}).")
+        if component_issues:
+            risks.append(f"{len(component_issues)} component issue event(s) were detected.")
+        if missing_data:
+            risks.append("Some lifecycle and telemetry fields are missing, reducing confidence.")
+
+        recommendations: list[str] = []
+        if not asset.get("warrantyEndDate"):
+            recommendations.append("Add warranty end date to improve lifecycle planning.")
+        if not asset.get("purchaseDate"):
+            recommendations.append("Backfill purchase date for stronger EOL confidence.")
+        if component_issues:
+            recommendations.append("Schedule preventive maintenance for repeated component issues.")
+        if payload.maintenance_count <= 0:
+            recommendations.append("Add maintenance records for better health traceability.")
+        if not recommendations:
+            recommendations.append("Continue periodic monitoring and maintenance reviews.")
+
+        confidence = "high"
+        if len(missing_data) >= 4:
+            confidence = "low"
+        elif len(missing_data) >= 2:
+            confidence = "medium"
+
+        summary = (
+            f"{asset_name}{f' ({asset_id})' if asset_id else ''} is currently {lifecycle}. "
+            f"EOL status is {eol_status} with {eol_confidence_pct}% confidence. "
+            f"{'Recent component issues were detected.' if component_issues else 'No major component failure trend was detected.'}"
+        )
+
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "risks": {"type": "array", "items": {"type": "string"}},
+                "recent_changes": {"type": "array", "items": {"type": "string"}},
+                "component_issues": {"type": "array", "items": {"type": "string"}},
+                "warranty_eol_concerns": {"type": "array", "items": {"type": "string"}},
+                "recommendations": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "summary",
+                "risks",
+                "recent_changes",
+                "component_issues",
+                "warranty_eol_concerns",
+                "recommendations",
+                "confidence",
+                "missing_data",
+            ],
+        }
+        prompt_payload = {
+            "asset": asset,
+            "eol_assessment": eol,
+            "include_related": payload.include_related,
+            "history_events": events[:80],
+            "components": components[:80],
+            "maintenance_count": payload.maintenance_count,
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                ASSET_HEALTH_SUMMARY_PROMPT.format(payload_json=json.dumps(prompt_payload, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            risks = [str(item).strip() for item in (parsed.get("risks") or []) if str(item).strip()] or risks
+            recent_changes = [str(item).strip() for item in (parsed.get("recent_changes") or []) if str(item).strip()] or recent_changes
+            component_issues = [str(item).strip() for item in (parsed.get("component_issues") or []) if str(item).strip()] or component_issues
+            warranty_eol_concerns = [str(item).strip() for item in (parsed.get("warranty_eol_concerns") or []) if str(item).strip()] or warranty_eol_concerns
+            recommendations = [str(item).strip() for item in (parsed.get("recommendations") or []) if str(item).strip()] or recommendations
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+            confidence_candidate = str(parsed.get("confidence") or confidence).strip().lower()
+            if confidence_candidate in {"low", "medium", "high"}:
+                confidence = confidence_candidate
+
+        return AssetHealthSummaryResponse(
+            summary=summary,
+            risks=risks[:12],
+            recent_changes=recent_changes[:12],
+            component_issues=component_issues[:12],
+            warranty_eol_concerns=warranty_eol_concerns[:12],
+            recommendations=recommendations[:12],
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            llm_used=llm_used,
+        )
+
+    @staticmethod
+    def _confidence_label(value: Any, fallback: str = "low") -> str:
+        candidate = str(value or fallback).strip().lower()
+        return candidate if candidate in {"low", "medium", "high"} else fallback
+
+    async def inventory_assistant(self, payload: InventoryAssistantRequest) -> InventoryAssistantResponse:
+        deterministic = payload.deterministic_result or {}
+        answer = str(deterministic.get("answer") or "No deterministic answer was provided.").strip()
+        suggested_actions = [
+            str(item).strip()
+            for item in (deterministic.get("suggestedActions") or deterministic.get("suggested_actions") or [])
+            if str(item).strip()
+        ]
+        confidence = self._confidence_label(deterministic.get("confidence"), "low")
+        missing_data = [
+            str(item).strip()
+            for item in (deterministic.get("missingData") or deterministic.get("missing_data") or [])
+            if str(item).strip()
+        ]
+
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "suggested_actions": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["answer", "suggested_actions", "confidence", "missing_data"],
+        }
+        prompt_payload = {
+            "query": payload.query,
+            "deterministic_result": deterministic,
+            "context_summary": payload.context_summary,
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                INVENTORY_ASSISTANT_PROMPT.format(payload_json=json.dumps(prompt_payload, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            answer = str(parsed.get("answer") or answer).strip() or answer
+            suggested_actions = [
+                str(item).strip() for item in (parsed.get("suggested_actions") or []) if str(item).strip()
+            ] or suggested_actions
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+
+        return InventoryAssistantResponse(
+            answer=answer,
+            suggested_actions=suggested_actions[:12],
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            llm_used=llm_used,
+        )
+
+    async def map_import_columns(self, payload: ImportColumnMappingRequest) -> ImportColumnMappingResponse:
+        mappings = [dict(row) for row in (payload.deterministic_mappings or [])]
+        unmapped = []
+        warnings: list[str] = []
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "mappings": {"type": "array", "items": {"type": "object"}},
+                "unmapped_columns": {"type": "array", "items": {"type": "string"}},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["mappings", "unmapped_columns", "warnings"],
+        }
+        prompt_payload = {
+            "filename": payload.filename,
+            "headers": payload.headers,
+            "sample_rows": payload.sample_rows[:6],
+            "expected_fields": payload.expected_fields,
+            "deterministic_mappings": payload.deterministic_mappings,
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                IMPORT_COLUMN_MAPPING_PROMPT.format(payload_json=json.dumps(prompt_payload, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            parsed_mappings = parsed.get("mappings") or []
+            if isinstance(parsed_mappings, list) and parsed_mappings:
+                mappings = [dict(row) for row in parsed_mappings if isinstance(row, dict)]
+            parsed_unmapped = parsed.get("unmapped_columns") or []
+            if isinstance(parsed_unmapped, list):
+                unmapped = [str(item).strip() for item in parsed_unmapped if str(item).strip()]
+            parsed_warnings = parsed.get("warnings") or []
+            if isinstance(parsed_warnings, list):
+                warnings = [str(item).strip() for item in parsed_warnings if str(item).strip()]
+
+        return ImportColumnMappingResponse(
+            mappings=mappings[:120],
+            unmapped_columns=unmapped[:120],
+            warnings=warnings[:40],
+            llm_used=llm_used,
+        )
+
+    async def detect_missing_inventory_data(self, payload: MissingDataDetectorRequest) -> MissingDataDetectorResponse:
+        report = payload.report or {}
+        summary = f"Detected {int(report.get('totalIssues') or 0)} issue(s), including {int(report.get('criticalIssues') or 0)} critical."
+        recommendations = [
+            str(item).strip()
+            for item in (report.get("recommendations") or [])
+            if str(item).strip()
+        ]
+        confidence = self._confidence_label(report.get("confidence"), "medium")
+        llm_used = False
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "recommendations": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string"},
+            },
+            "required": ["summary", "recommendations", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                MISSING_DATA_DETECTOR_PROMPT.format(payload_json=json.dumps({"report": report}, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            recommendations = [str(item).strip() for item in (parsed.get("recommendations") or []) if str(item).strip()] or recommendations
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+
+        return MissingDataDetectorResponse(
+            summary=summary,
+            recommendations=recommendations[:20],
+            confidence=confidence,
+            llm_used=llm_used,
+        )
+
+    async def maintenance_recommendations(self, payload: MaintenanceRecommendationRequest) -> MaintenanceRecommendationResponse:
+        recs = payload.recommendations or []
+        summary = f"Prepared {len(recs)} maintenance recommendation(s)." if recs else "Not enough data for actionable maintenance recommendations."
+        confidence = "medium" if recs else "low"
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+            },
+            "required": ["summary", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                MAINTENANCE_RECOMMENDATION_PROMPT.format(payload_json=json.dumps({"recommendations": recs[:80]}, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+        return MaintenanceRecommendationResponse(summary=summary, confidence=confidence, llm_used=llm_used)
+
+    async def procurement_recommendations(self, payload: ProcurementRecommendationRequest) -> ProcurementRecommendationResponse:
+        recs = payload.recommended_purchases or []
+        summary = f"Prepared {len(recs)} procurement recommendation(s)." if recs else "No urgent procurement recommendations from current deterministic inputs."
+        confidence = "medium" if recs else "low"
+        missing_data: list[str] = []
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string"},
+            },
+            "required": ["summary", "missing_data", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                PROCUREMENT_RECOMMENDATION_PROMPT.format(payload_json=json.dumps({"recommended_purchases": recs[:80]}, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()]
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+
+        return ProcurementRecommendationResponse(
+            summary=summary,
+            missing_data=missing_data[:20],
+            confidence=confidence,
+            llm_used=llm_used,
+        )
+
+    async def explain_duplicate_assets(self, payload: DuplicateExplanationRequest) -> DuplicateExplanationResponse:
+        groups = payload.duplicate_groups or []
+        summary = payload.summary or (
+            f"Detected {len(groups)} duplicate/similarity group(s)." if groups else "No likely duplicates detected."
+        )
+        confidence = "medium" if groups else "low"
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+            },
+            "required": ["summary", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                DUPLICATE_EXPLANATION_PROMPT.format(payload_json=json.dumps({"duplicate_groups": groups[:80], "summary": payload.summary}, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+        return DuplicateExplanationResponse(summary=summary, confidence=confidence, llm_used=llm_used)
+
+    async def natural_language_inventory_search(self, payload: NaturalLanguageInventorySearchRequest) -> NaturalLanguageInventorySearchResponse:
+        answer = payload.fallback_answer or "No deterministic answer was provided."
+        confidence = "medium" if payload.candidate_results else "low"
+        llm_used = False
+        schema = {
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "confidence": {"type": "string"},
+            },
+            "required": ["answer", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                NATURAL_LANGUAGE_SEARCH_PROMPT.format(payload_json=json.dumps({
+                    "query": payload.query,
+                    "interpreted_filters": payload.interpreted_filters,
+                    "candidate_results": payload.candidate_results[:80],
+                    "fallback_answer": payload.fallback_answer,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        if isinstance(parsed, dict):
+            llm_used = True
+            answer = str(parsed.get("answer") or answer).strip() or answer
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+        return NaturalLanguageInventorySearchResponse(answer=answer, confidence=confidence, llm_used=llm_used)
+
+    async def extract_assets_from_document_text(self, payload: DocumentExtractionRequest) -> DocumentExtractionResponse:
+        text = str(payload.document_text or "").strip()
+        deterministic_rows = payload.deterministic_rows or []
+        summary = f"Document text processed with {len(deterministic_rows)} deterministic candidate row(s)."
+        confidence = 0.55 if deterministic_rows else 0.35
+        warnings: list[str] = []
+        missing_fields: list[str] = []
+        extracted_rows = [dict(row) for row in deterministic_rows[:250]]
+        llm_used = False
+
+        if not text:
+            warnings.append("Document text is empty.")
+            return DocumentExtractionResponse(
+                source_document_summary=summary,
+                confidence=0.2,
+                warnings=warnings,
+                missing_fields=["documentText"],
+                extracted_rows=[],
+                llm_used=False,
+            )
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "source_document_summary": {"type": "string"},
+                "confidence": {"type": "number"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "missing_fields": {"type": "array", "items": {"type": "string"}},
+                "extracted_rows": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["source_document_summary", "confidence", "warnings", "missing_fields", "extracted_rows"],
+        }
+        parsed = None
+        if self.llm.enabled and len(text) <= 50000:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                DOCUMENT_EXTRACTION_PROMPT.format(payload_json=json.dumps({
+                    "filename": payload.filename,
+                    "document_text": text[:50000],
+                    "deterministic_rows": deterministic_rows[:80],
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("source_document_summary") or summary).strip() or summary
+            parsed_confidence = float(parsed.get("confidence") or confidence)
+            confidence = max(0.0, min(1.0, parsed_confidence))
+            warnings = [str(item).strip() for item in (parsed.get("warnings") or []) if str(item).strip()] or warnings
+            missing_fields = [str(item).strip() for item in (parsed.get("missing_fields") or []) if str(item).strip()] or missing_fields
+            parsed_rows = parsed.get("extracted_rows") or []
+            if isinstance(parsed_rows, list) and parsed_rows:
+                extracted_rows = [dict(row) for row in parsed_rows if isinstance(row, dict)][:250]
+
+        return DocumentExtractionResponse(
+            source_document_summary=summary,
+            confidence=max(0.0, min(1.0, confidence)),
+            warnings=warnings[:30],
+            missing_fields=missing_fields[:20],
+            extracted_rows=extracted_rows[:250],
             llm_used=llm_used,
         )
 

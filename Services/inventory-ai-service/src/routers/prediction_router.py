@@ -9,10 +9,28 @@ from fastapi import APIRouter, HTTPException, Request
 
 from src.models import get_store
 from src.schemas import (
+    AssetHealthSummaryRequest,
+    AssetHealthSummaryResponse,
     AssetLifespanRequest,
     AssetLifespanResponse,
+    DocumentExtractionRequest,
+    DocumentExtractionResponse,
+    DuplicateExplanationRequest,
+    DuplicateExplanationResponse,
     EolExplanationRequest,
     EolExplanationResponse,
+    ImportColumnMappingRequest,
+    ImportColumnMappingResponse,
+    InventoryAssistantRequest,
+    InventoryAssistantResponse,
+    MaintenanceRecommendationRequest,
+    MaintenanceRecommendationResponse,
+    MissingDataDetectorRequest,
+    MissingDataDetectorResponse,
+    NaturalLanguageInventorySearchRequest,
+    NaturalLanguageInventorySearchResponse,
+    ProcurementRecommendationRequest,
+    ProcurementRecommendationResponse,
     SourceSpecExtractionRequest,
     SourceSpecExtractionResponse,
     AssetSpecFeedbackRequest,
@@ -208,6 +226,207 @@ async def explain_eol_assessment(payload: EolExplanationRequest, request: Reques
             "inventory_ai_endpoint_seconds",
             time.perf_counter() - started,
             labels={"endpoint": "explain_eol_assessment"},
+        )
+
+
+@router.post(
+    "/summarize-asset-health",
+    response_model=AssetHealthSummaryResponse,
+    summary="Summarize asset health using combined lifecycle/history context",
+)
+async def summarize_asset_health(payload: AssetHealthSummaryRequest, request: Request) -> AssetHealthSummaryResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.summarize_asset_health(payload)
+    except Exception as exc:
+        logger.exception("Asset health summary helper failed")
+        raise HTTPException(status_code=500, detail=f"Asset health summary error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "summarize_asset_health"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "summarize_asset_health"},
+        )
+
+
+@router.post(
+    "/inventory-assistant",
+    response_model=InventoryAssistantResponse,
+    summary="Answer inventory assistant queries using deterministic context + LLM explanation",
+)
+async def inventory_assistant(payload: InventoryAssistantRequest, request: Request) -> InventoryAssistantResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.inventory_assistant(payload)
+    except Exception as exc:
+        logger.exception("Inventory assistant helper failed")
+        raise HTTPException(status_code=500, detail=f"Inventory assistant error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "inventory_assistant"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "inventory_assistant"},
+        )
+
+
+@router.post(
+    "/map-import-columns",
+    response_model=ImportColumnMappingResponse,
+    summary="Suggest import column mappings from messy headers",
+)
+async def map_import_columns(payload: ImportColumnMappingRequest, request: Request) -> ImportColumnMappingResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.map_import_columns(payload)
+    except Exception as exc:
+        logger.exception("Import column mapping helper failed")
+        raise HTTPException(status_code=500, detail=f"Import mapping error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "map_import_columns"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "map_import_columns"},
+        )
+
+
+@router.post(
+    "/detect-missing-inventory-data",
+    response_model=MissingDataDetectorResponse,
+    summary="Explain missing-data/data-quality findings",
+)
+async def detect_missing_inventory_data(payload: MissingDataDetectorRequest, request: Request) -> MissingDataDetectorResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.detect_missing_inventory_data(payload)
+    except Exception as exc:
+        logger.exception("Missing data detector helper failed")
+        raise HTTPException(status_code=500, detail=f"Missing-data helper error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "detect_missing_inventory_data"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "detect_missing_inventory_data"},
+        )
+
+
+@router.post(
+    "/maintenance-recommendations",
+    response_model=MaintenanceRecommendationResponse,
+    summary="Summarize maintenance recommendation candidates",
+)
+async def maintenance_recommendations(payload: MaintenanceRecommendationRequest, request: Request) -> MaintenanceRecommendationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.maintenance_recommendations(payload)
+    except Exception as exc:
+        logger.exception("Maintenance recommendations helper failed")
+        raise HTTPException(status_code=500, detail=f"Maintenance recommendations error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "maintenance_recommendations"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "maintenance_recommendations"},
+        )
+
+
+@router.post(
+    "/procurement-recommendations",
+    response_model=ProcurementRecommendationResponse,
+    summary="Summarize procurement recommendation candidates",
+)
+async def procurement_recommendations(payload: ProcurementRecommendationRequest, request: Request) -> ProcurementRecommendationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.procurement_recommendations(payload)
+    except Exception as exc:
+        logger.exception("Procurement recommendations helper failed")
+        raise HTTPException(status_code=500, detail=f"Procurement recommendations error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "procurement_recommendations"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "procurement_recommendations"},
+        )
+
+
+@router.post(
+    "/explain-duplicate-assets",
+    response_model=DuplicateExplanationResponse,
+    summary="Explain duplicate detection groups",
+)
+async def explain_duplicate_assets(payload: DuplicateExplanationRequest, request: Request) -> DuplicateExplanationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.explain_duplicate_assets(payload)
+    except Exception as exc:
+        logger.exception("Duplicate explanation helper failed")
+        raise HTTPException(status_code=500, detail=f"Duplicate explanation error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "explain_duplicate_assets"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "explain_duplicate_assets"},
+        )
+
+
+@router.post(
+    "/natural-language-inventory-search",
+    response_model=NaturalLanguageInventorySearchResponse,
+    summary="Explain NL inventory search results",
+)
+async def natural_language_inventory_search(
+    payload: NaturalLanguageInventorySearchRequest,
+    request: Request,
+) -> NaturalLanguageInventorySearchResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.natural_language_inventory_search(payload)
+    except Exception as exc:
+        logger.exception("Natural language inventory search helper failed")
+        raise HTTPException(status_code=500, detail=f"Natural language inventory search error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "natural_language_inventory_search"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "natural_language_inventory_search"},
+        )
+
+
+@router.post(
+    "/extract-assets-from-document-text",
+    response_model=DocumentExtractionResponse,
+    summary="Extract candidate inventory rows from document text for assisted import",
+)
+async def extract_assets_from_document_text(payload: DocumentExtractionRequest, request: Request) -> DocumentExtractionResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.extract_assets_from_document_text(payload)
+    except Exception as exc:
+        logger.exception("Document extraction helper failed")
+        raise HTTPException(status_code=500, detail=f"Document extraction error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "extract_assets_from_document_text"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "extract_assets_from_document_text"},
         )
 
 

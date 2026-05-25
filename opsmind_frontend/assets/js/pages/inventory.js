@@ -9,6 +9,11 @@ let BUILDINGS = [];
 let DEPARTMENTS = [];
 let ASSET_TYPES = [];
 let EOL_METRICS = {};
+let COMPONENT_TYPE_REGISTRY_BY_PARENT = {};
+let ACCESSORY_TYPES = [];
+let CONSUMABLE_TYPES = [];
+let SPARE_STOCK_TYPES = [];
+let LICENSE_TYPES = [];
 
 let selectedAssetCustomId = null;
 let currentAssets = [];
@@ -33,16 +38,61 @@ let specVerificationSnapshot = {
   metrics: null
 };
 let activeDetailsGroupName = null;
+let activeDetailsContext = null;
 let bulkSpecReviewContext = null;
 let bulkSpecActionInFlight = false;
 let spareStockItemsCache = [];
 let spareStockLowOnly = false;
+let currentInventoryView = 'parents';
+const INVENTORY_VIEWS = ['parents', 'components', 'accessories', 'consumables', 'spare_stock', 'licenses'];
+const INVENTORY_VIEW_BUTTON_IDS = {
+  parents: 'inventoryParentAssetsViewBtn',
+  components: 'inventoryComponentsViewBtn',
+  accessories: 'inventoryAccessoriesViewBtn',
+  consumables: 'inventoryConsumablesViewBtn',
+  spare_stock: 'inventorySpareStockViewBtn',
+  licenses: 'inventoryLicensesViewBtn',
+};
 const CMDB_MODAL_ID = 'inventoryCmdbModal';
+const GROUP_CMDB_MODAL_ID = 'inventoryGroupCmdbModal';
 let cmdbState = {
   assetId: null,
   activeTab: 'components',
 };
+let groupCmdbState = {
+  groupName: '',
+  activeTab: 'components',
+  selectedAssetIds: [],
+  searchText: '',
+};
 let importPreviewCache = null;
+const INVENTORY_GROUP_PAGE_SIZE = 50;
+let inventoryGroupRenderLimit = INVENTORY_GROUP_PAGE_SIZE;
+let inventoryPageState = {
+  page: 1,
+  pageSize: 50,
+  total: 0,
+  totalPages: 1,
+};
+let transferSelectionState = {
+  targetAssetIds: [],
+  isBulk: false,
+};
+let searchDebounceTimer = null;
+let historyViewState = {
+  assetId: null,
+  includeRelated: true,
+};
+let inventoryAiState = {
+  mode: 'assistant',
+};
+let inventoryAiChatState = {
+  open: false,
+  messages: [],
+  loading: false,
+  status: 'gemma',
+};
+let importAiHeaderMappings = null;
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -226,6 +276,64 @@ function displayLifecycleStatus(value) {
     eol_expired: 'EOL / Expired'
   };
   return labels[normalized] || (normalized ? normalized.replace(/_/g, ' ') : 'In Stock');
+}
+
+function populateAssetTypeSelectOptions() {
+  const select = document.getElementById('assetType');
+  if (!select) return;
+  const entries = Array.isArray(ASSET_TYPES) ? ASSET_TYPES : [];
+  if (!entries.length) return;
+
+  const currentValue = String(select.value || '').trim();
+  const grouped = new Map();
+  entries.forEach((entry) => {
+    const category = String(entry?.category || 'Other').trim() || 'Other';
+    if (!grouped.has(category)) grouped.set(category, []);
+    grouped.get(category).push(entry);
+  });
+
+  const html = ['<option value="">Select Asset Type</option>'];
+  grouped.forEach((items, category) => {
+    html.push(`<optgroup label="${UI.escapeHTML(category)}">`);
+    items.forEach((entry) => {
+      const value = String(entry?.value || '').trim();
+      const label = String(entry?.label || value).trim();
+      if (!value) return;
+      html.push(`<option value="${UI.escapeHTML(value)}" data-registry-key="${UI.escapeHTML(String(entry?.registryKey || ''))}" data-registry-label="${UI.escapeHTML(label)}">${UI.escapeHTML(label)}</option>`);
+    });
+    html.push('</optgroup>');
+  });
+
+  select.innerHTML = html.join('');
+  if (currentValue && Array.from(select.options).some((opt) => opt.value === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function normalizeInventoryView(value) {
+  const normalizedRaw = String(value || '').trim().toLowerCase();
+  const normalized = normalizedRaw === 'spare_parts' ? 'spare_stock' : normalizedRaw;
+  return INVENTORY_VIEWS.includes(normalized) ? normalized : 'parents';
+}
+
+function getAssetCategoryKey(asset) {
+  return String(asset?.category || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function isAccessoryAsset(asset) {
+  return getAssetCategoryKey(asset) === 'accessory';
+}
+
+function isConsumableAsset(asset) {
+  return getAssetCategoryKey(asset) === 'consumable';
+}
+
+function isLicenseAsset(asset) {
+  return getAssetCategoryKey(asset) === 'license';
+}
+
+function isSparePartAsset(asset) {
+  return getAssetCategoryKey(asset) === 'spare_part';
 }
 
 const TRACKABLE_ASSET_TYPES = new Set([
@@ -875,6 +983,15 @@ document.addEventListener('DOMContentLoaded', () => {
       window.submitTransfer();
     });
   }
+  ['transferIncludeRelated', 'transferIncludeComponents', 'transferIncludeAccessories', 'transferIncludeLicenses', 'transferIncludeConsumables'].forEach((id) => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.addEventListener('change', () => {
+      updateTransferRelatedFormState();
+      refreshTransferRelatedSummary().catch(() => {});
+    });
+  });
+  updateTransferRelatedFormState();
 
   const exportBtn = document.getElementById('exportPdfBtn');
   if (exportBtn) exportBtn.addEventListener('click', exportAssetsToDetailedPDF);
@@ -941,12 +1058,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if (deptFilter) deptFilter.addEventListener('change', syncFilters);
   if (typeFilter) typeFilter.addEventListener('change', syncFilters);
   if (lifecycleFilter) lifecycleFilter.addEventListener('change', syncFilters);
-  const openSpareStockBtn = document.getElementById('openSpareStockBtn');
+  Object.entries(INVENTORY_VIEW_BUTTON_IDS).forEach(([view, buttonId]) => {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    button.addEventListener('click', () => setInventoryView(view));
+  });
   const spareStockRefreshBtn = document.getElementById('spareStockRefreshBtn');
   const spareStockLowOnlyBtn = document.getElementById('spareStockLowOnlyBtn');
   const spareStockAddBtn = document.getElementById('spareStockAddBtn');
   const spareStockSearchInput = document.getElementById('spareStockSearchInput');
-  if (openSpareStockBtn) openSpareStockBtn.addEventListener('click', () => window.openSpareStockModal());
   if (spareStockRefreshBtn) spareStockRefreshBtn.addEventListener('click', () => window.loadSpareStock());
   if (spareStockLowOnlyBtn) spareStockLowOnlyBtn.addEventListener('click', () => {
     spareStockLowOnly = !spareStockLowOnly;
@@ -960,10 +1080,125 @@ document.addEventListener('DOMContentLoaded', () => {
   const previewImportBtn = document.getElementById('previewImportBtn');
   const commitImportBtn = document.getElementById('commitImportBtn');
   const downloadImportTemplateBtn = document.getElementById('downloadImportTemplateBtn');
+  const aiMapColumnsBtn = document.getElementById('aiMapColumnsBtn');
+  const previewDocumentImportBtn = document.getElementById('previewDocumentImportBtn');
   if (openImportAssetsBtn) openImportAssetsBtn.addEventListener('click', () => window.openImportAssetsModal());
   if (previewImportBtn) previewImportBtn.addEventListener('click', () => window.previewImportAssets());
   if (commitImportBtn) commitImportBtn.addEventListener('click', () => window.commitImportAssets());
   if (downloadImportTemplateBtn) downloadImportTemplateBtn.addEventListener('click', () => window.copyImportTemplateCsv());
+  if (aiMapColumnsBtn) aiMapColumnsBtn.addEventListener('click', () => window.runImportAiColumnMapping());
+  if (previewDocumentImportBtn) previewDocumentImportBtn.addEventListener('click', () => window.previewDocumentImportRows());
+  const importFileInput = document.getElementById('importAssetsFile');
+  const importDropZone = document.getElementById('importDropZone');
+  const importDropHint = document.getElementById('importDropZoneHint');
+  const updateDropHint = (file) => {
+    if (!importDropHint) return;
+    importDropHint.textContent = file ? `Selected file: ${file.name}` : 'No file selected.';
+  };
+  if (importFileInput) {
+    importFileInput.addEventListener('change', () => {
+      const file = importFileInput.files?.[0] || null;
+      updateDropHint(file);
+    });
+  }
+  if (importDropZone && importFileInput) {
+    importDropZone.addEventListener('click', (event) => {
+      if (event.target === importFileInput) return;
+      importFileInput.click();
+    });
+    ['dragenter', 'dragover'].forEach((eventName) => {
+      importDropZone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        importDropZone.classList.add('is-dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach((eventName) => {
+      importDropZone.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        importDropZone.classList.remove('is-dragover');
+      });
+    });
+    importDropZone.addEventListener('drop', (event) => {
+      const dt = event.dataTransfer;
+      const file = dt?.files?.[0];
+      if (!file) return;
+      const lower = String(file.name || '').toLowerCase();
+      if (!(lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls'))) {
+        showMessage('Invalid file type. Please use CSV or XLSX.', 'warning');
+        return;
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      importFileInput.files = transfer.files;
+      updateDropHint(file);
+    });
+  }
+
+  const inventoryAiAssistantBtn = document.getElementById('inventoryAiAssistantBtn');
+  const inventoryAiSearchBtn = document.getElementById('inventoryAiSearchBtn');
+  const inventoryAiMissingDataBtn = document.getElementById('inventoryAiMissingDataBtn');
+  const inventoryAiMaintenanceBtn = document.getElementById('inventoryAiMaintenanceBtn');
+  const inventoryAiProcurementBtn = document.getElementById('inventoryAiProcurementBtn');
+  const inventoryAiDuplicateBtn = document.getElementById('inventoryAiDuplicateBtn');
+  const inventoryAiRunBtn = document.getElementById('inventoryAiRunBtn');
+  const inventoryAiQueryInput = document.getElementById('inventoryAiQueryInput');
+  const inventoryAiChatLauncher = document.getElementById('inventoryAiChatLauncher');
+  const inventoryAiChatCloseBtn = document.getElementById('inventoryAiChatCloseBtn');
+  const inventoryAiChatMinimizeBtn = document.getElementById('inventoryAiChatMinimizeBtn');
+  const inventoryAiChatSendBtn = document.getElementById('inventoryAiChatSendBtn');
+  const inventoryAiChatInput = document.getElementById('inventoryAiChatInput');
+  const inventoryAiQuickPrompts = document.getElementById('inventoryAiQuickPrompts');
+  const inventoryAiChatMessages = document.getElementById('inventoryAiChatMessages');
+  if (inventoryAiAssistantBtn) inventoryAiAssistantBtn.addEventListener('click', () => window.toggleInventoryAiChat(true));
+  if (inventoryAiSearchBtn) inventoryAiSearchBtn.addEventListener('click', () => window.openInventoryAiModal('search'));
+  if (inventoryAiMissingDataBtn) inventoryAiMissingDataBtn.addEventListener('click', () => window.openInventoryAiModal('missing_data'));
+  if (inventoryAiMaintenanceBtn) inventoryAiMaintenanceBtn.addEventListener('click', () => window.openInventoryAiModal('maintenance'));
+  if (inventoryAiProcurementBtn) inventoryAiProcurementBtn.addEventListener('click', () => window.openInventoryAiModal('procurement'));
+  if (inventoryAiDuplicateBtn) inventoryAiDuplicateBtn.addEventListener('click', () => window.openInventoryAiModal('duplicates'));
+  if (inventoryAiRunBtn) inventoryAiRunBtn.addEventListener('click', () => window.runInventoryAiAction());
+  if (inventoryAiChatLauncher) inventoryAiChatLauncher.addEventListener('click', () => window.toggleInventoryAiChat());
+  if (inventoryAiChatCloseBtn) inventoryAiChatCloseBtn.addEventListener('click', () => window.toggleInventoryAiChat(false));
+  if (inventoryAiChatMinimizeBtn) inventoryAiChatMinimizeBtn.addEventListener('click', () => window.toggleInventoryAiChat(false));
+  if (inventoryAiChatSendBtn) inventoryAiChatSendBtn.addEventListener('click', () => window.sendInventoryAiChatMessage());
+  if (inventoryAiChatInput) {
+    inventoryAiChatInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        window.sendInventoryAiChatMessage();
+      }
+    });
+  }
+  if (inventoryAiQuickPrompts) {
+    inventoryAiQuickPrompts.addEventListener('click', (event) => {
+      const button = event.target?.closest('[data-ai-prompt]');
+      if (button) {
+        const prompt = String(button.getAttribute('data-ai-prompt') || '').trim();
+        if (prompt) window.openInventoryAiChatWithPrompt(prompt);
+        return;
+      }
+      const actionButton = event.target?.closest('[data-ai-action]');
+      if (!actionButton) return;
+      const mode = String(actionButton.getAttribute('data-ai-action') || '').trim();
+      if (mode) window.runInventoryAiQuickAction(mode);
+    });
+  }
+  if (inventoryAiChatMessages) {
+    inventoryAiChatMessages.addEventListener('click', (event) => {
+      const button = event.target?.closest('.inventory-ai-view-asset-btn');
+      if (!button) return;
+      const assetId = String(button.getAttribute('data-asset-id') || '').trim();
+      if (!assetId) return;
+      window.openInventoryAiMatchedAsset(assetId);
+    });
+  }
+  if (inventoryAiQueryInput) {
+    inventoryAiQueryInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        window.runInventoryAiAction();
+      }
+    });
+  }
 
   updateWorkingHoursAvailability();
   applyAssetTypeSpecTemplate();
@@ -975,7 +1210,22 @@ document.addEventListener('DOMContentLoaded', () => {
   if (detailsModalElement) {
     detailsModalElement.addEventListener('hidden.bs.modal', () => {
       activeDetailsGroupName = null;
+      activeDetailsContext = null;
       bulkSpecReviewContext = null;
+    });
+  }
+  const importModalElement = document.getElementById('importAssetsModal');
+  if (importModalElement) {
+    importModalElement.addEventListener('hidden.bs.modal', () => {
+      resetImportAssetsState();
+    });
+  }
+  const transferModalElement = document.getElementById('transferModal');
+  if (transferModalElement) {
+    transferModalElement.addEventListener('hidden.bs.modal', () => {
+      transferSelectionState = { targetAssetIds: [], isBulk: false };
+      const summaryEl = document.getElementById('transferRelatedCounts');
+      if (summaryEl) summaryEl.textContent = 'Related items: calculating...';
     });
   }
 });
@@ -997,7 +1247,13 @@ async function loadConfig() {
     BUILDINGS = configData.BUILDINGS || [];
     DEPARTMENTS = configData.DEPARTMENTS || [];
     ASSET_TYPES = configData.ASSET_TYPES || [];
+    COMPONENT_TYPE_REGISTRY_BY_PARENT = configData.COMPONENT_TYPE_REGISTRY_BY_PARENT || {};
+    ACCESSORY_TYPES = configData.ACCESSORY_TYPES || [];
+    CONSUMABLE_TYPES = configData.CONSUMABLE_TYPES || [];
+    SPARE_STOCK_TYPES = configData.SPARE_STOCK_TYPES || [];
+    LICENSE_TYPES = configData.LICENSE_TYPES || [];
     EOL_METRICS = configData.EOL_METRICS || {};
+    populateAssetTypeSelectOptions();
     
   } catch (error) {
     console.error('Error loading config:', error);
@@ -1010,12 +1266,38 @@ async function loadAssets() {
 
   loadAssetsInFlightPromise = (async () => {
     try {
-      const response = await inventoryRequest('/assets');
+      const searchTerm = String(document.getElementById('searchInput')?.value || '').trim();
+      const buildingFilter = String(document.getElementById('filterBuilding')?.value || 'all');
+      const deptFilter = String(document.getElementById('filterDept')?.value || 'all');
+      const typeFilter = String(document.getElementById('filterType')?.value || 'all');
+      const lifecycleFilter = String(document.getElementById('filterLifecycle')?.value || 'all');
+      const page = Math.max(1, Number(inventoryPageState.page || 1));
+      const pageSize = Math.max(10, Math.min(500, Number(inventoryPageState.pageSize || 50)));
+      const params = new URLSearchParams({
+        paginate: 'true',
+        page: String(page),
+        pageSize: String(pageSize),
+        view: currentInventoryView,
+      });
+      if (searchTerm) params.set('q', searchTerm);
+      if (buildingFilter && buildingFilter !== 'all') params.set('location', buildingFilter);
+      if (deptFilter && deptFilter !== 'all') params.set('department', deptFilter);
+      if (lifecycleFilter && lifecycleFilter !== 'all') params.set('lifecycleStatus', lifecycleFilter);
+      if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
+
+      const response = await inventoryRequest(`/assets?${params.toString()}`);
       if (!response.ok) throw new Error('Failed to fetch assets');
 
-      const assets = await response.json();
+      const payload = await response.json();
+      const assets = Array.isArray(payload)
+        ? payload
+        : (Array.isArray(payload?.items) ? payload.items : []);
       console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
       currentAssets = assets;
+      inventoryPageState.total = Number(payload?.total || assets.length || 0);
+      inventoryPageState.totalPages = Math.max(1, Number(payload?.totalPages || 1));
+      inventoryPageState.page = Math.max(1, Number(payload?.page || page));
+      inventoryPageState.pageSize = Math.max(10, Math.min(500, Number(payload?.pageSize || pageSize)));
       await loadAssetAiJobStatuses();
       await loadAssetLifespanPredictions();
       await loadAssetEolAssessments();
@@ -1306,18 +1588,42 @@ function getSpecVerificationBadge(status) {
   if (status === 'pending') return '<span class="badge bg-warning text-dark">Spec Review Pending</span>';
   if (status === 'corrected') return '<span class="badge bg-info text-dark">Spec Corrected</span>';
   if (status === 'verified') return '<span class="badge bg-success">Spec Verified</span>';
+  if (status === 'import_verified' || status === 'verified_by_import' || status === 'user_provided') {
+    return '<span class="badge bg-primary">Import Verified</span>';
+  }
   if (status === 'rejected') return '<span class="badge bg-secondary">Spec Rejected</span>';
   return '<span class="badge bg-light text-dark border">Spec Unchecked</span>';
 }
 
+function isTelemetryCategoryEligible(asset) {
+  const category = getAssetCategoryKey(asset);
+  return !['license', 'consumable', 'spare_part'].includes(category);
+}
+
+function isDeployedOutsideWarehouse(asset) {
+  const locationDeployed = normalizeValue(displayLocation(asset?.location)) !== normalizeValue('Central Warehouse');
+  const departmentAssigned = normalizeValue(displayDepartment(asset?.department)) !== normalizeValue('Unassigned');
+  const lifecycle = normalizeLifecycleStatus(asset?.lifecycleStatus || asset?.lifecycle_status || '');
+  const lifecycleDeployed = ['in_use', 'assigned', 'in_transit'].includes(lifecycle);
+  return locationDeployed || departmentAssigned || lifecycleDeployed;
+}
+
+function shouldShowTelemetryControl(asset, profile = getAssetProfile(asset)) {
+  if (!asset) return false;
+  if (!isTelemetryCategoryEligible(asset)) return false;
+  const trackableType = TRACKABLE_ASSET_TYPES.has(canonicalType(asset?.type));
+  if (!trackableType) return false;
+  return Boolean(profile.trackWorkingHours || profile.hasTelemetry || isDeployedOutsideWarehouse(asset));
+}
+
 function shouldShowSpecReviewButton(status) {
-  return status === 'pending' || status === 'unchecked';
+  return status === 'pending';
 }
 
 function getPendingSpecReviewAssetsInGroup(groupAssets = []) {
   return groupAssets.filter((asset) => {
     const status = getSpecVerificationStatus(asset);
-    return status === 'pending' || status === 'unchecked';
+    return status === 'pending';
   });
 }
 
@@ -1434,25 +1740,68 @@ function updateSpecVerificationSnapshotFromLocalAssets() {
 function upsertAssetInLocalState(updatedAsset) {
   if (!updatedAsset || !updatedAsset.customId) return null;
   const index = currentAssets.findIndex((asset) => asset.customId === updatedAsset.customId);
-  if (index < 0) return null;
-  currentAssets[index] = {
+  if (index < 0) {
+    currentAssets.unshift(updatedAsset);
+    return updatedAsset;
+  }
+  const merged = {
     ...currentAssets[index],
     ...updatedAsset,
     specifications: (updatedAsset.specifications && typeof updatedAsset.specifications === 'object')
       ? updatedAsset.specifications
       : currentAssets[index].specifications
   };
-  return currentAssets[index];
+  currentAssets[index] = merged;
+  return merged;
+}
+
+function collectAssetsFromTransferResponse(payload = {}) {
+  if (!payload || typeof payload !== 'object') return [];
+  const candidates = [];
+  if (payload.updatedAsset && payload.updatedAsset.customId) candidates.push(payload.updatedAsset);
+  if (Array.isArray(payload.updatedAssets)) {
+    payload.updatedAssets.forEach((asset) => {
+      if (asset && asset.customId) candidates.push(asset);
+    });
+  }
+  if (payload.original && payload.original.customId) candidates.push(payload.original);
+  if (payload.newBatch && payload.newBatch.customId) candidates.push(payload.newBatch);
+  if (Array.isArray(payload.newBatches)) {
+    payload.newBatches.forEach((asset) => {
+      if (asset && asset.customId) candidates.push(asset);
+    });
+  }
+  const unique = new Map();
+  candidates.forEach((asset) => unique.set(asset.customId, asset));
+  return Array.from(unique.values());
+}
+
+function applyTransferredAssetsToLocalState(assets = []) {
+  const updatedIds = [];
+  assets.forEach((asset) => {
+    if (!asset?.customId) return;
+    const merged = upsertAssetInLocalState(asset);
+    if (merged?.customId) updatedIds.push(merged.customId);
+  });
+  if (!updatedIds.length) return [];
+  renderTable();
+  rerenderOpenDetailsModalIfNeeded();
+  if (cmdbState.assetId && updatedIds.includes(cmdbState.assetId)) {
+    refreshCmdbModal(cmdbState.assetId, cmdbState.activeTab || 'maintenance').catch(() => {});
+  }
+  if (groupCmdbState.groupName) {
+    refreshGroupCmdbModal().catch(() => {});
+  }
+  updateSpecVerificationSnapshotFromLocalAssets();
+  checkGlobalEOLAlerts();
+  return updatedIds;
 }
 
 function rerenderOpenDetailsModalIfNeeded() {
   const detailsModalEl = document.getElementById('detailsModal');
   if (!detailsModalEl || !detailsModalEl.classList.contains('show')) return;
-  if (!activeDetailsGroupName) return;
-
-  const hasGroupAssets = currentAssets.some((asset) => asset.name === activeDetailsGroupName);
-  if (!hasGroupAssets) return;
-  window.viewAssetDetails(activeDetailsGroupName);
+  if (!activeDetailsContext) return;
+  window.viewAssetDetailsByContext(activeDetailsContext);
 }
 
 async function refreshDerivedStateForAssets(assetIds = []) {
@@ -1565,6 +1914,10 @@ window.openSpecVerificationModal = (customId) => {
 };
 
 window.openBulkSpecVerificationModal = () => {
+  if (currentInventoryView !== 'parents') {
+    showMessage('Bulk spec review is available in Parent Assets view only.', 'info');
+    return;
+  }
   if (!activeDetailsGroupName) {
     showMessage('Open a group first to review pending specs.', 'warning');
     return;
@@ -1751,11 +2104,83 @@ async function submitSpecVerificationAction(action) {
     showMessage(error.message || 'Failed to submit specification review.', 'error');
   }
 }
+function getCurrentViewMeta(view = currentInventoryView) {
+  const normalized = normalizeInventoryView(view);
+  const map = {
+    parents: {
+      searchPlaceholder: 'Search parent asset name, ID, serial, tag...',
+      headerName: 'Asset Group',
+      headerType: 'Asset Type',
+      headerQty: 'Total Quantity',
+      headerLocation: 'Locations Found',
+      typeFilterLabel: 'All Asset Types',
+      emptyText: 'No parent assets found matching filters.',
+    },
+    components: {
+      searchPlaceholder: 'Search component, serial, tag, parent...',
+      headerName: 'Component Group',
+      headerType: 'Component Type',
+      headerQty: 'Installed Components',
+      headerLocation: 'Installed In Parents',
+      typeFilterLabel: 'All Component Types',
+      emptyText: 'No installed components found matching filters.',
+    },
+    accessories: {
+      searchPlaceholder: 'Search accessory, serial/tag, assigned asset/user...',
+      headerName: 'Accessory Group',
+      headerType: 'Accessory Type',
+      headerQty: 'Total Quantity',
+      headerLocation: 'Locations Found',
+      typeFilterLabel: 'All Accessory Types',
+      emptyText: 'No accessories found matching filters.',
+    },
+    consumables: {
+      searchPlaceholder: 'Search consumable, part number, vendor, location...',
+      headerName: 'Consumable Group',
+      headerType: 'Consumable Type',
+      headerQty: 'Total Quantity',
+      headerLocation: 'Locations Found',
+      typeFilterLabel: 'All Consumable Types',
+      emptyText: 'No consumables found matching filters.',
+    },
+    spare_stock: {
+      searchPlaceholder: 'Search spare stock, part number, compatibility, vendor...',
+      headerName: 'Spare Stock Group',
+      headerType: 'Part Type',
+      headerQty: 'Stock Quantity',
+      headerLocation: 'Locations Found',
+      typeFilterLabel: 'All Spare Stock Types',
+      emptyText: 'No spare stock items found matching filters.',
+    },
+    licenses: {
+      searchPlaceholder: 'Search license/software, assignment, expiry, vendor...',
+      headerName: 'License Group',
+      headerType: 'License Type',
+      headerQty: 'Total Quantity',
+      headerLocation: 'Locations Found',
+      typeFilterLabel: 'All License Types',
+      emptyText: 'No licenses found matching filters.',
+    },
+  };
+  return map[normalized] || map.parents;
+}
+
+function getAssetViewTypeLabel(asset, view = currentInventoryView) {
+  const normalized = normalizeInventoryView(view);
+  if (normalized === 'components') return inferComponentTypeFromAsset(asset) || 'Component';
+  if (normalized === 'accessories') return inferAccessoryTypeFromAsset(asset) || 'Accessory';
+  if (normalized === 'consumables') return inferConsumableTypeFromAsset(asset) || 'Consumable';
+  if (normalized === 'licenses') return inferLicenseTypeFromAsset(asset) || 'License';
+  if (normalized === 'spare_stock') return 'Spare Stock';
+  return formatType(asset?.type);
+}
+
 function populateFilters() {
   const buildingSelect = document.getElementById('filterBuilding');
   const deptSelect = document.getElementById('filterDept');
   const typeSelect = document.getElementById('filterType');
   const lifecycleSelect = document.getElementById('filterLifecycle');
+  const viewMeta = getCurrentViewMeta();
 
   if (!buildingSelect || !deptSelect || !typeSelect) return;
 
@@ -1764,19 +2189,61 @@ function populateFilters() {
   const currentType = typeSelect.value;
   const currentLifecycle = lifecycleSelect?.value || 'all';
 
-  buildingSelect.innerHTML = '<option value="all">All Buildings</option>' + BUILDINGS.map(b => `<option value="${b}">${b}</option>`).join('');
-  deptSelect.innerHTML = '<option value="all">All Departments</option>' + DEPARTMENTS.map(d => `<option value="${d}">${d}</option>`).join('');
-  typeSelect.innerHTML = '<option value="all">All Asset Types</option>' + ASSET_TYPES.map(at => `<option value="${at.value}">${at.label}</option>`).join('');
+  let visibleBuildings = [];
+  let visibleDepartments = [];
+  let typeValues = [];
 
-  if (BUILDINGS.includes(currentBuilding) || currentBuilding === 'all') buildingSelect.value = currentBuilding;
-  if (DEPARTMENTS.includes(currentDept) || currentDept === 'all') deptSelect.value = currentDept;
-  if (ASSET_TYPES.map(a => a.value).includes(currentType) || currentType === 'all') typeSelect.value = currentType;
+  if (currentInventoryView === 'spare_stock') {
+    const stockRows = Array.isArray(spareStockItemsCache) ? spareStockItemsCache : [];
+    visibleBuildings = Array.from(new Set(stockRows.map((item) => String(item.location || '').trim()).filter(Boolean)));
+    visibleDepartments = ['Unassigned'];
+    typeValues = Array.from(new Set(stockRows.map((item) => normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock')).filter(Boolean)));
+  } else {
+    const visibleAssets = getAssetsForCurrentInventoryView();
+    visibleBuildings = Array.from(new Set(visibleAssets.map((asset) => {
+      if (currentInventoryView === 'components' && asset?.installedParentLocation) {
+        return displayLocation(String(asset.installedParentLocation));
+      }
+      return displayLocation(asset.location);
+    }).filter(Boolean)));
+    visibleDepartments = Array.from(new Set(visibleAssets.map((asset) => {
+      if (currentInventoryView === 'components' && asset?.installedParentDepartment) {
+        return displayDepartment(String(asset.installedParentDepartment));
+      }
+      return displayDepartment(asset.department);
+    }).filter(Boolean)));
+
+    if (currentInventoryView === 'parents') {
+      typeValues = Array.from(new Set(ASSET_TYPES.map((at) => at.value).filter(Boolean)));
+    } else {
+      typeValues = Array.from(new Set(visibleAssets.map((asset) => getAssetViewTypeLabel(asset, currentInventoryView)).filter(Boolean)));
+    }
+  }
+
+  buildingSelect.innerHTML = '<option value="all">All Buildings</option>' + visibleBuildings.map((b) => `<option value="${b}">${b}</option>`).join('');
+  deptSelect.innerHTML = '<option value="all">All Departments</option>' + visibleDepartments.map((d) => `<option value="${d}">${d}</option>`).join('');
+  typeSelect.innerHTML = `<option value="all">${viewMeta.typeFilterLabel}</option>` + typeValues.map((value) => {
+    const label = currentInventoryView === 'parents'
+      ? (ASSET_TYPES.find((at) => normalizeValue(at.value) === normalizeValue(value))?.label || formatType(value))
+      : value;
+    return `<option value="${value}">${label}</option>`;
+  }).join('');
+
+  if (visibleBuildings.includes(currentBuilding) || currentBuilding === 'all') buildingSelect.value = currentBuilding;
+  if (visibleDepartments.includes(currentDept) || currentDept === 'all') deptSelect.value = currentDept;
+  if (Array.from(typeSelect.options).some((option) => option.value === currentType) || currentType === 'all') typeSelect.value = currentType;
   if (lifecycleSelect) lifecycleSelect.value = currentLifecycle || 'all';
 }
 
 function syncFilters() {
-  renderTable();
-  filterGroupTable();
+  if (currentInventoryView === 'spare_stock') {
+    renderTable();
+    return;
+  }
+  inventoryPageState.page = 1;
+  loadAssets().catch((error) => {
+    showMessage(error.message || 'Failed to refresh inventory list.', 'error');
+  });
 }
 function resetFilters() {
   document.getElementById('filterBuilding').value = 'all';
@@ -1786,103 +2253,350 @@ function resetFilters() {
   if (lifecycleSelect) lifecycleSelect.value = 'all';
   const searchInput = document.getElementById('searchInput');
   if (searchInput) searchInput.value = '';
-  renderTable();
-}
-
-function filterGroupTable() {
-  const searchTerm = document.getElementById('searchInput')?.value.toLowerCase() || '';
-  const tableBody = document.getElementById('inventoryTableBody');
-  if (!tableBody) return;
-
-  const rows = tableBody.querySelectorAll('tr');
-  rows.forEach(row => {
-    row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? '' : 'none';
+  if (currentInventoryView === 'spare_stock') {
+    renderTable();
+    return;
+  }
+  inventoryPageState.page = 1;
+  loadAssets().catch((error) => {
+    showMessage(error.message || 'Failed to reset filters.', 'error');
   });
 }
 
-function handleSearchKeyPress(event) {
-  if (event.key === 'Enter') filterGroupTable();
+function filterGroupTable() {
+  if (currentInventoryView === 'spare_stock') {
+    renderTable();
+    return;
+  }
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = setTimeout(() => {
+    inventoryPageState.page = 1;
+    loadAssets().catch((error) => {
+      showMessage(error.message || 'Failed to search inventory.', 'error');
+    });
+  }, 260);
 }
+
+function handleSearchKeyPress(event) {
+  if (event.key === 'Enter') {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    inventoryPageState.page = 1;
+    loadAssets().catch((error) => {
+      showMessage(error.message || 'Failed to search inventory.', 'error');
+    });
+  }
+}
+
+function renderInventoryGroupPager() {
+  const pagerEl = document.getElementById('inventoryGroupPager');
+  if (!pagerEl) return;
+  const total = Number(inventoryPageState.total || 0);
+  const totalPages = Math.max(1, Number(inventoryPageState.totalPages || 1));
+  const page = Math.max(1, Number(inventoryPageState.page || 1));
+  if (total <= 0) {
+    pagerEl.classList.add('d-none');
+    pagerEl.innerHTML = '';
+    return;
+  }
+  const hasPrev = page > 1;
+  const hasNext = page < totalPages;
+  pagerEl.classList.remove('d-none');
+  pagerEl.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center">
+      <small class="text-muted">Page ${page} of ${totalPages} • Total groups/items: ${total}</small>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" ${hasPrev ? '' : 'disabled'} onclick="window.changeInventoryPage(-1)">
+          <i class="bi bi-arrow-left me-1"></i>Previous
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" ${hasNext ? '' : 'disabled'} onclick="window.changeInventoryPage(1)">
+          Next<i class="bi bi-arrow-right ms-1"></i>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+window.changeInventoryPage = (delta = 0) => {
+  const nextPage = Math.max(1, Number(inventoryPageState.page || 1) + Number(delta || 0));
+  if (nextPage === inventoryPageState.page) return;
+  inventoryPageState.page = nextPage;
+  loadAssets().catch((error) => {
+    showMessage(error.message || 'Failed to change page.', 'error');
+  });
+};
 
 function renderTable() {
   const tableBody = document.getElementById('inventoryTableBody');
   if (!tableBody) return;
+  const headerName = document.getElementById('groupTableHeaderName');
+  const headerType = document.getElementById('groupTableHeaderType');
+  const headerQty = document.getElementById('groupTableHeaderQty');
+  const headerLoc = document.getElementById('groupTableHeaderLocation');
+  const searchInput = document.getElementById('searchInput');
+  const viewMeta = getCurrentViewMeta();
+  Object.entries(INVENTORY_VIEW_BUTTON_IDS).forEach(([view, buttonId]) => {
+    const button = document.getElementById(buttonId);
+    if (!button) return;
+    button.className = normalizeInventoryView(view) === normalizeInventoryView(currentInventoryView)
+      ? 'btn btn-sm btn-primary'
+      : 'btn btn-sm btn-outline-primary';
+  });
+
+  if (searchInput) searchInput.placeholder = viewMeta.searchPlaceholder;
+  if (headerName) headerName.textContent = viewMeta.headerName;
+  if (headerType) headerType.textContent = viewMeta.headerType;
+  if (headerQty) headerQty.textContent = viewMeta.headerQty;
+  if (headerLoc) headerLoc.textContent = viewMeta.headerLocation;
 
   const buildingFilter = document.getElementById('filterBuilding')?.value;
   const deptFilter = document.getElementById('filterDept')?.value;
   const typeFilter = document.getElementById('filterType')?.value;
   const lifecycleFilter = document.getElementById('filterLifecycle')?.value;
+  const searchTerm = String(document.getElementById('searchInput')?.value || '').trim().toLowerCase();
 
-  const filteredAssets = currentAssets.filter(asset => {
-    const matchBuilding = !buildingFilter || buildingFilter === 'all' || normalizeValue(displayLocation(asset.location)) === normalizeValue(buildingFilter);
-    const matchDept = !deptFilter || deptFilter === 'all' || normalizeValue(displayDepartment(asset.department)) === normalizeValue(deptFilter);
-    const matchType = !typeFilter || typeFilter === 'all' || normalizeValue(canonicalType(asset.type)) === normalizeValue(typeFilter);
-    const assetLifecycle = normalizeLifecycleStatus(asset.lifecycleStatus || asset.lifecycle_status || 'in_stock');
-    const matchLifecycle = !lifecycleFilter || lifecycleFilter === 'all' || normalizeValue(assetLifecycle) === normalizeValue(lifecycleFilter);
-    return matchBuilding && matchDept && matchType && matchLifecycle;
-  });
+  if (currentInventoryView === 'spare_stock') {
+    const pagerEl = document.getElementById('inventoryGroupPager');
+    if (pagerEl) {
+      pagerEl.classList.add('d-none');
+      pagerEl.innerHTML = '';
+    }
+    const stockRows = (spareStockItemsCache || []).filter((item) => {
+      const candidateBuilding = String(item.location || '').trim() || 'Unknown';
+      const candidateType = normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock');
+      const matchBuilding = !buildingFilter || buildingFilter === 'all' || normalizeValue(candidateBuilding) === normalizeValue(buildingFilter);
+      const matchType = !typeFilter || typeFilter === 'all' || normalizeValue(candidateType) === normalizeValue(typeFilter);
+      if (!(matchBuilding && matchType)) return false;
+      if (!searchTerm) return true;
+      const haystack = [
+        item.partName,
+        item.partNumber,
+        item.brand,
+        item.model,
+        item.vendor,
+        item.location,
+        item.componentType,
+        JSON.stringify(item.compatibleAssetTypes || []),
+        JSON.stringify(item.compatibleBrandsModels || []),
+      ].join(' ').toLowerCase();
+      return haystack.includes(searchTerm);
+    });
 
-  if (!filteredAssets || filteredAssets.length === 0) {
-    tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">No assets found matching filters.</td></tr>`;
+    if (!stockRows.length) {
+      tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
+      updateDeleteAllAssetsButton();
+      return;
+    }
+
+    const groupedStock = {};
+    stockRows.forEach((item) => {
+      const key = normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock');
+      if (!groupedStock[key]) groupedStock[key] = [];
+      groupedStock[key].push(item);
+    });
+
+    const groupedEntries = Object.entries(groupedStock);
+    tableBody.innerHTML = groupedEntries.map(([groupType, groupItems]) => {
+      const totalQty = groupItems.reduce((sum, item) => sum + Number(item.quantityAvailable || 0), 0);
+      const locationSet = new Set(groupItems.map((item) => String(item.location || 'Unknown')).filter(Boolean));
+      const partNumbers = Array.from(new Set(groupItems.map((item) => String(item.partNumber || '')).filter(Boolean)));
+      const encodedType = encodeURIComponent(groupType);
+      return `
+        <tr>
+          <td>
+            <div class="d-flex align-items-center">
+              <div class="avatar-initial rounded bg-light text-primary me-3">
+                <i class="bi bi-box-seam"></i>
+              </div>
+              <div>
+                <div class="fw-bold text-dark">${UI.escapeHTML(groupType)}</div>
+                <small class="text-muted">${groupItems.length} stock item(s)</small>
+                <span class="d-none">${UI.escapeHTML(partNumbers.join(' '))}</span>
+              </div>
+            </div>
+          </td>
+          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(groupType)}</span></td>
+          <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
+          <td><small class="text-muted">${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-primary" onclick="window.openSpareStockModalForType(decodeURIComponent('${encodedType}'))" title="View Spare Stock">
+              <i class="bi bi-eye me-1"></i> View (${groupItems.length})
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
     updateDeleteAllAssetsButton();
     return;
   }
 
-  const groupedByName = {};
-  filteredAssets.forEach(asset => {
-    if (!groupedByName[asset.name]) groupedByName[asset.name] = [];
-    groupedByName[asset.name].push(asset);
+  const baseAssets = getAssetsForCurrentInventoryView();
+  const filteredAssets = baseAssets.filter((asset) => {
+    const installedParent = getInstalledParentInfo(asset);
+    const parentSearchText = `${installedParent.parentName} ${installedParent.parentId} ${installedParent.parentTag}`.trim();
+    const candidateBuilding = currentInventoryView === 'components' && asset?.installedParentLocation
+      ? displayLocation(String(asset.installedParentLocation))
+      : displayLocation(asset.location);
+    const candidateDepartment = currentInventoryView === 'components' && asset?.installedParentDepartment
+      ? displayDepartment(String(asset.installedParentDepartment))
+      : displayDepartment(asset.department);
+    const candidateType = currentInventoryView === 'parents'
+      ? canonicalType(asset.type)
+      : getAssetViewTypeLabel(asset, currentInventoryView);
+    const matchBuilding = !buildingFilter || buildingFilter === 'all' || normalizeValue(candidateBuilding) === normalizeValue(buildingFilter);
+    const matchDept = !deptFilter || deptFilter === 'all' || normalizeValue(candidateDepartment) === normalizeValue(deptFilter);
+    const matchType = !typeFilter || typeFilter === 'all' || normalizeValue(candidateType) === normalizeValue(typeFilter);
+    const assetLifecycle = normalizeLifecycleStatus(asset.lifecycleStatus || asset.lifecycle_status || 'in_stock');
+    const matchLifecycle = !lifecycleFilter || lifecycleFilter === 'all' || normalizeValue(assetLifecycle) === normalizeValue(lifecycleFilter);
+    if (!(matchBuilding && matchDept && matchType && matchLifecycle)) return false;
+    if (!searchTerm) return true;
+    const haystack = [
+      asset.name,
+      asset.customId,
+      getDisplaySerial(asset),
+      getDisplayAssetTag(asset),
+      inferComponentTypeFromAsset(asset),
+      inferAccessoryTypeFromAsset(asset),
+      inferConsumableTypeFromAsset(asset),
+      inferLicenseTypeFromAsset(asset),
+      candidateBuilding,
+      candidateDepartment,
+      parentSearchText,
+      asset?.assignedToName,
+      asset?.assignedToUserId,
+      asset?.vendor,
+    ].join(' ').toLowerCase();
+    return haystack.includes(searchTerm);
   });
 
-  tableBody.innerHTML = Object.entries(groupedByName).map(([assetName, assetGroup]) => {
-    const totalQty = getAssetsTotalQuantity(assetGroup);
-    const firstAsset = assetGroup[0];
-    const typeObj = ASSET_TYPES.find(t => normalizeValue(t.value) === normalizeValue(canonicalType(firstAsset.type)));
-    const typeLabel = typeObj ? typeObj.label : formatType(firstAsset.type);
-    
-    const locationsSet = new Set(assetGroup.map(a => displayLocation(a.location)).filter(Boolean));
-    const departmentsSet = new Set(assetGroup.map(a => displayDepartment(a.department)).filter(Boolean));
-    const serialsSet = new Set(assetGroup.map(a => getDisplaySerial(a)).filter(Boolean));
-    const tagsSet = new Set(assetGroup.map(a => getDisplayAssetTag(a)).filter(Boolean));
-    const locationsFound = Array.from(locationsSet).join(', ') || 'Unknown';
-    const departmentsFound = Array.from(departmentsSet).join(', ') || 'Unassigned';
-    const serialsFound = Array.from(serialsSet).join(', ');
-    const tagsFound = Array.from(tagsSet).join(', ');
+  if (!filteredAssets || filteredAssets.length === 0) {
+    tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
+    renderInventoryGroupPager();
+    updateDeleteAllAssetsButton();
+    return;
+  }
 
-    return `
-      <tr>
-        <td>
-          <div class="d-flex align-items-center">
-            <div class="avatar-initial rounded bg-light text-primary me-3">
-              <i class="bi ${getIconForType(firstAsset.type)}"></i>
+  if (currentInventoryView === 'components' || currentInventoryView === 'accessories' || currentInventoryView === 'consumables' || currentInventoryView === 'licenses') {
+    const groupedByComponentType = {};
+    filteredAssets.forEach((asset) => {
+      const componentType = getAssetViewTypeLabel(asset, currentInventoryView) || 'Item';
+      if (!groupedByComponentType[componentType]) groupedByComponentType[componentType] = [];
+      groupedByComponentType[componentType].push(asset);
+    });
+
+    const groupedEntries = Object.entries(groupedByComponentType);
+    tableBody.innerHTML = groupedEntries.map(([componentType, componentGroup]) => {
+      const encodedComponentType = encodeURIComponent(componentType);
+      const parentSet = new Set(componentGroup.map((asset) => {
+        const parent = getInstalledParentInfo(asset);
+        return parent.parentName || parent.parentId || parent.parentTag;
+      }).filter(Boolean));
+      const locationSet = new Set(componentGroup.map((asset) => {
+        if (asset?.installedParentLocation) return displayLocation(String(asset.installedParentLocation));
+        return displayLocation(asset.location);
+      }).filter(Boolean));
+      const serialsSet = new Set(componentGroup.map((asset) => getDisplaySerial(asset)).filter(Boolean));
+      const tagsSet = new Set(componentGroup.map((asset) => getDisplayAssetTag(asset)).filter(Boolean));
+      const parentSummary = Array.from(parentSet).slice(0, 3).join(', ');
+      const moreParents = parentSet.size > 3 ? ` +${parentSet.size - 3} more` : '';
+      return `
+        <tr>
+          <td>
+            <div class="d-flex align-items-center">
+              <div class="avatar-initial rounded bg-light text-primary me-3">
+                <i class="bi bi-cpu"></i>
+              </div>
+              <div>
+                <div class="fw-bold text-dark">${UI.escapeHTML(componentType)}</div>
+                <small class="text-muted">${parentSummary ? `Related to: ${UI.escapeHTML(parentSummary)}${UI.escapeHTML(moreParents)}` : (currentInventoryView === 'components' ? 'No parent relationship' : 'No linked parent')}</small>
+                <span class="d-none">${UI.escapeHTML(Array.from(serialsSet).join(' '))} ${UI.escapeHTML(Array.from(tagsSet).join(' '))}</span>
+              </div>
             </div>
-            <div>
-              <div class="fw-bold text-dark">${assetName}</div>
-              <small class="text-muted">${departmentsFound}</small>
-              <span class="d-none">${serialsFound} ${tagsFound}</span>
+          </td>
+          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(componentType)}</span></td>
+          <td class="text-center"><span class="badge bg-primary qty-badge">${componentGroup.length}</span></td>
+          <td><small class="text-muted">${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetailsByFilter('${currentInventoryView}', decodeURIComponent('${encodedComponentType}'))" title="View ${UI.escapeHTML(componentType)}">
+              <i class="bi bi-eye me-1"></i> View (${componentGroup.length})
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    renderInventoryGroupPager();
+  } else {
+    const groupedByTypeAndName = {};
+    filteredAssets.forEach((asset) => {
+      const typeLabel = formatType(asset.type);
+      const groupKey = `${typeLabel}::${asset.name}`;
+      if (!groupedByTypeAndName[groupKey]) groupedByTypeAndName[groupKey] = [];
+      groupedByTypeAndName[groupKey].push(asset);
+    });
+
+    const groupedEntries = Object.entries(groupedByTypeAndName);
+    tableBody.innerHTML = groupedEntries.map(([groupKey, assetGroup]) => {
+      const [typeLabel, assetName] = groupKey.split('::');
+      const encodedAssetName = encodeURIComponent(assetName);
+      const encodedAssetType = encodeURIComponent(canonicalType(assetGroup[0]?.type));
+      const totalQty = getAssetsTotalQuantity(assetGroup);
+      const firstAsset = assetGroup[0];
+      const locationsSet = new Set(assetGroup.map((asset) => displayLocation(asset.location)).filter(Boolean));
+      const departmentsSet = new Set(assetGroup.map((asset) => displayDepartment(asset.department)).filter(Boolean));
+      const serialsSet = new Set(assetGroup.map((asset) => getDisplaySerial(asset)).filter(Boolean));
+      const tagsSet = new Set(assetGroup.map((asset) => getDisplayAssetTag(asset)).filter(Boolean));
+      const locationsFound = Array.from(locationsSet).join(', ') || 'Unknown';
+      const departmentsFound = Array.from(departmentsSet).join(', ') || 'Unassigned';
+      const serialsFound = Array.from(serialsSet).join(', ');
+      const tagsFound = Array.from(tagsSet).join(', ');
+      return `
+        <tr>
+          <td>
+            <div class="d-flex align-items-center">
+              <div class="avatar-initial rounded bg-light text-primary me-3">
+                <i class="bi ${getIconForType(firstAsset.type)}"></i>
+              </div>
+              <div>
+                <div class="fw-bold text-dark">${UI.escapeHTML(assetName)}</div>
+                <small class="text-muted">${UI.escapeHTML(departmentsFound)}</small>
+                <span class="d-none">${UI.escapeHTML(serialsFound)} ${UI.escapeHTML(tagsFound)}</span>
+              </div>
             </div>
-          </div>
-        </td>
-        <td><span class="badge bg-light text-dark border">${typeLabel}</span></td>
-        <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
-        <td><small class="text-muted">${locationsFound}</small></td>
-        <td class="text-end">
-          <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetails('${assetName}')" title="View & Manage Items">
-            <i class="bi bi-eye me-1"></i> View (${totalQty})
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+          </td>
+          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(typeLabel)}</span></td>
+          <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
+          <td><small class="text-muted">${UI.escapeHTML(locationsFound)}</small></td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetailsByFilter('parents', decodeURIComponent('${encodedAssetName}'), decodeURIComponent('${encodedAssetType}'))" title="View & Manage Items">
+              <i class="bi bi-eye me-1"></i> View (${totalQty})
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    renderInventoryGroupPager();
+  }
   updateDeleteAllAssetsButton();
 }
 
 function updateDeleteAllAssetsButton() {
   const button = document.getElementById('deleteAllAssetsBtn');
   if (!button) return;
-  const count = getAssetsTotalQuantity(currentAssets);
+  const count = currentInventoryView === 'spare_stock'
+    ? (spareStockItemsCache || []).reduce((sum, item) => sum + Number(item.quantityAvailable || 0), 0)
+    : getAssetsTotalQuantity(getAssetsForCurrentInventoryView());
   button.disabled = count === 0;
-  button.innerHTML = `<i class="bi bi-trash3"></i> Delete All${count ? ` (${count})` : ''}`;
+  const labelMap = {
+    parents: 'Parent Assets',
+    components: 'Components',
+    accessories: 'Accessories',
+    consumables: 'Consumables',
+    spare_stock: 'Spare Stock',
+    licenses: 'Licenses',
+  };
+  const label = labelMap[currentInventoryView] || 'Assets';
+  button.innerHTML = `<i class="bi bi-trash3"></i> Delete ${label}${count ? ` (${count})` : ''}`;
 }
 
 async function handleAddAsset(e) {
@@ -1908,6 +2622,10 @@ async function handleAddAsset(e) {
     return;
   }
   const type = document.getElementById('assetType').value;
+  const assetTypeSelect = document.getElementById('assetType');
+  const selectedTypeOption = assetTypeSelect?.options?.[assetTypeSelect.selectedIndex] || null;
+  const registryTypeKey = String(selectedTypeOption?.dataset?.registryKey || '').trim();
+  const registryTypeLabel = String(selectedTypeOption?.dataset?.registryLabel || selectedTypeOption?.textContent || '').trim();
   const location = document.getElementById('assetLocation').value || 'Central Warehouse';
   const department = document.getElementById('assetDepartment').value || 'Unassigned';
   const brand = document.getElementById('assetBrand')?.value.trim() || '';
@@ -1943,6 +2661,8 @@ async function handleAddAsset(e) {
   const inferredQuality = inferAssetQuality({ brand, version, specs: manualSpecs, type });
   const specifications = {
     ...manualSpecs,
+    assetTypeRegistryKey: registryTypeKey || undefined,
+    assetTypeRegistryLabel: registryTypeLabel || undefined,
     brand,
     version,
     inferredQuality,
@@ -2138,10 +2858,60 @@ function showAIModal(messageHtml) {
   });
 }
 
+function resolveAssetsForDetailsContext(context) {
+  if (!context || typeof context !== 'object') return [];
+  if (context.mode === 'spare_stock') {
+    return [];
+  }
+  if (context.mode === 'components' || context.mode === 'accessories' || context.mode === 'consumables' || context.mode === 'licenses') {
+    return getAssetsForCurrentInventoryView().filter((asset) => normalizeValue(getAssetViewTypeLabel(asset, context.mode)) === normalizeValue(context.groupType || context.componentType || ''));
+  }
+  return getAssetsForCurrentInventoryView().filter((asset) => {
+    const matchName = String(asset.name || '') === String(context.assetName || '');
+    if (!matchName) return false;
+    if (!context.assetType) return true;
+    return normalizeValue(canonicalType(asset.type)) === normalizeValue(context.assetType);
+  });
+}
+
+window.viewAssetDetailsByFilter = (mode, value, type = '') => {
+  const normalizedMode = normalizeInventoryView(mode);
+  if (normalizedMode === 'spare_stock') {
+    window.openSpareStockModalForType(String(value || '').trim());
+    return;
+  }
+  const context = normalizedMode === 'parents'
+    ? { mode: 'parents', assetName: String(value || '').trim(), assetType: String(type || '').trim() }
+    : { mode: normalizedMode, groupType: String(value || '').trim(), componentType: String(value || '').trim() };
+  window.viewAssetDetailsByContext(context);
+};
+
+window.viewAssetDetailsByContext = (context) => {
+  const safeContext = (context && typeof context === 'object') ? context : null;
+  if (!safeContext) return;
+  const mode = normalizeInventoryView(safeContext.mode);
+  if (mode === 'spare_stock') {
+    window.openSpareStockModalForType(safeContext.groupType || '');
+    return;
+  }
+  safeContext.mode = mode;
+  activeDetailsContext = safeContext;
+  activeDetailsGroupName = safeContext.mode === 'parents'
+    ? (safeContext.assetName || null)
+    : (safeContext.groupType || safeContext.componentType || null);
+  window.viewAssetDetails(activeDetailsGroupName || '');
+};
+
 // --- View Asset Group Details ---
 window.viewAssetDetails = (assetName) => {
+  const context = activeDetailsContext || {
+    mode: currentInventoryView === 'parents' ? 'parents' : currentInventoryView,
+    assetName,
+    groupType: assetName,
+    assetType: '',
+  };
   activeDetailsGroupName = assetName;
-  const groupAssets = currentAssets.filter(a => a.name === assetName);
+  const groupAssets = resolveAssetsForDetailsContext(context);
   
   if (!groupAssets.length) {
     showMessage('Asset group not found.', 'error');
@@ -2152,9 +2922,21 @@ window.viewAssetDetails = (assetName) => {
   const unitRows = getAssetUnitRows(groupAssets);
   console.debug('[AssetCreateDebug] modal-render', { assetName, groupAssets: groupAssets.length, totalQty, renderedRows: unitRows.length });
   const batchCount = groupAssets.length;
-  document.getElementById('detailModalTitle').textContent = `${assetName} - ${totalQty} Unit(s)`;
+  const titleLabel = context.mode === 'parents'
+    ? (context.assetName || assetName)
+    : (context.groupType || context.componentType || assetName);
+  document.getElementById('detailModalTitle').textContent = `${titleLabel} - ${totalQty} Unit(s)`;
   const detailSubtitle = document.getElementById('detailModalSubtitle');
-  if (detailSubtitle) detailSubtitle.textContent = `Showing ${totalQty} unit(s) across ${batchCount} backend batch(es)`;
+  if (detailSubtitle) {
+    const modeLabel = context.mode === 'parents'
+      ? ''
+      : context.mode === 'components'
+        ? 'installed component'
+        : context.mode.slice(0, -1);
+    detailSubtitle.textContent = context.mode === 'parents'
+      ? `Showing ${totalQty} unit(s) across ${batchCount} backend batch(es)`
+      : `Showing ${totalQty} ${modeLabel} unit(s) in this group`;
+  }
   document.getElementById('innerSearchInput').value = '';
 
   const detailsBody = document.getElementById('detailsTableBody');
@@ -2168,7 +2950,7 @@ window.viewAssetDetails = (assetName) => {
 
     const aiBanner = document.createElement('div');
     aiBanner.id = 'aiSummaryBanner';
-    aiBanner.className = 'alert w-100 d-flex align-items-center mb-3 mt-2 ai-summary-banner';
+    aiBanner.className = 'w-100 mb-3 mt-2 inventory-ai-prediction-banner';
     
     const failingCount = groupAssets.reduce((count, asset) => {
       const eol = getEOLDetails(asset);
@@ -2183,21 +2965,43 @@ window.viewAssetDetails = (assetName) => {
       return count + (eol.eolStatus === 'unknown' || eol.eolStatus === 'insufficient_data' ? getAssetQuantity(asset) : 0);
     }, 0);
 
-    let aiText = `<strong>AI Prediction:</strong>&nbsp;Profile-based lifespan for a&nbsp;<strong>${formatType(sampleAsset.type)}</strong>&nbsp;is&nbsp;<strong>${eolData.metrics.years} years</strong>.&nbsp;`;
-
-    if (unknownCount > 0) {
-      aiText += ` <span class="text-warning">` +
-        `${unknownCount} item${unknownCount === 1 ? '' : 's'} ha${unknownCount === 1 ? 's' : 've'} unknown EOL status due to insufficient evidence or missing telemetry.` +
-        `</span>`;
-    } else if (lowConfidenceCount > 0) {
-      aiText += ` <span class="text-warning">Backend EOL assessment is low confidence. Manual review recommended.</span>`;
-    } else if (failingCount > 0) {
-      aiText += ` <span class="text-danger">Based on backend EOL assessment, <b>${failingCount} item(s)</b> in this group need replacement planning soon.</span>`;
+    if (context.mode !== 'parents') {
+      const parentLinks = new Set(groupAssets.map((asset) => {
+        const parent = getInstalledParentInfo(asset);
+        return parent.parentName || parent.parentId || parent.parentTag;
+      }).filter(Boolean));
+      aiBanner.innerHTML = `
+        <div class="inventory-ai-prediction-label">${UI.escapeHTML(context.mode === 'components' ? 'Component Group' : `${context.mode.replace(/_/g, ' ')}`)}</div>
+        <div class="inventory-ai-prediction-copy">
+          <p class="inventory-ai-prediction-main">
+            ${UI.escapeHTML(titleLabel)} across <strong>${groupAssets.length}</strong> linked unit(s).
+          </p>
+          <div class="inventory-ai-prediction-note">${parentLinks.size ? `${parentLinks.size} related parent asset(s) linked.` : 'No parent relationship found.'}</div>
+        </div>
+      `;
     } else {
-      aiText += ` <span class="text-success">All items in this group currently have a healthy EOL status.</span>`;
-    }
+      const predictionTargetLabel = getAssetPredictionLabel(sampleAsset);
+      let noteHtml = '';
+      if (unknownCount > 0) {
+        noteHtml = `${unknownCount} item${unknownCount === 1 ? '' : 's'} ha${unknownCount === 1 ? 's' : 've'} unknown EOL status due to insufficient evidence or missing telemetry.`;
+      } else if (lowConfidenceCount > 0) {
+        noteHtml = 'Backend EOL assessment is low confidence. Manual review is recommended.';
+      } else if (failingCount > 0) {
+        noteHtml = `${failingCount} item(s) in this group need replacement planning soon.`;
+      } else {
+        noteHtml = 'All items in this group currently have a healthy EOL status.';
+      }
 
-    aiBanner.innerHTML = aiText;
+      aiBanner.innerHTML = `
+        <div class="inventory-ai-prediction-label">AI Prediction</div>
+        <div class="inventory-ai-prediction-copy">
+          <p class="inventory-ai-prediction-main">
+            Profile-based lifespan for <strong>${UI.escapeHTML(predictionTargetLabel)}</strong> is <strong>${UI.escapeHTML(String(eolData.metrics.years))} years</strong>.
+          </p>
+          <div class="inventory-ai-prediction-note">${UI.escapeHTML(noteHtml)}</div>
+        </div>
+      `;
+    }
     headerDiv.insertBefore(aiBanner, headerDiv.firstChild);
   }
 
@@ -2207,10 +3011,22 @@ window.viewAssetDetails = (assetName) => {
 	    const specStatus = getSpecVerificationStatus(asset);
 	    const serialLabel = getDisplaySerial(asset);
 	    const assetTagLabel = getDisplayAssetTag(asset);
-	    const isDeployed = normalizeValue(displayLocation(asset.location)) !== normalizeValue('Central Warehouse');
+    const parentInfo = getInstalledParentInfo(asset);
+    const installedInLabel = String(
+      parentInfo.parentName
+      || parentInfo.parentTag
+      || parentInfo.parentId
+      || profile.specs?.installedInAssetName
+      || profile.specs?.installedInAssetTag
+      || profile.specs?.installedInAssetId
+      || ''
+    ).trim();
+    const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join(' · ');
+    const eolApplicable = isEolRelevantAsset(asset);
+    const telemetryVisible = shouldShowTelemetryControl(asset, profile);
     const trackingLabel = profile.trackWorkingHours
       ? `${getOperationalStateLabel(profile.telemetryStatus)} · ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` · ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
-      : 'Not monitored';
+      : (telemetryVisible ? 'Telemetry-capable (awaiting signal/configuration)' : 'Not monitored');
     return `
 	    <tr>
 		      <td class="ps-4">
@@ -2219,6 +3035,8 @@ window.viewAssetDetails = (assetName) => {
 		        ${isVirtualUnit ? `<div class="text-muted pred-lifespan-text">Unit ${unitIndex} of ${unitCount}</div>` : ''}
 	        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
 	        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
+          ${installedInLabel ? `<div class="text-muted pred-lifespan-text">Installed in: ${UI.escapeHTML(installedInLabel)}</div>` : ''}
+          ${context.mode !== 'parents' ? `<div class="text-muted pred-lifespan-text">Parent: ${UI.escapeHTML(parentDescriptor || 'No parent relationship found')}</div>` : ''}
 	        <div class="mt-1">${getSpecVerificationBadge(specStatus)}</div>
 	      </td>
 	      <td>
@@ -2231,10 +3049,11 @@ window.viewAssetDetails = (assetName) => {
 	        </span>
 	        <div class="text-muted small mt-1">${UI.escapeHTML(displayLifecycleStatus(asset.lifecycleStatus || 'in_stock'))}</div>
 	      </td>
-      <td>${displayLocation(asset.location)}</td>
-      <td>${displayDepartment(asset.department)}</td>
+      <td>${context.mode !== 'parents' && asset?.installedParentLocation ? displayLocation(String(asset.installedParentLocation)) : displayLocation(asset.location)}</td>
+      <td>${context.mode !== 'parents' && asset?.installedParentDepartment ? displayDepartment(String(asset.installedParentDepartment)) : displayDepartment(asset.department)}</td>
 	      <td>
-	        <div class="mb-1">
+	        ${eolApplicable ? `
+          <div class="mb-1">
 	          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
 	        </div>
 	        <div class="text-muted pred-lifespan-text">
@@ -2249,7 +3068,7 @@ window.viewAssetDetails = (assetName) => {
 	          <button class="btn btn-sm btn-outline-secondary" onclick="window.showEolWhy('${asset.customId}')" title="Why this EOL status">
 	            Why?
 	          </button>
-	        </div>
+	        </div>` : `<span class="badge bg-light text-dark border">Not Applicable</span>`}
 	        <div class="text-muted pred-lifespan-text">
 	          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
 	        </div>
@@ -2257,7 +3076,7 @@ window.viewAssetDetails = (assetName) => {
 	      <td class="text-end pe-4">
 	        <div class="d-inline-flex flex-column align-items-end gap-1 inventory-row-actions">
 	          <div class="btn-group btn-group-sm" role="group" aria-label="Primary row actions">
-	            ${profile.trackWorkingHours && isDeployed ? `
+	            ${telemetryVisible ? `
 	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State">
 	              <i class="bi bi-activity"></i>
 	            </button>` : ''}
@@ -2267,7 +3086,7 @@ window.viewAssetDetails = (assetName) => {
 		            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewTransferHistory('${asset.customId}')" title="View history">
 		              <i class="bi bi-clock-history"></i>
 		            </button>
-		            <button class="btn btn-outline-success d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.openAssetCmdb('${asset.customId}')" title="Components / Maintenance / Custody / Relationships">
+		            <button class="btn btn-outline-success d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.openAssetCmdb('${asset.customId}')" title="CMDB Details">
 		              <i class="bi bi-diagram-3"></i>
 		            </button>
 		            ${INVENTORY_ACCESS.canEditSpecs ? `
@@ -2297,12 +3116,16 @@ window.viewAssetDetails = (assetName) => {
   const bulkTransferBtn = document.getElementById('bulkTransferBtn');
   const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
   const bulkSpecReviewBtn = document.getElementById('bulkSpecReviewBtn');
-  const pendingAssetsForGroup = getPendingSpecReviewAssetsInGroup(groupAssets);
+  const pendingAssetsForGroup = context.mode === 'parents' ? getPendingSpecReviewAssetsInGroup(groupAssets) : [];
   const pendingUnitsForGroup = pendingAssetsForGroup.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
 
   if (bulkTransferBtn) {
-    bulkTransferBtn.style.display = INVENTORY_ACCESS.canTransferAsset ? '' : 'none';
+    bulkTransferBtn.style.display = (INVENTORY_ACCESS.canTransferAsset && context.mode === 'parents') ? '' : 'none';
     bulkTransferBtn.onclick = () => window.bulkTransferGroup(assetName);
+  }
+  const bulkGroupCmdbBtn = document.getElementById('bulkGroupCmdbBtn');
+  if (bulkGroupCmdbBtn) {
+    bulkGroupCmdbBtn.onclick = () => window.openGroupCmdb(assetName);
   }
   if (bulkDeleteBtn) {
     bulkDeleteBtn.style.display = INVENTORY_ACCESS.canDeleteAsset ? '' : 'none';
@@ -2316,13 +3139,17 @@ window.viewAssetDetails = (assetName) => {
   }
 
   if (headerDiv) {
+    const encodedDetailGroupName = encodeURIComponent(assetName);
     const groupActionsDiv = document.createElement('div');
     groupActionsDiv.className = 'd-flex gap-2 ms-auto';
     groupActionsDiv.innerHTML = `
-      <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels('${assetName}', true)" title="Print QR Labels">
+      <button class="btn btn-sm btn-outline-success" onclick="window.openGroupCmdb(decodeURIComponent('${encodedDetailGroupName}'))" title="Open Group CMDB">
+        <i class="bi bi-diagram-3"></i> Group CMDB
+      </button>
+      <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels(decodeURIComponent('${encodedDetailGroupName}'), true)" title="Print QR Labels">
         <i class="bi bi-printer"></i> Print Labels
       </button>
-      ${INVENTORY_ACCESS.canEditSpecs ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs('${assetName}', true)" title="Edit Group Specs">
+      ${INVENTORY_ACCESS.canEditSpecs ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs(decodeURIComponent('${encodedDetailGroupName}'), true)" title="Edit Group Specs">
         <i class="bi bi-pencil"></i> Edit Specs
       </button>` : ''}
     `;
@@ -2359,6 +3186,10 @@ window.transferIndividual = (customId) => {
 
   const asset = currentAssets.find(a => a.customId === customId);
   if (!asset) return;
+  transferSelectionState = {
+    targetAssetIds: [customId],
+    isBulk: false,
+  };
 
   const availableQuantity = getAssetQuantity(asset);
   const quantity = availableQuantity;
@@ -2373,6 +3204,18 @@ window.transferIndividual = (customId) => {
   document.getElementById('checkDept').checked = false;
   document.getElementById('buildingSelect').classList.add('d-none');
   document.getElementById('deptSelect').classList.add('d-none');
+  const includeRelatedInput = document.getElementById('transferIncludeRelated');
+  const includeComponentsInput = document.getElementById('transferIncludeComponents');
+  const includeAccessoriesInput = document.getElementById('transferIncludeAccessories');
+  const includeLicensesInput = document.getElementById('transferIncludeLicenses');
+  const includeConsumablesInput = document.getElementById('transferIncludeConsumables');
+  if (includeRelatedInput) includeRelatedInput.checked = true;
+  if (includeComponentsInput) includeComponentsInput.checked = true;
+  if (includeAccessoriesInput) includeAccessoriesInput.checked = true;
+  if (includeLicensesInput) includeLicensesInput.checked = false;
+  if (includeConsumablesInput) includeConsumablesInput.checked = false;
+  updateTransferRelatedFormState();
+  refreshTransferRelatedSummary().catch(() => {});
   
   populateTransferSelects();
   
@@ -2405,8 +3248,10 @@ window.deleteIndividual = async (customId) => {
     const groupName = assetToDelete?.name;
     await loadAssets();
 
-    if (groupName && currentAssets.some(a => a.name === groupName)) {
-      window.viewAssetDetails(groupName);
+    if (activeDetailsContext && resolveAssetsForDetailsContext(activeDetailsContext).length) {
+      window.viewAssetDetailsByContext(activeDetailsContext);
+    } else if (groupName && currentAssets.some(a => a.name === groupName)) {
+      window.viewAssetDetailsByFilter('parents', groupName, '');
     } else {
       const detailsModal = bootstrap.Modal.getInstance(document.getElementById('detailsModal'));
       if (detailsModal) detailsModal.hide();
@@ -2425,8 +3270,14 @@ window.bulkTransferGroup = (assetName) => {
     return;
   }
 
-  const groupAssets = currentAssets.filter(a => a.name === assetName);
+  const groupAssets = (activeDetailsContext && resolveAssetsForDetailsContext(activeDetailsContext).length)
+    ? resolveAssetsForDetailsContext(activeDetailsContext)
+    : currentAssets.filter((a) => a.name === assetName);
   if (!groupAssets.length) return;
+  transferSelectionState = {
+    targetAssetIds: groupAssets.map((asset) => asset.customId),
+    isBulk: true,
+  };
 
   const totalQty = getAssetsTotalQuantity(groupAssets);
   selectedAssetCustomId = assetName; 
@@ -2439,6 +3290,18 @@ window.bulkTransferGroup = (assetName) => {
   document.getElementById('checkDept').checked = false;
   document.getElementById('buildingSelect').classList.add('d-none');
   document.getElementById('deptSelect').classList.add('d-none');
+  const includeRelatedInput = document.getElementById('transferIncludeRelated');
+  const includeComponentsInput = document.getElementById('transferIncludeComponents');
+  const includeAccessoriesInput = document.getElementById('transferIncludeAccessories');
+  const includeLicensesInput = document.getElementById('transferIncludeLicenses');
+  const includeConsumablesInput = document.getElementById('transferIncludeConsumables');
+  if (includeRelatedInput) includeRelatedInput.checked = true;
+  if (includeComponentsInput) includeComponentsInput.checked = true;
+  if (includeAccessoriesInput) includeAccessoriesInput.checked = true;
+  if (includeLicensesInput) includeLicensesInput.checked = false;
+  if (includeConsumablesInput) includeConsumablesInput.checked = false;
+  updateTransferRelatedFormState();
+  refreshTransferRelatedSummary().catch(() => {});
   
   populateTransferSelects();
   
@@ -2452,7 +3315,9 @@ window.bulkDeleteGroup = async (assetName) => {
     return;
   }
 
-  const groupAssets = currentAssets.filter(a => a.name === assetName);
+  const groupAssets = (activeDetailsContext && resolveAssetsForDetailsContext(activeDetailsContext).length)
+    ? resolveAssetsForDetailsContext(activeDetailsContext)
+    : currentAssets.filter((a) => a.name === assetName);
   if (!groupAssets.length) return;
   const totalQty = getAssetsTotalQuantity(groupAssets);
 
@@ -2482,7 +3347,12 @@ window.bulkDeleteGroup = async (assetName) => {
 };
 
 window.deleteAllAssets = async () => {
-  const assetsToDelete = [...currentAssets];
+  if (currentInventoryView === 'spare_stock') {
+    showMessage('Use Spare Stock actions to adjust or remove spare stock items.', 'info');
+    await window.openSpareStockModal();
+    return;
+  }
+  const assetsToDelete = [...getAssetsForCurrentInventoryView()];
   const totalQty = getAssetsTotalQuantity(assetsToDelete);
   if (!assetsToDelete.length) {
     showMessage('No assets to delete.', 'warning');
@@ -2528,11 +3398,107 @@ window.deleteAllAssets = async () => {
   }
 };
 
-window.viewTransferHistory = async (customId) => {
+function historySourceBadgeHtml(sourceType) {
+  const normalized = String(sourceType || '').trim().toLowerCase();
+  const map = {
+    parent: { label: 'Parent', cls: 'bg-primary-subtle text-primary-emphasis border border-primary-subtle' },
+    component: { label: 'Component', cls: 'bg-info-subtle text-info-emphasis border border-info-subtle' },
+    accessory: { label: 'Accessory', cls: 'bg-warning-subtle text-warning-emphasis border border-warning-subtle' },
+    consumable: { label: 'Consumable', cls: 'bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle' },
+    license: { label: 'License', cls: 'bg-success-subtle text-success-emphasis border border-success-subtle' },
+    related: { label: 'Related', cls: 'bg-light text-dark border' },
+  };
+  const entry = map[normalized] || map.related;
+  return `<span class="badge ${entry.cls}">${entry.label}</span>`;
+}
+
+function renderHistoryLegend(entries = []) {
+  const sourceTypes = new Set(
+    (entries || [])
+      .map((entry) => String(entry?.sourceItemType || 'parent').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (!sourceTypes.size) sourceTypes.add('parent');
+  return Array.from(sourceTypes).map((type) => historySourceBadgeHtml(type)).join('');
+}
+
+function renderHistoryTimeline(entries = [], includeRelated = true) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    const emptyMessage = includeRelated
+      ? 'No related component/accessory/license history yet.'
+      : 'This asset does not have recorded actions yet.';
+    return `
+      <div class="empty-state py-4">
+        <i class="bi bi-clock-history"></i>
+        <h5>No history yet</h5>
+        <p>${UI.escapeHTML(emptyMessage)}</p>
+      </div>
+    `;
+  }
+
+  return entries.map((entry) => {
+    const sourceLabel = String(entry.sourceItemName || entry.sourceItemCustomId || '').trim();
+    const sourceMeta = [entry.sourceItemCustomId, entry.sourceItemAssetTag, entry.sourceItemSerialNumber]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .join(' • ');
+    const linkedParent = String(entry.linkedParentAssetId || entry.linkedParentAssetName || '').trim()
+      ? `Parent: ${entry.linkedParentAssetName || entry.linkedParentAssetId}${entry.linkedParentAssetTag ? ` (${entry.linkedParentAssetTag})` : ''}`
+      : '';
+    const message = [
+      String(entry.details || '').trim(),
+      entry.reason ? `Reason: ${entry.reason}` : '',
+      linkedParent,
+    ].filter(Boolean).join(' | ');
+    return `
+      <div class="timeline-item">
+        <div class="d-flex justify-content-between align-items-start gap-3">
+          <div class="d-flex flex-wrap align-items-center gap-2">
+            ${historySourceBadgeHtml(entry.sourceItemType || 'parent')}
+            <strong>${UI.escapeHTML(entry.event || 'Asset update')}</strong>
+          </div>
+          <small class="text-muted">${UI.formatDateTime(entry.date)}</small>
+        </div>
+        ${sourceLabel ? `<div class="small mt-1"><span class="text-muted">Item:</span> ${UI.escapeHTML(sourceLabel)}${sourceMeta ? ` <span class="text-muted">(${UI.escapeHTML(sourceMeta)})</span>` : ''}</div>` : ''}
+        <div class="text-muted small mt-1">${UI.escapeHTML(message || '')}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+window.viewTransferHistory = async (customId, options = {}) => {
   const historyContent = document.getElementById('historyContent');
   const historyTitle = document.querySelector('#historyModal .modal-title');
+  const includeRelatedInput = document.getElementById('historyIncludeRelated');
+  const historyLegend = document.getElementById('historyLegendBadges');
+  const assetRecord = currentAssets.find((entry) => entry.customId === customId);
+  const firstOpenForAsset = historyViewState.assetId !== customId;
+  const defaultIncludeRelated = firstOpenForAsset
+    ? isParentViewAsset(assetRecord || {})
+    : Boolean(includeRelatedInput?.checked ?? true);
+  const includeRelated = typeof options.includeRelated === 'boolean'
+    ? options.includeRelated
+    : defaultIncludeRelated;
+
+  historyViewState.assetId = customId;
+  historyViewState.includeRelated = includeRelated;
+
+  if (includeRelatedInput) {
+    includeRelatedInput.checked = includeRelated;
+    if (!includeRelatedInput.dataset.bound) {
+      includeRelatedInput.dataset.bound = 'true';
+      includeRelatedInput.addEventListener('change', () => {
+        if (!historyViewState.assetId) return;
+        window.viewTransferHistory(historyViewState.assetId, {
+          includeRelated: Boolean(includeRelatedInput.checked),
+          preserveModal: true,
+        }).catch(() => {});
+      });
+    }
+  }
 
   if (historyTitle) historyTitle.textContent = `Audit Trail - ${customId}`;
+  if (historyLegend) historyLegend.innerHTML = renderHistoryLegend([]);
   if (historyContent) {
     historyContent.innerHTML = `
       <div class="text-center py-4">
@@ -2543,37 +3509,21 @@ window.viewTransferHistory = async (customId) => {
   }
 
   const historyModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('historyModal'));
-  historyModal.show();
+  if (!options.preserveModal) {
+    historyModal.show();
+  }
 
   try {
-    const response = await inventoryRequest(`/assets/${encodeURIComponent(customId)}/history`);
+    const query = includeRelated ? '?includeRelated=true' : '';
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(customId)}/history${query}`);
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.message || 'Failed to load asset history');
     }
 
     const entries = await response.json();
-
-    if (!Array.isArray(entries) || entries.length === 0) {
-      historyContent.innerHTML = `
-        <div class="empty-state py-4">
-          <i class="bi bi-clock-history"></i>
-          <h5>No history yet</h5>
-          <p>This asset does not have recorded actions yet.</p>
-        </div>
-      `;
-      return;
-    }
-
-    historyContent.innerHTML = entries.map(entry => `
-      <div class="timeline-item">
-        <div class="d-flex justify-content-between gap-3">
-          <strong>${UI.escapeHTML(entry.event || 'Asset update')}</strong>
-          <small class="text-muted">${UI.formatDateTime(entry.date)}</small>
-        </div>
-        <div class="text-muted small mt-1">${UI.escapeHTML(entry.details || '')}</div>
-      </div>
-    `).join('');
+    if (historyLegend) historyLegend.innerHTML = renderHistoryLegend(entries);
+    historyContent.innerHTML = renderHistoryTimeline(entries, includeRelated);
   } catch (error) {
     console.error(error);
     historyContent.innerHTML = `
@@ -2647,6 +3597,9 @@ function ensureCmdbModal() {
       cmdbState = { assetId: null, activeTab: 'components' };
       const bodyEl = document.getElementById(`${CMDB_MODAL_ID}-body`);
       if (bodyEl) bodyEl.innerHTML = '';
+      document.querySelectorAll('body > .modal-backdrop').forEach((backdrop, index, list) => {
+        if (index < list.length - 1) backdrop.remove();
+      });
     });
   }
   return bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -2663,10 +3616,27 @@ async function fetchCmdbData(customId) {
   return { components, maintenance, custody, relationships, lifecycleEvents };
 }
 
-function renderCmdbBody(customId, data) {
+function renderCmdbBody(customId, data, asset) {
+  const installedParent = getInstalledParentInfo(asset || {});
+  const categoryKey = getAssetCategoryKey(asset || {});
+  const isComponentContext = isInstalledComponentAsset(asset || {});
+  const isAccessoryContext = categoryKey === 'accessory';
+  const isConsumableContext = categoryKey === 'consumable';
+  const isSparePartContext = categoryKey === 'spare_part';
+  const isLicenseContext = categoryKey === 'license';
+  const showComponentsTab = !(isComponentContext || isAccessoryContext || isConsumableContext || isSparePartContext || isLicenseContext);
+  const isParentContext = showComponentsTab;
+  const maintenanceTabLabel = (isConsumableContext || isSparePartContext) ? 'Stock/Adjustments' : 'Maintenance';
+  const maintenanceActionLabel = (isConsumableContext || isSparePartContext) ? 'Add Adjustment' : 'Add Maintenance';
+  const maintenanceEmptyLabel = (isConsumableContext || isSparePartContext) ? 'No stock adjustments.' : 'No maintenance records.';
+  const custodyTabLabel = isLicenseContext ? 'Assignment' : 'Assignment/Custody';
+  const relationshipsTabLabel = isConsumableContext ? 'Usage/Relationships' : 'Relationships';
   const componentsRows = (data.components || []).map((component) => `
     <tr>
-      <td>${UI.escapeHTML(component.componentName || '-')}</td>
+      <td>
+        <div>${UI.escapeHTML(component.componentName || '-')}</div>
+        ${component.childAsset?.customId ? `<div class="small text-muted">Asset: ${UI.escapeHTML(component.childAsset.customId)}</div>` : ''}
+      </td>
       <td>${UI.escapeHTML(component.componentType || '-')}</td>
       <td>${UI.escapeHTML([component.brand, component.model].filter(Boolean).join(' / ') || '-')}</td>
       <td>${UI.escapeHTML(component.serialNumber || '-')}</td>
@@ -2675,6 +3645,7 @@ function renderCmdbBody(customId, data) {
       <td>${UI.escapeHTML(component.condition || '-')}</td>
       <td>${component.installedAt ? UI.formatDateTime(component.installedAt) : '-'}</td>
       <td class="text-end">
+        ${component.childAsset?.customId ? `<button class="btn btn-sm btn-outline-success me-1" onclick="window.openAssetCmdb('${component.childAsset.customId}')">Open Asset</button>` : ''}
         <div class="dropdown">
           <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" type="button">Actions</button>
           <ul class="dropdown-menu dropdown-menu-end">
@@ -2724,6 +3695,28 @@ function renderCmdbBody(customId, data) {
       <td class="text-end">${row.direction === 'outgoing' ? `<button class="btn btn-sm btn-outline-danger" onclick="window.cmdbDeleteRelationship('${customId}','${row.id}')">Delete</button>` : ''}</td>
     </tr>
   `).join('');
+  const relatedParentRelationshipType = isComponentContext
+    ? 'installed_in'
+    : isAccessoryContext
+      ? 'used_with'
+      : isConsumableContext
+        ? 'consumed_by'
+        : isLicenseContext
+          ? 'licensed_to'
+          : isSparePartContext
+            ? 'spare_for'
+            : 'related_to';
+  const componentInstalledInRows = installedParent.hasParent
+    ? `
+      <tr>
+        <td>${relatedParentRelationshipType}</td>
+        <td>${UI.escapeHTML(installedParent.parentName || '-')}</td>
+        <td>${UI.escapeHTML(installedParent.parentId || '-')}</td>
+        <td>${UI.escapeHTML(installedParent.parentTag || '-')}</td>
+        <td class="text-end">${installedParent.parentId ? `<button class="btn btn-sm btn-outline-primary" onclick="window.openAssetCmdb('${installedParent.parentId}')">Open Parent</button>` : ''}</td>
+      </tr>
+    `
+    : '';
 
   const lifecycleRows = (data.lifecycleEvents || []).slice(0, 80).map((row) => `
     <tr>
@@ -2736,13 +3729,14 @@ function renderCmdbBody(customId, data) {
 
   return `
     <ul class="nav nav-tabs" role="tablist">
-      <li class="nav-item"><button class="nav-link" data-cmdb-tab="components" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-components" type="button">Components</button></li>
-      <li class="nav-item"><button class="nav-link" data-cmdb-tab="maintenance" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-maintenance" type="button">Maintenance</button></li>
-      <li class="nav-item"><button class="nav-link" data-cmdb-tab="custody" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-custody" type="button">Assignment/Custody</button></li>
-      <li class="nav-item"><button class="nav-link" data-cmdb-tab="relationships" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-relationships" type="button">Relationships</button></li>
+      ${showComponentsTab ? `<li class="nav-item"><button class="nav-link" data-cmdb-tab="components" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-components" type="button">Components</button></li>` : ''}
+      <li class="nav-item"><button class="nav-link" data-cmdb-tab="maintenance" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-maintenance" type="button">${maintenanceTabLabel}</button></li>
+      <li class="nav-item"><button class="nav-link" data-cmdb-tab="custody" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-custody" type="button">${custodyTabLabel}</button></li>
+      <li class="nav-item"><button class="nav-link" data-cmdb-tab="relationships" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-relationships" type="button">${relationshipsTabLabel}</button></li>
       <li class="nav-item"><button class="nav-link" data-cmdb-tab="lifecycle" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-lifecycle" type="button">Lifecycle Events</button></li>
     </ul>
     <div class="tab-content pt-3">
+      ${showComponentsTab ? `
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-components">
         <div class="d-flex justify-content-end gap-2 mb-2">
           <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${customId}')">Install From Stock</button>
@@ -2752,10 +3746,10 @@ function renderCmdbBody(customId, data) {
           <thead><tr><th>Name</th><th>Type</th><th>Brand/Model</th><th>Serial</th><th>Part No.</th><th>Status</th><th>Condition</th><th>Installed At</th><th class="text-end">Actions</th></tr></thead>
           <tbody>${componentsRows || '<tr><td colspan="9" class="text-muted">No components.</td></tr>'}</tbody>
         </table></div>
-      </div>
+      </div>` : ''}
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-maintenance">
-        <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddMaintenance('${customId}')">Add Maintenance</button></div>
-        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Type</th><th>Status</th><th>By</th><th>At</th><th>Cost</th></tr></thead><tbody>${maintenanceRows || '<tr><td colspan="5" class="text-muted">No maintenance records.</td></tr>'}</tbody></table></div>
+        <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddMaintenance('${customId}')">${maintenanceActionLabel}</button></div>
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Type</th><th>Status</th><th>By</th><th>At</th><th>Cost</th></tr></thead><tbody>${maintenanceRows || `<tr><td colspan="5" class="text-muted">${maintenanceEmptyLabel}</td></tr>`}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-custody">
         <div class="d-flex justify-content-end gap-2 mb-2">
@@ -2766,9 +3760,24 @@ function renderCmdbBody(customId, data) {
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-relationships">
         <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddRelationship('${customId}')">Add Relationship</button></div>
-        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Direction</th><th>Type</th><th>Asset</th><th>Related</th><th></th></tr></thead><tbody>${relRows || '<tr><td colspan="5" class="text-muted">No relationships.</td></tr>'}</tbody></table></div>
+        <div class="table-responsive"><table class="table table-sm">
+          <thead><tr><th>Direction/Type</th><th>Type/Parent Name</th><th>Asset/Parent ID</th><th>Related/Parent Tag</th><th></th></tr></thead>
+          <tbody>
+            ${componentInstalledInRows}
+            ${relRows}
+            ${(!relRows && !componentInstalledInRows) ? '<tr><td colspan="5" class="text-muted">No parent relationship found.</td></tr>' : ''}
+          </tbody>
+        </table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-lifecycle">
+        ${isParentContext ? `
+        <div class="d-flex justify-content-end mb-2">
+          <button class="btn btn-sm btn-outline-dark" onclick="window.cmdbAiHealthSummary('${customId}')">
+            <i class="bi bi-stars me-1"></i>AI Health Summary
+          </button>
+        </div>
+        <div id="${CMDB_MODAL_ID}-ai-health" class="mb-2"></div>
+        ` : ''}
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>When</th><th>Event</th><th>Reason</th><th>Actor</th></tr></thead><tbody>${lifecycleRows || '<tr><td colspan="4" class="text-muted">No lifecycle events.</td></tr>'}</tbody></table></div>
       </div>
     </div>
@@ -2790,23 +3799,549 @@ async function refreshCmdbModal(customId = cmdbState.assetId, preferredTab = cmd
   if (bodyEl) bodyEl.innerHTML = '<div class="text-muted py-3">Loading CMDB data...</div>';
 
   const data = await fetchCmdbData(customId);
-  if (bodyEl) bodyEl.innerHTML = renderCmdbBody(customId, data);
+  if (bodyEl) bodyEl.innerHTML = renderCmdbBody(customId, data, asset);
   const tabButtons = Array.from(document.querySelectorAll(`#${CMDB_MODAL_ID} [data-cmdb-tab]`));
   tabButtons.forEach((btn) => {
     btn.addEventListener('shown.bs.tab', (event) => {
       cmdbState.activeTab = event.target?.getAttribute('data-cmdb-tab') || 'components';
     });
   });
-  const targetBtn = document.querySelector(`#${CMDB_MODAL_ID} [data-cmdb-tab="${cmdbState.activeTab}"]`) || document.querySelector(`#${CMDB_MODAL_ID} [data-cmdb-tab="components"]`);
+  const categoryKey = getAssetCategoryKey(asset || {});
+  const allowComponentsTab = !(isInstalledComponentAsset(asset) || ['accessory', 'consumable', 'spare_part', 'license'].includes(categoryKey));
+  const targetBtn = document.querySelector(`#${CMDB_MODAL_ID} [data-cmdb-tab="${cmdbState.activeTab}"]`)
+    || document.querySelector(`#${CMDB_MODAL_ID} [data-cmdb-tab="${allowComponentsTab ? 'components' : 'maintenance'}"]`);
   if (targetBtn) bootstrap.Tab.getOrCreateInstance(targetBtn).show();
-  modal.show();
+  const modalEl = document.getElementById(CMDB_MODAL_ID);
+  if (modalEl && !modalEl.classList.contains('show')) {
+    modal.show();
+  }
+}
+
+function setInventoryView(nextView = 'parents') {
+  currentInventoryView = normalizeInventoryView(nextView);
+  inventoryPageState.page = 1;
+  activeDetailsContext = null;
+  activeDetailsGroupName = null;
+  bulkSpecReviewContext = null;
+  if (currentInventoryView === 'spare_stock') {
+    window.loadSpareStock()
+      .then(() => {
+        if (currentInventoryView === 'spare_stock') {
+          populateFilters();
+          renderTable();
+        }
+      })
+      .catch(() => {});
+    return;
+  }
+  loadAssets().catch((error) => {
+    showMessage(error.message || 'Failed to switch inventory view.', 'error');
+  });
 }
 
 window.openAssetCmdb = async (customId) => {
   try {
-    await refreshCmdbModal(customId, cmdbState.assetId === customId ? cmdbState.activeTab : 'components');
+    const asset = currentAssets.find((entry) => entry.customId === customId);
+    const categoryKey = getAssetCategoryKey(asset || {});
+    const allowComponentsTab = asset && !(isInstalledComponentAsset(asset) || ['accessory', 'consumable', 'spare_part', 'license'].includes(categoryKey));
+    const defaultTab = allowComponentsTab ? 'components' : 'maintenance';
+    await refreshCmdbModal(customId, cmdbState.assetId === customId ? cmdbState.activeTab : defaultTab);
   } catch (error) {
     showMessage(error.message || 'Failed to open CMDB modal.', 'error');
+  }
+};
+
+function getTransferRelatedOptionsFromForm() {
+  const includeRelated = Boolean(document.getElementById('transferIncludeRelated')?.checked);
+  return {
+    includeRelated,
+    includeComponents: includeRelated && Boolean(document.getElementById('transferIncludeComponents')?.checked),
+    includeAccessories: includeRelated && Boolean(document.getElementById('transferIncludeAccessories')?.checked),
+    includeLicenses: includeRelated && Boolean(document.getElementById('transferIncludeLicenses')?.checked),
+    includeConsumables: includeRelated && Boolean(document.getElementById('transferIncludeConsumables')?.checked),
+  };
+}
+
+function updateTransferRelatedFormState() {
+  const includeRelated = Boolean(document.getElementById('transferIncludeRelated')?.checked);
+  ['transferIncludeComponents', 'transferIncludeAccessories', 'transferIncludeLicenses', 'transferIncludeConsumables'].forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) input.disabled = !includeRelated;
+  });
+}
+
+async function refreshTransferRelatedSummary() {
+  const summaryEl = document.getElementById('transferRelatedCounts');
+  if (!summaryEl) return;
+  const opts = getTransferRelatedOptionsFromForm();
+  if (!opts.includeRelated) {
+    summaryEl.textContent = 'Related item transfer disabled.';
+    return;
+  }
+  if (transferSelectionState.isBulk || !transferSelectionState.targetAssetIds.length) {
+    summaryEl.textContent = 'Related counts will be resolved during transfer for selected units.';
+    return;
+  }
+  const assetId = transferSelectionState.targetAssetIds[0];
+  try {
+    const params = new URLSearchParams({
+      includeComponents: String(opts.includeComponents),
+      includeAccessories: String(opts.includeAccessories),
+      includeLicenses: String(opts.includeLicenses),
+      includeConsumables: String(opts.includeConsumables),
+    });
+    const payload = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/transfer-related-summary?${params.toString()}`);
+    const counts = payload?.counts || {};
+    summaryEl.textContent = `Related items: ${counts.components || 0} components, ${counts.accessories || 0} accessories, ${counts.licenses || 0} licenses, ${counts.consumables || 0} linked consumables.`;
+  } catch (_error) {
+    summaryEl.textContent = 'Could not load related counts. They will be resolved during transfer.';
+  }
+}
+
+function getGroupCmdbAssets(groupName = groupCmdbState.groupName) {
+  if (currentInventoryView === 'spare_stock') return [];
+  const scopedAssets = getAssetsForCurrentInventoryView();
+  return scopedAssets
+    .filter((asset) => {
+      if (currentInventoryView === 'parents') return asset.name === groupName;
+      return normalizeValue(getAssetViewTypeLabel(asset, currentInventoryView)) === normalizeValue(groupName);
+    })
+    .sort((a, b) => String(a.customId || '').localeCompare(String(b.customId || '')));
+}
+
+function ensureGroupCmdbModal() {
+  let modalEl = document.getElementById(GROUP_CMDB_MODAL_ID);
+  if (!modalEl) {
+    const modalHtml = `
+      <div class="modal fade" id="${GROUP_CMDB_MODAL_ID}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title fw-bold" id="${GROUP_CMDB_MODAL_ID}-title">Group CMDB</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="${GROUP_CMDB_MODAL_ID}-body"></div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    modalEl = document.getElementById(GROUP_CMDB_MODAL_ID);
+    modalEl.addEventListener('hidden.bs.modal', () => {
+      groupCmdbState = {
+        groupName: '',
+        activeTab: 'components',
+        selectedAssetIds: [],
+        searchText: '',
+      };
+      const bodyEl = document.getElementById(`${GROUP_CMDB_MODAL_ID}-body`);
+      if (bodyEl) bodyEl.innerHTML = '';
+      document.querySelectorAll('body > .modal-backdrop').forEach((backdrop, index, list) => {
+        if (index < list.length - 1) backdrop.remove();
+      });
+    });
+  }
+  return bootstrap.Modal.getOrCreateInstance(modalEl);
+}
+
+async function fetchGroupCmdbData(selectedAssetIds = []) {
+  const ids = Array.from(new Set((selectedAssetIds || []).map((id) => String(id || '').trim()).filter(Boolean)));
+  const pairs = await Promise.all(ids.map(async (assetId) => {
+    const data = await fetchCmdbData(assetId);
+    return [assetId, data];
+  }));
+  return Object.fromEntries(pairs);
+}
+
+function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
+  const selectedSet = new Set(selectedAssetIds);
+  const selectedAssets = groupAssets.filter((asset) => selectedSet.has(asset.customId));
+  const selectedCount = selectedAssets.length;
+  const totalCount = groupAssets.length;
+  const activeTab = groupCmdbState.activeTab || 'components';
+  const selectedData = selectedAssets.map((asset) => ({
+    asset,
+    data: dataMap[asset.customId] || { components: [], maintenance: [], custody: [], relationships: { outgoing: [], incoming: [] }, lifecycleEvents: [] },
+  }));
+  const componentsRows = selectedData.flatMap(({ asset, data }) => (data.components || []).map((component) => `
+    <tr>
+      <td>${UI.escapeHTML(asset.customId || '-')}</td>
+      <td>${UI.escapeHTML(component.componentName || '-')}</td>
+      <td>${UI.escapeHTML(component.componentType || '-')}</td>
+      <td>${UI.escapeHTML(component.serialNumber || '-')}</td>
+      <td>${UI.escapeHTML(cmdbStatusLabel(component.status || '-'))}</td>
+      <td>${component.installedAt ? UI.formatDateTime(component.installedAt) : '-'}</td>
+    </tr>
+  `)).join('');
+  const maintenanceRows = selectedData.flatMap(({ asset, data }) => (data.maintenance || []).map((row) => `
+    <tr>
+      <td>${UI.escapeHTML(asset.customId || '-')}</td>
+      <td>${UI.escapeHTML(row.maintenanceType || '-')}</td>
+      <td>${UI.escapeHTML(row.status || '-')}</td>
+      <td>${row.performedAt ? UI.formatDateTime(row.performedAt) : '-'}</td>
+      <td>${UI.escapeHTML(row.performedBy || '-')}</td>
+    </tr>
+  `)).join('');
+  const custodyRows = selectedData.flatMap(({ asset, data }) => (data.custody || []).map((row) => `
+    <tr>
+      <td>${UI.escapeHTML(asset.customId || '-')}</td>
+      <td>${UI.escapeHTML(row.action || '-')}</td>
+      <td>${UI.escapeHTML(row.assignedToName || row.assignedToUserId || '-')}</td>
+      <td>${row.checkoutDate ? UI.formatDateTime(row.checkoutDate) : '-'}</td>
+      <td>${row.returnedDate ? UI.formatDateTime(row.returnedDate) : '-'}</td>
+    </tr>
+  `)).join('');
+  const relationshipRows = selectedData.flatMap(({ asset, data }) => {
+    const outgoing = (data.relationships?.outgoing || []).map((row) => ({ ...row, direction: 'outgoing' }));
+    const incoming = (data.relationships?.incoming || []).map((row) => ({ ...row, direction: 'incoming' }));
+    return [...outgoing, ...incoming].map((row) => `
+      <tr>
+        <td>${UI.escapeHTML(asset.customId || '-')}</td>
+        <td>${UI.escapeHTML(row.direction || '-')}</td>
+        <td>${UI.escapeHTML(row.relationshipType || '-')}</td>
+        <td>${UI.escapeHTML(row.relatedAssetId || row.assetId || '-')}</td>
+      </tr>
+    `);
+  }).join('');
+  const lifecycleRows = selectedData.flatMap(({ asset, data }) => (data.lifecycleEvents || []).slice(0, 30).map((row) => `
+    <tr>
+      <td>${UI.escapeHTML(asset.customId || '-')}</td>
+      <td>${row.createdAt ? UI.formatDateTime(row.createdAt) : '-'}</td>
+      <td>${UI.escapeHTML(row.eventType || '-')}</td>
+      <td>${UI.escapeHTML(row.reason || '-')}</td>
+    </tr>
+  `)).join('');
+
+  const listRows = groupAssets.filter((asset) => {
+    const haystack = `${asset.customId} ${getDisplaySerial(asset)} ${displayLocation(asset.location)} ${displayDepartment(asset.department)}`.toLowerCase();
+    return !groupCmdbState.searchText || haystack.includes(groupCmdbState.searchText.toLowerCase());
+  }).map((asset) => {
+    const checked = selectedSet.has(asset.customId) ? 'checked' : '';
+    return `
+      <label class="list-group-item list-group-item-action py-2">
+        <input class="form-check-input me-2" type="checkbox" data-group-cmdb-checkbox="${asset.customId}" ${checked}>
+        <span class="fw-semibold">${UI.escapeHTML(asset.customId)}</span>
+        <div class="small text-muted">${UI.escapeHTML(getDisplaySerial(asset) || 'No Serial')} · ${UI.escapeHTML(displayLocation(asset.location))}</div>
+      </label>
+    `;
+  }).join('');
+
+  const summaryCards = selectedAssets.map((asset) => {
+    const data = dataMap[asset.customId] || {};
+    const components = Array.isArray(data.components) ? data.components.length : 0;
+    const maintenance = Array.isArray(data.maintenance) ? data.maintenance.length : 0;
+    return `
+      <tr>
+        <td>${UI.escapeHTML(asset.customId)}</td>
+        <td>${components}</td>
+        <td>${maintenance}</td>
+        <td><button class="btn btn-sm btn-outline-secondary" data-group-cmdb-single="${asset.customId}">Open Unit CMDB</button></td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="inventory-group-cmdb-layout">
+      <div>
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="small fw-bold text-uppercase text-muted">Units</div>
+          <div class="small text-muted">${selectedCount}/${totalCount} selected</div>
+        </div>
+        <div class="input-group input-group-sm mb-2">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input type="text" class="form-control" id="${GROUP_CMDB_MODAL_ID}-search" value="${UI.escapeHTML(groupCmdbState.searchText)}" placeholder="Search ID / serial / location">
+        </div>
+        <div class="d-flex gap-2 mb-2">
+          <button class="btn btn-sm btn-outline-secondary w-100" id="${GROUP_CMDB_MODAL_ID}-select-all">Select All</button>
+          <button class="btn btn-sm btn-outline-secondary w-100" id="${GROUP_CMDB_MODAL_ID}-clear-all">Clear</button>
+        </div>
+        <div class="list-group" style="max-height: 440px; overflow:auto;">
+          ${listRows || '<div class="text-muted small p-3">No units match this filter.</div>'}
+        </div>
+      </div>
+      <div>
+        <div class="alert alert-light border py-2 mb-2 small">
+          Group CMDB lets you compare differences across units and apply actions only to selected units.
+        </div>
+        <ul class="nav nav-tabs" role="tablist">
+          <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="components" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-components" type="button">Components</button></li>
+          <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="maintenance" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-maintenance" type="button">Maintenance</button></li>
+          <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="custody" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-custody" type="button">Assignment/Custody</button></li>
+          <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="relationships" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-relationships" type="button">Relationships</button></li>
+          <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="lifecycle" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-lifecycle" type="button">Lifecycle Events</button></li>
+        </ul>
+        <div class="tab-content pt-3">
+          <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-components">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="small text-muted">Use unit selector to compare per-unit components.</div>
+              ${selectedCount === 1 ? `
+                <div class="d-flex gap-2">
+                  <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${selectedAssets[0].customId}')">Install From Stock</button>
+                  <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${selectedAssets[0].customId}')">Add Component</button>
+                </div>
+              ` : ''}
+            </div>
+            <div class="table-responsive mb-3"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>Components</th><th>Maintenance</th><th></th></tr></thead>
+              <tbody>${summaryCards || '<tr><td colspan="4" class="text-muted">Select one or more units to begin.</td></tr>'}</tbody>
+            </table></div>
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>Name</th><th>Type</th><th>Serial</th><th>Status</th><th>Installed At</th></tr></thead>
+              <tbody>${componentsRows || '<tr><td colspan="6" class="text-muted">No component records for selected units.</td></tr>'}</tbody>
+            </table></div>
+          </div>
+          <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-maintenance">
+            <div class="d-flex justify-content-end mb-2">
+              <button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-maintenance">Bulk Add Maintenance</button>
+            </div>
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>Type</th><th>Status</th><th>At</th><th>By</th></tr></thead>
+              <tbody>${maintenanceRows || '<tr><td colspan="5" class="text-muted">No maintenance records for selected units.</td></tr>'}</tbody>
+            </table></div>
+          </div>
+          <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-custody">
+            <div class="d-flex gap-2 justify-content-end mb-2">
+              <button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-assign">Bulk Assign/Checkout</button>
+              <button class="btn btn-sm btn-outline-secondary" id="${GROUP_CMDB_MODAL_ID}-bulk-checkin">Bulk Check-in</button>
+            </div>
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>Action</th><th>User</th><th>Checkout</th><th>Return</th></tr></thead>
+              <tbody>${custodyRows || '<tr><td colspan="5" class="text-muted">No custody records for selected units.</td></tr>'}</tbody>
+            </table></div>
+          </div>
+          <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-relationships">
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>Direction</th><th>Type</th><th>Related Asset</th></tr></thead>
+              <tbody>${relationshipRows || '<tr><td colspan="4" class="text-muted">No relationships for selected units.</td></tr>'}</tbody>
+            </table></div>
+          </div>
+          <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-lifecycle">
+            <div class="table-responsive"><table class="table table-sm">
+              <thead><tr><th>Unit</th><th>When</th><th>Event</th><th>Reason</th></tr></thead>
+              <tbody>${lifecycleRows || '<tr><td colspan="4" class="text-muted">No lifecycle events for selected units.</td></tr>'}</tbody>
+            </table></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function refreshGroupCmdbModal() {
+  const groupAssets = getGroupCmdbAssets(groupCmdbState.groupName);
+  if (!groupAssets.length) {
+    showMessage('No assets found for this group.', 'warning');
+    return;
+  }
+  const validIds = new Set(groupAssets.map((asset) => asset.customId));
+  const selectedAssetIds = (groupCmdbState.selectedAssetIds || []).filter((id) => validIds.has(id));
+  if (!selectedAssetIds.length) selectedAssetIds.push(groupAssets[0].customId);
+  groupCmdbState.selectedAssetIds = selectedAssetIds;
+
+  const modal = ensureGroupCmdbModal();
+  const titleEl = document.getElementById(`${GROUP_CMDB_MODAL_ID}-title`);
+  const bodyEl = document.getElementById(`${GROUP_CMDB_MODAL_ID}-body`);
+  if (titleEl) titleEl.textContent = `Group CMDB - ${groupCmdbState.groupName}`;
+  if (bodyEl) bodyEl.innerHTML = '<div class="text-muted py-3">Loading group CMDB data...</div>';
+
+  const dataMap = await fetchGroupCmdbData(selectedAssetIds);
+  if (bodyEl) bodyEl.innerHTML = renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap);
+
+  const searchInput = document.getElementById(`${GROUP_CMDB_MODAL_ID}-search`);
+  if (searchInput) {
+    searchInput.addEventListener('input', (event) => {
+      groupCmdbState.searchText = String(event.target?.value || '');
+      refreshGroupCmdbModal().catch((error) => showMessage(error.message || 'Failed to refresh Group CMDB.', 'error'));
+    }, { once: true });
+  }
+
+  document.querySelectorAll(`[data-group-cmdb-checkbox]`).forEach((checkbox) => {
+    checkbox.addEventListener('change', (event) => {
+      const assetId = String(event.target?.getAttribute('data-group-cmdb-checkbox') || '');
+      const checked = Boolean(event.target?.checked);
+      const next = new Set(groupCmdbState.selectedAssetIds || []);
+      if (checked) next.add(assetId);
+      else next.delete(assetId);
+      groupCmdbState.selectedAssetIds = Array.from(next);
+      refreshGroupCmdbModal().catch((error) => showMessage(error.message || 'Failed to refresh Group CMDB.', 'error'));
+    }, { once: true });
+  });
+
+  const selectAllBtn = document.getElementById(`${GROUP_CMDB_MODAL_ID}-select-all`);
+  if (selectAllBtn) {
+    selectAllBtn.addEventListener('click', () => {
+      groupCmdbState.selectedAssetIds = groupAssets.map((asset) => asset.customId);
+      refreshGroupCmdbModal().catch((error) => showMessage(error.message || 'Failed to refresh Group CMDB.', 'error'));
+    }, { once: true });
+  }
+  const clearAllBtn = document.getElementById(`${GROUP_CMDB_MODAL_ID}-clear-all`);
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      groupCmdbState.selectedAssetIds = [];
+      refreshGroupCmdbModal().catch((error) => showMessage(error.message || 'Failed to refresh Group CMDB.', 'error'));
+    }, { once: true });
+  }
+  document.querySelectorAll('[data-group-cmdb-tab]').forEach((tabBtn) => {
+    tabBtn.addEventListener('shown.bs.tab', (event) => {
+      groupCmdbState.activeTab = event.target?.getAttribute('data-group-cmdb-tab') || 'components';
+    }, { once: true });
+  });
+  const tabBtn = document.querySelector(`[data-group-cmdb-tab="${groupCmdbState.activeTab || 'components'}"]`)
+    || document.querySelector('[data-group-cmdb-tab="components"]');
+  if (tabBtn) bootstrap.Tab.getOrCreateInstance(tabBtn).show();
+
+  document.querySelectorAll('[data-group-cmdb-single]').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      const assetId = String(event.target?.getAttribute('data-group-cmdb-single') || '');
+      if (assetId) window.openAssetCmdb(assetId);
+    }, { once: true });
+  });
+
+  const bulkMaintenanceBtn = document.getElementById(`${GROUP_CMDB_MODAL_ID}-bulk-maintenance`);
+  if (bulkMaintenanceBtn) {
+    bulkMaintenanceBtn.addEventListener('click', () => window.groupCmdbBulkAddMaintenance(), { once: true });
+  }
+  const bulkAssignBtn = document.getElementById(`${GROUP_CMDB_MODAL_ID}-bulk-assign`);
+  if (bulkAssignBtn) {
+    bulkAssignBtn.addEventListener('click', () => window.groupCmdbBulkAssign(), { once: true });
+  }
+  const bulkCheckinBtn = document.getElementById(`${GROUP_CMDB_MODAL_ID}-bulk-checkin`);
+  if (bulkCheckinBtn) {
+    bulkCheckinBtn.addEventListener('click', () => window.groupCmdbBulkCheckin(), { once: true });
+  }
+
+  const modalEl = document.getElementById(GROUP_CMDB_MODAL_ID);
+  if (modalEl && !modalEl.classList.contains('show')) {
+    modal.show();
+  }
+}
+
+window.openGroupCmdb = async (groupName) => {
+  if (currentInventoryView === 'spare_stock') {
+    await window.openSpareStockModalForType(groupName);
+    return;
+  }
+  if (!String(groupName || '').trim()) {
+    showMessage('Open a group first.', 'warning');
+    return;
+  }
+  groupCmdbState.groupName = String(groupName).trim();
+  groupCmdbState.activeTab = 'components';
+  groupCmdbState.searchText = '';
+  groupCmdbState.selectedAssetIds = getGroupCmdbAssets(groupCmdbState.groupName).map((asset) => asset.customId);
+  await refreshGroupCmdbModal();
+};
+
+window.groupCmdbBulkAddMaintenance = async () => {
+  const selectedIds = Array.from(new Set(groupCmdbState.selectedAssetIds || []));
+  if (!selectedIds.length) {
+    showMessage('Select at least one unit.', 'warning');
+    return;
+  }
+  const maintenanceType = window.prompt('Maintenance type:', 'preventive_maintenance');
+  if (!maintenanceType) return;
+  const status = window.prompt('Status (completed/in_progress/scheduled):', 'completed') || 'completed';
+  const performedBy = window.prompt('Performed by (optional):', '') || '';
+  const reason = window.prompt('Reason/notes (optional):', '') || '';
+  for (const assetId of selectedIds) {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
+      maintenanceType,
+      status,
+      performedBy,
+      reason,
+      performedAt: new Date().toISOString(),
+    });
+  }
+  showMessage(`Maintenance record added to ${selectedIds.length} unit(s).`, 'success');
+  await refreshGroupCmdbModal();
+};
+
+window.groupCmdbBulkAssign = async () => {
+  const selectedIds = Array.from(new Set(groupCmdbState.selectedAssetIds || []));
+  if (!selectedIds.length) {
+    showMessage('Select at least one unit.', 'warning');
+    return;
+  }
+  const assignedToName = window.prompt('Assign to (name):', '');
+  if (!assignedToName) return;
+  const assignedDepartment = window.prompt('Assigned department (optional):', '') || '';
+  const expectedReturnDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '') || '';
+  for (const assetId of selectedIds) {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/assign`, {
+      assignedToName,
+      assignedDepartment,
+      expectedReturnDate: expectedReturnDate || null,
+      checkoutDate: new Date().toISOString(),
+    });
+  }
+  await loadAssets();
+  showMessage(`Checked out ${selectedIds.length} unit(s).`, 'success');
+  await refreshGroupCmdbModal();
+};
+
+window.groupCmdbBulkCheckin = async () => {
+  const selectedIds = Array.from(new Set(groupCmdbState.selectedAssetIds || []));
+  if (!selectedIds.length) {
+    showMessage('Select at least one unit.', 'warning');
+    return;
+  }
+  const reason = window.prompt('Check-in reason/notes (optional):', '') || '';
+  for (const assetId of selectedIds) {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/check-in`, {
+      returnedDate: new Date().toISOString(),
+      reason,
+    });
+  }
+  await loadAssets();
+  showMessage(`Checked in ${selectedIds.length} unit(s).`, 'success');
+  await refreshGroupCmdbModal();
+};
+
+window.cmdbAiHealthSummary = async (assetId) => {
+  const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-health`);
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="alert alert-secondary mb-0">
+      <div class="d-flex align-items-center gap-2">
+        <span class="spinner-border spinner-border-sm" role="status"></span>
+        <span>Generating AI health summary...</span>
+      </div>
+    </div>
+  `;
+  try {
+    const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/ai-health-summary`, {
+      includeRelated: true,
+    });
+    const listHtml = (items) => (Array.isArray(items) && items.length
+      ? `<ul class="mb-2">${items.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>`
+      : '<div class="text-muted small mb-2">None.</div>');
+    panel.innerHTML = `
+      <div class="alert alert-dark mb-2">
+        <div class="d-flex justify-content-between align-items-center gap-2">
+          <strong>AI Asset Health Summary</strong>
+          <span class="badge bg-${result.confidence === 'high' ? 'success' : result.confidence === 'medium' ? 'warning text-dark' : 'danger'}">${UI.escapeHTML(String(result.confidence || 'low').toUpperCase())}</span>
+        </div>
+        <div class="small mt-2">${UI.escapeHTML(result.summary || 'No summary available.')}</div>
+        ${result.llmUsed ? '<div class="small text-muted mt-1">Generated with local LLM assistance.</div>' : '<div class="small text-muted mt-1">Fallback summary used (LLM unavailable).</div>'}
+      </div>
+      <div class="small"><strong>Main Risks</strong></div>${listHtml(result.risks)}
+      <div class="small"><strong>Recent Changes</strong></div>${listHtml(result.recentChanges)}
+      <div class="small"><strong>Component Issues</strong></div>${listHtml(result.componentIssues)}
+      <div class="small"><strong>Warranty/EOL Concerns</strong></div>${listHtml(result.warrantyEolConcerns)}
+      <div class="small"><strong>Recommended Next Actions</strong></div>${listHtml(result.recommendations)}
+      <div class="small"><strong>Missing Data</strong></div>${listHtml(result.missingData)}
+    `;
+  } catch (error) {
+    panel.innerHTML = `
+      <div class="alert alert-warning mb-0">
+        <strong>AI summary unavailable.</strong>
+        <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
+      </div>
+    `;
+    showMessage(error.message || 'Failed to generate AI health summary.', 'warning');
   }
 };
 
@@ -2821,13 +4356,17 @@ window.cmdbViewComponentHistory = async (assetId, componentId) => {
 };
 
 window.cmdbAddComponent = async (assetId) => {
+  const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
+  const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
+  const optionsHint = componentOptions.slice(0, 12).join(', ');
   const componentName = window.prompt('Component name (e.g., RAM 16GB):', '');
   if (!componentName) return;
-  const componentType = window.prompt('Component type (ram/cpu/ssd/gpu/etc):', 'component') || 'component';
+  const componentType = window.prompt(`Component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
   const serialNumber = window.prompt('Component serial number (optional):', '') || '';
   const partNumber = window.prompt('Part number (optional):', '') || '';
   const existingChildAssetId = window.prompt('Existing component asset custom ID (optional):', '') || '';
-  const createAsAsset = window.confirm('Create this component as a linked inventory asset as well?');
+  const embeddedOnly = window.confirm('Create as embedded-only component row? Click Cancel to create/link inventory component asset (recommended).');
+  const createAsAsset = existingChildAssetId ? false : !embeddedOnly;
   const reason = window.prompt('Reason/notes (optional):', '') || '';
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components`, {
@@ -2849,9 +4388,12 @@ window.cmdbAddComponent = async (assetId) => {
 };
 
 window.cmdbEditComponent = async (assetId, componentId) => {
+  const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
+  const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
+  const optionsHint = componentOptions.slice(0, 12).join(', ');
   const componentName = window.prompt('Updated component name:', '');
   if (!componentName) return;
-  const componentType = window.prompt('Updated component type:', 'component') || 'component';
+  const componentType = window.prompt(`Updated component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
   const serialNumber = window.prompt('Updated serial (optional):', '') || '';
   const partNumber = window.prompt('Updated part number (optional):', '') || '';
   const condition = window.prompt('Updated condition (optional):', '') || '';
@@ -2883,9 +4425,12 @@ window.cmdbRemoveComponent = async (assetId, componentId) => {
 };
 
 window.cmdbReplaceComponent = async (assetId, componentId) => {
+  const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
+  const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
+  const optionsHint = componentOptions.slice(0, 12).join(', ');
   const componentName = window.prompt('New component name:', '');
   if (!componentName) return;
-  const componentType = window.prompt('New component type:', 'component') || 'component';
+  const componentType = window.prompt(`New component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
   const serialNumber = window.prompt('New component serial (optional):', '') || '';
   const reason = window.prompt('Replacement reason:', 'replaced');
   if (!reason) return;
@@ -3148,10 +4693,20 @@ window.openSpareStockModal = async () => {
   await window.loadSpareStock();
 };
 
+window.openSpareStockModalForType = async (componentType = '') => {
+  await window.openSpareStockModal();
+  const searchInput = document.getElementById('spareStockSearchInput');
+  if (searchInput) {
+    searchInput.value = String(componentType || '').trim();
+    window.renderSpareStockTable();
+  }
+};
+
 window.addSpareStockItem = async () => {
   const partName = window.prompt('Part name:', '');
   if (!partName) return;
-  const componentType = window.prompt('Component type:', 'ssd') || 'component';
+  const spareTypeHint = (SPARE_STOCK_TYPES || []).slice(0, 10).join(', ');
+  const componentType = window.prompt(`Component type (examples: ${spareTypeHint || 'Spare SSD'}):`, SPARE_STOCK_TYPES?.[0] || 'Spare SSD') || 'component';
   const brand = window.prompt('Brand (optional):', '') || '';
   const model = window.prompt('Model (optional):', '') || '';
   const partNumber = window.prompt('Part number (optional):', '') || '';
@@ -3185,7 +4740,8 @@ window.editSpareStockItem = async (id) => {
   if (!target) return;
   const partName = window.prompt('Part name:', target.partName || '') || '';
   if (!partName) return;
-  const componentType = window.prompt('Component type:', target.componentType || 'component') || target.componentType;
+  const spareTypeHint = (SPARE_STOCK_TYPES || []).slice(0, 10).join(', ');
+  const componentType = window.prompt(`Component type (examples: ${spareTypeHint || 'Spare SSD'}):`, target.componentType || SPARE_STOCK_TYPES?.[0] || 'component') || target.componentType;
   const brand = window.prompt('Brand:', target.brand || '') || '';
   const model = window.prompt('Model:', target.model || '') || '';
   const partNumber = window.prompt('Part number:', target.partNumber || '') || '';
@@ -3223,6 +4779,537 @@ window.adjustSpareStockItem = async (id) => {
   }
 };
 
+function inventoryAiStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  const map = {
+    online: { text: 'Online', dotClass: '' },
+    gemma: { text: 'Gemma ready', dotClass: '' },
+    fallback: { text: 'Fallback mode', dotClass: 'warning' },
+    loading: { text: 'Thinking...', dotClass: 'warning' },
+    error: { text: 'Offline', dotClass: 'error' },
+  };
+  return map[normalized] || map.online;
+}
+
+function setInventoryAiChatStatus(status) {
+  inventoryAiChatState.status = status;
+  const statusText = document.getElementById('inventoryAiChatStatusText');
+  const statusDot = document.getElementById('inventoryAiChatStatusDot');
+  const meta = inventoryAiStatusLabel(status);
+  if (statusText) statusText.textContent = meta.text;
+  if (statusDot) {
+    statusDot.className = 'inventory-ai-status-dot';
+    if (meta.dotClass) statusDot.classList.add(meta.dotClass);
+  }
+}
+
+function getInventoryAiChatContext() {
+  const searchValue = String(document.getElementById('searchInput')?.value || '').trim();
+  const building = String(document.getElementById('filterBuilding')?.value || '').trim();
+  const department = String(document.getElementById('filterDept')?.value || '').trim();
+  const type = String(document.getElementById('filterType')?.value || '').trim();
+  const lifecycleStatus = String(document.getElementById('filterLifecycle')?.value || '').trim();
+  const selectedAssetId = cmdbState.assetId || historyViewState.assetId || selectedAssetCustomId || null;
+  return {
+    view: currentInventoryView,
+    search: searchValue,
+    filters: {
+      building,
+      department,
+      type,
+      lifecycleStatus,
+      page: inventoryPageState.page,
+      pageSize: inventoryPageState.pageSize,
+    },
+    selectedAssetCustomId: selectedAssetId,
+  };
+}
+
+function renderInventoryAiMatchedItems(items = []) {
+  if (!Array.isArray(items) || !items.length) return '';
+  return `
+    <div class="mt-2">
+      ${items.slice(0, 6).map((item) => `
+        <div class="inventory-ai-chat-match">
+          <div class="d-flex justify-content-between align-items-start gap-2">
+            <div>
+              <div class="fw-semibold small">${UI.escapeHTML(item.name || item.assetName || 'Asset')}</div>
+              <div class="small text-muted">${UI.escapeHTML(item.assetId || item.customId || '-')} • ${UI.escapeHTML(item.category || item.type || '-')}</div>
+              <div class="small text-muted">${UI.escapeHTML(item.location || '-')} • ${UI.escapeHTML(item.status || item.lifecycleStatus || '-')}</div>
+            </div>
+            ${(item.assetId || item.customId) ? `<button type="button" class="btn btn-sm btn-outline-primary inventory-ai-view-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View</button>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderInventoryAiChatMessages() {
+  const container = document.getElementById('inventoryAiChatMessages');
+  const sendBtn = document.getElementById('inventoryAiChatSendBtn');
+  const input = document.getElementById('inventoryAiChatInput');
+  if (!container) return;
+  const messages = inventoryAiChatState.messages || [];
+  const emptyState = `
+    <div class="inventory-ai-chat-empty">
+      Hi, I’m your Inventory AI Assistant. Ask me about assets, maintenance, stock, duplicates, EOL, or imports.
+    </div>
+  `;
+  const rows = messages.map((entry) => {
+    const role = entry.role === 'user' ? 'user' : 'assistant';
+    const metaPills = [];
+    if (entry.confidence) metaPills.push(`<span class="inventory-ai-chat-pill">Confidence: ${UI.escapeHTML(String(entry.confidence).toUpperCase())}</span>`);
+    if (entry.fallbackUsed) metaPills.push('<span class="inventory-ai-chat-pill">Fallback mode</span>');
+    if (entry.actionLabel) metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(entry.actionLabel)}</span>`);
+    const suggestionPills = Array.isArray(entry.suggestedActions)
+      ? entry.suggestedActions.slice(0, 5).map((action) => `<span class="inventory-ai-chat-pill">${UI.escapeHTML(String(action || ''))}</span>`).join('')
+      : '';
+    return `
+      <div class="inventory-ai-chat-msg ${role}">
+        <div>${UI.escapeHTML(String(entry.text || ''))}</div>
+        ${(metaPills.length || suggestionPills) ? `<div class="inventory-ai-chat-meta">${metaPills.join('')}${suggestionPills ? `<div class="mt-1">${suggestionPills}</div>` : ''}</div>` : ''}
+        ${renderInventoryAiMatchedItems(entry.matchedItems || [])}
+      </div>
+    `;
+  }).join('');
+  const loadingRow = inventoryAiChatState.loading
+    ? `<div class="inventory-ai-chat-msg assistant"><span class="spinner-border spinner-border-sm me-2"></span>Inventory AI is thinking…</div>`
+    : '';
+  container.innerHTML = (rows || emptyState) + loadingRow;
+  if (sendBtn) sendBtn.disabled = inventoryAiChatState.loading;
+  if (input) input.disabled = inventoryAiChatState.loading;
+  container.scrollTop = container.scrollHeight;
+}
+
+function ensureInventoryAiWelcomeMessage() {
+  if (inventoryAiChatState.messages.length) return;
+  inventoryAiChatState.messages.push({
+    role: 'assistant',
+    text: 'Hello, I can help with inventory status, maintenance, warranty, EOL, stock, duplicates, and procurement questions.',
+    confidence: 'medium',
+    fallbackUsed: false,
+  });
+}
+
+window.toggleInventoryAiChat = (forceState = null) => {
+  const panel = document.getElementById('inventoryAiChatPanel');
+  const launcher = document.getElementById('inventoryAiChatLauncher');
+  if (!panel || !launcher) return;
+  const nextOpen = typeof forceState === 'boolean' ? forceState : !inventoryAiChatState.open;
+  inventoryAiChatState.open = nextOpen;
+  panel.classList.toggle('d-none', !nextOpen);
+  launcher.classList.toggle('d-none', nextOpen);
+  if (nextOpen) {
+    ensureInventoryAiWelcomeMessage();
+    renderInventoryAiChatMessages();
+    setInventoryAiChatStatus(inventoryAiChatState.status || 'online');
+    const input = document.getElementById('inventoryAiChatInput');
+    if (input) input.focus();
+  }
+};
+
+window.openInventoryAiChatWithPrompt = async (prompt) => {
+  const value = String(prompt || '').trim();
+  if (!value) return;
+  window.toggleInventoryAiChat(true);
+  const input = document.getElementById('inventoryAiChatInput');
+  if (input) input.value = value;
+  await window.sendInventoryAiChatMessage();
+};
+
+window.runInventoryAiQuickAction = async (mode) => {
+  const actionMode = String(mode || '').trim();
+  if (!actionMode || inventoryAiChatState.loading) return;
+  window.toggleInventoryAiChat(true);
+  inventoryAiChatState.loading = true;
+  setInventoryAiChatStatus('loading');
+  renderInventoryAiChatMessages();
+  try {
+    const endpoint = inventoryAiEndpointForMode(actionMode);
+    const context = getInventoryAiChatContext();
+    const needsQuery = actionMode === 'search';
+    const query = needsQuery
+      ? (String(document.getElementById('inventoryAiChatInput')?.value || '').trim() || `important inventory risks in ${context.view}`)
+      : '';
+    const payload = needsQuery
+      ? {
+        query,
+        currentView: context.view,
+        search: context.search,
+        filters: context.filters,
+        selectedAssetCustomId: context.selectedAssetCustomId,
+      }
+      : {};
+    const result = await postInventoryJson(endpoint, payload);
+    const response = buildChatResponseFromMode(actionMode, result || {});
+    inventoryAiChatState.messages.push({
+      role: 'assistant',
+      text: response.text,
+      confidence: response.confidence,
+      fallbackUsed: response.fallbackUsed,
+      matchedItems: response.matchedItems || [],
+      suggestedActions: response.suggestedActions || [],
+      actionLabel: inventoryAiQuickActionLabel(actionMode),
+    });
+    setInventoryAiChatStatus(response.fallbackUsed ? 'fallback' : 'gemma');
+  } catch (error) {
+    inventoryAiChatState.messages.push({
+      role: 'assistant',
+      text: `AI action failed. ${error.message || 'Please try again.'}`,
+      confidence: 'low',
+      fallbackUsed: true,
+      actionLabel: inventoryAiQuickActionLabel(actionMode),
+    });
+    setInventoryAiChatStatus('error');
+    showMessage(error.message || 'Inventory AI action failed.', 'error');
+  } finally {
+    inventoryAiChatState.loading = false;
+    renderInventoryAiChatMessages();
+  }
+};
+
+window.openInventoryAiMatchedAsset = async (customId) => {
+  const assetId = String(customId || '').trim();
+  if (!assetId) return;
+  try {
+    await window.openAssetCmdb(assetId);
+  } catch (_error) {
+    showMessage('Could not open asset details from AI result.', 'warning');
+  }
+};
+
+window.sendInventoryAiChatMessage = async () => {
+  if (inventoryAiChatState.loading) return;
+  const input = document.getElementById('inventoryAiChatInput');
+  const message = String(input?.value || '').trim();
+  if (!message) return;
+  inventoryAiChatState.messages.push({ role: 'user', text: message });
+  if (input) input.value = '';
+  inventoryAiChatState.loading = true;
+  setInventoryAiChatStatus('loading');
+  renderInventoryAiChatMessages();
+
+  try {
+    const context = getInventoryAiChatContext();
+    const payload = {
+      query: message,
+      message,
+      context,
+      currentView: context.view,
+      search: context.search,
+      filters: context.filters,
+      selectedAssetCustomId: context.selectedAssetCustomId,
+    };
+    const result = await postInventoryJson('/inventory/ai/assistant', payload);
+    const answer = String(result?.answer || 'No assistant answer returned.');
+    inventoryAiChatState.messages.push({
+      role: 'assistant',
+      text: answer,
+      confidence: String(result?.confidence || 'low'),
+      fallbackUsed: Boolean(result?.fallbackUsed),
+      matchedItems: Array.isArray(result?.matchedItems) ? result.matchedItems : [],
+      suggestedActions: Array.isArray(result?.suggestedActions) ? result.suggestedActions : [],
+      actionLabel: 'Inventory AI assistant',
+    });
+    setInventoryAiChatStatus(result?.fallbackUsed ? 'fallback' : 'gemma');
+  } catch (error) {
+    inventoryAiChatState.messages.push({
+      role: 'assistant',
+      text: `I could not complete that request right now. ${error.message || 'Please try again.'}`,
+      confidence: 'low',
+      fallbackUsed: true,
+    });
+    setInventoryAiChatStatus('error');
+    showMessage(error.message || 'Inventory AI assistant request failed.', 'error');
+  } finally {
+    inventoryAiChatState.loading = false;
+    renderInventoryAiChatMessages();
+  }
+};
+
+function renderInventoryAiResult(payload) {
+  const mode = inventoryAiState.mode;
+  const resultEl = document.getElementById('inventoryAiResult');
+  if (!resultEl) return;
+  const confidence = String(payload?.confidence || 'low');
+  const badgeClass = confidence === 'high' ? 'bg-success' : confidence === 'medium' ? 'bg-warning text-dark' : 'bg-danger';
+  const summary = UI.escapeHTML(String(payload?.summary || payload?.answer || 'Completed.'));
+
+  if (mode === 'assistant' || mode === 'search') {
+    const items = Array.isArray(payload?.matchedItems || payload?.results) ? (payload.matchedItems || payload.results) : [];
+    const rows = items.slice(0, 40).map((item) => `
+      <tr>
+        <td>${UI.escapeHTML(item.assetId || '-')}</td>
+        <td>${UI.escapeHTML(item.name || '-')}</td>
+        <td>${UI.escapeHTML(item.type || '-')}</td>
+        <td>${UI.escapeHTML(item.location || '-')}</td>
+        <td>${UI.escapeHTML(item.department || '-')}</td>
+        <td>${UI.escapeHTML(item.reason || '-')}</td>
+      </tr>
+    `).join('');
+    resultEl.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong>AI Result</strong>
+        <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
+      </div>
+      <div class="mb-2">${summary}</div>
+      <div class="small text-muted mb-2">Filters: ${UI.escapeHTML(JSON.stringify(payload?.filtersUsed || payload?.interpretedFilters || {}))}</div>
+      <div class="table-responsive"><table class="table table-sm"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Location</th><th>Department</th><th>Reason</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="text-muted">No matched items.</td></tr>'}</tbody></table></div>
+      <div class="small text-muted mt-2">Suggested actions: ${UI.escapeHTML((payload?.suggestedActions || []).join(' | ') || '-')}</div>
+    `;
+    return;
+  }
+
+  if (mode === 'missing_data') {
+    const rows = Array.isArray(payload?.assetsWithIssues) ? payload.assetsWithIssues.slice(0, 80) : [];
+    resultEl.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong>Data Quality Summary</strong>
+        <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
+      </div>
+      <div class="mb-2">${summary}</div>
+      <div class="small mb-2">Total Issues: <strong>${UI.escapeHTML(String(payload?.totalIssues ?? 0))}</strong> | Critical: <strong>${UI.escapeHTML(String(payload?.criticalIssues ?? 0))}</strong></div>
+      <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Severity</th><th>Issue</th><th>Asset</th><th>Message</th></tr></thead><tbody>
+      ${rows.map((row) => `<tr><td>${UI.escapeHTML(row.severity || '-')}</td><td>${UI.escapeHTML(row.issue || '-')}</td><td>${UI.escapeHTML(`${row.assetName || ''} (${row.assetId || '-'})`)}</td><td>${UI.escapeHTML(row.message || '-')}</td></tr>`).join('') || '<tr><td colspan="4" class="text-muted">No issues.</td></tr>'}
+      </tbody></table></div>
+      <div class="small text-muted mt-2">Recommendations: ${UI.escapeHTML((payload?.recommendations || []).join(' | ') || '-')}</div>
+    `;
+    return;
+  }
+
+  if (mode === 'maintenance' || mode === 'procurement') {
+    const rows = Array.isArray(payload?.recommendations || payload?.recommendedPurchases) ? (payload.recommendations || payload.recommendedPurchases).slice(0, 80) : [];
+    const isProcurement = mode === 'procurement';
+    resultEl.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong>${isProcurement ? 'Procurement' : 'Maintenance'} Recommendations</strong>
+        <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
+      </div>
+      <div class="mb-2">${summary}</div>
+      <div class="table-responsive"><table class="table table-sm"><thead><tr>
+      ${isProcurement ? '<th>Item</th><th>Type</th><th>Qty</th><th>Priority</th><th>Reason</th>' : '<th>Asset</th><th>Priority</th><th>Action</th><th>Due</th><th>Reason</th>'}
+      </tr></thead><tbody>
+      ${rows.map((row) => isProcurement
+        ? `<tr><td>${UI.escapeHTML(row.itemName || '-')}</td><td>${UI.escapeHTML(row.type || '-')}</td><td>${UI.escapeHTML(String(row.recommendedQuantity ?? '-'))}</td><td>${UI.escapeHTML(row.priority || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`
+        : `<tr><td>${UI.escapeHTML(`${row.assetName || '-'} (${row.assetId || '-'})`)}</td><td>${UI.escapeHTML(row.priority || '-')}</td><td>${UI.escapeHTML(row.recommendedAction || '-')}</td><td>${UI.escapeHTML(row.dueDateSuggestion || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`
+      ).join('') || `<tr><td colspan="5" class="text-muted">No recommendations.</td></tr>`}
+      </tbody></table></div>
+    `;
+    return;
+  }
+
+  if (mode === 'duplicates') {
+    const groups = Array.isArray(payload?.duplicateGroups) ? payload.duplicateGroups.slice(0, 40) : [];
+    resultEl.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong>Duplicate Detection</strong>
+        <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
+      </div>
+      <div class="mb-2">${summary}</div>
+      <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Severity</th><th>Reason</th><th>Assets</th><th>Action</th></tr></thead><tbody>
+      ${groups.map((group) => `<tr><td>${UI.escapeHTML(group.severity || '-')}</td><td>${UI.escapeHTML(group.reason || '-')}</td><td>${UI.escapeHTML((group.assets || []).map((asset) => asset.assetId).join(', ') || '-')}</td><td>${UI.escapeHTML(group.recommendedAction || '-')}</td></tr>`).join('') || '<tr><td colspan="4" class="text-muted">No duplicate groups.</td></tr>'}
+      </tbody></table></div>
+      <div class="small text-muted mt-2">Embedding support: ${UI.escapeHTML(payload?.embeddingSupport?.enabled ? `${payload.embeddingSupport.provider}:${payload.embeddingSupport.model}` : 'fallback deterministic only')}</div>
+    `;
+    return;
+  }
+
+  resultEl.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <strong>Inventory AI Result</strong>
+      <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
+    </div>
+    <pre class="mb-0 small">${UI.escapeHTML(JSON.stringify(payload, null, 2))}</pre>
+  `;
+}
+
+function inventoryAiEndpointForMode(mode) {
+  const map = {
+    assistant: '/inventory/ai/assistant',
+    search: '/inventory/ai/search',
+    missing_data: '/inventory/ai/missing-data',
+    maintenance: '/inventory/ai/maintenance-recommendations',
+    procurement: '/inventory/ai/procurement-recommendations',
+    duplicates: '/inventory/ai/duplicate-detection',
+  };
+  return map[mode] || map.assistant;
+}
+
+function inventoryAiQuickActionLabel(mode) {
+  const map = {
+    search: 'AI inventory search result',
+    missing_data: 'Data quality check completed',
+    maintenance: 'Maintenance recommendations ready',
+    procurement: 'Procurement recommendations ready',
+    duplicates: 'Duplicate detection completed',
+  };
+  return map[mode] || 'Inventory AI action completed';
+}
+
+function buildChatResponseFromMode(mode, payload) {
+  const confidence = String(payload?.confidence || 'low');
+  if (mode === 'missing_data') {
+    return {
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      confidence,
+      fallbackUsed: Boolean(payload?.fallbackUsed),
+      matchedItems: Array.isArray(payload?.assetsWithIssues)
+        ? payload.assetsWithIssues.slice(0, 10).map((item) => ({
+          assetId: item.assetId,
+          name: item.assetName || item.assetId || 'Asset',
+          category: item.severity || 'Issue',
+          type: item.issue || 'Data Quality',
+          location: '-',
+          status: item.message || '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.recommendations) ? payload.recommendations : [],
+    };
+  }
+
+  if (mode === 'maintenance') {
+    return {
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      confidence,
+      fallbackUsed: Boolean(payload?.fallbackUsed),
+      matchedItems: Array.isArray(payload?.recommendations)
+        ? payload.recommendations.slice(0, 10).map((item) => ({
+          assetId: item.assetId,
+          name: item.assetName || item.assetId || 'Asset',
+          category: item.priority || 'Maintenance',
+          type: 'Maintenance',
+          location: item.dueDateSuggestion || '-',
+          status: item.reason || '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.recommendations)
+        ? payload.recommendations.slice(0, 6).map((item) => String(item.recommendedAction || '').trim()).filter(Boolean)
+        : [],
+    };
+  }
+
+  if (mode === 'procurement') {
+    return {
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      confidence,
+      fallbackUsed: Boolean(payload?.fallbackUsed),
+      matchedItems: Array.isArray(payload?.recommendedPurchases)
+        ? payload.recommendedPurchases.slice(0, 10).map((item) => ({
+          assetId: item.itemName || '-',
+          name: item.itemName || 'Inventory Item',
+          category: item.type || 'Procurement',
+          type: item.priority || '-',
+          location: '-',
+          status: `Qty ${item.recommendedQuantity ?? '-'}${item.reason ? ` • ${item.reason}` : ''}`,
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.recommendedPurchases)
+        ? payload.recommendedPurchases.slice(0, 6).map((item) => `Buy ${item.recommendedQuantity ?? '?'} ${item.itemName || 'item'}`)
+        : [],
+    };
+  }
+
+  if (mode === 'duplicates') {
+    return {
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      confidence,
+      fallbackUsed: Boolean(payload?.fallbackUsed),
+      matchedItems: Array.isArray(payload?.duplicateGroups)
+        ? payload.duplicateGroups.slice(0, 10).flatMap((group) => (group.assets || []).slice(0, 3).map((asset) => ({
+          assetId: asset.assetId,
+          name: asset.name || asset.assetId || 'Asset',
+          category: group.severity || 'Duplicate',
+          type: group.reason || 'Duplicate',
+          location: '-',
+          status: group.recommendedAction || '-',
+        })))
+        : [],
+      suggestedActions: Array.isArray(payload?.duplicateGroups)
+        ? payload.duplicateGroups.slice(0, 6).map((group) => String(group.recommendedAction || '').trim()).filter(Boolean)
+        : [],
+    };
+  }
+
+  return {
+    text: String(payload?.answer || payload?.summary || inventoryAiQuickActionLabel(mode)),
+    confidence,
+    fallbackUsed: Boolean(payload?.fallbackUsed),
+    matchedItems: Array.isArray(payload?.results) ? payload.results : [],
+    suggestedActions: Array.isArray(payload?.suggestedActions) ? payload.suggestedActions : [],
+  };
+}
+
+function inventoryAiModeMeta(mode) {
+  const map = {
+    assistant: { title: 'Inventory AI Assistant', queryRequired: true, placeholder: 'Ask inventory questions (e.g., Which assets are missing serial numbers?)' },
+    search: { title: 'AI Search', queryRequired: true, placeholder: 'Search in natural language (e.g., licenses expiring soon)' },
+    missing_data: { title: 'AI Data Quality Check', queryRequired: false, placeholder: '' },
+    maintenance: { title: 'AI Maintenance Recommendations', queryRequired: false, placeholder: '' },
+    procurement: { title: 'AI Procurement Recommendations', queryRequired: false, placeholder: '' },
+    duplicates: { title: 'AI Duplicate Check', queryRequired: false, placeholder: '' },
+  };
+  return map[mode] || map.assistant;
+}
+
+window.openInventoryAiModal = async (mode = 'assistant') => {
+  if (mode === 'assistant') {
+    window.toggleInventoryAiChat(true);
+    return;
+  }
+  inventoryAiState.mode = mode;
+  const meta = inventoryAiModeMeta(mode);
+  const modalEl = document.getElementById('inventoryAiModal');
+  const titleEl = document.getElementById('inventoryAiModalTitle');
+  const inputSection = document.getElementById('inventoryAiInputSection');
+  const queryInput = document.getElementById('inventoryAiQueryInput');
+  const statusEl = document.getElementById('inventoryAiStatus');
+  const resultEl = document.getElementById('inventoryAiResult');
+  if (!modalEl) return;
+  if (titleEl) titleEl.textContent = meta.title;
+  if (inputSection) inputSection.classList.toggle('d-none', !meta.queryRequired);
+  if (queryInput) queryInput.placeholder = meta.placeholder;
+  if (statusEl) statusEl.textContent = 'Ready.';
+  if (resultEl) resultEl.textContent = 'Click Run to start.';
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+  if (!meta.queryRequired) {
+    await window.runInventoryAiAction();
+  }
+};
+
+window.runInventoryAiAction = async () => {
+  const mode = inventoryAiState.mode || 'assistant';
+  const endpoint = inventoryAiEndpointForMode(mode);
+  const meta = inventoryAiModeMeta(mode);
+  const queryInput = document.getElementById('inventoryAiQueryInput');
+  const runBtn = document.getElementById('inventoryAiRunBtn');
+  const statusEl = document.getElementById('inventoryAiStatus');
+  if (meta.queryRequired && !String(queryInput?.value || '').trim()) {
+    showMessage('Please enter a query first.', 'warning');
+    return;
+  }
+  if (runBtn) {
+    runBtn.disabled = true;
+    runBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
+  }
+  if (statusEl) statusEl.textContent = 'Running AI analysis...';
+  try {
+    const payload = meta.queryRequired ? { query: String(queryInput?.value || '').trim() } : {};
+    const result = await postInventoryJson(endpoint, payload);
+    renderInventoryAiResult(result || {});
+    if (statusEl) statusEl.textContent = `Completed (${result?.fallbackUsed ? 'fallback path used' : 'LLM-assisted path used'}).`;
+  } catch (error) {
+    if (statusEl) statusEl.textContent = 'Failed.';
+    showMessage(error.message || 'Inventory AI request failed.', 'error');
+  } finally {
+    if (runBtn) {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Run';
+    }
+  }
+};
+
 function renderImportPreviewRows(rows = []) {
   const tableBody = document.getElementById('importPreviewTableBody');
   if (!tableBody) return;
@@ -3252,15 +5339,33 @@ function renderImportPreviewRows(rows = []) {
   }).join('');
 }
 
-window.openImportAssetsModal = async () => {
+function resetImportAssetsState() {
   importPreviewCache = null;
+  importAiHeaderMappings = null;
   const summary = document.getElementById('importPreviewSummary');
   const commitSummary = document.getElementById('importCommitSummary');
   const commitBtn = document.getElementById('commitImportBtn');
+  const fileInput = document.getElementById('importAssetsFile');
+  const dropHint = document.getElementById('importDropZoneHint');
+  const aiMappingSummary = document.getElementById('importAiMappingSummary');
+  const docText = document.getElementById('importDocumentText');
+  const docSummary = document.getElementById('importDocumentSummary');
   if (summary) summary.textContent = 'No preview yet.';
-  if (commitSummary) commitSummary.textContent = '';
+  if (commitSummary) {
+    commitSummary.textContent = '';
+    commitSummary.className = 'small mt-2';
+  }
+  if (aiMappingSummary) aiMappingSummary.textContent = 'No AI mapping yet.';
+  if (docText) docText.value = '';
+  if (docSummary) docSummary.textContent = 'No document extraction run yet.';
   if (commitBtn) commitBtn.disabled = true;
+  if (fileInput) fileInput.value = '';
+  if (dropHint) dropHint.textContent = 'No file selected.';
   renderImportPreviewRows([]);
+}
+
+window.openImportAssetsModal = async () => {
+  resetImportAssetsState();
   const modalEl = document.getElementById('importAssetsModal');
   if (!modalEl) return;
   const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -3273,7 +5378,7 @@ window.copyImportTemplateCsv = async () => {
     'parent_asset,Dell OptiPlex Lab PC,Asset,Desktop,Dell,OptiPlex 7090,PC-SN-001,UNI-PC-LAB-A-001,LAT7090,Main Building,Computer Science,active,in_use,,,,1,,,Dell,2024-01-15,2024-01-15,2027-01-15,25000,IT Lab,Main PC',
     'embedded_component,RAM 16GB DDR4,Component,Electronics,Kingston,16GB DDR4,RAM-SN-001,UNI-RAM-001,KVR16GB,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,RAM,Good,1,,,,,,,,Initial RAM',
     'embedded_component,SSD 512GB,Component,Electronics,Samsung,512GB SSD,SSD-SN-001,UNI-SSD-001,SAM512,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,Storage,Good,1,,,,,,,,Initial SSD',
-    'spare_stock,Samsung 512GB SSD,Spare Part,Electronics,Samsung,512GB SSD,,SPARE-SSD-512,SAM512,Central Warehouse,Computer Science,active,in_stock,,Storage,New,3,1,1,Dell,,,,1500,,Compatible with Dell OptiPlex',
+    'spare_stock,Samsung 512GB SSD,Spare Stock,Spare SSD,Samsung,512GB SSD,,SPARE-SSD-512,SAM512,Central Warehouse,Computer Science,active,in_stock,,Spare SSD,New,3,1,1,Dell,,,,1500,,Compatible with Dell OptiPlex',
   ].join('\n');
   try {
     await navigator.clipboard.writeText(template);
@@ -3296,6 +5401,11 @@ window.previewImportAssets = async () => {
   const name = String(file.name || '');
   const lower = name.toLowerCase();
 
+  if (!(lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls'))) {
+    showMessage('Invalid file type. Please upload CSV or XLSX.', 'warning');
+    return;
+  }
+
   if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
     showMessage('XLSX preview is not enabled yet. Please use CSV for now.', 'warning');
     return;
@@ -3305,6 +5415,7 @@ window.previewImportAssets = async () => {
     const preview = await postInventoryJson('/assets/import/preview', {
       filename: name,
       fileContent: text,
+      headerMappings: importAiHeaderMappings || undefined,
     });
     importPreviewCache = preview;
     renderImportPreviewRows(preview.normalizedRows || []);
@@ -3319,6 +5430,92 @@ window.previewImportAssets = async () => {
     if (commitBtn) commitBtn.disabled = !preview.canImport;
   } catch (error) {
     showMessage(error.message || 'Failed to preview import.', 'error');
+  }
+};
+
+window.runImportAiColumnMapping = async () => {
+  const fileInput = document.getElementById('importAssetsFile');
+  const summaryEl = document.getElementById('importAiMappingSummary');
+  if (!fileInput || !fileInput.files || !fileInput.files.length) {
+    showMessage('Choose a CSV file first.', 'warning');
+    return;
+  }
+  const file = fileInput.files[0];
+  const lower = String(file.name || '').toLowerCase();
+  if (!lower.endsWith('.csv')) {
+    showMessage('AI column mapping currently supports CSV in this pass.', 'warning');
+    return;
+  }
+  if (summaryEl) summaryEl.textContent = 'Running AI column mapping...';
+  try {
+    const fileContent = await file.text();
+    const result = await postInventoryJson('/assets/import/ai-map-columns', {
+      filename: file.name,
+      fileContent,
+    });
+    const mappings = Array.isArray(result?.mappings) ? result.mappings : [];
+    importAiHeaderMappings = {};
+    mappings.forEach((entry) => {
+      const source = String(entry.sourceColumn || '').trim();
+      const target = String(entry.targetColumn || '').trim();
+      if (source && target) importAiHeaderMappings[source] = target;
+    });
+    const mappedCount = Object.keys(importAiHeaderMappings || {}).length;
+    const unmapped = Array.isArray(result?.unmappedColumns) ? result.unmappedColumns : [];
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    if (summaryEl) {
+      summaryEl.textContent = `Mapped ${mappedCount} column(s). Unmapped: ${unmapped.length}. ${warnings.length ? `Warnings: ${warnings.join(' | ')}` : ''}`;
+      summaryEl.className = `small mb-2 ${mappedCount ? 'text-success' : 'text-warning'}`;
+    }
+    showMessage(mappedCount ? 'AI column mappings ready. Click Preview to validate rows.' : 'No confident AI mappings found.', mappedCount ? 'success' : 'warning');
+  } catch (error) {
+    if (summaryEl) {
+      summaryEl.textContent = 'AI mapping failed. You can still run normal preview.';
+      summaryEl.className = 'small mb-2 text-danger';
+    }
+    showMessage(error.message || 'Failed to run AI import mapping.', 'error');
+  }
+};
+
+window.previewDocumentImportRows = async () => {
+  const textInput = document.getElementById('importDocumentText');
+  const summary = document.getElementById('importDocumentSummary');
+  const commitSummary = document.getElementById('importCommitSummary');
+  const commitBtn = document.getElementById('commitImportBtn');
+  const documentText = String(textInput?.value || '').trim();
+  if (!documentText) {
+    showMessage('Paste document text first.', 'warning');
+    return;
+  }
+  if (summary) summary.textContent = 'Extracting candidate rows from document text...';
+  try {
+    const preview = await postInventoryJson('/assets/import/pdf-preview', {
+      filename: 'document.txt',
+      documentText,
+    });
+    importPreviewCache = preview;
+    renderImportPreviewRows(preview.normalizedRows || preview.extractedRows || []);
+    if (summary) {
+      summary.textContent = `${preview.sourceDocumentSummary || 'Extraction completed.'} Confidence: ${Math.round(Number(preview.confidence || 0) * 100)}%.`;
+      summary.className = 'small text-muted mt-2';
+    }
+    const previewSummary = document.getElementById('importPreviewSummary');
+    if (previewSummary) {
+      previewSummary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
+    }
+    if (commitSummary) {
+      const msgs = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
+      commitSummary.textContent = msgs || '';
+      commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
+    }
+    if (commitBtn) commitBtn.disabled = !preview.canImport;
+    showMessage('Document extraction preview ready. Review rows before confirming import.', 'success');
+  } catch (error) {
+    if (summary) {
+      summary.textContent = 'Document extraction failed.';
+      summary.className = 'small text-danger mt-2';
+    }
+    showMessage(error.message || 'Failed to extract import rows from document text.', 'error');
   }
 };
 
@@ -3342,11 +5539,26 @@ window.commitImportAssets = async () => {
       summary.textContent = `Import complete. Assets: ${result.createdAssets || 0}, Components: ${result.createdComponents || 0}, Spare Stock: ${result.createdSpareStockItems || 0}, Skipped: ${(result.skippedRows || []).length}.`;
       summary.className = `small mt-2 ${result.success ? 'text-success' : 'text-danger'}`;
     }
-    showMessage(result.success ? 'Import completed successfully.' : 'Import finished with errors.', result.success ? 'success' : 'warning');
-    await loadAssets();
-    await window.loadSpareStock();
-    if (cmdbState.assetId) {
-      await refreshCmdbModal(cmdbState.assetId, cmdbState.activeTab || 'components');
+    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Parent/Assets: ${result.createdAssets || 0}, Components: ${result.createdComponents || 0}, Spare Stock: ${result.createdSpareStockItems || 0}.`;
+    showMessage(summaryMessage, result.success ? 'success' : 'warning');
+    if (result.success) {
+      const modalEl = document.getElementById('importAssetsModal');
+      if (modalEl) {
+        const modal = bootstrap.Modal.getInstance(modalEl) || bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.hide();
+      }
+      resetImportAssetsState();
+      const refreshTasks = [
+        loadAssets(),
+        window.loadSpareStock(),
+      ];
+      if (cmdbState.assetId) refreshTasks.push(refreshCmdbModal(cmdbState.assetId, cmdbState.activeTab || 'components'));
+      if (groupCmdbState.groupName) refreshTasks.push(refreshGroupCmdbModal());
+      const outcomes = await Promise.allSettled(refreshTasks);
+      const failedRefresh = outcomes.some((item) => item.status === 'rejected');
+      if (failedRefresh) {
+        showMessage('Import completed, but some refresh calls failed. Reload if data looks stale.', 'warning');
+      }
     }
   } catch (error) {
     showMessage(error.message || 'Failed to commit import.', 'error');
@@ -3832,10 +6044,21 @@ window.submitTransfer = async () => {
     confirmBtn.disabled = true;
     confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Transferring...';
 
-    const isBulk = currentAssets.some(a => a.name === selectedAssetCustomId);
-    const transferAssetQuantity = async (assetId, destType, destination, quantityToMove, label) => {
-      const transferData = { destType, destination, quantityToMove };
-      const response = await fetch(`${API_URL}/assets/${assetId}/transfer`, {
+    const transferOptions = getTransferRelatedOptionsFromForm();
+    const isBulk = Boolean(transferSelectionState.isBulk);
+    const selectedIds = Array.from(new Set(transferSelectionState.targetAssetIds || []));
+    const transferAssetQuantity = async (assetId, destType, destination, quantityToMove, label, includeRelatedOnCall) => {
+      const transferData = {
+        destType,
+        destination,
+        quantityToMove,
+        includeRelated: includeRelatedOnCall && transferOptions.includeRelated,
+        includeComponents: transferOptions.includeComponents,
+        includeAccessories: transferOptions.includeAccessories,
+        includeLicenses: transferOptions.includeLicenses,
+        includeConsumables: transferOptions.includeConsumables,
+      };
+      const response = await inventoryRequest(`/assets/${assetId}/transfer`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(transferData),
@@ -3844,31 +6067,29 @@ window.submitTransfer = async () => {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.message || `${label} transfer failed for ${assetId}`);
       }
+      return response.json().catch(() => ({}));
     };
+    const allTransferPayloads = [];
 
     if (!isBulk) {
       const selectedAsset = currentAssets.find(a => a.customId === selectedAssetCustomId);
+      if (!selectedAsset) throw new Error('Selected asset not found on current page.');
       const maxQuantity = getAssetQuantity(selectedAsset);
       if (quantity > maxQuantity) {
         throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
       }
+      const includeRelatedOnDept = !buildingChecked || deptChecked;
       if (buildingChecked) {
-        const transferData = { destType: 'building', destination: buildingValue, quantityToMove: quantity };
-        const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
-        });
-        if (!response.ok) throw new Error((await response.json()).message || 'Building transfer failed');
+        const payload = await transferAssetQuantity(selectedAssetCustomId, 'building', buildingValue, quantity, 'Building', !deptChecked);
+        allTransferPayloads.push(payload);
       }
 
       if (deptChecked) {
-        const transferData = { destType: 'department', destination: deptValue, quantityToMove: quantity };
-        const response = await inventoryRequest(`/assets/${selectedAssetCustomId}/transfer`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
-        });
-        if (!response.ok) throw new Error((await response.json()).message || 'Department transfer failed');
+        const payload = await transferAssetQuantity(selectedAssetCustomId, 'department', deptValue, quantity, 'Department', includeRelatedOnDept);
+        allTransferPayloads.push(payload);
       }
     } else {
-      const groupAssets = currentAssets.filter(a => a.name === selectedAssetCustomId);
+      const groupAssets = currentAssets.filter((asset) => selectedIds.includes(asset.customId));
       const maxQuantity = getAssetsTotalQuantity(groupAssets);
       if (quantity > maxQuantity) {
         throw new Error(`Only ${maxQuantity} unit(s) are available to transfer.`);
@@ -3879,19 +6100,13 @@ window.submitTransfer = async () => {
         if (remainingQuantity <= 0) break;
         const quantityToMove = Math.min(remainingQuantity, getAssetQuantity(asset));
         if (buildingChecked) {
-          const transferData = { destType: 'building', destination: buildingValue, quantityToMove: 1 };
-          const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
-          });
-          if (!response.ok) throw new Error((await response.json()).message || `Building transfer failed for ${asset.customId}`);
+          const payload = await transferAssetQuantity(asset.customId, 'building', buildingValue, quantityToMove, `Building (${asset.customId})`, !deptChecked);
+          allTransferPayloads.push(payload);
         }
 
         if (deptChecked) {
-          const transferData = { destType: 'department', destination: deptValue, quantityToMove: 1 };
-          const response = await inventoryRequest(`/assets/${asset.customId}/transfer`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(transferData),
-          });
-          if (!response.ok) throw new Error((await response.json()).message || `Department transfer failed for ${asset.customId}`);
+          const payload = await transferAssetQuantity(asset.customId, 'department', deptValue, quantityToMove, `Department (${asset.customId})`, true);
+          allTransferPayloads.push(payload);
         }
         remainingQuantity -= quantityToMove;
       }
@@ -3900,11 +6115,20 @@ window.submitTransfer = async () => {
     const transferModal = bootstrap.Modal.getInstance(document.getElementById('transferModal'));
     if (transferModal) transferModal.hide();
 
-    const detailsModal = bootstrap.Modal.getInstance(document.getElementById('detailsModal'));
-    if (detailsModal) detailsModal.hide();
-
-    await loadAssets();
-    showMessage('Transfer completed successfully.', 'success');
+    const touchedIds = [];
+    allTransferPayloads.forEach((payload) => {
+      const assetsFromPayload = collectAssetsFromTransferResponse(payload);
+      touchedIds.push(...applyTransferredAssetsToLocalState(assetsFromPayload));
+    });
+    const uniqueTouched = Array.from(new Set(touchedIds));
+    if (uniqueTouched.length) {
+      refreshDerivedStateForAssets(uniqueTouched).catch(() => {});
+    }
+    const relatedSummaries = allTransferPayloads
+      .map((payload) => String(payload?.relatedTransferSummary || '').trim())
+      .filter(Boolean);
+    const relatedSummary = relatedSummaries.length ? ` ${relatedSummaries[relatedSummaries.length - 1]}` : '';
+    showMessage(`Transfer completed successfully.${relatedSummary}`, 'success');
   } catch (error) {
     console.error(error);
     showMessage(error.message || 'Transfer failed.', 'error');
@@ -4371,6 +6595,210 @@ function formatType(type) {
   const typeObj = ASSET_TYPES.find(t => normalizeValue(t.value) === normalizeValue(key));
   if (typeObj) return typeObj.label;
   return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getAssetPredictionLabel(asset) {
+  const categoryRaw = String(asset?.category || '').trim().toLowerCase();
+  const categoryLabels = {
+    component: 'Component',
+    accessory: 'Accessory',
+    consumable: 'Consumable',
+    license: 'License',
+    spare_part: 'Spare Stock',
+    asset: ''
+  };
+  const typeLabel = formatType(asset?.type);
+  if (typeLabel && normalizeValue(typeLabel) !== normalizeValue('electronics')) return typeLabel;
+  const specs = getAssetSpecs(asset);
+  const registryLabel = String(specs.assetTypeRegistryLabel || '').trim();
+  if (registryLabel && normalizeValue(registryLabel) !== normalizeValue('electronics')) return registryLabel;
+  const componentTypeLabel = normalizeComponentTypeLabel(specs.componentType || '');
+  if (componentTypeLabel) return componentTypeLabel;
+  return categoryLabels[categoryRaw] || 'Asset';
+}
+
+function isEolRelevantAsset(asset) {
+  const category = getAssetCategoryKey(asset);
+  if (category === 'consumable' || category === 'license' || category === 'spare_part') return false;
+  return true;
+}
+
+const COMPONENT_TYPE_KEYWORDS = [
+  'ram', 'memory', 'ssd', 'hdd', 'storage', 'cpu', 'processor', 'gpu', 'motherboard',
+  'psu', 'power_supply', 'battery', 'network', 'nic', 'toner', 'lamp', 'charger',
+  'fan', 'heatsink', 'nvme', 'card', 'module'
+];
+
+function normalizeComponentTypeLabel(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!normalized) return '';
+  const labels = {
+    ram: 'RAM',
+    memory: 'RAM',
+    storage: 'Storage',
+    ssd: 'SSD',
+    hdd: 'HDD',
+    cpu: 'CPU',
+    processor: 'CPU',
+    gpu: 'GPU',
+    motherboard: 'Motherboard',
+    psu: 'PSU',
+    power_supply: 'PSU',
+    battery: 'Battery',
+    network_card: 'Network Card',
+    nic: 'Network Card',
+    toner: 'Toner',
+    lamp: 'Lamp',
+  };
+  return labels[normalized] || normalized.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function inferComponentTypeFromAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const explicit = String(
+    asset?.componentType
+    || asset?.component_type
+    || specs.componentType
+    || specs.component_type
+    || ''
+  ).trim();
+  if (explicit) return normalizeComponentTypeLabel(explicit);
+  const text = `${asset?.name || ''} ${asset?.type || ''}`.toLowerCase();
+  const match = COMPONENT_TYPE_KEYWORDS.find((keyword) => text.includes(keyword.replace(/_/g, ' ')) || text.includes(keyword));
+  return match ? normalizeComponentTypeLabel(match) : '';
+}
+
+function inferAccessoryTypeFromAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const explicit = String(specs.accessoryType || specs.type || '').trim();
+  if (explicit) return normalizeComponentTypeLabel(explicit);
+  return normalizeComponentTypeLabel(formatType(asset?.type || asset?.name || 'Accessory'));
+}
+
+function inferConsumableTypeFromAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const explicit = String(specs.consumableType || specs.componentType || specs.type || '').trim();
+  if (explicit) return normalizeComponentTypeLabel(explicit);
+  return normalizeComponentTypeLabel(formatType(asset?.type || asset?.name || 'Consumable'));
+}
+
+function inferLicenseTypeFromAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const explicit = String(specs.licenseType || specs.softwareName || '').trim();
+  if (explicit) return normalizeComponentTypeLabel(explicit);
+  const name = String(asset?.name || '').trim();
+  if (name) return normalizeComponentTypeLabel(name);
+  return 'License';
+}
+
+function normalizeRegistryKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function getComponentRegistryOptionsForAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const registryKey = normalizeRegistryKey(
+    specs.assetTypeRegistryKey
+    || inferComponentTypeFromAsset(asset)
+    || canonicalType(asset?.type || '')
+  );
+  const specific = COMPONENT_TYPE_REGISTRY_BY_PARENT?.[registryKey];
+  const fallbackByType = COMPONENT_TYPE_REGISTRY_BY_PARENT?.[canonicalType(asset?.type || '')];
+  const fallback = COMPONENT_TYPE_REGISTRY_BY_PARENT?.default;
+  const options = specific || fallbackByType || fallback || [];
+  return Array.isArray(options) ? options : [];
+}
+
+function getInstalledParentInfo(asset) {
+  const specs = getAssetSpecs(asset);
+  const parentId = String(
+    asset?.installedParentCustomId
+    || asset?.installedParentAssetId
+    || asset?.relatedParentCustomId
+    || asset?.assignedToAssetCustomId
+    || specs.installedInAssetId
+    || specs.usedWithAssetId
+    || specs.assignedToAssetId
+    || ''
+  ).trim();
+  const parentTag = String(
+    asset?.installedParentAssetTag
+    || asset?.relatedParentAssetTag
+    || asset?.assignedToAssetAssetTag
+    || specs.installedInAssetTag
+    || specs.usedWithAssetTag
+    || specs.assignedToAssetTag
+    || ''
+  ).trim();
+  const parentName = String(
+    asset?.installedParentName
+    || asset?.relatedParentName
+    || asset?.assignedToAssetName
+    || specs.installedInAssetName
+    || specs.usedWithAssetName
+    || specs.assignedToAssetName
+    || ''
+  ).trim();
+  return {
+    parentId,
+    parentTag,
+    parentName,
+    hasParent: Boolean(parentId || parentTag || parentName),
+  };
+}
+
+function isInstalledComponentAsset(asset) {
+  const installedParent = getInstalledParentInfo(asset);
+  const isComponentCategory = getAssetCategoryKey(asset) === 'component';
+  const inferredComponentType = inferComponentTypeFromAsset(asset);
+  const nonComponentCategory = isAccessoryAsset(asset) || isConsumableAsset(asset) || isLicenseAsset(asset) || isSparePartAsset(asset);
+  return installedParent.hasParent && (
+    isComponentCategory
+    || Boolean(asset?.isComponentAsset)
+    || (!nonComponentCategory && Boolean(inferredComponentType))
+  );
+}
+
+function isParentViewAsset(asset) {
+  if (isInstalledComponentAsset(asset)) return false;
+  if (isAccessoryAsset(asset) || isConsumableAsset(asset) || isLicenseAsset(asset) || isSparePartAsset(asset)) return false;
+  return true;
+}
+
+function isAccessoryViewAsset(asset) {
+  return isAccessoryAsset(asset);
+}
+
+function isConsumableViewAsset(asset) {
+  return isConsumableAsset(asset);
+}
+
+function isLicenseViewAsset(asset) {
+  return isLicenseAsset(asset);
+}
+
+function getAssetsForInventoryView(view = currentInventoryView) {
+  const normalizedView = normalizeInventoryView(view);
+  if (normalizedView === 'components') {
+    return currentAssets.filter((asset) => isInstalledComponentAsset(asset));
+  }
+  if (normalizedView === 'accessories') {
+    return currentAssets.filter((asset) => isAccessoryViewAsset(asset));
+  }
+  if (normalizedView === 'consumables') {
+    return currentAssets.filter((asset) => isConsumableViewAsset(asset));
+  }
+  if (normalizedView === 'licenses') {
+    return currentAssets.filter((asset) => isLicenseViewAsset(asset));
+  }
+  if (normalizedView === 'spare_stock') {
+    return currentAssets.filter((asset) => isSparePartAsset(asset));
+  }
+  return currentAssets.filter((asset) => isParentViewAsset(asset));
+}
+
+function getAssetsForCurrentInventoryView() {
+  return getAssetsForInventoryView(currentInventoryView);
 }
 
 function getStatusBadgeClass(status) {

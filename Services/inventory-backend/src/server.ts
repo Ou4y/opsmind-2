@@ -13,7 +13,15 @@ import { TOPICS } from './events/assetEvents';
 import ticketRoutes from './routes/ticketRoutes';
 import configRoutes from './routes/configRoutes';
 import inventoryAiReadinessRoutes from './routes/inventoryAiReadinessRoutes';
-import { EOL_METRICS } from './config/constants';
+import {
+    EOL_METRICS,
+    ASSET_TYPES,
+    COMPONENT_TYPE_REGISTRY_BY_PARENT,
+    ACCESSORY_TYPES,
+    CONSUMABLE_TYPES,
+    SPARE_STOCK_TYPES,
+    LICENSE_TYPES,
+} from './config/constants';
 import { notificationService } from './services/NotificationService';
 import {
     getLatestPersistedLifespanPrediction,
@@ -94,42 +102,94 @@ console.log('✅ [API] Prisma Client initialized');
 
 // --- ENUM MAPPING HELPERS ---
 function mapToAssetType(value: string): AssetType {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
     const typeMap: Record<string, AssetType> = {
-        'laptop': 'LAPTOP', 'Laptop': 'LAPTOP',
-        'desktop': 'DESKTOP', 'Desktop': 'DESKTOP',
-        'tablet': 'TABLET', 'Tablet': 'TABLET',
-        'server': 'SERVER', 'Server': 'SERVER',
-        'monitor': 'MONITOR', 'Monitor': 'MONITOR',
-        'peripheral': 'PERIPHERAL', 'Peripheral': 'PERIPHERAL',
-        'keyboard': 'KEYBOARD', 'Keyboard': 'KEYBOARD',
-        'electronics': 'ELECTRONICS', 'Electronics': 'ELECTRONICS',
-        'projector': 'PROJECTOR', 'Projector': 'PROJECTOR',
-        'smartboard': 'SMARTBOARD', 'Smartboard': 'SMARTBOARD',
-        'camera': 'CAMERA', 'Camera': 'CAMERA',
-        'speaker': 'SPEAKER', 'Speaker': 'SPEAKER',
-        'microphone': 'MICROPHONE', 'Microphone': 'MICROPHONE',
-        'router': 'ROUTER', 'Router': 'ROUTER',
-        'switch': 'SWITCH', 'Switch': 'SWITCH',
-        'access_point': 'ACCESS_POINT', 'Access_Point': 'ACCESS_POINT',
-        'firewall': 'FIREWALL', 'Firewall': 'FIREWALL',
-        'printer': 'PRINTER', 'Printer': 'PRINTER',
-        'scanner': 'SCANNER', 'Scanner': 'SCANNER',
-        'desk': 'DESK', 'Desk': 'DESK',
-        'chair': 'CHAIR', 'Chair': 'CHAIR',
-        'whiteboard': 'WHITEBOARD', 'Whiteboard': 'WHITEBOARD',
-        'filing_cabinet': 'FILING_CABINET', 'Filing_Cabinet': 'FILING_CABINET',
-        'furniture': 'FURNITURE', 'Furniture': 'FURNITURE',
-        'microscope': 'MICROSCOPE', 'Microscope': 'MICROSCOPE',
-        'centrifuge': 'CENTRIFUGE', 'Centrifuge': 'CENTRIFUGE',
-        'oscilloscope': 'OSCILLOSCOPE', 'Oscilloscope': 'OSCILLOSCOPE',
-        '3d_printer': 'THREE_D_PRINTER', '3D_Printer': 'THREE_D_PRINTER',
-        'lab_bench': 'LAB_BENCH', 'Lab_Bench': 'LAB_BENCH',
-        'vehicle': 'VEHICLE', 'Vehicle': 'VEHICLE',
-        'generator': 'GENERATOR', 'Generator': 'GENERATOR',
-        'hvac': 'HVAC', 'HVAC': 'HVAC',
-        'maintenance_tool': 'MAINTENANCE_TOOL', 'Maintenance_Tool': 'MAINTENANCE_TOOL',
+        laptop: 'LAPTOP',
+        desktop: 'DESKTOP',
+        desktop_pc: 'DESKTOP',
+        workstation: 'DESKTOP',
+        thin_client: 'DESKTOP',
+        lab_computer: 'DESKTOP',
+        library_pc: 'DESKTOP',
+        tablet: 'TABLET',
+        ipad: 'TABLET',
+        server: 'SERVER',
+        nas_storage: 'SERVER',
+        nvr_dvr: 'SERVER',
+        monitor: 'MONITOR',
+        peripheral: 'PERIPHERAL',
+        external_storage_device: 'PERIPHERAL',
+        keyboard: 'KEYBOARD',
+        electronics: 'ELECTRONICS',
+        ups: 'ELECTRONICS',
+        network_rack: 'ELECTRONICS',
+        ip_phone: 'ELECTRONICS',
+        biometric_attendance_device: 'ELECTRONICS',
+        self_check_machine: 'ELECTRONICS',
+        blood_pressure_monitor: 'ELECTRONICS',
+        thermometer: 'ELECTRONICS',
+        first_aid_kit: 'ELECTRONICS',
+        medical_refrigerator: 'ELECTRONICS',
+        projector: 'PROJECTOR',
+        smartboard: 'SMARTBOARD',
+        interactive_display: 'SMARTBOARD',
+        camera: 'CAMERA',
+        cctv_camera: 'CAMERA',
+        document_camera: 'CAMERA',
+        lecture_capture_device: 'CAMERA',
+        speaker: 'SPEAKER',
+        speaker_system: 'SPEAKER',
+        amplifier: 'SPEAKER',
+        microphone: 'MICROPHONE',
+        router: 'ROUTER',
+        switch: 'SWITCH',
+        network_switch: 'SWITCH',
+        access_point: 'ACCESS_POINT',
+        firewall: 'FIREWALL',
+        firewall_appliance: 'FIREWALL',
+        printer: 'PRINTER',
+        photocopier: 'PRINTER',
+        scanner: 'SCANNER',
+        barcode_scanner: 'SCANNER',
+        rfid_reader: 'SCANNER',
+        book_scanner: 'SCANNER',
+        desk: 'DESK',
+        chair: 'CHAIR',
+        whiteboard: 'WHITEBOARD',
+        notice_board: 'WHITEBOARD',
+        filing_cabinet: 'FILING_CABINET',
+        furniture: 'FURNITURE',
+        podium: 'FURNITURE',
+        meeting_table: 'FURNITURE',
+        bookshelf: 'FURNITURE',
+        locker: 'FURNITURE',
+        wheelchair: 'FURNITURE',
+        examination_bed: 'FURNITURE',
+        microscope: 'MICROSCOPE',
+        centrifuge: 'CENTRIFUGE',
+        oscilloscope: 'OSCILLOSCOPE',
+        function_generator: 'OSCILLOSCOPE',
+        '3d_printer': 'THREE_D_PRINTER',
+        lab_bench: 'LAB_BENCH',
+        vehicle: 'VEHICLE',
+        university_vehicle: 'VEHICLE',
+        golf_cart: 'VEHICLE',
+        bus: 'VEHICLE',
+        van: 'VEHICLE',
+        car: 'VEHICLE',
+        generator: 'GENERATOR',
+        hvac: 'HVAC',
+        hvac_unit: 'HVAC',
+        air_conditioner: 'HVAC',
+        maintenance_tool: 'MAINTENANCE_TOOL',
+        multimeter: 'MAINTENANCE_TOOL',
+        power_tool: 'MAINTENANCE_TOOL',
+        tool_kit: 'MAINTENANCE_TOOL',
+        cleaning_machine: 'MAINTENANCE_TOOL',
+        laser_cutter: 'MAINTENANCE_TOOL',
+        cnc_machine: 'MAINTENANCE_TOOL',
     };
-    return typeMap[value] || 'ELECTRONICS';
+    return typeMap[normalized] || 'ELECTRONICS';
 }
 
 function mapToAssetStatus(value: string): AssetStatus {
@@ -170,6 +230,7 @@ function mapToAssetCategory(value: unknown): AssetCategory {
         consumable: 'CONSUMABLE',
         license: 'LICENSE',
         spare_part: 'SPARE_PART',
+        spare_stock: 'SPARE_PART',
     };
     return categoryMap[normalized] || 'ASSET';
 }
@@ -213,6 +274,35 @@ function mapToAssetDepartment(value: string): AssetDepartment {
     return deptMap[value] || 'UNASSIGNED';
 }
 
+function mapLocationToFriendly(value: AssetLocation | string): string {
+    const mapping: Record<string, string> = {
+        CENTRAL_WAREHOUSE: 'Central Warehouse',
+        MAIN_BUILDING: 'Main Building',
+        K_BUILDING: 'K Building',
+        N_BUILDING: 'N Building',
+        S_BUILDING: 'S Building',
+        R_BUILDING: 'R Building',
+        PHARMACY_BUILDING: 'Pharmacy Building',
+    };
+    return mapping[String(value || '').toUpperCase()] || String(value || '');
+}
+
+function mapDepartmentToFriendly(value: AssetDepartment | string): string {
+    const mapping: Record<string, string> = {
+        COMPUTER_SCIENCE: 'Computer Science',
+        ENGINEERING: 'Engineering',
+        ARCHITECTURE: 'Architecture',
+        BUSINESS: 'Business',
+        MASS_COMM: 'Mass Comm',
+        ALSUN: 'Alsun',
+        PHARMACY: 'Pharmacy',
+        DENTISTRY: 'Dentistry',
+        UNASSIGNED: 'Unassigned',
+        GENERAL: 'General',
+    };
+    return mapping[String(value || '').toUpperCase()] || String(value || '');
+}
+
 const MAX_ASSET_CREATION_QUANTITY = 500;
 
 function parseRequestedQuantity(rawQuantity: unknown): number {
@@ -238,6 +328,19 @@ function parseOptionalDateInput(value: unknown): Date | null {
     if (!raw) return null;
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function scheduleTransferLifespanRefresh(assetId: string) {
+    Promise.resolve()
+        .then(async () => {
+            await refreshAndPersistAssetLifespan(assetId, {
+                reason: 'asset_transferred',
+                forcePersist: true,
+            });
+        })
+        .catch((error: any) => {
+            console.warn(`[InventoryAI] transfer lifespan refresh failed for ${assetId}: ${error.message}`);
+        });
 }
 
 function parseOptionalNumberInput(value: unknown): number | null {
@@ -343,6 +446,48 @@ async function generateComponentAssetCustomId(parentAssetId: string, componentTy
     return `${parentAssetId}-${prefix}-${Date.now()}`;
 }
 
+async function updateChildAssetLinkMetadata(
+    db: any,
+    childAssetId: string,
+    options: {
+        lifecycleStatus: AssetLifecycleStatus;
+        status: AssetStatus;
+        parentAssetId?: string | null;
+        parentAssetName?: string | null;
+        parentAssetTag?: string | null;
+        componentType?: string | null;
+        clearInstalledIn?: boolean;
+    }
+): Promise<void> {
+    const child = await db.asset.findUnique({ where: { customId: childAssetId } });
+    if (!child) return;
+    const currentSpecs = ((child.specifications as Record<string, any>) || {});
+    const nextSpecs: Record<string, any> = {
+        ...currentSpecs,
+        componentType: options.componentType || currentSpecs.componentType || undefined,
+    };
+    if (options.clearInstalledIn) {
+        nextSpecs.installedInAssetId = null;
+        nextSpecs.installedInAssetName = null;
+        nextSpecs.installedInAssetTag = null;
+        nextSpecs.installedInRemovedAt = new Date().toISOString();
+    } else {
+        nextSpecs.installedInAssetId = options.parentAssetId || null;
+        nextSpecs.installedInAssetName = options.parentAssetName || null;
+        nextSpecs.installedInAssetTag = options.parentAssetTag || null;
+        nextSpecs.installedInRemovedAt = null;
+    }
+    await db.asset.update({
+        where: { customId: childAssetId },
+        data: {
+            category: 'COMPONENT',
+            lifecycleStatus: options.lifecycleStatus,
+            status: options.status,
+            specifications: nextSpecs,
+        }
+    });
+}
+
 type ImportRecordType =
     | 'parent_asset'
     | 'component_asset'
@@ -418,7 +563,39 @@ const IMPORT_CATEGORY_ALLOWED = new Set([
     'consumable',
     'license',
     'spare_part',
+    'spare_stock',
 ]);
+
+const IMPORT_PARENT_ASSET_TYPE_ALLOWED = new Set(
+    ASSET_TYPES.flatMap((entry: any) => {
+        const values = [entry?.value, entry?.label, entry?.registryKey];
+        return values
+            .map((value) => String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+            .filter(Boolean);
+    })
+);
+
+const IMPORT_COMPONENT_TYPE_ALLOWED = new Set(
+    Object.values(COMPONENT_TYPE_REGISTRY_BY_PARENT)
+        .flat()
+        .map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+);
+
+const IMPORT_ACCESSORY_TYPE_ALLOWED = new Set(
+    ACCESSORY_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+);
+
+const IMPORT_CONSUMABLE_TYPE_ALLOWED = new Set(
+    CONSUMABLE_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+);
+
+const IMPORT_SPARE_STOCK_TYPE_ALLOWED = new Set(
+    SPARE_STOCK_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+);
+
+const IMPORT_LICENSE_TYPE_ALLOWED = new Set(
+    LICENSE_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
+);
 
 const IMPORT_HEADER_MAP: Record<string, keyof Omit<NormalizedImportRow, 'rowNumber' | 'proposedAction' | 'errors' | 'warnings' | 'statusLabel' | 'canImport'>> = {
     recordtype: 'recordType',
@@ -660,6 +837,42 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
                 row.errors.push(`Invalid category (${row.category})`);
             }
         }
+        if (row.assetType) {
+            const normalizedAssetType = String(row.assetType).trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (!IMPORT_PARENT_ASSET_TYPE_ALLOWED.has(normalizedAssetType)) {
+                row.warnings.push(`Unrecognized asset type in registry (${row.assetType}). It will map to nearest supported backend type.`);
+            }
+        }
+        if (row.recordType === 'component_asset' || row.recordType === 'embedded_component') {
+            const normalizedComponentType = String(row.componentType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (normalizedComponentType && !IMPORT_COMPONENT_TYPE_ALLOWED.has(normalizedComponentType)) {
+                row.warnings.push(`Component type (${row.componentType}) is not in current registry; keeping as custom component type.`);
+            }
+        }
+        if (row.recordType === 'accessory') {
+            const normalizedAccessoryType = String(row.assetType || row.category || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (normalizedAccessoryType && !IMPORT_ACCESSORY_TYPE_ALLOWED.has(normalizedAccessoryType)) {
+                row.warnings.push(`Accessory type (${row.assetType || row.category}) is outside the standard accessory registry.`);
+            }
+        }
+        if (row.recordType === 'consumable') {
+            const normalizedConsumableType = String(row.assetType || row.category || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (normalizedConsumableType && !IMPORT_CONSUMABLE_TYPE_ALLOWED.has(normalizedConsumableType)) {
+                row.warnings.push(`Consumable type (${row.assetType || row.category}) is outside the standard consumable registry.`);
+            }
+        }
+        if (row.recordType === 'spare_stock') {
+            const normalizedSpareType = String(row.componentType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (normalizedSpareType && !IMPORT_SPARE_STOCK_TYPE_ALLOWED.has(normalizedSpareType)) {
+                row.warnings.push(`Spare stock type (${row.componentType}) is outside the standard spare-stock registry.`);
+            }
+        }
+        if (row.recordType === 'license') {
+            const normalizedLicenseType = String(row.assetType || row.assetName || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (normalizedLicenseType && !IMPORT_LICENSE_TYPE_ALLOWED.has(normalizedLicenseType)) {
+                row.warnings.push(`License type (${row.assetType || row.assetName}) is outside the standard license registry.`);
+            }
+        }
 
         if ((row.recordType === 'parent_asset' || row.recordType === 'accessory' || row.recordType === 'consumable' || row.recordType === 'license' || row.recordType === 'component_asset') && !row.assetName) {
             row.errors.push('Asset Name is required');
@@ -745,7 +958,37 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
     };
 }
 
-function parseImportFileRows(filename: string, fileContent: string): Array<Record<string, any>> {
+function parseImportTemplateFieldToNormalizedKey(value: string): string {
+    const normalized = normalizeImportHeader(value || '');
+    const direct = IMPORT_HEADER_MAP[normalized];
+    if (direct) return String(direct);
+    const aliases: Record<string, string> = {
+        recordtype: 'recordType',
+        assetname: 'assetName',
+        assettype: 'assetType',
+        serialnumber: 'serialNumber',
+        assettag: 'assetTag',
+        manufacturerpartnumber: 'manufacturerPartNumber',
+        parentassettag: 'parentAssetTag',
+        componenttype: 'componentType',
+        minimumstocklevel: 'minimumStockLevel',
+        reorderpoint: 'reorderPoint',
+        purchasedate: 'purchaseDate',
+        warrantystartdate: 'warrantyStartDate',
+        warrantyenddate: 'warrantyEndDate',
+        purchasecost: 'purchaseCost',
+        assignedto: 'assignedTo',
+        lifestatus: 'lifecycleStatus',
+        lifecyclestatus: 'lifecycleStatus',
+    };
+    return aliases[normalized] || '';
+}
+
+function parseImportFileRows(
+    filename: string,
+    fileContent: string,
+    headerMappings: Record<string, string> | null = null
+): Array<Record<string, any>> {
     const lower = String(filename || '').toLowerCase();
     if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
         throw new RequestValidationError('XLSX import is not enabled yet. CSV is supported now. XLSX support is planned for Slice 2.1.');
@@ -753,7 +996,18 @@ function parseImportFileRows(filename: string, fileContent: string): Array<Recor
     const rows = parseCsvContent(fileContent);
     if (!rows.length) return [];
     const headerRow = rows[0] || [];
-    const headerMap = headerRow.map((header) => IMPORT_HEADER_MAP[normalizeImportHeader(header)] || null);
+    const normalizedMappingEntries = new Map<string, string>();
+    Object.entries(headerMappings || {}).forEach(([sourceColumn, targetColumn]) => {
+        const sourceKey = normalizeImportHeader(sourceColumn);
+        const targetKey = parseImportTemplateFieldToNormalizedKey(targetColumn);
+        if (sourceKey && targetKey) normalizedMappingEntries.set(sourceKey, targetKey);
+    });
+    const headerMap = headerRow.map((header) => {
+        const sourceKey = normalizeImportHeader(header);
+        const mappedViaAi = normalizedMappingEntries.get(sourceKey);
+        if (mappedViaAi) return mappedViaAi as keyof Omit<NormalizedImportRow, 'rowNumber' | 'proposedAction' | 'errors' | 'warnings' | 'statusLabel' | 'canImport'>;
+        return IMPORT_HEADER_MAP[sourceKey] || null;
+    });
     const result: Array<Record<string, any>> = [];
 
     for (let index = 1; index < rows.length; index += 1) {
@@ -1049,6 +1303,18 @@ type EolExplanationHelperResponse = {
     llmUsed: boolean;
 };
 
+type AiHealthSummaryHelperResponse = {
+    summary: string;
+    risks: string[];
+    recentChanges: string[];
+    componentIssues: string[];
+    warrantyEolConcerns: string[];
+    recommendations: string[];
+    confidence: 'low' | 'medium' | 'high';
+    missingData: string[];
+    llmUsed: boolean;
+};
+
 async function callInventoryAiHelper(path: string, body: Record<string, unknown>, timeoutMs = 8_000): Promise<any | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1173,6 +1439,875 @@ function buildEolExplanationFallback(assessment: EolAssessmentResponse): EolExpl
     };
 }
 
+function buildAiHealthSummaryFallback(params: {
+    asset: Asset;
+    timeline: CombinedHistoryEntry[];
+    assessment: EolAssessmentResponse;
+}): AiHealthSummaryHelperResponse {
+    const assetSpecs = ((params.asset.specifications as Record<string, any>) || {});
+    const latestChanges = (params.timeline || []).slice(0, 6).map((entry) => {
+        const sourceName = entry.sourceItemName || entry.sourceItemCustomId || 'Related item';
+        const reason = entry.reason ? ` — Reason: ${entry.reason}` : '';
+        return `${sourceName}: ${entry.event}${reason}`;
+    });
+    const componentIssues = (params.timeline || [])
+        .filter((entry) => {
+            const key = normalizeValue(entry.eventType || entry.event);
+            return entry.sourceItemType === 'component'
+                && (key.includes('failed') || key.includes('repair') || key.includes('replace') || key.includes('retire') || key.includes('dispose'));
+        })
+        .slice(0, 6)
+        .map((entry) => `${entry.sourceItemName || 'Component'} ${entry.event.toLowerCase()}`);
+
+    const missingData: string[] = [];
+    if (!params.asset.purchaseDate) missingData.push('purchaseDate');
+    if (!params.asset.warrantyEndDate) missingData.push('warrantyEndDate');
+    if (!normalizeSerialValue(params.asset.serialNumber)) missingData.push('serialNumber');
+    if (!Array.isArray(params.timeline) || params.timeline.length === 0) missingData.push('historyEvents');
+    if (!assetSpecs.telemetryEnabled && !assetSpecs.trackWorkingHours) missingData.push('telemetrySignals');
+
+    const assessmentStatusText = String(params.assessment.status || '').trim();
+    const assessmentStatusKey = assessmentStatusText.toLowerCase();
+    const risks: string[] = [];
+    if (assessmentStatusKey.includes('risk') || assessmentStatusKey.includes('expired') || assessmentStatusKey.includes('end_of_life')) {
+        risks.push(`EOL status is ${assessmentStatusText.replace(/_/g, ' ')} (${Math.round(Number(params.assessment.confidence || 0) * 100)}% confidence).`);
+    }
+    if (componentIssues.length) {
+        risks.push(`Component incidents detected: ${componentIssues.length} recent issue(s).`);
+    }
+    if (missingData.length >= 3) {
+        risks.push('Key lifecycle and telemetry data is missing; health confidence is limited.');
+    }
+
+    const recommendations: string[] = [];
+    if (!params.asset.warrantyEndDate) recommendations.push('Add warranty end date to improve lifecycle and procurement planning.');
+    if (componentIssues.length) recommendations.push('Review frequent component issues and schedule preventive maintenance.');
+    if (!params.asset.purchaseDate) recommendations.push('Backfill purchase date for stronger EOL confidence.');
+    if (!recommendations.length) recommendations.push('Continue routine monitoring and maintenance reviews.');
+
+    const warrantyEolConcerns: string[] = [];
+    if (params.asset.warrantyEndDate) {
+        warrantyEolConcerns.push(`Warranty end date: ${params.asset.warrantyEndDate.toISOString().slice(0, 10)}`);
+    } else {
+        warrantyEolConcerns.push('Warranty end date is missing.');
+    }
+    warrantyEolConcerns.push(`EOL assessment: ${params.assessment.reason}`);
+
+    const confidence: 'low' | 'medium' | 'high' = missingData.length >= 4
+        ? 'low'
+        : missingData.length >= 2
+            ? 'medium'
+            : 'high';
+
+    const summary = [
+        `${params.asset.name} (${params.asset.customId}) is currently ${String(params.asset.lifecycleStatus || '').toLowerCase().replace(/_/g, ' ')}.`,
+        `EOL status is ${params.assessment.status.replace(/_/g, ' ')} with ${Math.round(Number(params.assessment.confidence || 0) * 100)}% confidence.`,
+        componentIssues.length
+            ? `Recent component concerns were detected (${componentIssues.length}).`
+            : 'No recent component failure trend was detected from recorded history.',
+    ].join(' ');
+
+    return {
+        summary,
+        risks,
+        recentChanges: latestChanges,
+        componentIssues,
+        warrantyEolConcerns,
+        recommendations,
+        confidence,
+        missingData,
+        llmUsed: false,
+    };
+}
+
+const INVENTORY_AI_SUPPORTED_HINT = 'I can help with inventory status, maintenance, warranty, EOL, stock, duplicates, and procurement questions.';
+const INVENTORY_AI_MAX_ASSETS = 1600;
+const INVENTORY_AI_MAX_COMPONENTS = 2400;
+const INVENTORY_AI_MAX_EVENTS = 2400;
+const INVENTORY_AI_MAX_MAINTENANCE = 1600;
+const INVENTORY_AI_MAX_SPARE_STOCK = 1200;
+
+type InventoryAiMatchedItem = {
+    assetId: string;
+    name: string;
+    type: string;
+    category: string;
+    status: string;
+    lifecycleStatus: string;
+    location: string;
+    department: string;
+    serialNumber: string | null;
+    assetTag: string | null;
+    reason: string;
+    parentAssetId?: string | null;
+};
+
+type InventoryAiSnapshot = {
+    assets: Asset[];
+    components: Array<{
+        id: string;
+        parentAssetId: string;
+        childAssetId: string | null;
+        componentName: string;
+        componentType: string;
+        status: string;
+        serialNumber: string | null;
+        partNumber: string | null;
+        updatedAt: Date;
+        removedAt: Date | null;
+    }>;
+    maintenance: Array<{
+        id: string;
+        assetId: string;
+        componentId: string | null;
+        maintenanceType: string;
+        status: string;
+        performedAt: Date | null;
+        nextMaintenanceDate: Date | null;
+        reason: string | null;
+    }>;
+    lifecycleEvents: Array<{
+        id: string;
+        assetId: string;
+        componentId: string | null;
+        eventType: string;
+        reason: string | null;
+        createdAt: Date;
+    }>;
+    spareStock: Array<{
+        id: string;
+        partName: string;
+        componentType: string;
+        quantityAvailable: number;
+        minimumStockLevel: number;
+        reorderPoint: number | null;
+        unitCost: Prisma.Decimal | null;
+        vendor: string | null;
+        location: string | null;
+    }>;
+};
+
+async function buildInventoryAiSnapshot(): Promise<InventoryAiSnapshot> {
+    const assets = await prisma.asset.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: INVENTORY_AI_MAX_ASSETS,
+    });
+    const assetIds = assets.map((asset) => asset.customId);
+    const [components, maintenance, lifecycleEvents, spareStock] = await Promise.all([
+        prisma.assetComponent.findMany({
+            where: {
+                OR: [
+                    { parentAssetId: { in: assetIds } },
+                    { childAssetId: { in: assetIds } },
+                ],
+            },
+            select: {
+                id: true,
+                parentAssetId: true,
+                childAssetId: true,
+                componentName: true,
+                componentType: true,
+                status: true,
+                serialNumber: true,
+                partNumber: true,
+                updatedAt: true,
+                removedAt: true,
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: INVENTORY_AI_MAX_COMPONENTS,
+        }),
+        prisma.assetMaintenanceRecord.findMany({
+            where: { assetId: { in: assetIds } },
+            select: {
+                id: true,
+                assetId: true,
+                componentId: true,
+                maintenanceType: true,
+                status: true,
+                performedAt: true,
+                nextMaintenanceDate: true,
+                reason: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: INVENTORY_AI_MAX_MAINTENANCE,
+        }),
+        prisma.assetLifecycleEvent.findMany({
+            where: { assetId: { in: assetIds } },
+            select: {
+                id: true,
+                assetId: true,
+                componentId: true,
+                eventType: true,
+                reason: true,
+                createdAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: INVENTORY_AI_MAX_EVENTS,
+        }),
+        prisma.spareStockItem.findMany({
+            select: {
+                id: true,
+                partName: true,
+                componentType: true,
+                quantityAvailable: true,
+                minimumStockLevel: true,
+                reorderPoint: true,
+                unitCost: true,
+                vendor: true,
+                location: true,
+            },
+            orderBy: { updatedAt: 'desc' },
+            take: INVENTORY_AI_MAX_SPARE_STOCK,
+        }),
+    ]);
+
+    return { assets, components, maintenance, lifecycleEvents, spareStock };
+}
+
+function buildAiMatchedItem(asset: Asset, reason: string, parentAssetId: string | null = null): InventoryAiMatchedItem {
+    return {
+        assetId: asset.customId,
+        name: asset.name,
+        type: canonicalAssetType(asset.type),
+        category: String(asset.category || '').toLowerCase(),
+        status: String(asset.status || '').toLowerCase(),
+        lifecycleStatus: String(asset.lifecycleStatus || '').toLowerCase(),
+        location: mapLocationToFriendly(asset.location),
+        department: mapDepartmentToFriendly(asset.department),
+        serialNumber: normalizeSerialValue(asset.serialNumber),
+        assetTag: normalizeSerialValue(asset.assetTag),
+        reason,
+        parentAssetId,
+    };
+}
+
+function classifyAiQueryIntent(query: string): string {
+    const q = String(query || '').toLowerCase();
+    if (!q.trim()) return 'unknown';
+    if ((q.includes('missing') || q.includes('without')) && q.includes('serial')) return 'missing_serial';
+    if (q.includes('duplicate')) return 'duplicates';
+    if (q.includes('warranty') && (q.includes('expired') || q.includes('expire'))) return 'warranty_expiry';
+    if (q.includes('maintenance')) return 'maintenance';
+    if (q.includes('component') && (q.includes('fail') || q.includes('replace') || q.includes('repair'))) return 'component_failures';
+    if (q.includes('low stock') || q.includes('reorder') || q.includes('spare')) return 'low_stock';
+    if (q.includes('buy') || q.includes('procurement') || q.includes('purchase')) return 'procurement';
+    if (q.includes('eol') || q.includes('end of life')) return 'eol';
+    if (q.includes('license') && q.includes('expir')) return 'license_expiry';
+    return 'unknown';
+}
+
+function normalizeLifecycleKey(value: unknown): string {
+    return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string): {
+    answer: string;
+    matchedItems: InventoryAiMatchedItem[];
+    filtersUsed: Record<string, any>;
+    confidence: 'low' | 'medium' | 'high';
+    missingData: string[];
+    suggestedActions: string[];
+    supported: boolean;
+} {
+    const intent = classifyAiQueryIntent(query);
+    const now = new Date();
+    const matchedItems: InventoryAiMatchedItem[] = [];
+    const suggestedActions: string[] = [];
+    const missingData: string[] = [];
+    const filtersUsed: Record<string, any> = { intent };
+
+    if (intent === 'missing_serial') {
+        snapshot.assets.forEach((asset) => {
+            const category = String(asset.category || '').toLowerCase();
+            if (['consumable', 'spare_part'].includes(category)) return;
+            if (!normalizeSerialValue(asset.serialNumber)) {
+                matchedItems.push(buildAiMatchedItem(asset, 'Missing serial number'));
+            }
+        });
+        suggestedActions.push('Backfill serial numbers for high-priority and assigned assets first.');
+    } else if (intent === 'warranty_expiry') {
+        const soonDays = 90;
+        filtersUsed.windowDays = soonDays;
+        snapshot.assets.forEach((asset) => {
+            if (!asset.warrantyEndDate) return;
+            const diff = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+            if (diff <= soonDays) {
+                const label = diff < 0 ? 'Warranty expired' : `Warranty expires in ${Math.ceil(diff)} day(s)`;
+                matchedItems.push(buildAiMatchedItem(asset, label));
+            }
+        });
+        suggestedActions.push('Plan renewals/replacements for assets with expired or soon-expiring warranty.');
+    } else if (intent === 'maintenance') {
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+        const impacted = new Set<string>();
+        snapshot.maintenance.forEach((row) => {
+            const targetDate = row.nextMaintenanceDate || row.performedAt;
+            if (!targetDate) return;
+            if (targetDate.getMonth() === currentMonth && targetDate.getFullYear() === currentYear) {
+                impacted.add(row.assetId);
+            }
+        });
+        snapshot.assets.forEach((asset) => {
+            if (impacted.has(asset.customId)) {
+                matchedItems.push(buildAiMatchedItem(asset, 'Maintenance due this month'));
+            }
+        });
+        suggestedActions.push('Schedule this month maintenance items and assign responsible technicians.');
+    } else if (intent === 'component_failures') {
+        const failures = new Map<string, number>();
+        snapshot.lifecycleEvents.forEach((event) => {
+            const key = normalizeValue(event.eventType);
+            if (key.includes('failed') || key.includes('repair') || key.includes('replace')) {
+                failures.set(event.assetId, (failures.get(event.assetId) || 0) + 1);
+            }
+        });
+        snapshot.assets.forEach((asset) => {
+            const count = failures.get(asset.customId) || 0;
+            if (count > 0) {
+                matchedItems.push(buildAiMatchedItem(asset, `${count} component issue event(s)`));
+            }
+        });
+        suggestedActions.push('Inspect repeated component failures and evaluate preventive replacement plans.');
+    } else if (intent === 'low_stock') {
+        snapshot.spareStock.forEach((item) => {
+            const reorder = item.reorderPoint ?? item.minimumStockLevel;
+            if (item.quantityAvailable <= reorder) {
+                matchedItems.push({
+                    assetId: item.id,
+                    name: item.partName,
+                    type: String(item.componentType || 'component'),
+                    category: 'spare_part',
+                    status: 'in_stock',
+                    lifecycleStatus: 'in_stock',
+                    location: String(item.location || '-'),
+                    department: '-',
+                    serialNumber: null,
+                    assetTag: null,
+                    reason: `Low stock (${item.quantityAvailable} <= ${reorder})`,
+                });
+            }
+        });
+        suggestedActions.push('Create purchase requests for low-stock spare parts.');
+    } else if (intent === 'procurement') {
+        snapshot.spareStock.forEach((item) => {
+            const reorder = item.reorderPoint ?? item.minimumStockLevel;
+            if (item.quantityAvailable <= reorder) {
+                matchedItems.push({
+                    assetId: item.id,
+                    name: item.partName,
+                    type: String(item.componentType || 'component'),
+                    category: 'spare_part',
+                    status: 'in_stock',
+                    lifecycleStatus: 'in_stock',
+                    location: String(item.location || '-'),
+                    department: '-',
+                    serialNumber: null,
+                    assetTag: null,
+                    reason: `Reorder suggested (${item.quantityAvailable} available)`,
+                });
+            }
+        });
+        suggestedActions.push('Prioritize procurement by stock criticality and failure trends.');
+    } else if (intent === 'eol') {
+        snapshot.assets.forEach((asset) => {
+            const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+            if (lifecycle === 'eol_expired') {
+                matchedItems.push(buildAiMatchedItem(asset, 'Lifecycle status marked EOL expired'));
+                return;
+            }
+            if (asset.warrantyEndDate) {
+                const diff = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+                if (diff <= 0) {
+                    matchedItems.push(buildAiMatchedItem(asset, 'Warranty ended (potential EOL risk)'));
+                }
+            }
+        });
+        suggestedActions.push('Review EOL-risk assets for replacement planning.');
+    } else if (intent === 'license_expiry') {
+        snapshot.assets.forEach((asset) => {
+            if (String(asset.category || '').toLowerCase() !== 'license') return;
+            if (!asset.warrantyEndDate) return;
+            const diff = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+            if (diff <= 90) {
+                const reason = diff < 0 ? 'License expired' : `License expires in ${Math.ceil(diff)} day(s)`;
+                matchedItems.push(buildAiMatchedItem(asset, reason));
+            }
+        });
+        suggestedActions.push('Renew or reassign expiring licenses before service interruption.');
+    } else if (intent === 'duplicates') {
+        const serialMap = new Map<string, Asset[]>();
+        snapshot.assets.forEach((asset) => {
+            const serial = normalizeSerialValue(asset.serialNumber);
+            if (!serial) return;
+            const key = serial.toLowerCase();
+            serialMap.set(key, [...(serialMap.get(key) || []), asset]);
+        });
+        serialMap.forEach((rows) => {
+            if (rows.length <= 1) return;
+            rows.forEach((asset) => matchedItems.push(buildAiMatchedItem(asset, `Duplicate serial (${asset.serialNumber})`)));
+        });
+        suggestedActions.push('Merge or correct duplicate records after verification.');
+    } else {
+        return {
+            answer: INVENTORY_AI_SUPPORTED_HINT,
+            matchedItems: [],
+            filtersUsed,
+            confidence: 'low',
+            missingData: [],
+            suggestedActions: ['Ask about missing serials, warranty expiry, maintenance, stock, duplicates, EOL, or procurement.'],
+            supported: false,
+        };
+    }
+
+    if (!snapshot.assets.length) missingData.push('assets');
+    if (!snapshot.components.length) missingData.push('components');
+    if (!snapshot.maintenance.length) missingData.push('maintenanceRecords');
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    if (!snapshot.spareStock.length) missingData.push('spareStockItems');
+
+    const answer = matchedItems.length
+        ? `Found ${matchedItems.length} matching item(s) for "${query}".`
+        : `No matching records were found for "${query}" in the current dataset.`;
+    const confidence: 'low' | 'medium' | 'high' = matchedItems.length > 20
+        ? 'high'
+        : matchedItems.length > 0
+            ? 'medium'
+            : 'low';
+
+    return {
+        answer,
+        matchedItems: matchedItems.slice(0, 120),
+        filtersUsed,
+        confidence,
+        missingData,
+        suggestedActions,
+        supported: true,
+    };
+}
+
+function deterministicImportColumnMapping(params: {
+    headers: string[];
+    expectedFields: string[];
+}): {
+    mappings: Array<{ sourceColumn: string; targetColumn: string; confidence: number; reason: string }>;
+    unmappedColumns: string[];
+    warnings: string[];
+} {
+    const aliases: Record<string, string> = {
+        serialno: 'Serial Number',
+        serialnumber: 'Serial Number',
+        devicetag: 'Asset Tag',
+        assetid: 'Asset Tag',
+        assigneddept: 'Department',
+        dept: 'Department',
+        itemtype: 'Asset Type',
+        parenttag: 'Parent Asset Tag',
+        warrantyexp: 'Warranty End Date',
+        warrantyexpiry: 'Warranty End Date',
+        purchdate: 'Purchase Date',
+        recordtype: 'Record Type',
+        component: 'Component Type',
+    };
+    const normalizedExpected = new Map<string, string>();
+    (params.expectedFields || []).forEach((field) => {
+        normalizedExpected.set(normalizeImportHeader(field), field);
+    });
+    const mappings: Array<{ sourceColumn: string; targetColumn: string; confidence: number; reason: string }> = [];
+    const unmappedColumns: string[] = [];
+    const warnings: string[] = [];
+
+    (params.headers || []).forEach((source) => {
+        const normalized = normalizeImportHeader(source);
+        let target = normalizedExpected.get(normalized) || aliases[normalized] || '';
+        if (!target) {
+            const fuzzy = Array.from(normalizedExpected.entries()).find(([key]) => key.includes(normalized) || normalized.includes(key));
+            if (fuzzy) target = fuzzy[1];
+        }
+        if (!target) {
+            unmappedColumns.push(source);
+            return;
+        }
+        const confidence = normalizedExpected.has(normalized) ? 0.96 : (aliases[normalized] ? 0.9 : 0.72);
+        mappings.push({
+            sourceColumn: source,
+            targetColumn: target,
+            confidence,
+            reason: normalizedExpected.has(normalized)
+                ? 'Exact normalized header match.'
+                : (aliases[normalized]
+                    ? 'Mapped using known inventory header alias.'
+                    : 'Mapped using fuzzy normalized header similarity.'),
+        });
+    });
+    if (unmappedColumns.length) {
+        warnings.push(`${unmappedColumns.length} column(s) could not be mapped automatically.`);
+    }
+    return { mappings, unmappedColumns, warnings };
+}
+
+function extractHeadersAndSampleRowsFromCsv(fileContent: string): { headers: string[]; sampleRows: Record<string, string>[] } {
+    const rows = parseCsvContent(fileContent || '');
+    if (!rows.length) return { headers: [], sampleRows: [] };
+    const headers = (rows[0] || []).map((entry) => String(entry || '').trim()).filter(Boolean);
+    const sampleRows = rows.slice(1, 6).map((row) => {
+        const mapped: Record<string, string> = {};
+        headers.forEach((header, index) => {
+            mapped[header] = String(row[index] || '').trim();
+        });
+        return mapped;
+    });
+    return { headers, sampleRows };
+}
+
+function extractCandidateRowsFromDocumentText(documentText: string): Array<Record<string, any>> {
+    const text = String(documentText || '');
+    const lines = text.split(/\r?\n/).map((line) => String(line || '').trim()).filter(Boolean);
+    const rows: Array<Record<string, any>> = [];
+    for (const line of lines.slice(0, 400)) {
+        const parts = line.split(/[|,\t;]/).map((entry) => String(entry || '').trim()).filter(Boolean);
+        if (parts.length < 2) continue;
+        const name = parts[0];
+        const serialCandidate = parts.find((entry) => /[A-Z0-9]{4,}/i.test(entry) && /sn|serial/i.test(entry) === false) || '';
+        const recordType = /license|subscription/i.test(line)
+            ? 'license'
+            : /toner|ink|paper|battery|label/i.test(line)
+                ? 'consumable'
+                : /spare|stock|replacement/i.test(line)
+                    ? 'spare_stock'
+                    : /ram|ssd|hdd|cpu|gpu|psu|battery|charger/i.test(line)
+                        ? 'component_asset'
+                        : 'parent_asset';
+        rows.push({
+            recordType,
+            assetName: name,
+            serialNumber: serialCandidate || '',
+            notes: line,
+            quantity: 1,
+        });
+    }
+    return rows.slice(0, 250);
+}
+
+function computeMissingDataReport(snapshot: InventoryAiSnapshot): {
+    totalIssues: number;
+    criticalIssues: number;
+    warnings: string[];
+    assetsWithIssues: Array<Record<string, any>>;
+    recommendations: string[];
+    confidence: 'low' | 'medium' | 'high';
+} {
+    const issues: Array<Record<string, any>> = [];
+    const childLinkedIds = new Set(snapshot.components.map((row) => row.childAssetId).filter(Boolean) as string[]);
+    const now = new Date();
+    snapshot.assets.forEach((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        const serialMissing = !normalizeSerialValue(asset.serialNumber);
+        const tagMissing = !normalizeSerialValue(asset.assetTag);
+        const vendorMissing = !normalizeSerialValue((asset as any).vendor);
+        const locationMissing = !String(asset.location || '').trim();
+        const departmentMissing = !String(asset.department || '').trim();
+        const purchaseMissing = !asset.purchaseDate;
+        const warrantyMissing = !asset.warrantyEndDate;
+        const createdAt = new Date(asset.createdAt);
+        const assetAgeDays = Math.max(0, (now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
+        const maintenanceExists = snapshot.maintenance.some((row) => row.assetId === asset.customId);
+        const needsMaintenanceHistory = assetAgeDays > 365 && !maintenanceExists;
+
+        if (!['consumable', 'spare_part'].includes(category) && serialMissing) {
+            issues.push({ severity: 'critical', issue: 'missing_serial', assetId: asset.customId, assetName: asset.name, category, message: 'Serial number is missing.' });
+        }
+        if (!['consumable', 'spare_part'].includes(category) && tagMissing) {
+            issues.push({ severity: 'warning', issue: 'missing_asset_tag', assetId: asset.customId, assetName: asset.name, category, message: 'Asset tag is missing.' });
+        }
+        if (warrantyMissing && category !== 'consumable' && category !== 'spare_part') {
+            issues.push({ severity: 'warning', issue: 'missing_warranty_end', assetId: asset.customId, assetName: asset.name, category, message: 'Warranty end date is missing.' });
+        }
+        if (purchaseMissing && category !== 'consumable' && category !== 'spare_part') {
+            issues.push({ severity: 'warning', issue: 'missing_purchase_date', assetId: asset.customId, assetName: asset.name, category, message: 'Purchase date is missing.' });
+        }
+        if (vendorMissing && ['asset', 'component', 'accessory', 'license'].includes(category)) {
+            issues.push({ severity: 'info', issue: 'missing_vendor', assetId: asset.customId, assetName: asset.name, category, message: 'Vendor is missing.' });
+        }
+        if (locationMissing) {
+            issues.push({ severity: 'critical', issue: 'missing_location', assetId: asset.customId, assetName: asset.name, category, message: 'Location is missing.' });
+        }
+        if (departmentMissing) {
+            issues.push({ severity: 'warning', issue: 'missing_department', assetId: asset.customId, assetName: asset.name, category, message: 'Department is missing.' });
+        }
+        if (category === 'component' && !childLinkedIds.has(asset.customId)) {
+            const specs = ((asset.specifications as Record<string, any>) || {});
+            const hasParentMeta = Boolean(
+                normalizeSerialValue(specs.installedInAssetId)
+                || normalizeSerialValue(specs.parentAssetId)
+                || normalizeSerialValue(specs.installedInAssetTag)
+            );
+            if (!hasParentMeta) {
+                issues.push({
+                    severity: 'critical',
+                    issue: 'component_missing_parent_relation',
+                    assetId: asset.customId,
+                    assetName: asset.name,
+                    category,
+                    message: 'Component asset has no parent relation/link.',
+                });
+            }
+        }
+        if (needsMaintenanceHistory && ['asset', 'component', 'accessory'].includes(category)) {
+            issues.push({
+                severity: 'info',
+                issue: 'missing_maintenance_history',
+                assetId: asset.customId,
+                assetName: asset.name,
+                category,
+                message: 'Asset is older than one year with no maintenance records.',
+            });
+        }
+    });
+
+    snapshot.components.forEach((component) => {
+        if (!normalizeSerialValue(component.serialNumber)) {
+            issues.push({
+                severity: 'warning',
+                issue: 'component_row_missing_serial',
+                assetId: component.parentAssetId,
+                assetName: component.componentName,
+                category: 'component',
+                message: `Component row ${component.componentName} is missing serial number.`,
+            });
+        }
+    });
+
+    const criticalIssues = issues.filter((issue) => issue.severity === 'critical').length;
+    const warningIssues = issues.filter((issue) => issue.severity === 'warning').length;
+    const confidence: 'low' | 'medium' | 'high' = criticalIssues > 0
+        ? 'high'
+        : (warningIssues > 0 ? 'medium' : 'low');
+    const recommendations = [
+        'Fix critical identity fields first: serial number, parent link, location.',
+        'Backfill warranty and purchase dates for stronger lifecycle/EOL confidence.',
+        'Add maintenance records for older or high-usage assets.',
+    ];
+
+    return {
+        totalIssues: issues.length,
+        criticalIssues,
+        warnings: [
+            `${criticalIssues} critical issue(s)`,
+            `${warningIssues} warning issue(s)`,
+        ],
+        assetsWithIssues: issues.slice(0, 500),
+        recommendations,
+        confidence,
+    };
+}
+
+function buildMaintenanceRecommendations(snapshot: InventoryAiSnapshot): Array<Record<string, any>> {
+    const recommendationMap = new Map<string, Record<string, any>>();
+    const failureCounts = new Map<string, number>();
+    const now = new Date();
+    snapshot.lifecycleEvents.forEach((event) => {
+        const key = normalizeValue(event.eventType);
+        if (key.includes('failed') || key.includes('repair') || key.includes('replace')) {
+            failureCounts.set(event.assetId, (failureCounts.get(event.assetId) || 0) + 1);
+        }
+    });
+
+    snapshot.assets.forEach((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        if (['consumable', 'spare_part', 'license'].includes(category)) return;
+        const failures = failureCounts.get(asset.customId) || 0;
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        const isRepairStatus = lifecycle === 'pending_repair' || lifecycle === 'under_maintenance';
+        const lastMaintenance = snapshot.maintenance
+            .filter((row) => row.assetId === asset.customId && row.performedAt)
+            .sort((a, b) => new Date(b.performedAt || 0).getTime() - new Date(a.performedAt || 0).getTime())[0];
+        const daysSinceMaintenance = lastMaintenance?.performedAt
+            ? (now.getTime() - new Date(lastMaintenance.performedAt).getTime()) / (1000 * 60 * 60 * 24)
+            : Number.POSITIVE_INFINITY;
+
+        if (failures >= 2 || isRepairStatus || daysSinceMaintenance > 180) {
+            const priority = failures >= 3 || isRepairStatus ? 'high' : 'medium';
+            const reason = isRepairStatus
+                ? 'Asset lifecycle indicates maintenance/repair status.'
+                : failures >= 2
+                    ? `Detected ${failures} failure/repair events.`
+                    : `No recent maintenance records (${Math.round(daysSinceMaintenance)} days).`;
+            recommendationMap.set(asset.customId, {
+                assetId: asset.customId,
+                assetName: asset.name,
+                priority,
+                reason,
+                recommendedAction: isRepairStatus
+                    ? 'Run diagnostic and complete maintenance ticket.'
+                    : 'Schedule preventive maintenance inspection.',
+                dueDateSuggestion: new Date(now.getTime() + (priority === 'high' ? 3 : 14) * 86400000).toISOString().slice(0, 10),
+                evidence: {
+                    failureEvents: failures,
+                    lifecycleStatus: lifecycle,
+                    daysSinceMaintenance: Number.isFinite(daysSinceMaintenance) ? Math.round(daysSinceMaintenance) : null,
+                },
+            });
+        }
+    });
+    return Array.from(recommendationMap.values()).slice(0, 200);
+}
+
+function buildProcurementRecommendations(snapshot: InventoryAiSnapshot): Array<Record<string, any>> {
+    const recommendations: Array<Record<string, any>> = [];
+    const failureByComponentType = new Map<string, number>();
+    snapshot.lifecycleEvents.forEach((event) => {
+        const key = normalizeValue(event.eventType);
+        if (!(key.includes('failed') || key.includes('replaced'))) return;
+        const componentRef = snapshot.components.find((component) => component.id === event.componentId);
+        if (!componentRef) return;
+        const componentTypeKey = normalizeValue(componentRef.componentType || componentRef.componentName);
+        failureByComponentType.set(componentTypeKey, (failureByComponentType.get(componentTypeKey) || 0) + 1);
+    });
+
+    snapshot.spareStock.forEach((item) => {
+        const reorder = item.reorderPoint ?? item.minimumStockLevel;
+        if (item.quantityAvailable > reorder) return;
+        const typeKey = normalizeValue(item.componentType || item.partName);
+        const failurePressure = failureByComponentType.get(typeKey) || 0;
+        const recommendedQuantity = Math.max(1, (reorder + 1) - item.quantityAvailable + Math.min(5, failurePressure));
+        const estimatedCost = item.unitCost ? Number(item.unitCost) * recommendedQuantity : null;
+        recommendations.push({
+            itemName: item.partName,
+            type: item.componentType,
+            recommendedQuantity,
+            priority: failurePressure >= 3 || item.quantityAvailable === 0 ? 'high' : 'medium',
+            reason: failurePressure > 0
+                ? `Low stock and ${failurePressure} related failure/replacement event(s).`
+                : 'Low stock reached reorder/minimum threshold.',
+            estimatedCost,
+            relatedAssets: [],
+            evidence: {
+                quantityAvailable: item.quantityAvailable,
+                reorderPoint: reorder,
+                failurePressure,
+                vendor: item.vendor,
+                unitCost: item.unitCost ? Number(item.unitCost) : null,
+            },
+        });
+    });
+    return recommendations.slice(0, 150);
+}
+
+function buildDuplicateDetectionReport(snapshot: InventoryAiSnapshot): {
+    duplicateGroups: Array<Record<string, any>>;
+    summary: string;
+} {
+    const groups: Array<Record<string, any>> = [];
+    const serialMap = new Map<string, Asset[]>();
+    const tagMap = new Map<string, Asset[]>();
+    const signatureMap = new Map<string, Asset[]>();
+
+    snapshot.assets.forEach((asset) => {
+        const serial = normalizeSerialValue(asset.serialNumber);
+        const tag = normalizeSerialValue(asset.assetTag);
+        if (serial) {
+            const key = serial.toLowerCase();
+            serialMap.set(key, [...(serialMap.get(key) || []), asset]);
+        }
+        if (tag) {
+            const key = tag.toLowerCase();
+            tagMap.set(key, [...(tagMap.get(key) || []), asset]);
+        }
+        const signature = [
+            normalizeValue(asset.name),
+            canonicalAssetType(asset.type),
+            mapLocationToFriendly(asset.location).toLowerCase(),
+            mapDepartmentToFriendly(asset.department).toLowerCase(),
+        ].join('|');
+        signatureMap.set(signature, [...(signatureMap.get(signature) || []), asset]);
+    });
+
+    serialMap.forEach((assets, serial) => {
+        if (assets.length <= 1) return;
+        groups.push({
+            severity: 'high',
+            reason: `Duplicate serial number (${serial})`,
+            assets: assets.map((asset) => ({ assetId: asset.customId, name: asset.name, serialNumber: asset.serialNumber, assetTag: asset.assetTag })),
+            recommendedAction: 'Verify physical asset identity and merge/remove duplicate records.',
+            confidence: 0.98,
+        });
+    });
+    tagMap.forEach((assets, tag) => {
+        if (assets.length <= 1) return;
+        groups.push({
+            severity: 'high',
+            reason: `Duplicate asset tag (${tag})`,
+            assets: assets.map((asset) => ({ assetId: asset.customId, name: asset.name, serialNumber: asset.serialNumber, assetTag: asset.assetTag })),
+            recommendedAction: 'Correct or reassign duplicate asset tags.',
+            confidence: 0.96,
+        });
+    });
+    signatureMap.forEach((assets, signature) => {
+        if (assets.length <= 1) return;
+        if (assets.length > 8) return;
+        groups.push({
+            severity: 'medium',
+            reason: `Similar name/type/location signature (${signature})`,
+            assets: assets.map((asset) => ({ assetId: asset.customId, name: asset.name, serialNumber: asset.serialNumber, assetTag: asset.assetTag })),
+            recommendedAction: 'Review if these are duplicate imported rows or true separate units.',
+            confidence: 0.72,
+        });
+    });
+
+    return {
+        duplicateGroups: groups.slice(0, 200),
+        summary: groups.length
+            ? `Detected ${groups.length} duplicate/similarity group(s).`
+            : 'No likely duplicates were detected with deterministic rules.',
+    };
+}
+
+function deterministicNaturalLanguageSearch(snapshot: InventoryAiSnapshot, query: string): {
+    interpretedFilters: Record<string, any>;
+    results: InventoryAiMatchedItem[];
+    answer: string;
+    confidence: 'low' | 'medium' | 'high';
+    fallbackUsed: boolean;
+} {
+    const assistant = deterministicAssistantAnswer(snapshot, query);
+    if (assistant.supported) {
+        return {
+            interpretedFilters: assistant.filtersUsed,
+            results: assistant.matchedItems,
+            answer: assistant.answer,
+            confidence: assistant.confidence,
+            fallbackUsed: true,
+        };
+    }
+    const q = normalizeValue(query);
+    const results = snapshot.assets
+        .filter((asset) => {
+            const haystack = [
+                asset.customId,
+                asset.name,
+                canonicalAssetType(asset.type),
+                mapLocationToFriendly(asset.location),
+                mapDepartmentToFriendly(asset.department),
+                asset.serialNumber,
+                asset.assetTag,
+            ].map((entry) => normalizeValue(entry)).join(' ');
+            return haystack.includes(q);
+        })
+        .slice(0, 120)
+        .map((asset) => buildAiMatchedItem(asset, 'Matched by fallback normalized text search.'));
+
+    return {
+        interpretedFilters: { mode: 'fallback_text_search' },
+        results,
+        answer: results.length
+            ? `Found ${results.length} item(s) using fallback text search.`
+            : 'No matches found for this natural language query.',
+        confidence: results.length ? 'medium' : 'low',
+        fallbackUsed: true,
+    };
+}
+
 function canonicalAssetType(type: unknown): string {
     const aliases: Record<string, string> = {
         LAPTOP: 'laptop',
@@ -1211,6 +2346,80 @@ function canonicalAssetType(type: unknown): string {
     };
     const raw = String(type || '');
     return aliases[raw.toUpperCase()] || raw.toLowerCase();
+}
+
+const TELEMETRY_CAPABLE_ASSET_TYPES = new Set<string>([
+    'desktop',
+    'laptop',
+    'server',
+    'workstation',
+    'thin_client',
+    'tablet',
+    'ipad',
+    'printer',
+    'photocopier',
+    'projector',
+    'smartboard',
+    'interactive_display',
+    'router',
+    'network_switch',
+    'access_point',
+    'firewall_appliance',
+    'ip_phone',
+    'cctv_camera',
+    'nvr_dvr',
+    'ups',
+    'nas_storage',
+    'external_storage_device',
+    'lab_computer',
+    'biometric_attendance_device',
+    'monitor',
+    'scanner',
+]);
+
+function isTelemetryCapableAsset(params: { type?: unknown; category?: unknown }): boolean {
+    const category = String(params.category || '').trim().toLowerCase();
+    if (['license', 'consumable', 'spare_part', 'component'].includes(category)) return false;
+    return TELEMETRY_CAPABLE_ASSET_TYPES.has(canonicalAssetType(params.type));
+}
+
+function buildTelemetryDefaultsForAsset(params: {
+    type?: unknown;
+    category?: unknown;
+    existingSpecs?: Record<string, any>;
+    location?: unknown;
+}): Record<string, any> {
+    const specs = params.existingSpecs || {};
+    const telemetryExplicit = (
+        specs.trackWorkingHours === true
+        || String(specs.trackWorkingHours || '').toLowerCase() === 'true'
+        || specs.telemetryEnabled === true
+        || String(specs.telemetryEnabled || '').toLowerCase() === 'true'
+    );
+    const telemetryCapable = isTelemetryCapableAsset({ type: params.type, category: params.category });
+    const telemetryEnabled = telemetryExplicit || telemetryCapable;
+    const locationLabel = String(params.location || '').trim().toLowerCase();
+    const inWarehouse = !locationLabel || locationLabel === 'central warehouse';
+    const baseStatus = telemetryEnabled
+        ? (inWarehouse ? 'offline' : 'insufficient_data')
+        : 'not_monitored';
+    const baseReason = telemetryEnabled
+        ? (inWarehouse
+            ? 'Telemetry-capable asset is currently in warehouse/offline staging.'
+            : 'Telemetry-capable asset imported/created for deployed monitoring.')
+        : 'Telemetry monitoring disabled for this asset.';
+    return {
+        ...specs,
+        trackWorkingHours: telemetryEnabled,
+        telemetryEnabled,
+        telemetryStatus: String(specs.telemetryStatus || baseStatus),
+        telemetryConfidence: String(specs.telemetryConfidence || 'low'),
+        telemetryReason: String(specs.telemetryReason || baseReason),
+        operationalState: String(specs.operationalState || (telemetryEnabled ? 'insufficient_data' : 'not_monitored')),
+        operationalStateUpdatedAt: String(specs.operationalStateUpdatedAt || new Date().toISOString()),
+        lastTelemetryAt: specs.lastTelemetryAt || undefined,
+        workingHours: Number(specs.workingHours || 0),
+    };
 }
 
 function getSpecNumber(specs: Record<string, any>, keys: string[], fallback = 0): number {
@@ -1741,6 +2950,90 @@ async function buildAssetEolAssessment(asset: Asset): Promise<EolAssessmentRespo
     const lifecycleSnapshot = snapshotFromCanonicalPrediction(canonicalPrediction as unknown as Record<string, any>) || readLifespanSnapshot(specs);
     const startDate = resolveLifecycleStartDate(asset, specs);
     const fallbackYears = determineFallbackLifespanYears(String(asset.type || ''));
+    const categoryKey = String(asset.category || '').trim().toLowerCase();
+    const missingData: string[] = [];
+    const usedData: string[] = [];
+
+    if (categoryKey === 'license') {
+        const expiryCandidate = (
+            normalizeSerialValue((specs as any).licenseExpiry)
+            || normalizeSerialValue((specs as any).expiryDate)
+            || normalizeSerialValue((specs as any).warrantyEndDate)
+        );
+        const parsedExpiry = expiryCandidate ? new Date(expiryCandidate) : asset.warrantyEndDate;
+        const validExpiry = parsedExpiry && !Number.isNaN(parsedExpiry.getTime()) ? parsedExpiry : null;
+        if (validExpiry) {
+            usedData.push('license expiry date');
+        } else {
+            missingData.push('license expiry/warranty end date');
+        }
+        const monthsRemaining = monthsBetween(now, validExpiry);
+        const status: EolAssessmentStatus = !validExpiry
+            ? 'insufficient_data'
+            : (monthsRemaining !== null && monthsRemaining < 0)
+                ? 'overdue'
+                : (monthsRemaining !== null && monthsRemaining <= 1)
+                    ? 'due_soon'
+                    : (monthsRemaining !== null && monthsRemaining <= 3)
+                        ? 'watch'
+                        : 'healthy';
+        const confidence = validExpiry ? 0.9 : 0.2;
+        const reason = validExpiry
+            ? `License expires on ${validExpiry.toISOString().slice(0, 10)}. Data used: ${usedData.join(', ')}.`
+            : `EOL confidence low because ${missingData.join(', ')} is missing.`;
+        return {
+            assetId: asset.customId,
+            status,
+            predictedEolDate: validExpiry ? validExpiry.toISOString() : null,
+            monthsRemaining,
+            confidence: Number(confidence.toFixed(3)),
+            reason,
+            evidenceLevel: confidence >= 0.75 ? 'high' : confidence >= 0.5 ? 'medium' : 'low',
+            procurementRecommended: status === 'due_soon' || status === 'overdue',
+            procurementWindowMonths: status === 'overdue' || status === 'due_soon' ? 1 : null,
+            predictionSource: validExpiry ? 'freshly_calculated_prediction' : 'insufficient_data',
+            telemetryStatus: telemetryTruth.state,
+            specEvidenceStatus,
+            suitableForProcurementPlanning: Boolean(validExpiry),
+            predictedLifespanYears: null,
+            generatedAt: new Date().toISOString(),
+        };
+    }
+
+    if (categoryKey === 'consumable' || categoryKey === 'spare_part') {
+        const quantity = Number((specs as any).quantityAvailable ?? (specs as any).quantity ?? asset.quantity ?? 0);
+        const reorderPoint = Number((specs as any).reorderPoint ?? (specs as any).minimumStockLevel ?? 0);
+        if (Number.isFinite(quantity)) usedData.push('quantity');
+        else missingData.push('quantity');
+        if (Number.isFinite(reorderPoint) && reorderPoint > 0) usedData.push('minimum stock/reorder point');
+        else missingData.push('minimum stock/reorder point');
+        const safeQty = Number.isFinite(quantity) ? quantity : 0;
+        const safeReorder = Number.isFinite(reorderPoint) ? reorderPoint : 0;
+        const status: EolAssessmentStatus = safeQty <= 0
+            ? 'overdue'
+            : safeReorder > 0 && safeQty <= safeReorder
+                ? 'watch'
+                : 'healthy';
+        const confidence = usedData.length >= 2 ? 0.88 : 0.4;
+        const reason = `Stock health for ${categoryKey === 'consumable' ? 'consumable' : 'spare stock'}: quantity=${safeQty}, reorderPoint=${safeReorder}. Data used: ${usedData.join(', ') || 'none'}.${missingData.length ? ` Missing data: ${missingData.join(', ')}.` : ''}`;
+        return {
+            assetId: asset.customId,
+            status,
+            predictedEolDate: null,
+            monthsRemaining: null,
+            confidence: Number(confidence.toFixed(3)),
+            reason,
+            evidenceLevel: confidence >= 0.75 ? 'high' : confidence >= 0.5 ? 'medium' : 'low',
+            procurementRecommended: safeQty <= 0 || (safeReorder > 0 && safeQty <= safeReorder),
+            procurementWindowMonths: safeQty <= 0 ? 0 : (safeReorder > 0 && safeQty <= safeReorder ? 1 : null),
+            predictionSource: 'freshly_calculated_prediction',
+            telemetryStatus: telemetryTruth.state,
+            specEvidenceStatus,
+            suitableForProcurementPlanning: true,
+            predictedLifespanYears: null,
+            generatedAt: new Date().toISOString(),
+        };
+    }
 
     let predictedLifespanYears: number | null = null;
     let predictionSource: EolPredictionSource = 'insufficient_data';
@@ -1779,6 +3072,34 @@ async function buildAssetEolAssessment(asset: Asset): Promise<EolAssessmentRespo
         reasonParts.push('Predicted lifespan was invalid; using fallback category default.');
     }
 
+    if (categoryKey === 'component') {
+        const componentType = String((specs as any).componentType || '').trim().toLowerCase();
+        const componentProfiles: Record<string, number> = {
+            ram: 6,
+            cpu: 7,
+            ssd: 4,
+            hdd: 4,
+            storage: 4,
+            battery: 3,
+            psu: 5,
+            gpu: 6,
+            motherboard: 7,
+        };
+        if (componentType && Number.isFinite(componentProfiles[componentType])) {
+            predictedLifespanYears = componentProfiles[componentType];
+            predictionSource = 'fallback_category_default';
+            reasonParts.push(`Component-type profile applied (${componentType}: ${predictedLifespanYears} years).`);
+        } else {
+            reasonParts.push('Component-type profile unavailable; using base asset type estimate.');
+        }
+        if (String(asset.status || '').toUpperCase() === 'REPAIR') {
+            reasonParts.push('Component is currently in repair state.');
+        }
+        if (String(asset.status || '').toUpperCase() === 'RETIRED') {
+            reasonParts.push('Component already retired.');
+        }
+    }
+
     const predictedEolDate = computePredictedEolDate(startDate, predictedLifespanYears);
     const monthsRemaining = monthsBetween(now, predictedEolDate);
 
@@ -1814,7 +3135,16 @@ async function buildAssetEolAssessment(asset: Asset): Promise<EolAssessmentRespo
 
     if (!startDate) {
         confidence = Math.min(confidence, 0.25);
-        reasonParts.push('Lifecycle start date is missing; EOL date confidence is reduced.');
+        reasonParts.push('Lifecycle start date is missing.');
+        missingData.push('purchase/commission date');
+    }
+
+    if (!canonicalTelemetrySample) missingData.push('telemetry sample');
+    if (!canonicalSpecSnapshot) missingData.push('canonical spec evidence snapshot');
+    if (!lifecycleSnapshot) missingData.push('persisted lifecycle prediction');
+
+    if (missingData.length) {
+        reasonParts.push(`EOL confidence ${missingData.length >= 2 ? 'low' : 'medium'} because missing data: ${Array.from(new Set(missingData)).join(', ')}.`);
     }
 
     confidence = clampNumber(confidence, 0.05, 0.98);
@@ -2590,12 +3920,19 @@ app.post('/api/inventory/spare-stock/:id/adjust', inventoryAdminGuard, async (re
 app.post('/api/assets/import/preview', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
         const filename = String(req.body?.filename || '').trim();
+        const headerMappings = (req.body?.headerMappings && typeof req.body.headerMappings === 'object')
+            ? req.body.headerMappings as Record<string, string>
+            : null;
         let rawRows: Array<Record<string, any>> = [];
 
         if (Array.isArray(req.body?.rows)) {
             rawRows = req.body.rows as Array<Record<string, any>>;
         } else if (String(req.body?.fileContent || '').trim()) {
-            rawRows = parseImportFileRows(filename || 'upload.csv', String(req.body.fileContent || ''));
+            rawRows = parseImportFileRows(
+                filename || 'upload.csv',
+                String(req.body.fileContent || ''),
+                headerMappings,
+            );
         } else {
             return res.status(400).json({ message: 'Provide rows[] or fileContent for import preview.' });
         }
@@ -2635,9 +3972,22 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
         }
 
         const importBatchId = `IMPORT-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+        const importTimestamp = new Date().toISOString();
         const warnings: string[] = [...revalidated.warnings];
         const errors: string[] = [];
         const skippedRows: Array<{ rowNumber: number; reason: string }> = [];
+        const buildImportSpecifications = (extra: Record<string, any> = {}) => ({
+            ...extra,
+            importBatchId,
+            importedFrom: sourceName,
+            importedAt: importTimestamp,
+            specVerificationStatus: 'import_verified',
+            specVerificationAction: 'imported_from_file',
+            specVerificationReviewedBy: 'inventory-import',
+            specVerificationReviewedAt: importTimestamp,
+            aiSpecEvidenceStatus: 'import_provided',
+            aiSpecEvidenceReason: 'Provided directly by validated inventory import file.',
+        });
 
         const result = await prisma.$transaction(async (tx) => {
             const createdAssets: string[] = [];
@@ -2699,12 +4049,16 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             purchaseCost: row.purchaseCost,
                             warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
                             warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
-                            specifications: {
-                                brand: row.brand || undefined,
-                                version: row.model || undefined,
-                                importBatchId,
-                                importedFrom: sourceName,
-                            },
+                            specifications: buildTelemetryDefaultsForAsset({
+                                type: row.assetType || row.componentType || 'electronics',
+                                category: mapToAssetCategory(row.category || 'asset'),
+                                location: row.location || 'Central Warehouse',
+                                existingSpecs: buildImportSpecifications({
+                                    brand: row.brand || undefined,
+                                    version: row.model || undefined,
+                                    autoComponentsFromSpecs: false,
+                                }),
+                            }),
                         }
                     });
                     createdAssets.push(created.customId);
@@ -2744,14 +4098,95 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
                             continue;
                         }
+                        const parentAssetRef = await tx.asset.findUnique({
+                            where: { customId: parentId },
+                            select: { customId: true, name: true, assetTag: true, location: true, department: true },
+                        });
+                        if (!parentAssetRef) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent asset ${parentId} was not found.` });
+                            continue;
+                        }
+
+                        const componentSerial = normalizeSerialValue(row.serialNumber);
+                        const componentTag = normalizeSerialValue(row.assetTag);
+                        const potentialChildFilters: Prisma.AssetWhereInput[] = [];
+                        if (componentTag) potentialChildFilters.push({ assetTag: componentTag });
+                        if (componentSerial) potentialChildFilters.push({ serialNumber: componentSerial });
+
+                        let childAsset: Asset | null = null;
+                        if (potentialChildFilters.length > 0) {
+                            childAsset = await tx.asset.findFirst({
+                                where: { OR: potentialChildFilters },
+                                orderBy: { createdAt: 'desc' },
+                            });
+                        }
+                        if (!childAsset) {
+                            const generatedCustomId = componentTag || await generateComponentAssetCustomId(parentId, row.componentType || 'component');
+                            childAsset = await tx.asset.create({
+                                data: {
+                                    customId: generatedCustomId,
+                                    name: row.assetName,
+                                    type: mapToAssetType(row.assetType || row.componentType || 'electronics'),
+                                    status: 'ACTIVE',
+                                    lifecycleStatus: 'IN_USE',
+                                    category: 'COMPONENT',
+                                    value: row.purchaseCost || 0,
+                                    quantity: 1,
+                                    serialNumber: componentSerial,
+                                    assetTag: componentTag,
+                                    manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
+                                    location: parentAssetRef.location,
+                                    department: parentAssetRef.department,
+                                    custodyStatus: 'UNASSIGNED',
+                                    purchaseDate: parseOptionalDateInput(row.purchaseDate),
+                                    vendor: normalizeSerialValue(row.vendor),
+                                    purchaseCost: row.purchaseCost,
+                                    warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
+                                    warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
+                                    specifications: buildImportSpecifications({
+                                        brand: row.brand || undefined,
+                                        version: row.model || undefined,
+                                        installedInAssetId: parentAssetRef.customId,
+                                        installedInAssetName: parentAssetRef.name,
+                                        installedInAssetTag: parentAssetRef.assetTag || null,
+                                        componentType: row.componentType || 'component',
+                                    }),
+                                }
+                            });
+                            createdAssets.push(childAsset.customId);
+                        } else {
+                            const existingChildSpecs = ((childAsset.specifications as Record<string, any>) || {});
+                            childAsset = await tx.asset.update({
+                                where: { customId: childAsset.customId },
+                                data: {
+                                    category: 'COMPONENT',
+                                    lifecycleStatus: 'IN_USE',
+                                    status: 'ACTIVE',
+                                    serialNumber: componentSerial || childAsset.serialNumber,
+                                    assetTag: componentTag || childAsset.assetTag,
+                                    manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber) || childAsset.manufacturerPartNumber,
+                                    location: parentAssetRef.location,
+                                    department: parentAssetRef.department,
+                                    specifications: buildImportSpecifications({
+                                        ...existingChildSpecs,
+                                        installedInAssetId: parentAssetRef.customId,
+                                        installedInAssetName: parentAssetRef.name,
+                                        installedInAssetTag: parentAssetRef.assetTag || null,
+                                        componentType: row.componentType || 'component',
+                                    }),
+                                }
+                            });
+                        }
+
                         const component = await tx.assetComponent.create({
                             data: {
                                 parentAssetId: parentId,
+                                childAssetId: childAsset.customId,
                                 componentName: row.assetName,
                                 componentType: row.componentType || 'component',
                                 brand: normalizeSerialValue(row.brand),
                                 model: normalizeSerialValue(row.model),
-                                serialNumber: normalizeSerialValue(row.serialNumber),
+                                serialNumber: componentSerial,
                                 partNumber: normalizeSerialValue(row.manufacturerPartNumber),
                                 status: normalizeComponentStatus(row.status, 'installed'),
                                 condition: normalizeSerialValue(row.condition),
@@ -2778,6 +4213,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     filename: sourceName,
                                     rowNumber: row.rowNumber,
                                     componentName: row.assetName,
+                                    childAssetId: childAsset.customId,
                                 },
                                 reason: 'bulk_import',
                                 actor: 'inventory-import',
@@ -2789,6 +4225,12 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                     if (row.recordType === 'component_asset') {
                         const parentId = row.parentAssetTag
                             ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
+                            : null;
+                        const parentAssetRef = parentId
+                            ? await tx.asset.findUnique({
+                                where: { customId: parentId },
+                                select: { customId: true, name: true, assetTag: true },
+                            })
                             : null;
                         const customId = normalizeSerialValue(row.assetTag) || `IMPORTED-COMP-${Date.now()}-${row.rowNumber}`;
                         const child = await tx.asset.create({
@@ -2813,12 +4255,15 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 purchaseCost: row.purchaseCost,
                                 warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
                                 warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
-                                specifications: {
+                                specifications: buildImportSpecifications({
                                     brand: row.brand || undefined,
                                     version: row.model || undefined,
-                                    importBatchId,
-                                    importedFrom: sourceName,
-                                },
+                                    ...(parentId ? {
+                                        installedInAssetId: parentId,
+                                        installedInAssetTag: normalizeSerialValue(row.parentAssetTag),
+                                        installedInAssetName: parentAssetRef?.name || undefined,
+                                    } : {}),
+                                }),
                             }
                         });
                         createdAssets.push(child.customId);
@@ -2960,12 +4405,15 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     purchaseCost: row.purchaseCost,
                                     warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
                                     warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
-                                    specifications: {
-                                        brand: row.brand || undefined,
-                                        version: row.model || undefined,
-                                        importBatchId,
-                                        importedFrom: sourceName,
-                                    },
+                                    specifications: buildTelemetryDefaultsForAsset({
+                                        type: row.assetType || 'electronics',
+                                        category: mapToAssetCategory(row.recordType),
+                                        location: row.location || 'Central Warehouse',
+                                        existingSpecs: buildImportSpecifications({
+                                            brand: row.brand || undefined,
+                                            version: row.model || undefined,
+                                        }),
+                                    }),
                                 }
                             });
                             createdAssets.push(created.customId);
@@ -3025,6 +4473,309 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
     }
 });
 
+app.post('/api/assets/import/ai-map-columns', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const expectedFields = Array.isArray(req.body?.expectedFields) && req.body.expectedFields.length
+            ? req.body.expectedFields.map((entry: unknown) => String(entry || '').trim()).filter(Boolean)
+            : [
+                'Record Type', 'Asset Name', 'Category', 'Asset Type', 'Brand', 'Model',
+                'Serial Number', 'Asset Tag', 'Manufacturer Part Number', 'Location', 'Department',
+                'Status', 'Lifecycle Status', 'Parent Asset Tag', 'Component Type', 'Condition',
+                'Quantity', 'Minimum Stock Level', 'Reorder Point', 'Vendor', 'Purchase Date',
+                'Warranty Start Date', 'Warranty End Date', 'Purchase Cost', 'Assigned To', 'Notes',
+            ];
+        let headers: string[] = [];
+        let sampleRows: Record<string, string>[] = [];
+        const filename = String(req.body?.filename || '').trim() || 'upload.csv';
+        const fileContent = String(req.body?.fileContent || '');
+        if (Array.isArray(req.body?.headers) && req.body.headers.length) {
+            headers = req.body.headers.map((entry: unknown) => String(entry || '').trim()).filter(Boolean);
+            sampleRows = Array.isArray(req.body?.sampleRows) ? req.body.sampleRows.slice(0, 8) : [];
+        } else if (fileContent.trim()) {
+            const parsed = extractHeadersAndSampleRowsFromCsv(fileContent);
+            headers = parsed.headers;
+            sampleRows = parsed.sampleRows;
+        } else {
+            return res.status(400).json({ message: 'Provide headers/sampleRows or fileContent.' });
+        }
+
+        const deterministic = deterministicImportColumnMapping({ headers, expectedFields });
+        const ai = await callInventoryAiHelper('/map-import-columns', {
+            filename,
+            headers,
+            sampleRows,
+            expectedFields,
+            deterministicMappings: deterministic.mappings,
+        }, 9_000);
+        const aiMappings = Array.isArray(ai?.mappings)
+            ? ai.mappings.map((row: any) => ({
+                sourceColumn: String(row?.sourceColumn || '').trim(),
+                targetColumn: String(row?.targetColumn || '').trim(),
+                confidence: Number(row?.confidence || 0.6),
+                reason: String(row?.reason || 'AI-assisted mapping suggestion'),
+            })).filter((row: any) => row.sourceColumn && row.targetColumn)
+            : [];
+
+        const mergedMap = new Map<string, { sourceColumn: string; targetColumn: string; confidence: number; reason: string }>();
+        deterministic.mappings.forEach((row) => mergedMap.set(normalizeImportHeader(row.sourceColumn), row));
+        aiMappings.forEach((row: { sourceColumn: string; targetColumn: string; confidence: number; reason: string }) => {
+            const key = normalizeImportHeader(row.sourceColumn);
+            if (!mergedMap.has(key)) {
+                mergedMap.set(key, row);
+            } else if ((mergedMap.get(key)?.confidence || 0) < row.confidence) {
+                mergedMap.set(key, row);
+            }
+        });
+
+        const mappedSourceKeys = new Set(Array.from(mergedMap.values()).map((row) => normalizeImportHeader(row.sourceColumn)));
+        const unmappedColumns = headers.filter((header) => !mappedSourceKeys.has(normalizeImportHeader(header)));
+
+        return res.json({
+            mappings: Array.from(mergedMap.values()),
+            unmappedColumns,
+            warnings: Array.from(new Set([
+                ...(deterministic.warnings || []),
+                ...(Array.isArray(ai?.warnings) ? ai.warnings.map((entry: unknown) => String(entry || '').trim()).filter(Boolean) : []),
+            ])),
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to map import columns', error: error.message });
+    }
+});
+
+app.post('/api/assets/import/pdf-preview', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const filename = String(req.body?.filename || '').trim() || 'document.txt';
+        const inputText = String(req.body?.documentText || req.body?.fileContent || '').trim();
+        if (!inputText) {
+            return res.status(400).json({
+                message: 'No document text provided. Paste extracted text or upload text-based content.',
+            });
+        }
+        let extractedRows = extractCandidateRowsFromDocumentText(inputText);
+        const ai = await callInventoryAiHelper('/extract-assets-from-document-text', {
+            filename,
+            documentText: inputText.slice(0, 50000),
+            deterministicRows: extractedRows.slice(0, 120),
+        }, 12_000);
+        if (Array.isArray(ai?.extracted_rows) && ai.extracted_rows.length) {
+            const aiRows = ai.extracted_rows
+                .slice(0, 300)
+                .map((row: any) => ({
+                    recordType: normalizeImportRecordType(row?.recordType || row?.record_type || 'parent_asset') || 'parent_asset',
+                    assetName: String(row?.assetName || row?.asset_name || '').trim(),
+                    category: String(row?.category || '').trim(),
+                    assetType: String(row?.assetType || row?.asset_type || '').trim(),
+                    brand: String(row?.brand || '').trim(),
+                    model: String(row?.model || '').trim(),
+                    serialNumber: String(row?.serialNumber || row?.serial_number || '').trim(),
+                    assetTag: String(row?.assetTag || row?.asset_tag || '').trim(),
+                    manufacturerPartNumber: String(row?.manufacturerPartNumber || row?.manufacturer_part_number || '').trim(),
+                    location: String(row?.location || '').trim(),
+                    department: String(row?.department || '').trim(),
+                    status: String(row?.status || '').trim(),
+                    lifecycleStatus: String(row?.lifecycleStatus || row?.lifecycle_status || '').trim(),
+                    parentAssetTag: String(row?.parentAssetTag || row?.parent_asset_tag || '').trim(),
+                    componentType: String(row?.componentType || row?.component_type || '').trim(),
+                    condition: String(row?.condition || '').trim(),
+                    quantity: parseOptionalIntegerInput(row?.quantity) ?? 1,
+                    minimumStockLevel: parseOptionalIntegerInput(row?.minimumStockLevel || row?.minimum_stock_level),
+                    reorderPoint: parseOptionalIntegerInput(row?.reorderPoint || row?.reorder_point),
+                    vendor: String(row?.vendor || '').trim(),
+                    purchaseDate: String(row?.purchaseDate || row?.purchase_date || '').trim(),
+                    warrantyStartDate: String(row?.warrantyStartDate || row?.warranty_start_date || '').trim(),
+                    warrantyEndDate: String(row?.warrantyEndDate || row?.warranty_end_date || '').trim(),
+                    purchaseCost: parseOptionalNumberInput(row?.purchaseCost || row?.purchase_cost),
+                    assignedTo: String(row?.assignedTo || row?.assigned_to || '').trim(),
+                    notes: String(row?.notes || '').trim(),
+                }))
+                .filter((row: Record<string, any>) => row.assetName || row.serialNumber || row.assetTag);
+            if (aiRows.length) extractedRows = aiRows;
+        }
+
+        const normalizedRows = normalizeImportRows(extractedRows);
+        const preview = await validateImportRows(normalizedRows);
+        return res.json({
+            filename,
+            sourceDocumentSummary: String(ai?.source_document_summary || `Parsed ${extractedRows.length} candidate row(s) from document text.`),
+            confidence: Number(ai?.confidence || (preview.validRows > 0 ? 0.72 : 0.48)),
+            warnings: Array.from(new Set<string>([
+                ...(preview.warnings || []),
+                ...(Array.isArray(ai?.warnings) ? ai.warnings.map((entry: unknown) => String(entry || '').trim()).filter(Boolean) : []),
+            ])),
+            missingFields: Array.isArray(ai?.missing_fields) ? ai.missing_fields : [],
+            extractedRows: preview.normalizedRows,
+            normalizedRows: preview.normalizedRows,
+            totalRows: preview.totalRows,
+            validRows: preview.validRows,
+            invalidRows: preview.invalidRows,
+            errors: preview.errors,
+            canImport: Boolean(preview.canImport),
+            fallbackUsed: !ai,
+            limitations: 'PDF/OCR extraction is limited in this pass. Review all rows before commit.',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to build PDF/document import preview', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const query = String(req.body?.query || '').trim();
+        if (!query) return res.status(400).json({ message: 'query is required' });
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = deterministicAssistantAnswer(snapshot, query);
+        const ai = await callInventoryAiHelper('/inventory-assistant', {
+            query,
+            deterministicResult: deterministic,
+            contextSummary: {
+                assets: snapshot.assets.length,
+                components: snapshot.components.length,
+                maintenance: snapshot.maintenance.length,
+                lifecycleEvents: snapshot.lifecycleEvents.length,
+                spareStock: snapshot.spareStock.length,
+            },
+        }, 11_000);
+        const answer = String(ai?.answer || deterministic.answer || INVENTORY_AI_SUPPORTED_HINT);
+        const suggestedActions = Array.isArray(ai?.suggested_actions)
+            ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 12)
+            : deterministic.suggestedActions;
+        return res.json({
+            answer,
+            matchedItems: deterministic.matchedItems,
+            filtersUsed: deterministic.filtersUsed,
+            confidence: String(ai?.confidence || deterministic.confidence || 'low'),
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
+                : deterministic.missingData,
+            suggestedActions,
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run inventory AI assistant', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/missing-data', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = computeMissingDataReport(snapshot);
+        const ai = await callInventoryAiHelper('/detect-missing-inventory-data', {
+            report: deterministic,
+        }, 11_000);
+        return res.json({
+            totalIssues: deterministic.totalIssues,
+            criticalIssues: deterministic.criticalIssues,
+            warnings: deterministic.warnings,
+            assetsWithIssues: deterministic.assetsWithIssues,
+            recommendations: Array.isArray(ai?.recommendations)
+                ? ai.recommendations.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : deterministic.recommendations,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            summary: String(ai?.summary || `Detected ${deterministic.totalIssues} data quality issue(s).`),
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run missing-data detector', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/maintenance-recommendations', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const recommendations = buildMaintenanceRecommendations(snapshot);
+        const ai = await callInventoryAiHelper('/maintenance-recommendations', {
+            recommendations,
+        }, 11_000);
+        return res.json({
+            recommendations,
+            summary: String(ai?.summary || (recommendations.length
+                ? `Prepared ${recommendations.length} maintenance recommendation(s).`
+                : 'Not enough maintenance/failure data to suggest actions.')),
+            confidence: String(ai?.confidence || (recommendations.length ? 'medium' : 'low')),
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate maintenance recommendations', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/procurement-recommendations', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const recommendedPurchases = buildProcurementRecommendations(snapshot);
+        const ai = await callInventoryAiHelper('/procurement-recommendations', {
+            recommendedPurchases,
+        }, 11_000);
+        return res.json({
+            summary: String(ai?.summary || (recommendedPurchases.length
+                ? `Prepared ${recommendedPurchases.length} procurement recommendation(s).`
+                : 'No urgent procurement items detected from current stock thresholds.')),
+            recommendedPurchases,
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : [],
+            confidence: String(ai?.confidence || (recommendedPurchases.length ? 'medium' : 'low')),
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate procurement recommendations', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/duplicate-detection', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildDuplicateDetectionReport(snapshot);
+        const ai = await callInventoryAiHelper('/explain-duplicate-assets', {
+            duplicateGroups: deterministic.duplicateGroups.slice(0, 120),
+            summary: deterministic.summary,
+        }, 11_000);
+        const embeddingProvider = String(process.env.EMBEDDING_PROVIDER || '').trim() || 'none';
+        const embeddingModel = String(process.env.EMBEDDING_MODEL || '').trim() || 'n/a';
+        return res.json({
+            duplicateGroups: deterministic.duplicateGroups,
+            summary: String(ai?.summary || deterministic.summary),
+            embeddingSupport: {
+                provider: embeddingProvider,
+                model: embeddingModel,
+                enabled: embeddingProvider.toLowerCase() === 'ollama' && Boolean(embeddingModel),
+                used: false,
+                note: 'Deterministic duplicate detection is active. Embedding similarity is optional and currently fallback-only.',
+            },
+            fallbackUsed: !ai,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run duplicate detection', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/search', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const query = String(req.body?.query || '').trim();
+        if (!query) return res.status(400).json({ message: 'query is required' });
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = deterministicNaturalLanguageSearch(snapshot, query);
+        const ai = await callInventoryAiHelper('/natural-language-inventory-search', {
+            query,
+            interpretedFilters: deterministic.interpretedFilters,
+            candidateResults: deterministic.results.slice(0, 80),
+            fallbackAnswer: deterministic.answer,
+        }, 11_000);
+        return res.json({
+            query,
+            interpretedFilters: deterministic.interpretedFilters,
+            results: deterministic.results,
+            answer: String(ai?.answer || deterministic.answer),
+            confidence: String(ai?.confidence || deterministic.confidence),
+            fallbackUsed: !ai || deterministic.fallbackUsed,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run natural language inventory search', error: error.message });
+    }
+});
+
 // --- ASSET ROUTES ---
 
 app.get('/api/assets', async (req: Request, res: Response) => {
@@ -3032,13 +4783,23 @@ app.get('/api/assets', async (req: Request, res: Response) => {
         const where: Prisma.AssetWhereInput = {};
         const andClauses: Prisma.AssetWhereInput[] = [];
         const orClauses: Prisma.AssetWhereInput[] = [];
+        const viewRaw = String(req.query.view || '').trim().toLowerCase();
         const statusRaw = String(req.query.status || '').trim();
         const lifecycleRaw = String(req.query.lifecycleStatus || '').trim();
         const categoryRaw = String(req.query.category || '').trim();
+        const typeRaw = String(req.query.type || '').trim();
+        const componentTypeRaw = String(req.query.componentType || '').trim();
         const locationRaw = String(req.query.location || '').trim();
         const departmentRaw = String(req.query.department || '').trim();
         const assignedToRaw = String(req.query.assignedTo || '').trim();
-        const searchRaw = String(req.query.q || req.query.query || '').trim();
+        const searchRaw = String(req.query.q || req.query.query || req.query.search || '').trim();
+        const pageRaw = Number(req.query.page);
+        const pageSizeRaw = Number(req.query.pageSize);
+        const paginationRequested = parseBooleanFlag(req.query.paginate)
+            || Number.isFinite(pageRaw)
+            || Number.isFinite(pageSizeRaw);
+        const pageSize = Math.min(500, Math.max(1, Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.trunc(pageSizeRaw) : 100));
+        const page = Math.max(1, Number.isFinite(pageRaw) && pageRaw > 0 ? Math.trunc(pageRaw) : 1);
         const serialMissing = parseBooleanFlag(req.query.serialMissing);
         const underMaintenance = parseBooleanFlag(req.query.underMaintenance);
         const warrantyExpiringDays = Number(req.query.warrantyExpiringDays || 0);
@@ -3046,6 +4807,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
         if (statusRaw) where.status = mapToAssetStatus(statusRaw);
         if (lifecycleRaw) where.lifecycleStatus = mapToLifecycleStatus(lifecycleRaw);
         if (categoryRaw) where.category = mapToAssetCategory(categoryRaw);
+        if (typeRaw && viewRaw === 'parents') where.type = mapToAssetType(typeRaw);
         if (locationRaw) where.location = mapToAssetLocation(locationRaw);
         if (departmentRaw) where.department = mapToAssetDepartment(departmentRaw);
 
@@ -3094,7 +4856,8 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             );
         }
 
-        if (searchRaw) {
+        const useDbSearch = !(viewRaw === 'components' || viewRaw === 'accessories' || viewRaw === 'consumables' || viewRaw === 'licenses');
+        if (searchRaw && useDbSearch) {
             orClauses.push(
                 { customId: { contains: searchRaw, mode: 'insensitive' } },
                 { name: { contains: searchRaw, mode: 'insensitive' } },
@@ -3115,7 +4878,246 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             where,
             orderBy: { createdAt: 'desc' },
         });
-        res.json(assets.map((asset) => annotateAssetWithTruthfulSignals(asset)));
+        const assetIds = assets.map((asset) => asset.customId);
+        const activeComponentLinks = assetIds.length
+            ? await prisma.assetComponent.findMany({
+                where: {
+                    childAssetId: { in: assetIds },
+                    removedAt: null,
+                    status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
+                },
+                include: {
+                    parentAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            assetTag: true,
+                            location: true,
+                            department: true,
+                        }
+                    }
+                },
+                orderBy: { updatedAt: 'desc' },
+            })
+            : [];
+        const componentLinkByChildId = new Map<string, typeof activeComponentLinks[number]>();
+        activeComponentLinks.forEach((link) => {
+            if (!link.childAssetId) return;
+            if (!componentLinkByChildId.has(link.childAssetId)) {
+                componentLinkByChildId.set(link.childAssetId, link);
+            }
+        });
+        const assetById = new Map(assets.map((asset) => [asset.customId, asset]));
+        const componentRelationshipTypes = ['installed_in', 'component_of'];
+        const componentRelationships = assetIds.length
+            ? await prisma.assetRelationship.findMany({
+                where: {
+                    OR: [
+                        {
+                            assetId: { in: assetIds },
+                            relationshipType: { in: componentRelationshipTypes },
+                        },
+                        {
+                            relatedAssetId: { in: assetIds },
+                            relationshipType: { in: componentRelationshipTypes },
+                        },
+                    ],
+                },
+                include: {
+                    asset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            assetTag: true,
+                            location: true,
+                            department: true,
+                            category: true,
+                        }
+                    },
+                    relatedAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            assetTag: true,
+                            location: true,
+                            department: true,
+                            category: true,
+                        }
+                    }
+                },
+                orderBy: { updatedAt: 'desc' },
+            })
+            : [];
+        const relationshipParentByAssetId = new Map<string, {
+            customId: string;
+            name: string;
+            assetTag: string | null;
+            location: AssetLocation;
+            department: AssetDepartment;
+        }>();
+        componentRelationships.forEach((row) => {
+            const leftAsset = assetById.get(row.assetId);
+            const rightAsset = assetById.get(row.relatedAssetId);
+            const leftIsComponent = String(leftAsset?.category || row.asset?.category || '').toLowerCase() === 'component';
+            const rightIsComponent = String(rightAsset?.category || row.relatedAsset?.category || '').toLowerCase() === 'component';
+
+            let childAssetId = row.assetId;
+            let parentAsset = row.relatedAsset;
+
+            if (rightIsComponent && !leftIsComponent) {
+                childAssetId = row.relatedAssetId;
+                parentAsset = row.asset;
+            }
+
+            if (!relationshipParentByAssetId.has(childAssetId)) {
+                relationshipParentByAssetId.set(childAssetId, {
+                    customId: parentAsset.customId,
+                    name: parentAsset.name,
+                    assetTag: parentAsset.assetTag,
+                    location: parentAsset.location,
+                    department: parentAsset.department,
+                });
+            }
+        });
+
+        const enrichedAssets = assets.map((rawAsset) => {
+            const asset = annotateAssetWithTruthfulSignals(rawAsset);
+            const specs = ((asset.specifications as Record<string, any>) || {});
+            const linkedComponent = componentLinkByChildId.get(asset.customId);
+            const relationshipParent = relationshipParentByAssetId.get(asset.customId);
+            const metadataParentId = normalizeSerialValue(specs.installedInAssetId);
+            const metadataParentTag = normalizeSerialValue(specs.installedInAssetTag);
+            const metadataParentName = normalizeSerialValue(specs.installedInAssetName);
+            const installedParentCustomId = linkedComponent?.parentAsset?.customId || relationshipParent?.customId || metadataParentId || null;
+            const installedParentAssetTag = linkedComponent?.parentAsset?.assetTag || relationshipParent?.assetTag || metadataParentTag || null;
+            const installedParentName = linkedComponent?.parentAsset?.name || relationshipParent?.name || metadataParentName || null;
+            const installedParentLocation = linkedComponent?.parentAsset?.location || relationshipParent?.location || null;
+            const installedParentDepartment = linkedComponent?.parentAsset?.department || relationshipParent?.department || null;
+            const componentType = linkedComponent?.componentType || normalizeSerialValue(specs.componentType) || null;
+            const componentStatus = linkedComponent?.status || null;
+            const hasInstalledParent = Boolean(installedParentCustomId || installedParentAssetTag || installedParentName);
+            const categoryKey = String(asset.category || '').toLowerCase();
+            const isComponentCategory = categoryKey === 'component';
+            const isAccessory = categoryKey === 'accessory';
+            const isConsumable = categoryKey === 'consumable';
+            const isSparePart = categoryKey === 'spare_part';
+            const isLicense = categoryKey === 'license';
+            const relatedParentCustomId = installedParentCustomId || normalizeSerialValue(specs.assignedToAssetId) || normalizeSerialValue(specs.usedWithAssetId) || null;
+            const relatedParentAssetTag = installedParentAssetTag || normalizeSerialValue(specs.assignedToAssetTag) || normalizeSerialValue(specs.usedWithAssetTag) || null;
+            const relatedParentName = installedParentName || normalizeSerialValue(specs.assignedToAssetName) || normalizeSerialValue(specs.usedWithAssetName) || null;
+            const assignedToAssetCustomId = normalizeSerialValue(specs.assignedToAssetId) || null;
+            const assignedToAssetAssetTag = normalizeSerialValue(specs.assignedToAssetTag) || null;
+            const assignedToAssetName = normalizeSerialValue(specs.assignedToAssetName) || null;
+            const stockQuantity = Number.isFinite(Number((specs as any).quantityAvailable)) ? Number((specs as any).quantityAvailable) : null;
+            const minimumStockLevel = Number.isFinite(Number((specs as any).minimumStockLevel)) ? Number((specs as any).minimumStockLevel) : null;
+            const reorderPoint = Number.isFinite(Number((specs as any).reorderPoint)) ? Number((specs as any).reorderPoint) : null;
+            const licenseExpiry = normalizeSerialValue(specs.licenseExpiry || specs.expiryDate || specs.warrantyEndDate) || (asset.warrantyEndDate ? asset.warrantyEndDate.toISOString() : null);
+            const inventoryViewType = isSparePart
+                ? 'spare_stock'
+                : isLicense
+                    ? 'licenses'
+                    : isConsumable
+                        ? 'consumables'
+                        : isAccessory
+                            ? 'accessories'
+                            : (hasInstalledParent && (isComponentCategory || Boolean(componentType)))
+                                ? 'components'
+                                : 'parents';
+            return {
+                ...asset,
+                inventoryViewType,
+                isParentAsset: inventoryViewType === 'parents',
+                isComponentAsset: Boolean(isComponentCategory || componentType),
+                isAccessory,
+                isConsumable,
+                isSparePart,
+                isLicense,
+                installedParentAssetId: installedParentCustomId,
+                installedParentCustomId,
+                installedParentAssetTag,
+                installedParentName,
+                installedParentLocation,
+                installedParentDepartment,
+                relatedParentCustomId,
+                relatedParentAssetTag,
+                relatedParentName,
+                assignedToAssetCustomId,
+                assignedToAssetAssetTag,
+                assignedToAssetName,
+                componentType,
+                componentStatus,
+                isInstalledInParent: hasInstalledParent,
+                stockQuantity,
+                minimumStockLevel,
+                reorderPoint,
+                licenseExpiry,
+            };
+        });
+
+        let responseAssets = viewRaw === 'components'
+            ? enrichedAssets.filter((asset) => Boolean((asset as any).isInstalledInParent))
+            : viewRaw === 'parents'
+                ? enrichedAssets.filter((asset) => String((asset as any).inventoryViewType) === 'parents')
+                : viewRaw === 'accessories'
+                    ? enrichedAssets.filter((asset) => Boolean((asset as any).isAccessory))
+                    : viewRaw === 'consumables'
+                        ? enrichedAssets.filter((asset) => Boolean((asset as any).isConsumable))
+                        : (viewRaw === 'spare_stock' || viewRaw === 'spare_parts')
+                            ? enrichedAssets.filter((asset) => Boolean((asset as any).isSparePart))
+                            : viewRaw === 'licenses'
+                            ? enrichedAssets.filter((asset) => Boolean((asset as any).isLicense))
+                                : enrichedAssets;
+        const normalizedTypeFilter = normalizeValue(componentTypeRaw || typeRaw);
+        if (normalizedTypeFilter) {
+            responseAssets = responseAssets.filter((asset) => {
+                const normalizedAssetType = normalizeValue(String(asset.type || ''));
+                const normalizedComponentType = normalizeValue(String((asset as any).componentType || ((asset.specifications as Record<string, any>)?.componentType || '')));
+                const inferredLabel = normalizeValue(String((asset as any).inventoryViewType || ''));
+                return (
+                    normalizedAssetType.includes(normalizedTypeFilter)
+                    || normalizedComponentType.includes(normalizedTypeFilter)
+                    || inferredLabel.includes(normalizedTypeFilter)
+                );
+            });
+        }
+        if (searchRaw && !useDbSearch) {
+            const q = normalizeValue(searchRaw);
+            responseAssets = responseAssets.filter((asset) => {
+                const specs = ((asset.specifications as Record<string, any>) || {});
+                const haystack = [
+                    asset.customId,
+                    asset.name,
+                    asset.serialNumber,
+                    asset.assetTag,
+                    asset.manufacturerPartNumber,
+                    (asset as any).installedParentCustomId,
+                    (asset as any).installedParentAssetTag,
+                    (asset as any).installedParentName,
+                    (asset as any).relatedParentCustomId,
+                    (asset as any).relatedParentAssetTag,
+                    (asset as any).relatedParentName,
+                    specs.brand,
+                    specs.version,
+                    specs.componentType,
+                ].map((entry) => normalizeValue(entry)).join(' ');
+                return haystack.includes(q);
+            });
+        }
+        if (!paginationRequested) {
+            return res.json(responseAssets);
+        }
+        const total = responseAssets.length;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const boundedPage = Math.min(page, totalPages);
+        const startIndex = (boundedPage - 1) * pageSize;
+        const items = responseAssets.slice(startIndex, startIndex + pageSize);
+        return res.json({
+            items,
+            total,
+            page: boundedPage,
+            pageSize,
+            totalPages,
+        });
     } catch (err) { 
         res.status(500).json({ error: 'Failed to fetch assets' }); 
     }
@@ -3848,15 +5850,404 @@ app.post('/api/assets/spec-verification/bulk', async (req: Request, res: Respons
     }
 });
 
+type TimelineSourceType = 'parent' | 'component' | 'accessory' | 'consumable' | 'license' | 'related';
+
+type CombinedHistoryEntry = {
+    id: string;
+    date: string;
+    event: string;
+    details: string;
+    eventType: string;
+    sourceItemType: TimelineSourceType;
+    sourceItemId: string | null;
+    sourceItemName: string | null;
+    sourceItemCustomId: string | null;
+    sourceItemAssetTag: string | null;
+    sourceItemSerialNumber: string | null;
+    componentId: string | null;
+    actor: string | null;
+    reason: string | null;
+    notes: string | null;
+    oldValue?: Record<string, any> | null;
+    newValue?: Record<string, any> | null;
+    linkedParentAssetId?: string | null;
+    linkedParentAssetName?: string | null;
+    linkedParentAssetTag?: string | null;
+};
+
+function toTimelineSourceType(category: unknown, fallback: TimelineSourceType = 'related'): TimelineSourceType {
+    const normalized = String(category || '').trim().toLowerCase();
+    if (normalized === 'component') return 'component';
+    if (normalized === 'accessory') return 'accessory';
+    if (normalized === 'consumable') return 'consumable';
+    if (normalized === 'license') return 'license';
+    if (normalized === 'asset') return 'parent';
+    return fallback;
+}
+
+function toTimelineDateIso(value: unknown): string {
+    const parsed = value instanceof Date ? value : new Date(String(value || ''));
+    if (Number.isNaN(parsed.getTime())) {
+        return new Date(0).toISOString();
+    }
+    return parsed.toISOString();
+}
+
+function toTimelineEventLabel(eventType: string, fallback = 'Asset Update'): string {
+    const normalized = String(eventType || '').trim();
+    if (!normalized) return fallback;
+    return normalized
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function resolveLinkedParentFromSpecs(asset: Asset | null | undefined): {
+    parentAssetId: string | null;
+    parentAssetName: string | null;
+    parentAssetTag: string | null;
+} {
+    const specs = ((asset?.specifications as Record<string, any>) || {});
+    return {
+        parentAssetId: normalizeSerialValue(specs.installedInAssetId || specs.parentAssetId || specs.usedWithAssetId || specs.assignedToAssetId),
+        parentAssetName: normalizeSerialValue(specs.installedInAssetName || specs.usedWithAssetName || specs.assignedToAssetName),
+        parentAssetTag: normalizeSerialValue(specs.installedInAssetTag || specs.usedWithAssetTag || specs.assignedToAssetTag),
+    };
+}
+
+async function resolveRelatedAssetIdsForHistory(parentAssetId: string): Promise<Set<string>> {
+    const relatedIds = new Set<string>();
+    const [componentRows, relationshipRows] = await Promise.all([
+        prisma.assetComponent.findMany({
+            where: { parentAssetId },
+            select: { childAssetId: true },
+        }),
+        prisma.assetRelationship.findMany({
+            where: {
+                OR: [
+                    { assetId: parentAssetId },
+                    { relatedAssetId: parentAssetId },
+                ],
+            },
+            include: {
+                asset: { select: { customId: true, category: true } },
+                relatedAsset: { select: { customId: true, category: true } },
+            },
+        }),
+    ]);
+
+    componentRows.forEach((row) => {
+        if (row.childAssetId) relatedIds.add(row.childAssetId);
+    });
+
+    relationshipRows.forEach((row) => {
+        const other = row.assetId === parentAssetId ? row.relatedAsset : row.asset;
+        if (!other?.customId || other.customId === parentAssetId) return;
+        const categoryKey = String(other.category || '').toLowerCase();
+        if (['component', 'accessory', 'consumable', 'license'].includes(categoryKey)) {
+            relatedIds.add(other.customId);
+        }
+    });
+
+    return relatedIds;
+}
+
+function dedupeTimelineEntries(entries: CombinedHistoryEntry[]): CombinedHistoryEntry[] {
+    const seen = new Set<string>();
+    const deduped: CombinedHistoryEntry[] = [];
+    for (const entry of entries) {
+        const key = [
+            normalizeValue(entry.eventType),
+            entry.sourceItemCustomId || '',
+            entry.componentId || '',
+            entry.date,
+            normalizeValue(entry.details),
+        ].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(entry);
+    }
+    return deduped;
+}
+
+async function buildCombinedHistoryTimeline(assetId: string, includeRelated: boolean): Promise<CombinedHistoryEntry[]> {
+    const baseAsset = await AssetService.getAssetByCustomId(assetId);
+    if (!baseAsset) {
+        throw new RequestValidationError('Asset not found');
+    }
+
+    const relatedIds = includeRelated ? await resolveRelatedAssetIdsForHistory(assetId) : new Set<string>();
+    const sourceAssetIds = [assetId, ...Array.from(relatedIds)];
+
+    const [sourceAssets, historyRows, lifecycleRows, maintenanceRows, custodyRows, relationshipRows, componentRows] = await Promise.all([
+        prisma.asset.findMany({
+            where: { customId: { in: sourceAssetIds } },
+        }),
+        prisma.assetHistory.findMany({
+            where: { assetId: { in: sourceAssetIds } },
+            orderBy: { date: 'desc' },
+            take: includeRelated ? 1200 : 500,
+        }),
+        prisma.assetLifecycleEvent.findMany({
+            where: { assetId: { in: sourceAssetIds } },
+            include: { component: true },
+            orderBy: { createdAt: 'desc' },
+            take: includeRelated ? 1200 : 500,
+        }),
+        prisma.assetMaintenanceRecord.findMany({
+            where: { assetId: { in: sourceAssetIds } },
+            include: { component: true },
+            orderBy: { createdAt: 'desc' },
+            take: includeRelated ? 600 : 300,
+        }),
+        prisma.assetCustodyEvent.findMany({
+            where: { assetId: { in: sourceAssetIds } },
+            orderBy: { createdAt: 'desc' },
+            take: includeRelated ? 600 : 300,
+        }),
+        prisma.assetRelationship.findMany({
+            where: {
+                OR: [
+                    { assetId: { in: sourceAssetIds } },
+                    { relatedAssetId: { in: sourceAssetIds } },
+                ],
+            },
+            orderBy: { createdAt: 'desc' },
+            take: includeRelated ? 600 : 300,
+        }),
+        prisma.assetComponent.findMany({
+            where: {
+                OR: [
+                    { parentAssetId: assetId },
+                    { childAssetId: { in: sourceAssetIds } },
+                ],
+            },
+            orderBy: { updatedAt: 'desc' },
+        }),
+    ]);
+
+    const sourceAssetById = new Map(sourceAssets.map((asset) => [asset.customId, asset]));
+    const componentById = new Map(componentRows.map((row) => [row.id, row]));
+    const linkedParentBySourceId = new Map<string, { id: string | null; name: string | null; tag: string | null }>();
+
+    sourceAssets.forEach((asset) => {
+        const parentFromSpecs = resolveLinkedParentFromSpecs(asset);
+        linkedParentBySourceId.set(asset.customId, {
+            id: parentFromSpecs.parentAssetId,
+            name: parentFromSpecs.parentAssetName,
+            tag: parentFromSpecs.parentAssetTag,
+        });
+    });
+
+    componentRows.forEach((component) => {
+        if (!component.childAssetId) return;
+        const existing = linkedParentBySourceId.get(component.childAssetId);
+        if (existing?.id) return;
+        linkedParentBySourceId.set(component.childAssetId, {
+            id: component.parentAssetId,
+            name: baseAsset.customId === component.parentAssetId ? baseAsset.name : null,
+            tag: baseAsset.customId === component.parentAssetId ? baseAsset.assetTag : null,
+        });
+    });
+
+    const entries: CombinedHistoryEntry[] = [];
+
+    historyRows.forEach((row) => {
+        const sourceAsset = sourceAssetById.get(row.assetId) || null;
+        const sourceType = row.assetId === assetId
+            ? 'parent'
+            : toTimelineSourceType(sourceAsset?.category, 'related');
+        const parentLink = linkedParentBySourceId.get(row.assetId);
+        entries.push({
+            id: `history:${row.id}`,
+            date: toTimelineDateIso(row.date),
+            event: String(row.event || 'Asset Update'),
+            details: String(row.details || ''),
+            eventType: 'asset_history',
+            sourceItemType: sourceType,
+            sourceItemId: sourceAsset?.id || null,
+            sourceItemName: sourceAsset?.name || null,
+            sourceItemCustomId: sourceAsset?.customId || row.assetId,
+            sourceItemAssetTag: sourceAsset?.assetTag || null,
+            sourceItemSerialNumber: sourceAsset?.serialNumber || null,
+            componentId: null,
+            actor: null,
+            reason: null,
+            notes: null,
+            linkedParentAssetId: parentLink?.id || null,
+            linkedParentAssetName: parentLink?.name || null,
+            linkedParentAssetTag: parentLink?.tag || null,
+        });
+    });
+
+    lifecycleRows.forEach((row) => {
+        const sourceAsset = sourceAssetById.get(row.assetId) || null;
+        const relatedComponent = row.component || (row.componentId ? componentById.get(row.componentId) || null : null);
+        const sourceType = relatedComponent
+            ? 'component'
+            : row.assetId === assetId
+                ? 'parent'
+                : toTimelineSourceType(sourceAsset?.category, 'related');
+        const sourceName = relatedComponent?.componentName || sourceAsset?.name || row.assetId;
+        const details = [
+            row.reason ? `Reason: ${row.reason}` : '',
+            row.notes ? `Notes: ${row.notes}` : '',
+        ].filter(Boolean).join(' | ');
+        const parentLink = linkedParentBySourceId.get(row.assetId);
+        entries.push({
+            id: `lifecycle:${row.id}`,
+            date: toTimelineDateIso(row.createdAt),
+            event: toTimelineEventLabel(row.eventType, 'Lifecycle Event'),
+            details,
+            eventType: String(row.eventType || 'lifecycle_event'),
+            sourceItemType: sourceType,
+            sourceItemId: sourceAsset?.id || null,
+            sourceItemName: sourceName || null,
+            sourceItemCustomId: relatedComponent?.childAssetId || sourceAsset?.customId || row.assetId,
+            sourceItemAssetTag: sourceAsset?.assetTag || null,
+            sourceItemSerialNumber: relatedComponent?.serialNumber || sourceAsset?.serialNumber || null,
+            componentId: row.componentId || null,
+            actor: row.actor || null,
+            reason: row.reason || null,
+            notes: row.notes || null,
+            oldValue: (row.oldValue as Record<string, any> | null) || null,
+            newValue: (row.newValue as Record<string, any> | null) || null,
+            linkedParentAssetId: parentLink?.id || null,
+            linkedParentAssetName: parentLink?.name || null,
+            linkedParentAssetTag: parentLink?.tag || null,
+        });
+    });
+
+    maintenanceRows.forEach((row) => {
+        const sourceAsset = sourceAssetById.get(row.assetId) || null;
+        const relatedComponent = row.component || (row.componentId ? componentById.get(row.componentId) || null : null);
+        const sourceType = relatedComponent
+            ? 'component'
+            : row.assetId === assetId
+                ? 'parent'
+                : toTimelineSourceType(sourceAsset?.category, 'related');
+        const sourceName = relatedComponent?.componentName || sourceAsset?.name || row.assetId;
+        const detailsParts = [
+            `${row.maintenanceType} (${row.status})`,
+            row.reason ? `Reason: ${row.reason}` : '',
+            row.notes ? `Notes: ${row.notes}` : '',
+        ].filter(Boolean);
+        const parentLink = linkedParentBySourceId.get(row.assetId);
+        entries.push({
+            id: `maintenance:${row.id}`,
+            date: toTimelineDateIso(row.createdAt),
+            event: 'Maintenance Record',
+            details: detailsParts.join(' | '),
+            eventType: 'maintenance_record',
+            sourceItemType: sourceType,
+            sourceItemId: sourceAsset?.id || null,
+            sourceItemName: sourceName || null,
+            sourceItemCustomId: relatedComponent?.childAssetId || sourceAsset?.customId || row.assetId,
+            sourceItemAssetTag: sourceAsset?.assetTag || null,
+            sourceItemSerialNumber: relatedComponent?.serialNumber || sourceAsset?.serialNumber || null,
+            componentId: row.componentId || null,
+            actor: row.performedBy || null,
+            reason: row.reason || null,
+            notes: row.notes || null,
+            linkedParentAssetId: parentLink?.id || null,
+            linkedParentAssetName: parentLink?.name || null,
+            linkedParentAssetTag: parentLink?.tag || null,
+        });
+    });
+
+    custodyRows.forEach((row) => {
+        const sourceAsset = sourceAssetById.get(row.assetId) || null;
+        const sourceType = row.assetId === assetId
+            ? 'parent'
+            : toTimelineSourceType(sourceAsset?.category, 'related');
+        const detailsParts = [
+            `Action: ${row.action}`,
+            row.assignedToName || row.assignedToUserId ? `To: ${row.assignedToName || row.assignedToUserId}` : '',
+            row.reason ? `Reason: ${row.reason}` : '',
+            row.notes ? `Notes: ${row.notes}` : '',
+        ].filter(Boolean);
+        const parentLink = linkedParentBySourceId.get(row.assetId);
+        entries.push({
+            id: `custody:${row.id}`,
+            date: toTimelineDateIso(row.createdAt),
+            event: toTimelineEventLabel(`custody_${row.action}`, 'Custody Event'),
+            details: detailsParts.join(' | '),
+            eventType: `custody_${row.action}`,
+            sourceItemType: sourceType,
+            sourceItemId: sourceAsset?.id || null,
+            sourceItemName: sourceAsset?.name || null,
+            sourceItemCustomId: sourceAsset?.customId || row.assetId,
+            sourceItemAssetTag: sourceAsset?.assetTag || null,
+            sourceItemSerialNumber: sourceAsset?.serialNumber || null,
+            componentId: null,
+            actor: row.actor || null,
+            reason: row.reason || null,
+            notes: row.notes || null,
+            linkedParentAssetId: parentLink?.id || null,
+            linkedParentAssetName: parentLink?.name || null,
+            linkedParentAssetTag: parentLink?.tag || null,
+        });
+    });
+
+    relationshipRows.forEach((row) => {
+        const sourceAsset = sourceAssetById.get(row.assetId) || null;
+        const targetAsset = sourceAssetById.get(row.relatedAssetId) || null;
+        const sourceType = row.assetId === assetId
+            ? 'parent'
+            : toTimelineSourceType(sourceAsset?.category, 'related');
+        const details = `${row.assetId} ${row.relationshipType} ${row.relatedAssetId}`;
+        const parentLink = linkedParentBySourceId.get(row.assetId);
+        entries.push({
+            id: `relationship:${row.id}`,
+            date: toTimelineDateIso(row.createdAt),
+            event: toTimelineEventLabel(`relationship_${row.relationshipType}`, 'Relationship Event'),
+            details,
+            eventType: 'relationship_event',
+            sourceItemType: sourceType,
+            sourceItemId: sourceAsset?.id || null,
+            sourceItemName: sourceAsset?.name || null,
+            sourceItemCustomId: sourceAsset?.customId || row.assetId,
+            sourceItemAssetTag: sourceAsset?.assetTag || null,
+            sourceItemSerialNumber: sourceAsset?.serialNumber || null,
+            componentId: null,
+            actor: null,
+            reason: null,
+            notes: normalizeSerialValue((row as any).notes),
+            newValue: {
+                relationshipType: row.relationshipType,
+                assetId: row.assetId,
+                relatedAssetId: row.relatedAssetId,
+                relatedAssetName: targetAsset?.name || null,
+            },
+            linkedParentAssetId: parentLink?.id || null,
+            linkedParentAssetName: parentLink?.name || null,
+            linkedParentAssetTag: parentLink?.tag || null,
+        });
+    });
+
+    const deduped = dedupeTimelineEntries(entries)
+        .sort((a, b) => toTimelineDateIso(b.date).localeCompare(toTimelineDateIso(a.date)));
+    return deduped;
+}
+
 // --- GET ASSET HISTORY ---
 app.get('/api/assets/:id/history', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        const history = await HistoryService.getHistoryForAsset(id);
-        res.json(history);
-    } catch (err) {
+        const includeRelated = parseBooleanFlag(req.query.includeRelated);
+        if (!includeRelated) {
+            const history = await HistoryService.getHistoryForAsset(id);
+            return res.json(history);
+        }
+        const combined = await buildCombinedHistoryTimeline(id, true);
+        return res.json(combined);
+    } catch (err: any) {
         console.error('Error fetching history:', err);
-        res.status(500).json({ message: "Failed to fetch history" });
+        if (err instanceof RequestValidationError) {
+            return res.status(404).json({ message: err.message });
+        }
+        return res.status(500).json({ message: "Failed to fetch history" });
     }
 });
 
@@ -3910,7 +6301,9 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
         const componentType = String(req.body?.componentType || '').trim() || 'component';
         if (!componentName) return res.status(400).json({ message: 'componentName is required' });
 
-        const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+        const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
+            ? true
+            : parseBooleanFlag(req.body?.createAsAsset);
         const requestedChildAssetId = normalizeSerialValue(req.body?.childAssetId);
         const componentSerial = normalizeSerialValue(req.body?.serialNumber);
         const componentTag = normalizeSerialValue(req.body?.assetTag);
@@ -3933,6 +6326,13 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                         serialNumber: componentSerial || linkedAsset.serialNumber,
                         assetTag: componentTag || linkedAsset.assetTag,
                         manufacturerPartNumber: normalizeSerialValue(req.body?.partNumber) || linkedAsset.manufacturerPartNumber,
+                        specifications: {
+                            ...((linkedAsset.specifications as Record<string, any>) || {}),
+                            installedInAssetId: req.params.id,
+                            installedInAssetName: asset.name,
+                            installedInAssetTag: asset.assetTag || null,
+                            componentType,
+                        },
                     }
                 });
             } else if (createAsAsset) {
@@ -3970,6 +6370,9 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                             assignedDepartment: null,
                             custodyStatus: 'UNASSIGNED',
                             specifications: {
+                                installedInAssetId: req.params.id,
+                                installedInAssetName: asset.name,
+                                installedInAssetTag: asset.assetTag || null,
                                 parentAssetId: req.params.id,
                                 componentType,
                                 createdFrom: 'component_create_as_asset',
@@ -3986,6 +6389,13 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                             serialNumber: componentSerial || linkedAsset.serialNumber,
                             assetTag: componentTag || linkedAsset.assetTag,
                             manufacturerPartNumber: normalizeSerialValue(req.body?.partNumber) || linkedAsset.manufacturerPartNumber,
+                            specifications: {
+                                ...((linkedAsset.specifications as Record<string, any>) || {}),
+                                installedInAssetId: req.params.id,
+                                installedInAssetName: asset.name,
+                                installedInAssetTag: asset.assetTag || null,
+                                componentType,
+                            },
                         }
                     });
                 }
@@ -4146,13 +6556,11 @@ app.post('/api/assets/:id/components/:componentId/remove', async (req: Request, 
             }
         });
         if (updated.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: updated.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: 'IN_STOCK',
-                    status: 'ACTIVE',
-                }
+            await updateChildAssetLinkMetadata(prisma, updated.childAssetId, {
+                lifecycleStatus: 'IN_STOCK',
+                status: 'ACTIVE',
+                clearInstalledIn: true,
+                componentType: updated.componentType,
             });
         }
         await recordLifecycleEvent({
@@ -4181,6 +6589,8 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
         if (!component || component.parentAssetId !== req.params.id) {
             return res.status(404).json({ message: 'Component not found' });
         }
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'replaced';
         const newComponentInput = req.body?.newComponent || {};
         const [oldComponent, newComponent] = await prisma.$transaction([
@@ -4211,23 +6621,21 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
             }),
         ]);
         if (oldComponent.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: oldComponent.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: 'IN_STOCK',
-                    status: 'ACTIVE',
-                }
+            await updateChildAssetLinkMetadata(prisma, oldComponent.childAssetId, {
+                lifecycleStatus: 'IN_STOCK',
+                status: 'ACTIVE',
+                clearInstalledIn: true,
+                componentType: oldComponent.componentType,
             });
         }
         if (newComponent.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: newComponent.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: 'IN_USE',
-                    status: 'ACTIVE',
-                }
+            await updateChildAssetLinkMetadata(prisma, newComponent.childAssetId, {
+                lifecycleStatus: 'IN_USE',
+                status: 'ACTIVE',
+                parentAssetId: parentAsset.customId,
+                parentAssetName: parentAsset.name,
+                parentAssetTag: parentAsset.assetTag || null,
+                componentType: newComponent.componentType,
             });
         }
         await recordLifecycleEvent({
@@ -4280,7 +6688,9 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
             const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType;
             const serialNumber = normalizeSerialValue(req.body?.serialNumber);
             const partNumber = normalizeSerialValue(req.body?.partNumber) || stock.partNumber;
-            const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+            const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
+                ? true
+                : parseBooleanFlag(req.body?.createAsAsset);
 
             let childAssetId: string | null = normalizeSerialValue(req.body?.childAssetId);
             if (!childAssetId && createAsAsset) {
@@ -4304,6 +6714,9 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
                         custodyStatus: 'UNASSIGNED',
                         specifications: {
                             parentAssetId: req.params.id,
+                            installedInAssetId: req.params.id,
+                            installedInAssetName: asset.name,
+                            installedInAssetTag: asset.assetTag || null,
                             stockItemId: stock.id,
                             componentType,
                             createdFrom: 'stock_install',
@@ -4343,13 +6756,13 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
             });
 
             if (installed.childAssetId) {
-                await tx.asset.update({
-                    where: { customId: installed.childAssetId },
-                    data: {
-                        category: 'COMPONENT',
-                        lifecycleStatus: 'IN_USE',
-                        status: 'ACTIVE',
-                    }
+                await updateChildAssetLinkMetadata(tx, installed.childAssetId, {
+                    lifecycleStatus: 'IN_USE',
+                    status: 'ACTIVE',
+                    parentAssetId: asset.customId,
+                    parentAssetName: asset.name,
+                    parentAssetTag: asset.assetTag || null,
+                    componentType: installed.componentType,
                 });
             }
 
@@ -4423,13 +6836,11 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
             });
 
             if (oldComponent.childAssetId) {
-                await tx.asset.update({
-                    where: { customId: oldComponent.childAssetId },
-                    data: {
-                        category: 'COMPONENT',
-                        lifecycleStatus: failedStatus === 'failed' ? 'PENDING_REPAIR' : 'IN_STOCK',
-                        status: failedStatus === 'failed' ? 'REPAIR' : 'ACTIVE',
-                    }
+                await updateChildAssetLinkMetadata(tx, oldComponent.childAssetId, {
+                    lifecycleStatus: failedStatus === 'failed' ? 'PENDING_REPAIR' : 'IN_STOCK',
+                    status: failedStatus === 'failed' ? 'REPAIR' : 'ACTIVE',
+                    clearInstalledIn: failedStatus !== 'failed',
+                    componentType: oldComponent.componentType,
                 });
             }
 
@@ -4444,7 +6855,9 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
             const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType || oldComponent.componentType;
             const serialNumber = normalizeSerialValue(req.body?.serialNumber);
             const partNumber = normalizeSerialValue(req.body?.partNumber) || stock.partNumber || oldComponent.partNumber;
-            const createAsAsset = parseBooleanFlag(req.body?.createAsAsset);
+            const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
+                ? true
+                : parseBooleanFlag(req.body?.createAsAsset);
             let childAssetId: string | null = normalizeSerialValue(req.body?.childAssetId);
 
             if (!childAssetId && createAsAsset) {
@@ -4468,6 +6881,9 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
                         custodyStatus: 'UNASSIGNED',
                         specifications: {
                             parentAssetId: req.params.id,
+                            installedInAssetId: req.params.id,
+                            installedInAssetName: asset.name,
+                            installedInAssetTag: asset.assetTag || null,
                             stockItemId: stock.id,
                             replacedComponentId: oldComponent.id,
                             componentType,
@@ -4508,13 +6924,13 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
             });
 
             if (installed.childAssetId) {
-                await tx.asset.update({
-                    where: { customId: installed.childAssetId },
-                    data: {
-                        category: 'COMPONENT',
-                        lifecycleStatus: 'IN_USE',
-                        status: 'ACTIVE',
-                    }
+                await updateChildAssetLinkMetadata(tx, installed.childAssetId, {
+                    lifecycleStatus: 'IN_USE',
+                    status: 'ACTIVE',
+                    parentAssetId: asset.customId,
+                    parentAssetName: asset.name,
+                    parentAssetTag: asset.assetTag || null,
+                    componentType: installed.componentType,
                 });
             }
 
@@ -4594,6 +7010,8 @@ app.post('/api/assets/:id/components/:componentId/repair', async (req: Request, 
         if (!component || component.parentAssetId !== req.params.id) {
             return res.status(404).json({ message: 'Component not found' });
         }
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'repair';
         const repairedStatus = String(req.body?.status || 'under_repair').trim();
         const updated = await prisma.assetComponent.update({
@@ -4605,15 +7023,15 @@ app.post('/api/assets/:id/components/:componentId/repair', async (req: Request, 
             },
         });
         if (updated.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: updated.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed'
-                        ? 'IN_USE'
-                        : 'PENDING_REPAIR',
-                    status: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed' ? 'ACTIVE' : 'REPAIR',
-                }
+            await updateChildAssetLinkMetadata(prisma, updated.childAssetId, {
+                lifecycleStatus: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed'
+                    ? 'IN_USE'
+                    : 'PENDING_REPAIR',
+                status: normalizeComponentStatus(repairedStatus, 'under_repair') === 'installed' ? 'ACTIVE' : 'REPAIR',
+                parentAssetId: parentAsset.customId,
+                parentAssetName: parentAsset.name,
+                parentAssetTag: parentAsset.assetTag || null,
+                componentType: updated.componentType,
             });
         }
         const maintenance = await prisma.assetMaintenanceRecord.create({
@@ -4658,6 +7076,8 @@ app.post('/api/assets/:id/components/:componentId/mark-failed', async (req: Requ
         if (!component || component.parentAssetId !== req.params.id) {
             return res.status(404).json({ message: 'Component not found' });
         }
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'failed';
         const updated = await prisma.assetComponent.update({
             where: { id: component.id },
@@ -4668,13 +7088,13 @@ app.post('/api/assets/:id/components/:componentId/mark-failed', async (req: Requ
             }
         });
         if (updated.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: updated.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: 'PENDING_REPAIR',
-                    status: 'REPAIR',
-                }
+            await updateChildAssetLinkMetadata(prisma, updated.childAssetId, {
+                lifecycleStatus: 'PENDING_REPAIR',
+                status: 'REPAIR',
+                parentAssetId: parentAsset.customId,
+                parentAssetName: parentAsset.name,
+                parentAssetTag: parentAsset.assetTag || null,
+                componentType: updated.componentType,
             });
         }
         await recordLifecycleEvent({
@@ -4715,13 +7135,11 @@ app.post('/api/assets/:id/components/:componentId/retire', async (req: Request, 
             }
         });
         if (updated.childAssetId) {
-            await prisma.asset.update({
-                where: { customId: updated.childAssetId },
-                data: {
-                    category: 'COMPONENT',
-                    lifecycleStatus: nextStatus === 'disposed' ? 'DISPOSED' : 'RETIRED',
-                    status: 'RETIRED',
-                }
+            await updateChildAssetLinkMetadata(prisma, updated.childAssetId, {
+                lifecycleStatus: nextStatus === 'disposed' ? 'DISPOSED' : 'RETIRED',
+                status: 'RETIRED',
+                clearInstalledIn: true,
+                componentType: updated.componentType,
             });
         }
         await recordLifecycleEvent({
@@ -5058,6 +7476,116 @@ app.post('/api/assets/:id/eol-explanation', async (req: Request, res: Response) 
     }
 });
 
+app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const asset = await AssetService.getAssetByCustomId(id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const includeRelated = typeof req.body?.includeRelated === 'undefined'
+            ? true
+            : parseBooleanFlag(req.body?.includeRelated);
+
+        const [timeline, assessment, components, maintenanceCount] = await Promise.all([
+            buildCombinedHistoryTimeline(id, includeRelated),
+            buildAssetEolAssessment(asset),
+            prisma.assetComponent.findMany({
+                where: { parentAssetId: id },
+                orderBy: { updatedAt: 'desc' },
+                take: 300,
+            }),
+            prisma.assetMaintenanceRecord.count({
+                where: { assetId: id },
+            }),
+        ]);
+
+        const helperPayload = {
+            asset: {
+                customId: asset.customId,
+                name: asset.name,
+                type: asset.type,
+                category: asset.category,
+                status: asset.status,
+                lifecycleStatus: asset.lifecycleStatus,
+                serialNumber: asset.serialNumber,
+                assetTag: asset.assetTag,
+                purchaseDate: asset.purchaseDate ? asset.purchaseDate.toISOString() : null,
+                warrantyEndDate: asset.warrantyEndDate ? asset.warrantyEndDate.toISOString() : null,
+                location: asset.location,
+                department: asset.department,
+                specifications: asset.specifications || {},
+            },
+            eolAssessment: assessment,
+            includeRelated,
+            historyEvents: timeline.slice(0, 120).map((entry) => ({
+                date: entry.date,
+                event: entry.event,
+                eventType: entry.eventType,
+                sourceItemType: entry.sourceItemType,
+                sourceItemName: entry.sourceItemName,
+                sourceItemCustomId: entry.sourceItemCustomId,
+                details: entry.details,
+                reason: entry.reason,
+            })),
+            components: components.slice(0, 120).map((component) => ({
+                id: component.id,
+                name: component.componentName,
+                type: component.componentType,
+                status: component.status,
+                condition: component.condition,
+                serialNumber: component.serialNumber,
+                partNumber: component.partNumber,
+                installedAt: component.installedAt ? component.installedAt.toISOString() : null,
+                removedAt: component.removedAt ? component.removedAt.toISOString() : null,
+            })),
+            maintenanceCount,
+        };
+
+        const ai = await callInventoryAiHelper('/summarize-asset-health', helperPayload, 12_000);
+        if (!ai) {
+            return res.json(buildAiHealthSummaryFallback({
+                asset,
+                timeline,
+                assessment,
+            }));
+        }
+
+        const fallback = buildAiHealthSummaryFallback({
+            asset,
+            timeline,
+            assessment,
+        });
+        const confidenceRaw = normalizeValue(ai.confidence || fallback.confidence);
+        const confidence: 'low' | 'medium' | 'high' = confidenceRaw === 'high'
+            ? 'high'
+            : confidenceRaw === 'medium'
+                ? 'medium'
+                : 'low';
+        return res.json({
+            summary: String(ai.summary || fallback.summary),
+            risks: Array.isArray(ai.risks) ? ai.risks.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12) : fallback.risks,
+            recentChanges: Array.isArray(ai.recent_changes)
+                ? ai.recent_changes.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                : fallback.recentChanges,
+            componentIssues: Array.isArray(ai.component_issues)
+                ? ai.component_issues.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                : fallback.componentIssues,
+            warrantyEolConcerns: Array.isArray(ai.warranty_eol_concerns)
+                ? ai.warranty_eol_concerns.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                : fallback.warrantyEolConcerns,
+            recommendations: Array.isArray(ai.recommendations)
+                ? ai.recommendations.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                : fallback.recommendations,
+            confidence,
+            missingData: Array.isArray(ai.missing_data)
+                ? ai.missing_data.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 24)
+                : fallback.missingData,
+            llmUsed: Boolean(ai.llm_used),
+        } as AiHealthSummaryHelperResponse);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate AI health summary', error: error.message });
+    }
+});
+
 app.get('/api/assets/:id/ai-jobs', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
@@ -5168,6 +7696,7 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
             || admin?.name
             || 'asset_creator'
         ).trim();
+        const normalizedCategory = mapToAssetCategory(category);
 
         const enrichedSpecificationsBase: Record<string, any> = {
             ...inputSpecifications,
@@ -5191,30 +7720,21 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
             || String(enrichedSpecificationsBase.trackWorkingHours || '').toLowerCase() === 'true'
             || enrichedSpecificationsBase.telemetryEnabled === true
             || String(enrichedSpecificationsBase.telemetryEnabled || '').toLowerCase() === 'true'
-        );
-        const enrichedSpecifications = {
-            ...enrichedSpecificationsBase,
-            trackWorkingHours: trackTelemetry,
-            telemetryEnabled: trackTelemetry,
-            telemetryStatus: trackTelemetry ? 'insufficient_data' : 'not_monitored',
-            telemetryConfidence: 'low',
-            telemetryReason: trackTelemetry
-                ? 'Telemetry monitoring enabled, but no live signal has been received yet.'
-                : 'Telemetry monitoring disabled for this asset.',
-            operationalState: trackTelemetry
-                ? (String(enrichedSpecificationsBase.operationalState || '').trim() || 'insufficient_data')
-                : 'not_monitored',
-            operationalStateUpdatedAt: trackTelemetry
-                ? (String(enrichedSpecificationsBase.operationalStateUpdatedAt || '').trim() || new Date().toISOString())
-                : undefined,
-            lastTelemetryAt: trackTelemetry ? (enrichedSpecificationsBase.lastTelemetryAt || undefined) : undefined,
-            workingHours: Number(enrichedSpecificationsBase.workingHours || 0),
-        };
+        ) || isTelemetryCapableAsset({ type, category: normalizedCategory });
+        const enrichedSpecifications = buildTelemetryDefaultsForAsset({
+            type,
+            category: normalizedCategory,
+            existingSpecs: {
+                ...enrichedSpecificationsBase,
+                trackWorkingHours: trackTelemetry,
+                telemetryEnabled: trackTelemetry,
+            },
+            location,
+        });
 
         const qty = parseRequestedQuantity(quantity ?? 1);
         const assetGroupId = String(customId || `ASSET-${Date.now()}`).trim();
         const unitIds = buildUnitAssetIds(assetGroupId, qty);
-        const normalizedCategory = mapToAssetCategory(category);
         const normalizedLifecycleStatus = mapToLifecycleStatus(lifecycleStatus || (assignedToName || assignedToUserId ? 'assigned' : 'in_stock'));
         const normalizedCustodyStatus = mapToCustodyStatus(custodyStatus || (assignedToName || assignedToUserId ? 'checked_out' : 'unassigned'));
 
@@ -5399,10 +7919,247 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
         res.status(500).json({ message: error.message });
     }
 });
+
+type RelatedTransferOptions = {
+    includeRelated: boolean;
+    includeComponents: boolean;
+    includeAccessories: boolean;
+    includeLicenses: boolean;
+    includeConsumables: boolean;
+};
+
+function parseRelatedTransferOptions(payload: any): RelatedTransferOptions {
+    const includeRelated = parseBooleanFlag(payload?.includeRelated);
+    const includeComponents = includeRelated && parseBooleanFlag(
+        payload?.includeComponents ?? true
+    );
+    const includeAccessories = includeRelated && parseBooleanFlag(
+        payload?.includeAccessories ?? true
+    );
+    const includeLicenses = includeRelated && parseBooleanFlag(
+        payload?.includeLicenses ?? false
+    );
+    const includeConsumables = includeRelated && parseBooleanFlag(
+        payload?.includeConsumables ?? false
+    );
+    return {
+        includeRelated,
+        includeComponents,
+        includeAccessories,
+        includeLicenses,
+        includeConsumables,
+    };
+}
+
+async function collectRelatedAssetsForTransfer(parentAssetId: string, options: RelatedTransferOptions) {
+    const blockedComponentStatuses = ['removed', 'replaced', 'retired', 'disposed'];
+    const byCategory = {
+        components: new Set<string>(),
+        accessories: new Set<string>(),
+        licenses: new Set<string>(),
+        consumables: new Set<string>(),
+    };
+
+    if (options.includeComponents) {
+        const componentRows = await prisma.assetComponent.findMany({
+            where: {
+                parentAssetId,
+                childAssetId: { not: null },
+                removedAt: null,
+                status: { notIn: blockedComponentStatuses },
+            },
+            select: {
+                childAssetId: true,
+            },
+        });
+        componentRows.forEach((row) => {
+            if (row.childAssetId) byCategory.components.add(row.childAssetId);
+        });
+    }
+
+    if (options.includeAccessories || options.includeLicenses || options.includeConsumables || options.includeComponents) {
+        const relationshipTypes = [
+            'installed_in',
+            'component_of',
+            'uses',
+            'used_with',
+            'assigned_to',
+            'license_for',
+            'licensed_to',
+            'consumed_by',
+            'attached_to',
+            'connected_to',
+        ];
+        const relationshipRows = await prisma.assetRelationship.findMany({
+            where: {
+                relationshipType: { in: relationshipTypes },
+                OR: [
+                    { assetId: parentAssetId },
+                    { relatedAssetId: parentAssetId },
+                ]
+            },
+            include: {
+                asset: {
+                    select: { customId: true, category: true },
+                },
+                relatedAsset: {
+                    select: { customId: true, category: true },
+                },
+            },
+        });
+
+        relationshipRows.forEach((row) => {
+            const other = row.assetId === parentAssetId ? row.relatedAsset : row.asset;
+            const otherId = other?.customId;
+            const otherCategory = String(other?.category || '').toLowerCase();
+            if (!otherId || otherId === parentAssetId) return;
+            if (otherCategory === 'component' && options.includeComponents) byCategory.components.add(otherId);
+            if (otherCategory === 'accessory' && options.includeAccessories) byCategory.accessories.add(otherId);
+            if (otherCategory === 'license' && options.includeLicenses) byCategory.licenses.add(otherId);
+            if (otherCategory === 'consumable' && options.includeConsumables) byCategory.consumables.add(otherId);
+        });
+    }
+
+    const allIds = Array.from(new Set([
+        ...Array.from(byCategory.components),
+        ...Array.from(byCategory.accessories),
+        ...Array.from(byCategory.licenses),
+        ...Array.from(byCategory.consumables),
+    ]));
+
+    return {
+        allIds,
+        byCategory: {
+            components: Array.from(byCategory.components),
+            accessories: Array.from(byCategory.accessories),
+            licenses: Array.from(byCategory.licenses),
+            consumables: Array.from(byCategory.consumables),
+        },
+        counts: {
+            components: byCategory.components.size,
+            accessories: byCategory.accessories.size,
+            licenses: byCategory.licenses.size,
+            consumables: byCategory.consumables.size,
+            total: allIds.length,
+        }
+    };
+}
+
+async function transferRelatedAssetsWithParent(params: {
+    parentAsset: Asset;
+    updateData: Record<string, any>;
+    destinationType: string;
+    destination: string;
+    options: RelatedTransferOptions;
+}) {
+    if (!params.options.includeRelated) {
+        return {
+            updatedAssets: [] as Asset[],
+            affectedRelatedIds: [] as string[],
+            affectedRelatedCounts: {
+                components: 0,
+                accessories: 0,
+                licenses: 0,
+                consumables: 0,
+                total: 0,
+            },
+            summary: 'Related item transfer disabled.',
+        };
+    }
+
+    const related = await collectRelatedAssetsForTransfer(params.parentAsset.customId, params.options);
+    if (!related.allIds.length) {
+        return {
+            updatedAssets: [] as Asset[],
+            affectedRelatedIds: [] as string[],
+            affectedRelatedCounts: related.counts,
+            summary: 'No related items were linked to this parent asset.',
+        };
+    }
+
+    const relatedAssets = await prisma.asset.findMany({
+        where: { customId: { in: related.allIds } },
+    });
+    const updatesById = new Map<string, Partial<Asset>>();
+    const updatedAssets: Asset[] = [];
+
+    for (const relatedAsset of relatedAssets) {
+        const category = String(relatedAsset.category || '').toLowerCase();
+        const isLicense = category === 'license';
+        const shouldMovePhysically = !isLicense && category !== 'spare_part';
+        const updatePayload: Record<string, any> = {};
+        if (shouldMovePhysically) {
+            if (typeof params.updateData.location !== 'undefined') updatePayload.location = params.updateData.location;
+            if (typeof params.updateData.department !== 'undefined') updatePayload.department = params.updateData.department;
+        }
+
+        let updatedAsset = relatedAsset;
+        if (Object.keys(updatePayload).length > 0) {
+            updatedAsset = await AssetService.updateAsset(relatedAsset.customId, updatePayload);
+        }
+        updatesById.set(updatedAsset.customId, updatedAsset as Partial<Asset>);
+        updatedAssets.push(updatedAsset);
+
+        await recordLifecycleEvent({
+            assetId: updatedAsset.customId,
+            eventType: 'asset_transferred_with_parent',
+            oldValue: {
+                location: String(relatedAsset.location),
+                department: String(relatedAsset.department),
+            },
+            newValue: {
+                location: String(updatedAsset.location),
+                department: String(updatedAsset.department),
+                parentAssetId: params.parentAsset.customId,
+                destinationType: params.destinationType,
+                destination: params.destination,
+            },
+            reason: 'moved_with_parent_asset',
+            notes: `Moved with parent asset ${params.parentAsset.customId}`,
+        });
+        await recordHistoryEvent({
+            assetId: updatedAsset.customId,
+            action: 'Transferred With Parent',
+            details: `Moved with parent asset ${params.parentAsset.customId} to ${params.destinationType}: ${params.destination}`,
+        });
+    }
+
+    const summary = `Transferred related items with parent ${params.parentAsset.customId}: components=${related.counts.components}, accessories=${related.counts.accessories}, licenses=${related.counts.licenses}, consumables=${related.counts.consumables}.`;
+    return {
+        updatedAssets,
+        affectedRelatedIds: related.allIds,
+        affectedRelatedCounts: related.counts,
+        summary,
+    };
+}
+
+app.get('/api/assets/:id/transfer-related-summary', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const options = parseRelatedTransferOptions({
+            includeRelated: true,
+            includeComponents: req.query.includeComponents ?? 'true',
+            includeAccessories: req.query.includeAccessories ?? 'true',
+            includeLicenses: req.query.includeLicenses ?? 'false',
+            includeConsumables: req.query.includeConsumables ?? 'false',
+        });
+        const summary = await collectRelatedAssetsForTransfer(asset.customId, options);
+        return res.json({
+            parentAssetId: asset.customId,
+            counts: summary.counts,
+            ids: summary.byCategory,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to read transfer-related summary', error: error.message });
+    }
+});
+
 // --- TRANSFER & SPLIT LOGIC ---
 app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
     const { destType, destination, quantityToMove, admin } = req.body;
     console.log(`📦 Attempting transfer for ID: ${req.params.id}`);
+    const relatedTransferOptions = parseRelatedTransferOptions(req.body);
 
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
@@ -5468,16 +8225,25 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
                 historyAction: 'Transfer',
                 historyDetails: `Moved to ${destType}: ${destination}`,
             });
-            try {
-                await refreshAndPersistAssetLifespan(updated.customId, {
-                    reason: 'asset_transferred',
-                    forcePersist: true,
-                });
-            } catch (error: any) {
-                console.warn(`[InventoryAI] transfer lifespan refresh failed for ${updated.customId}: ${error.message}`);
-            }
+            scheduleTransferLifespanRefresh(updated.customId);
             const refreshed = await AssetService.getAssetByCustomId(updated.customId);
-            return res.json(refreshed || updated);
+            const normalized = annotateAssetWithTruthfulSignals(refreshed || updated);
+            const relatedTransferResult = await transferRelatedAssetsWithParent({
+                parentAsset: normalized as Asset,
+                updateData,
+                destinationType: String(destType || ''),
+                destination: String(destination || ''),
+                options: relatedTransferOptions,
+            });
+            const normalizedRelated = relatedTransferResult.updatedAssets.map((entry) => annotateAssetWithTruthfulSignals(entry));
+            return res.json({
+                success: true,
+                updatedAsset: normalized,
+                updatedAssets: [normalized, ...normalizedRelated],
+                affectedRelatedIds: relatedTransferResult.affectedRelatedIds,
+                affectedRelatedCounts: relatedTransferResult.affectedRelatedCounts,
+                relatedTransferSummary: relatedTransferResult.summary,
+            });
         }
 
         // Partial transfer - reduce original quantity
@@ -5544,22 +8310,33 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
         );
 
         for (const newBatch of newBatches) {
-            try {
-                await refreshAndPersistAssetLifespan(newBatch.customId, {
-                    reason: 'asset_transferred',
-                    forcePersist: true,
-                });
-            } catch (error: any) {
-                console.warn(`[InventoryAI] split transfer lifespan refresh failed for ${newBatch.customId}: ${error.message}`);
-            }
+            scheduleTransferLifespanRefresh(newBatch.customId);
         }
         const refreshedOriginal = await AssetService.getAssetByCustomId(updated.customId);
         const refreshedSplits = await Promise.all(newBatches.map((newBatch) => AssetService.getAssetByCustomId(newBatch.customId)));
+        const normalizedOriginal = annotateAssetWithTruthfulSignals(refreshedOriginal || updated);
+        const normalizedSplits = refreshedSplits
+            .filter((entry): entry is Asset => Boolean(entry))
+            .map((entry) => annotateAssetWithTruthfulSignals(entry));
 
+        const partialRelatedSummary = relatedTransferOptions.includeRelated
+            ? 'Related-item transfer was skipped because partial quantity transfer creates split units.'
+            : 'Related item transfer disabled.';
         res.json({
-            original: refreshedOriginal || updated,
-            newBatch: refreshedSplits[0] || newBatches[0],
-            newBatches: refreshedSplits.filter((entry): entry is Asset => Boolean(entry)),
+            success: true,
+            original: normalizedOriginal,
+            newBatch: normalizedSplits[0] || annotateAssetWithTruthfulSignals(newBatches[0]),
+            newBatches: normalizedSplits,
+            updatedAssets: [normalizedOriginal, ...normalizedSplits],
+            affectedRelatedIds: [],
+            affectedRelatedCounts: {
+                components: 0,
+                accessories: 0,
+                licenses: 0,
+                consumables: 0,
+                total: 0,
+            },
+            relatedTransferSummary: partialRelatedSummary,
         });
     } catch (error: any) {
         console.error("❌ Transfer Route Error:", error.message);

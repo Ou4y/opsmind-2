@@ -132,6 +132,200 @@ Input:
 """
 
 
+ASSET_HEALTH_SUMMARY_PROMPT = """You summarize inventory asset health from provided facts only.
+Never invent incidents, dates, or hardware details that are not in the input.
+
+Rules:
+- Return ONLY JSON.
+- Keep recommendations practical and tied to evidence.
+- If data is missing, list it in missing_data.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "risks": [],
+  "recent_changes": [],
+  "component_issues": [],
+  "warranty_eol_concerns": [],
+  "recommendations": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_ASSISTANT_PROMPT = """You are an inventory assistant for ITAM/CMDB operations.
+Use only the provided deterministic findings; do not invent facts.
+
+Rules:
+- Return ONLY JSON.
+- Keep answer practical and concise.
+- If no matches, explain that clearly and suggest next useful queries.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "answer": "",
+  "suggested_actions": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+IMPORT_COLUMN_MAPPING_PROMPT = """You map messy import headers to expected inventory template fields.
+Use only provided headers/samples/expected fields.
+
+Rules:
+- Return ONLY JSON.
+- Do not map a source column to multiple targets.
+- Prefer high-confidence mappings only when justified.
+
+Required output:
+{{
+  "mappings": [
+    {{
+      "sourceColumn": "",
+      "targetColumn": "",
+      "confidence": 0.0,
+      "reason": ""
+    }}
+  ],
+  "unmapped_columns": [],
+  "warnings": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MISSING_DATA_DETECTOR_PROMPT = """You explain inventory data-quality findings.
+Do not invent issues; use provided deterministic report.
+
+Rules:
+- Return ONLY JSON.
+- Keep recommendations prioritized.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "recommendations": [],
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MAINTENANCE_RECOMMENDATION_PROMPT = """You summarize maintenance recommendations for inventory assets.
+Use only provided recommendation candidates.
+
+Rules:
+- Return ONLY JSON.
+- Keep output actionable and grounded.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+PROCUREMENT_RECOMMENDATION_PROMPT = """You summarize procurement recommendations for inventory management.
+Use only provided deterministic recommendation candidates.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent vendor prices when missing.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "missing_data": [],
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+DUPLICATE_EXPLANATION_PROMPT = """You explain possible duplicate inventory records.
+Use only provided duplicate groups.
+
+Rules:
+- Return ONLY JSON.
+- Do not claim duplicates outside the provided groups.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+NATURAL_LANGUAGE_SEARCH_PROMPT = """You explain natural-language inventory search results.
+Use only provided interpreted filters and candidate results.
+
+Rules:
+- Return ONLY JSON.
+- If no results, suggest better query refinement.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "answer": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+DOCUMENT_EXTRACTION_PROMPT = """Extract candidate inventory rows from provided document text.
+This is assisted import only, so keep uncertain fields empty.
+
+Rules:
+- Return ONLY JSON.
+- Never fabricate serial numbers/dates/costs.
+- recordType should be one of:
+  parent_asset, component_asset, embedded_component, spare_stock, accessory, consumable, license
+
+Required output:
+{{
+  "source_document_summary": "",
+  "confidence": 0.0,
+  "warnings": [],
+  "missing_fields": [],
+  "extracted_rows": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
 SPEC_SOURCE_EXTRACTION_PROMPT = """You extract asset specs from provided source text only.
 Do not invent facts that are missing from the text.
 
