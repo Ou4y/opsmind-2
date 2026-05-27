@@ -19,15 +19,17 @@ def _parse_ollama_timeout_seconds() -> int:
     Ticket service uses OLLAMA_TIMEOUT_MS while inventory-ai historically used
     OLLAMA_TIMEOUT_SECONDS; support both so deployments stay compatible.
     """
+    minimum_timeout_seconds = 20
+
     raw_seconds = os.getenv("OLLAMA_TIMEOUT_SECONDS")
     if raw_seconds is not None and str(raw_seconds).strip():
-        return max(3, int(str(raw_seconds).strip()))
+        return max(minimum_timeout_seconds, int(str(raw_seconds).strip()))
 
     raw_ms = os.getenv("OLLAMA_TIMEOUT_MS")
     if raw_ms is not None and str(raw_ms).strip():
-        timeout_ms = max(3000, int(str(raw_ms).strip()))
+        timeout_ms = max(minimum_timeout_seconds * 1000, int(str(raw_ms).strip()))
         # Round up to avoid unintentionally shortening configured timeout.
-        return max(3, (timeout_ms + 999) // 1000)
+        return max(minimum_timeout_seconds, (timeout_ms + 999) // 1000)
 
     return 45
 

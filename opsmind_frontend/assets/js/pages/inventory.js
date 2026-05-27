@@ -66,6 +66,11 @@ let groupCmdbState = {
   searchText: '',
 };
 let importPreviewCache = null;
+let importAiRepairState = {
+  suggestions: [],
+  beforeMetrics: null,
+  lastApplySummary: '',
+};
 const INVENTORY_GROUP_PAGE_SIZE = 50;
 let inventoryGroupRenderLimit = INVENTORY_GROUP_PAGE_SIZE;
 let inventoryPageState = {
@@ -93,6 +98,123 @@ let inventoryAiChatState = {
   status: 'gemma',
 };
 let importAiHeaderMappings = null;
+let loanerBoardRows = [];
+let auditBoardRows = [];
+let bulkCheckoutValidationRows = [];
+const INVENTORY_MAP_IMAGE_PATH = '/assets/images/miu-campus-map.png';
+const INVENTORY_MAP_DEFAULT_PAGE_SIZE = 500;
+const INVENTORY_MAP_LANDSCAPE_MODE = 'clockwise';
+const INVENTORY_MAP_FLIP_CURRENT_HORIZONTAL_180 = true;
+const INVENTORY_MAP_COORDINATE_MODE = 'display';
+// Coordinate tuning note:
+// Coordinates below are in FINAL DISPLAY SPACE (what users see in the horizontal map):
+// xPercent: left -> right, yPercent: top -> bottom.
+// We keep image rotation for visual orientation, but marker placement uses these
+// display coordinates directly (no extra projection math).
+const INVENTORY_MAP_LOCATION_DEFINITIONS = [
+  {
+    key: 'central_warehouse',
+    name: 'Central Warehouse',
+    xPercent: 92,
+    yPercent: 76,
+    aliases: ['central warehouse', 'central_warehouse', 'warehouse', 'main warehouse', 'warehouse staging'],
+  },
+  {
+    key: 'main',
+    name: 'Main Building',
+    xPercent: 88,
+    yPercent: 58,
+    aliases: ['main', 'main building', 'building main', 'main_building'],
+  },
+  {
+    key: 'k',
+    name: 'K Building',
+    xPercent: 86,
+    yPercent: 23,
+    aliases: ['k', 'k building', 'building k', 'k_building'],
+  },
+  {
+    key: 'r',
+    name: 'R Building',
+    xPercent: 12,
+    yPercent: 25,
+    aliases: ['r', 'r building', 'building r', 'r_building'],
+  },
+  {
+    key: 'n',
+    name: 'N Building',
+    xPercent: 38,
+    yPercent: 80,
+    aliases: ['n', 'n building', 'building n', 'n_building'],
+  },
+  {
+    key: 's',
+    name: 'S Building',
+    xPercent: 39,
+    yPercent: 43,
+    aliases: ['s', 's building', 'building s', 's_building'],
+  },
+  {
+    key: 'pharmacy',
+    name: 'Pharmacy Building',
+    xPercent: 60,
+    yPercent: 23,
+    aliases: ['pharmacy', 'pharmacy building', 'pharmacy_building'],
+  },
+  {
+    key: 'copy_center',
+    name: 'Copy Center',
+    xPercent: 60,
+    yPercent: 83,
+    aliases: ['copy center', 'copycenter', 'copy-center', 'copy_centre', 'copy_center'],
+  },
+  {
+    key: 'mosque',
+    name: 'Mosque',
+    xPercent: 56,
+    yPercent: 83,
+    aliases: ['mosque'],
+  },
+  {
+    key: 'workshop',
+    name: 'Workshop',
+    xPercent: 4,
+    yPercent: 52,
+    aliases: ['workshop'],
+  },
+];
+const INVENTORY_MAP_LOCATION_INDEX = INVENTORY_MAP_LOCATION_DEFINITIONS.reduce((acc, entry) => {
+  const aliasSet = new Set([entry.name, ...(entry.aliases || [])]);
+  aliasSet.forEach((alias) => {
+    acc.set(String(alias || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ''), entry);
+  });
+  return acc;
+}, new Map());
+let inventoryMapState = {
+  loading: false,
+  allAssets: [],
+  filteredAssets: [],
+  groupedMarkers: [],
+  selectedLocationKey: null,
+  mapImageReady: false,
+  mapImageMissing: false,
+  canvasSize: { width: 0, height: 0 },
+};
+let inventoryMapCalibrationState = {
+  enabled: false,
+  draggingKey: null,
+  selectedKey: null,
+  draftByKey: new Map(),
+};
+
+function getInventoryMapDisplayRotation() {
+  let rotation = 0;
+  if (INVENTORY_MAP_LANDSCAPE_MODE === 'clockwise') rotation = 90;
+  if (INVENTORY_MAP_LANDSCAPE_MODE === 'counterclockwise') rotation = 270;
+  if (INVENTORY_MAP_FLIP_CURRENT_HORIZONTAL_180) rotation += 180;
+  const normalized = ((rotation % 360) + 360) % 360;
+  return normalized;
+}
 
 const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 
@@ -169,23 +291,48 @@ function applyInventoryRoleUI() {
 const TYPE_ALIASES = {
   LAPTOP: 'laptop',
   DESKTOP: 'desktop',
+  DESKTOP_PC: 'desktop',
+  PC: 'desktop',
+  WORKSTATION: 'desktop',
+  THIN_CLIENT: 'desktop',
+  LAB_COMPUTER: 'desktop',
+  LIBRARY_PC: 'desktop',
   TABLET: 'tablet',
+  IPAD: 'tablet',
   SERVER: 'server',
+  NAS_STORAGE: 'server',
+  NVR_DVR: 'server',
   MONITOR: 'monitor',
   PERIPHERAL: 'peripheral',
+  EXTERNAL_STORAGE_DEVICE: 'peripheral',
   KEYBOARD: 'keyboard',
   ELECTRONICS: 'electronics',
+  UPS: 'electronics',
+  BIOMETRIC_ATTENDANCE_DEVICE: 'electronics',
+  IP_PHONE: 'electronics',
   PROJECTOR: 'projector',
   SMARTBOARD: 'smartboard',
+  INTERACTIVE_DISPLAY: 'smartboard',
   CAMERA: 'camera',
+  CCTV_CAMERA: 'camera',
+  DOCUMENT_CAMERA: 'camera',
+  LECTURE_CAPTURE_DEVICE: 'camera',
   SPEAKER: 'speaker',
+  SPEAKER_SYSTEM: 'speaker',
+  AMPLIFIER: 'speaker',
   MICROPHONE: 'microphone',
   ROUTER: 'router',
   SWITCH: 'switch',
+  NETWORK_SWITCH: 'switch',
   ACCESS_POINT: 'access_point',
   FIREWALL: 'firewall',
+  FIREWALL_APPLIANCE: 'firewall',
   PRINTER: 'printer',
+  PHOTOCOPIER: 'printer',
   SCANNER: 'scanner',
+  BARCODE_SCANNER: 'scanner',
+  RFID_READER: 'scanner',
+  BOOK_SCANNER: 'scanner',
   DESK: 'desk',
   CHAIR: 'chair',
   WHITEBOARD: 'whiteboard',
@@ -204,12 +351,25 @@ const TYPE_ALIASES = {
 
 const LOCATION_ALIASES = {
   CENTRAL_WAREHOUSE: 'Central Warehouse',
+  MAIN: 'Main Building',
   MAIN_BUILDING: 'Main Building',
+  K: 'K Building',
   K_BUILDING: 'K Building',
+  N: 'N Building',
   N_BUILDING: 'N Building',
+  S: 'S Building',
   S_BUILDING: 'S Building',
+  R: 'R Building',
   R_BUILDING: 'R Building',
-  PHARMACY_BUILDING: 'Pharmacy Building'
+  PHARMACY: 'Pharmacy Building',
+  PHARMACY_BUILDING: 'Pharmacy Building',
+  COPY_CENTER: 'Copy Center',
+  COPYCENTER: 'Copy Center',
+  COPY_CENTRE: 'Copy Center',
+  MOSQUE: 'Mosque',
+  WORKSHOP: 'Workshop',
+  IT_STORE: 'IT Store',
+  COMPUTER_LAB_A: 'Computer Lab A',
 };
 
 const DEPARTMENT_ALIASES = {
@@ -230,13 +390,204 @@ function normalizeValue(value) {
 }
 
 function canonicalType(type) {
-  const raw = String(type || '');
-  return TYPE_ALIASES[raw.toUpperCase()] || raw.toLowerCase();
+  const raw = String(type || '').trim();
+  if (!raw) return '';
+  const normalized = raw.toUpperCase().replace(/[\s-]+/g, '_');
+  return TYPE_ALIASES[normalized] || raw.toLowerCase().replace(/[\s-]+/g, '_');
 }
 
 function displayLocation(location) {
   const raw = String(location || '');
   return LOCATION_ALIASES[raw.toUpperCase()] || raw || 'Unknown';
+}
+
+function normalizeInventoryMapToken(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function isExactTokenBoundaryMatch(normalizedValue, aliasNorm) {
+  if (!normalizedValue || !aliasNorm) return false;
+  if (normalizedValue === aliasNorm) return true;
+  if (!normalizedValue.startsWith(aliasNorm) && !normalizedValue.endsWith(aliasNorm)) return false;
+  if (normalizedValue.startsWith(aliasNorm)) {
+    const nextChar = normalizedValue.charAt(aliasNorm.length);
+    if (!nextChar) return true;
+    return /[0-9]/.test(nextChar);
+  }
+  if (normalizedValue.endsWith(aliasNorm)) {
+    const prevIndex = normalizedValue.length - aliasNorm.length - 1;
+    const prevChar = normalizedValue.charAt(prevIndex);
+    if (!prevChar) return true;
+    return /[0-9]/.test(prevChar);
+  }
+  return false;
+}
+
+function resolveInventoryMapLocation(locationValue) {
+  const raw = String(locationValue || '').trim();
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const normalized = normalizeInventoryMapToken(cleaned);
+  if (!normalized) return null;
+
+  const direct = INVENTORY_MAP_LOCATION_INDEX.get(normalized);
+  if (direct) {
+    return {
+      ...direct,
+      matchedAlias: cleaned,
+      matchMethod: 'exact',
+    };
+  }
+
+  let best = null;
+  let bestScore = -1;
+  for (const entry of INVENTORY_MAP_LOCATION_DEFINITIONS) {
+    const aliases = [entry.name, ...(entry.aliases || [])];
+    for (const alias of aliases) {
+      const aliasRaw = String(alias || '').trim();
+      const aliasNorm = normalizeInventoryMapToken(alias);
+      if (!aliasNorm) continue;
+      if (aliasNorm.length <= 4) {
+        if (normalized === aliasNorm) {
+          if (bestScore < 4) {
+            best = { ...entry, matchedAlias: aliasRaw, matchMethod: 'exact_short' };
+            bestScore = 4;
+          }
+        }
+        continue;
+      }
+      if (normalized === aliasNorm) {
+        if (bestScore < 4) {
+          best = { ...entry, matchedAlias: aliasRaw, matchMethod: 'exact' };
+          bestScore = 4;
+        }
+        continue;
+      }
+      if (isExactTokenBoundaryMatch(normalized, aliasNorm)) {
+        if (bestScore < 3) {
+          best = { ...entry, matchedAlias: aliasRaw, matchMethod: 'boundary' };
+          bestScore = 3;
+        }
+        continue;
+      }
+      if (aliasNorm.length >= 6 && normalized.includes(aliasNorm)) {
+        if (bestScore < 2) {
+          best = { ...entry, matchedAlias: aliasRaw, matchMethod: 'contains' };
+          bestScore = 2;
+        }
+      }
+    }
+  }
+  if (best) return best;
+  return null;
+}
+
+function updateInventoryMapCanvasLayout() {
+  const wrapEl = document.querySelector('.inventory-map-canvas-wrap');
+  const canvasEl = document.getElementById('inventoryAssetMapCanvas');
+  const imageEl = document.getElementById('inventoryAssetMapImage');
+  const markerLayer = document.getElementById('inventoryAssetMapMarkers');
+  if (!wrapEl || !canvasEl || !imageEl || !markerLayer) return;
+  const naturalWidth = Number(imageEl.naturalWidth || 0);
+  const naturalHeight = Number(imageEl.naturalHeight || 0);
+  if (!naturalWidth || !naturalHeight) return;
+
+  const availableWidth = Math.max(220, Math.floor(wrapEl.clientWidth - 12));
+  const availableHeight = Math.max(220, Math.floor(wrapEl.clientHeight - 12));
+  const rotation = getInventoryMapDisplayRotation();
+  const isLandscape = rotation === 90 || rotation === 270;
+  const effectiveWidth = isLandscape ? naturalHeight : naturalWidth;
+  const effectiveHeight = isLandscape ? naturalWidth : naturalHeight;
+  const imageRatio = effectiveWidth / effectiveHeight;
+
+  let targetWidth = availableWidth;
+  let targetHeight = Math.round(targetWidth / imageRatio);
+  if (targetHeight > availableHeight) {
+    targetHeight = availableHeight;
+    targetWidth = Math.round(targetHeight * imageRatio);
+  }
+
+  canvasEl.style.width = `${targetWidth}px`;
+  canvasEl.style.height = `${targetHeight}px`;
+  imageEl.style.setProperty('--inventory-map-image-rotation', `${rotation}deg`);
+  if (isLandscape) {
+    imageEl.style.width = `${targetHeight}px`;
+    imageEl.style.height = `${targetWidth}px`;
+  } else {
+    imageEl.style.width = `${targetWidth}px`;
+    imageEl.style.height = `${targetHeight}px`;
+  }
+  markerLayer.style.width = '100%';
+  markerLayer.style.height = '100%';
+  inventoryMapState.canvasSize = { width: targetWidth, height: targetHeight };
+  window.renderInventoryMapCalibrationMarkers?.();
+}
+
+function projectInventoryMapCoordinates(xPercent, yPercent) {
+  const x = Number(xPercent);
+  const y = Number(yPercent);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (INVENTORY_MAP_COORDINATE_MODE === 'display') {
+    return { xPercent: x, yPercent: y };
+  }
+  const rotation = getInventoryMapDisplayRotation();
+  if (rotation === 90) return { xPercent: y, yPercent: 100 - x };
+  if (rotation === 180) return { xPercent: 100 - x, yPercent: 100 - y };
+  if (rotation === 270) return { xPercent: 100 - y, yPercent: x };
+  return { xPercent: x, yPercent: y };
+}
+
+function unprojectInventoryMapCoordinates(displayXPercent, displayYPercent) {
+  const x = Number(displayXPercent);
+  const y = Number(displayYPercent);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (INVENTORY_MAP_COORDINATE_MODE === 'display') {
+    return { xPercent: x, yPercent: y };
+  }
+  const rotation = getInventoryMapDisplayRotation();
+  if (rotation === 90) return { xPercent: 100 - y, yPercent: x };
+  if (rotation === 180) return { xPercent: 100 - x, yPercent: 100 - y };
+  if (rotation === 270) return { xPercent: y, yPercent: 100 - x };
+  return { xPercent: x, yPercent: y };
+}
+
+function getMapLocationDefinitionByKey(locationKey) {
+  return INVENTORY_MAP_LOCATION_DEFINITIONS.find((entry) => entry.key === locationKey) || null;
+}
+
+function getCalibrationBaseCoordinates(locationKey) {
+  const draft = inventoryMapCalibrationState.draftByKey.get(locationKey);
+  if (draft && Number.isFinite(Number(draft.xPercent)) && Number.isFinite(Number(draft.yPercent))) {
+    return {
+      xPercent: Number(draft.xPercent),
+      yPercent: Number(draft.yPercent),
+    };
+  }
+  const definition = getMapLocationDefinitionByKey(locationKey);
+  if (!definition) return null;
+  return {
+    xPercent: Number(definition.xPercent),
+    yPercent: Number(definition.yPercent),
+  };
+}
+
+function inventoryMapViewToCategory(view) {
+  const v = String(view || '').trim().toLowerCase();
+  if (!v || v === 'all') return 'all';
+  if (v === 'spare_parts') return 'spare_stock';
+  return v;
+}
+
+function shouldTreatMapItemAsNearEol(asset) {
+  const lifecycle = String(asset?.lifecycleStatus || '').trim().toLowerCase();
+  if (lifecycle.includes('eol') || lifecycle.includes('retired') || lifecycle.includes('disposed')) return true;
+  const expiry = asset?.warrantyEndDate ? new Date(asset.warrantyEndDate) : null;
+  if (!expiry || Number.isNaN(expiry.getTime())) return false;
+  const deltaDays = (expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+  return deltaDays <= 90;
 }
 
 function displayDepartment(department) {
@@ -339,7 +690,10 @@ function isSparePartAsset(asset) {
 const TRACKABLE_ASSET_TYPES = new Set([
   'laptop', 'desktop', 'tablet', 'server', 'monitor', 'projector', 'smartboard',
   'camera', 'speaker', 'microphone', 'router', 'switch', 'access_point',
-  'firewall', 'printer', 'scanner', 'microscope', 'centrifuge', 'oscilloscope',
+  'firewall', 'printer', 'scanner', 'peripheral', 'nas_storage', 'nvr_dvr',
+  'cctv_camera', 'document_camera', 'lecture_capture_device', 'ip_phone',
+  'biometric_attendance_device',
+  'microscope', 'centrifuge', 'oscilloscope',
   '3d_printer', 'vehicle', 'generator', 'hvac', 'maintenance_tool'
 ]);
 
@@ -681,7 +1035,12 @@ function getAssetProfile(asset) {
   const quality = String(specs.inferredQuality || specs.quality || inferAssetQuality({ brand, version, specs, type: asset?.type })).toLowerCase();
   const telemetry = getTelemetryStatusMeta(specs);
   const workingHours = Math.max(0, getEffectiveWorkingHours(specs));
-  const trackWorkingHours = toBoolean(specs.trackWorkingHours) && TRACKABLE_ASSET_TYPES.has(canonicalType(asset?.type));
+  const canonical = canonicalType(asset?.type);
+  const trackWorkingHours = toBoolean(specs.trackWorkingHours) && (
+    TRACKABLE_ASSET_TYPES.has(canonical)
+    || toBoolean(specs.telemetryEnabled)
+    || toBoolean(specs.telemetryApplicable)
+  );
   const operationalState = telemetry.state;
 
   return {
@@ -1081,13 +1440,131 @@ document.addEventListener('DOMContentLoaded', () => {
   const commitImportBtn = document.getElementById('commitImportBtn');
   const downloadImportTemplateBtn = document.getElementById('downloadImportTemplateBtn');
   const aiMapColumnsBtn = document.getElementById('aiMapColumnsBtn');
+  const aiRepairImportBtn = document.getElementById('aiRepairImportBtn');
+  const aiMatchInvoiceBtn = document.getElementById('aiMatchInvoiceBtn');
   const previewDocumentImportBtn = document.getElementById('previewDocumentImportBtn');
+  const importAiRepairApplySafeBtn = document.getElementById('importAiRepairApplySafeBtn');
+  const importAiRepairApplySelectedBtn = document.getElementById('importAiRepairApplySelectedBtn');
+  const importAiRepairIgnoreAllBtn = document.getElementById('importAiRepairIgnoreAllBtn');
+  const importAiRepairRerunPreviewBtn = document.getElementById('importAiRepairRerunPreviewBtn');
+  const importAiRepairTableBody = document.getElementById('importAiRepairTableBody');
   if (openImportAssetsBtn) openImportAssetsBtn.addEventListener('click', () => window.openImportAssetsModal());
   if (previewImportBtn) previewImportBtn.addEventListener('click', () => window.previewImportAssets());
   if (commitImportBtn) commitImportBtn.addEventListener('click', () => window.commitImportAssets());
   if (downloadImportTemplateBtn) downloadImportTemplateBtn.addEventListener('click', () => window.copyImportTemplateCsv());
   if (aiMapColumnsBtn) aiMapColumnsBtn.addEventListener('click', () => window.runImportAiColumnMapping());
+  if (aiRepairImportBtn) aiRepairImportBtn.addEventListener('click', () => window.runImportAiRepairErrors());
+  if (aiMatchInvoiceBtn) aiMatchInvoiceBtn.addEventListener('click', () => window.runImportAiInvoiceMatch());
   if (previewDocumentImportBtn) previewDocumentImportBtn.addEventListener('click', () => window.previewDocumentImportRows());
+  if (importAiRepairApplySafeBtn) importAiRepairApplySafeBtn.addEventListener('click', () => window.applyAllSafeImportRepairs());
+  if (importAiRepairApplySelectedBtn) importAiRepairApplySelectedBtn.addEventListener('click', () => window.applySelectedImportRepairs());
+  if (importAiRepairIgnoreAllBtn) importAiRepairIgnoreAllBtn.addEventListener('click', () => window.ignoreAllImportRepairs());
+  if (importAiRepairRerunPreviewBtn) importAiRepairRerunPreviewBtn.addEventListener('click', () => window.rerunImportPreviewValidation());
+  if (importAiRepairTableBody) {
+    importAiRepairTableBody.addEventListener('click', (event) => {
+      const applyBtn = event.target?.closest('[data-import-repair-apply-id]');
+      if (applyBtn) {
+        const fixId = String(applyBtn.getAttribute('data-import-repair-apply-id') || '').trim();
+        if (fixId) window.applySingleImportRepair(fixId);
+        return;
+      }
+      const ignoreBtn = event.target?.closest('[data-import-repair-ignore-id]');
+      if (ignoreBtn) {
+        const fixId = String(ignoreBtn.getAttribute('data-import-repair-ignore-id') || '').trim();
+        if (fixId) window.ignoreSingleImportRepair(fixId);
+      }
+    });
+    importAiRepairTableBody.addEventListener('change', (event) => {
+      const checkbox = event.target?.closest('[data-import-repair-select-id]');
+      if (!checkbox) return;
+      const fixId = String(checkbox.getAttribute('data-import-repair-select-id') || '').trim();
+      if (!fixId) return;
+      const selected = Boolean(checkbox.checked);
+      importAiRepairState.suggestions = (importAiRepairState.suggestions || []).map((fix) => {
+        if (String(fix.id || '') !== fixId) return fix;
+        return { ...fix, selected };
+      });
+      renderImportRepairSuggestions();
+    });
+  }
+  const openAssetMapBtn = document.getElementById('openAssetMapBtn');
+  const openBulkCheckoutBtn = document.getElementById('openBulkCheckoutBtn');
+  const openLoanerBoardBtn = document.getElementById('openLoanerBoardBtn');
+  const openAuditBoardBtn = document.getElementById('openAuditBoardBtn');
+  const bulkCheckoutValidateBtn = document.getElementById('bulkCheckoutValidateBtn');
+  const bulkCheckoutConfirmBtn = document.getElementById('bulkCheckoutConfirmBtn');
+  const loanerRefreshBtn = document.getElementById('loanerRefreshBtn');
+  const loanerSearchInput = document.getElementById('loanerSearchInput');
+  const auditBoardRefreshBtn = document.getElementById('auditBoardRefreshBtn');
+  const mapRefreshBtn = document.getElementById('assetMapRefreshBtn');
+  const mapResetFiltersBtn = document.getElementById('assetMapResetFiltersBtn');
+  const mapSearchInput = document.getElementById('assetMapSearchInput');
+  const mapViewFilter = document.getElementById('assetMapViewFilter');
+  const mapTypeFilter = document.getElementById('assetMapTypeFilter');
+  const mapLocationFilter = document.getElementById('assetMapLocationFilter');
+  const mapDepartmentFilter = document.getElementById('assetMapDepartmentFilter');
+  const mapLifecycleFilter = document.getElementById('assetMapLifecycleFilter');
+  const mapTelemetryOnly = document.getElementById('assetMapTelemetryOnly');
+  const mapNearEolOnly = document.getElementById('assetMapNearEolOnly');
+  const mapHighRiskOnly = document.getElementById('assetMapHighRiskOnly');
+  const mapMaintenanceOnly = document.getElementById('assetMapMaintenanceOnly');
+  const mapModalEl = document.getElementById('inventoryAssetMapModal');
+  const mapCalibrateToggleBtn = document.getElementById('assetMapCalibrateToggleBtn');
+  const mapCopyCoordsBtn = document.getElementById('assetMapCopyCoordsBtn');
+  if (openAssetMapBtn) openAssetMapBtn.addEventListener('click', () => window.openInventoryAssetMap());
+  if (openBulkCheckoutBtn) openBulkCheckoutBtn.addEventListener('click', () => window.openBulkCheckoutModal());
+  if (openLoanerBoardBtn) openLoanerBoardBtn.addEventListener('click', () => window.openLoanerBoardModal());
+  if (openAuditBoardBtn) openAuditBoardBtn.addEventListener('click', () => window.openAuditBoardModal());
+  if (bulkCheckoutValidateBtn) bulkCheckoutValidateBtn.addEventListener('click', () => window.validateBulkCheckoutAssets());
+  if (bulkCheckoutConfirmBtn) bulkCheckoutConfirmBtn.addEventListener('click', () => window.confirmBulkCheckout());
+  if (loanerRefreshBtn) loanerRefreshBtn.addEventListener('click', () => window.loadLoanerBoard());
+  if (loanerSearchInput) loanerSearchInput.addEventListener('input', () => window.renderLoanerBoard());
+  if (auditBoardRefreshBtn) auditBoardRefreshBtn.addEventListener('click', () => window.loadAuditBoard());
+  if (mapRefreshBtn) mapRefreshBtn.addEventListener('click', () => window.loadInventoryMapAssets(true));
+  if (mapCalibrateToggleBtn) {
+    mapCalibrateToggleBtn.addEventListener('click', () => {
+      setInventoryMapCalibrationEnabled(!inventoryMapCalibrationState.enabled);
+    });
+  }
+  if (mapCopyCoordsBtn) {
+    mapCopyCoordsBtn.addEventListener('click', () => copyInventoryMapCalibrationJson());
+  }
+  if (mapModalEl) {
+    mapModalEl.addEventListener('hidden.bs.modal', () => {
+      if (inventoryMapCalibrationState.enabled) setInventoryMapCalibrationEnabled(false);
+    });
+  }
+  if (mapResetFiltersBtn) {
+    mapResetFiltersBtn.addEventListener('click', () => {
+      const ids = [
+        'assetMapSearchInput',
+        'assetMapTypeFilter',
+        'assetMapLocationFilter',
+        'assetMapDepartmentFilter',
+      ];
+      ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      const viewFilter = document.getElementById('assetMapViewFilter');
+      const lifecycleFilter = document.getElementById('assetMapLifecycleFilter');
+      if (viewFilter) viewFilter.value = 'all';
+      if (lifecycleFilter) lifecycleFilter.value = 'all';
+      ['assetMapTelemetryOnly', 'assetMapNearEolOnly', 'assetMapHighRiskOnly', 'assetMapMaintenanceOnly'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = false;
+      });
+      if (inventoryMapState.allAssets.length) window.filterInventoryMapAssets();
+    });
+  }
+  [mapSearchInput, mapViewFilter, mapTypeFilter, mapLocationFilter, mapDepartmentFilter, mapLifecycleFilter, mapTelemetryOnly, mapNearEolOnly, mapHighRiskOnly, mapMaintenanceOnly].forEach((el) => {
+    if (!el) return;
+    const eventName = el.tagName === 'INPUT' && String(el.getAttribute('type') || '').toLowerCase() !== 'checkbox' ? 'input' : 'change';
+    el.addEventListener(eventName, () => {
+      if (!inventoryMapState.allAssets.length) return;
+      window.filterInventoryMapAssets();
+    });
+  });
   const importFileInput = document.getElementById('importAssetsFile');
   const importDropZone = document.getElementById('importDropZone');
   const importDropHint = document.getElementById('importDropZoneHint');
@@ -1184,11 +1661,165 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   if (inventoryAiChatMessages) {
     inventoryAiChatMessages.addEventListener('click', (event) => {
+      const copyBtn = event.target?.closest('.inventory-ai-copy-report-btn');
+      if (copyBtn) {
+        const encoded = String(copyBtn.getAttribute('data-report-encoded') || '').trim();
+        const text = encoded ? decodeURIComponent(encoded) : '';
+        if (!text) return;
+        navigator.clipboard?.writeText(text).then(() => {
+          showMessage('Report summary copied to clipboard.', 'success');
+        }).catch(() => {
+          showMessage('Could not copy report summary.', 'warning');
+        });
+        return;
+      }
       const button = event.target?.closest('.inventory-ai-view-asset-btn');
       if (!button) return;
       const assetId = String(button.getAttribute('data-asset-id') || '').trim();
       if (!assetId) return;
       window.openInventoryAiMatchedAsset(assetId);
+    });
+  }
+  const mapMarkerLayer = document.getElementById('inventoryAssetMapMarkers');
+  if (mapMarkerLayer) {
+    mapMarkerLayer.addEventListener('click', (event) => {
+      const button = event.target?.closest('.inventory-map-marker');
+      if (!button) return;
+      const key = String(button.getAttribute('data-location-key') || '').trim();
+      inventoryMapState.selectedLocationKey = key || null;
+      window.renderInventoryMapLocationAssets();
+    });
+  }
+  const mapCalibrationLayer = document.getElementById('inventoryAssetMapCalibrationMarkers');
+  if (mapCalibrationLayer) {
+    const findMarkerAndPoint = (event) => {
+      const marker = event.target?.closest('[data-calibration-location-key]');
+      if (!marker) return null;
+      const canvas = document.getElementById('inventoryAssetMapCanvas');
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 100;
+      const y = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * 100;
+      const clampedX = Math.max(0, Math.min(100, x));
+      const clampedY = Math.max(0, Math.min(100, y));
+      return {
+        marker,
+        locationKey: String(marker.getAttribute('data-calibration-location-key') || '').trim(),
+        xPercent: clampedX,
+        yPercent: clampedY,
+      };
+    };
+    const applyDragPoint = (point) => {
+      if (!point?.locationKey) return;
+      const baseCoords = unprojectInventoryMapCoordinates(point.xPercent, point.yPercent);
+      if (!baseCoords) return;
+      inventoryMapCalibrationState.draftByKey.set(point.locationKey, {
+        xPercent: Math.max(0, Math.min(100, Number(baseCoords.xPercent))),
+        yPercent: Math.max(0, Math.min(100, Number(baseCoords.yPercent))),
+      });
+      window.renderInventoryMapCalibrationMarkers();
+      window.renderInventoryMapMarkers();
+      window.renderInventoryMapLocationAssets();
+      renderInventoryMapCalibrationPanel();
+    };
+    mapCalibrationLayer.addEventListener('pointerdown', (event) => {
+      if (!inventoryMapCalibrationState.enabled) return;
+      const point = findMarkerAndPoint(event);
+      if (!point || !point.locationKey) return;
+      inventoryMapCalibrationState.selectedKey = point.locationKey;
+      inventoryMapCalibrationState.draggingKey = point.locationKey;
+      event.preventDefault();
+      mapCalibrationLayer.setPointerCapture?.(event.pointerId);
+      applyDragPoint(point);
+    });
+    mapCalibrationLayer.addEventListener('pointermove', (event) => {
+      if (!inventoryMapCalibrationState.enabled || !inventoryMapCalibrationState.draggingKey) return;
+      const canvas = document.getElementById('inventoryAssetMapCanvas');
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 100;
+      const y = ((event.clientY - rect.top) / Math.max(rect.height, 1)) * 100;
+      applyDragPoint({
+        locationKey: inventoryMapCalibrationState.draggingKey,
+        xPercent: Math.max(0, Math.min(100, x)),
+        yPercent: Math.max(0, Math.min(100, y)),
+      });
+    });
+    const stopDrag = () => {
+      if (!inventoryMapCalibrationState.draggingKey) return;
+      inventoryMapCalibrationState.draggingKey = null;
+      window.renderInventoryMapCalibrationMarkers();
+      renderInventoryMapCalibrationPanel();
+    };
+    mapCalibrationLayer.addEventListener('pointerup', stopDrag);
+    mapCalibrationLayer.addEventListener('pointercancel', stopDrag);
+    mapCalibrationLayer.addEventListener('pointerleave', () => {
+      if (inventoryMapCalibrationState.draggingKey) stopDrag();
+    });
+  }
+  const mapLocationAssets = document.getElementById('assetMapLocationAssets');
+  if (mapLocationAssets) {
+    mapLocationAssets.addEventListener('click', (event) => {
+      const viewBtn = event.target?.closest('.inventory-map-view-btn');
+      if (viewBtn) {
+        const assetId = String(viewBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        const modalEl = document.getElementById('inventoryAssetMapModal');
+        bootstrap.Modal.getInstance(modalEl)?.hide();
+        window.openAssetCmdb(assetId);
+        return;
+      }
+      const transferBtn = event.target?.closest('.inventory-map-transfer-btn');
+      if (transferBtn) {
+        const assetId = String(transferBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        const modalEl = document.getElementById('inventoryAssetMapModal');
+        bootstrap.Modal.getInstance(modalEl)?.hide();
+        window.transferIndividual(assetId);
+        return;
+      }
+      const historyBtn = event.target?.closest('.inventory-map-history-btn');
+      if (historyBtn) {
+        const assetId = String(historyBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        const modalEl = document.getElementById('inventoryAssetMapModal');
+        bootstrap.Modal.getInstance(modalEl)?.hide();
+        window.viewTransferHistory(assetId);
+      }
+    });
+  }
+
+  const loanerTableBody = document.getElementById('loanerTableBody');
+  if (loanerTableBody) {
+    loanerTableBody.addEventListener('click', (event) => {
+      const checkoutBtn = event.target?.closest('[data-loaner-checkout-id]');
+      if (checkoutBtn) {
+        const assetId = String(checkoutBtn.getAttribute('data-loaner-checkout-id') || '').trim();
+        if (assetId) window.loanerCheckoutAsset(assetId);
+        return;
+      }
+      const returnBtn = event.target?.closest('[data-loaner-return-id]');
+      if (returnBtn) {
+        const assetId = String(returnBtn.getAttribute('data-loaner-return-id') || '').trim();
+        if (assetId) window.loanerReturnAsset(assetId);
+      }
+    });
+  }
+
+  const auditTableBody = document.getElementById('auditBoardTableBody');
+  if (auditTableBody) {
+    auditTableBody.addEventListener('click', (event) => {
+      const verifyBtn = event.target?.closest('[data-audit-verify-id]');
+      if (verifyBtn) {
+        const assetId = String(verifyBtn.getAttribute('data-audit-verify-id') || '').trim();
+        if (assetId) window.auditVerifyAssetLocation(assetId);
+        return;
+      }
+      const missingBtn = event.target?.closest('[data-audit-missing-id]');
+      if (missingBtn) {
+        const assetId = String(missingBtn.getAttribute('data-audit-missing-id') || '').trim();
+        if (assetId) window.auditMarkAssetMissing(assetId);
+      }
     });
   }
   if (inventoryAiQueryInput) {
@@ -1228,6 +1859,27 @@ document.addEventListener('DOMContentLoaded', () => {
       if (summaryEl) summaryEl.textContent = 'Related items: calculating...';
     });
   }
+  const assetMapModalElement = document.getElementById('inventoryAssetMapModal');
+  if (assetMapModalElement) {
+    assetMapModalElement.addEventListener('shown.bs.modal', () => {
+      updateInventoryMapCanvasLayout();
+      window.renderInventoryMapMarkers();
+    });
+    assetMapModalElement.addEventListener('hidden.bs.modal', () => {
+      inventoryMapState.selectedLocationKey = null;
+      window.renderInventoryMapLocationAssets();
+    });
+  }
+
+  updateInventoryAiFloatingOffset();
+  window.addEventListener('resize', () => updateInventoryAiFloatingOffset());
+  window.addEventListener('resize', () => {
+    const mapModalEl = document.getElementById('inventoryAssetMapModal');
+    if (mapModalEl && mapModalEl.classList.contains('show')) {
+      updateInventoryMapCanvasLayout();
+      window.renderInventoryMapMarkers();
+    }
+  });
 });
 
 async function initializePage() {
@@ -1600,20 +2252,68 @@ function isTelemetryCategoryEligible(asset) {
   return !['license', 'consumable', 'spare_part'].includes(category);
 }
 
+const CENTRAL_WAREHOUSE_LOCATION_TOKENS = new Set([
+  'centralwarehouse',
+  'centralwarehousestaging',
+  'mainwarehouse',
+  'warehouse',
+  'centralstore',
+]);
+
+function isCentralWarehouseLocation(locationValue) {
+  const raw = String(locationValue || '').trim();
+  if (!raw) return false;
+  const normalized = normalizeInventoryMapToken(displayLocation(raw) || raw);
+  return CENTRAL_WAREHOUSE_LOCATION_TOKENS.has(normalized);
+}
+
 function isDeployedOutsideWarehouse(asset) {
-  const locationDeployed = normalizeValue(displayLocation(asset?.location)) !== normalizeValue('Central Warehouse');
-  const departmentAssigned = normalizeValue(displayDepartment(asset?.department)) !== normalizeValue('Unassigned');
-  const lifecycle = normalizeLifecycleStatus(asset?.lifecycleStatus || asset?.lifecycle_status || '');
-  const lifecycleDeployed = ['in_use', 'assigned', 'in_transit'].includes(lifecycle);
-  return locationDeployed || departmentAssigned || lifecycleDeployed;
+  if (!asset) return false;
+  return !isCentralWarehouseLocation(asset.location);
 }
 
 function shouldShowTelemetryControl(asset, profile = getAssetProfile(asset)) {
   if (!asset) return false;
   if (!isTelemetryCategoryEligible(asset)) return false;
-  const trackableType = TRACKABLE_ASSET_TYPES.has(canonicalType(asset?.type));
-  if (!trackableType) return false;
-  return Boolean(profile.trackWorkingHours || profile.hasTelemetry || isDeployedOutsideWarehouse(asset));
+  const canonical = canonicalType(asset?.type);
+  const specs = profile?.specs && typeof profile.specs === 'object' ? profile.specs : getAssetSpecs(asset);
+  const modelHints = [
+    canonical,
+    normalizeValue(asset?.name),
+    normalizeValue(specs?.assetType),
+    normalizeValue(specs?.assetTypeLabel),
+    normalizeValue(specs?.registryKey),
+  ].join(' ');
+  const legacyHeuristicCapable = (
+    modelHints.includes('desktop')
+    || modelHints.includes('laptop')
+    || modelHints.includes('pc')
+    || modelHints.includes('server')
+    || modelHints.includes('projector')
+    || modelHints.includes('printer')
+    || modelHints.includes('switch')
+    || modelHints.includes('router')
+    || modelHints.includes('accesspoint')
+    || modelHints.includes('smartboard')
+    || modelHints.includes('interactive')
+    || modelHints.includes('cctv')
+    || modelHints.includes('ups')
+    || modelHints.includes('biometric')
+  );
+  const trackableType = TRACKABLE_ASSET_TYPES.has(canonical) || legacyHeuristicCapable;
+  const telemetryConfigured = Boolean(
+    profile.trackWorkingHours
+    || profile.hasTelemetry
+    || toBoolean(specs.telemetryApplicable)
+    || toBoolean(specs.telemetryEnabled)
+    || toBoolean(specs.trackWorkingHours)
+    || toBoolean(asset.telemetryEnabledDerived)
+    || toBoolean(asset.telemetryCapableDerived)
+  );
+  if (!trackableType && !telemetryConfigured) return false;
+  if (!isDeployedOutsideWarehouse(asset)) return false;
+  if (toBoolean(specs.telemetryDisabled)) return false;
+  return telemetryConfigured;
 }
 
 function shouldShowSpecReviewButton(status) {
@@ -2298,6 +2998,7 @@ function renderInventoryGroupPager() {
   if (total <= 0) {
     pagerEl.classList.add('d-none');
     pagerEl.innerHTML = '';
+    updateInventoryAiFloatingOffset();
     return;
   }
   const hasPrev = page > 1;
@@ -2316,6 +3017,7 @@ function renderInventoryGroupPager() {
       </div>
     </div>
   `;
+  updateInventoryAiFloatingOffset();
 }
 
 window.changeInventoryPage = (delta = 0) => {
@@ -2386,6 +3088,7 @@ function renderTable() {
     if (!stockRows.length) {
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
       updateDeleteAllAssetsButton();
+      updateInventoryAiFloatingOffset();
       return;
     }
 
@@ -2428,6 +3131,7 @@ function renderTable() {
       `;
     }).join('');
     updateDeleteAllAssetsButton();
+    updateInventoryAiFloatingOffset();
     return;
   }
 
@@ -3024,9 +3728,20 @@ window.viewAssetDetails = (assetName) => {
     const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join(' · ');
     const eolApplicable = isEolRelevantAsset(asset);
     const telemetryVisible = shouldShowTelemetryControl(asset, profile);
+    const telemetryConfigured = Boolean(
+      profile.trackWorkingHours
+      || profile.hasTelemetry
+      || toBoolean(profile.specs?.telemetryApplicable)
+      || toBoolean(profile.specs?.telemetryEnabled)
+      || toBoolean(profile.specs?.trackWorkingHours)
+    );
     const trackingLabel = profile.trackWorkingHours
       ? `${getOperationalStateLabel(profile.telemetryStatus)} · ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` · ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
-      : (telemetryVisible ? 'Telemetry-capable (awaiting signal/configuration)' : 'Not monitored');
+      : (telemetryVisible
+          ? 'Telemetry-capable (awaiting signal/configuration)'
+          : (telemetryConfigured && isCentralWarehouseLocation(asset?.location)
+              ? 'Telemetry activates after deployment outside Central Warehouse'
+              : 'Not monitored'));
     return `
 	    <tr>
 		      <td class="ps-4">
@@ -3559,6 +4274,299 @@ async function postInventoryJson(path, payload = {}, method = 'POST') {
   return response.json().catch(() => ({}));
 }
 
+function parseBulkCheckoutCodes(raw) {
+  return Array.from(new Set(
+    String(raw || '')
+      .split(/\r?\n|,/)
+      .map((entry) => String(entry || '').trim())
+      .filter(Boolean)
+  ));
+}
+
+function renderBulkCheckoutValidation() {
+  const bodyEl = document.getElementById('bulkCheckoutValidationTableBody');
+  const summaryEl = document.getElementById('bulkCheckoutValidationSummary');
+  if (!bodyEl || !summaryEl) return;
+  if (!bulkCheckoutValidationRows.length) {
+    bodyEl.innerHTML = '<tr><td colspan="3" class="text-muted">No validation yet.</td></tr>';
+    summaryEl.textContent = 'Ready.';
+    return;
+  }
+  const validCount = bulkCheckoutValidationRows.filter((row) => row.valid).length;
+  const invalidCount = bulkCheckoutValidationRows.length - validCount;
+  summaryEl.textContent = `Validated ${bulkCheckoutValidationRows.length} entries: ${validCount} valid, ${invalidCount} invalid.`;
+  bodyEl.innerHTML = bulkCheckoutValidationRows.map((row) => `
+    <tr>
+      <td>${UI.escapeHTML(row.assetId || row.input || '-')}</td>
+      <td>${row.valid ? '<span class="badge bg-success">Valid</span>' : '<span class="badge bg-danger">Invalid</span>'}</td>
+      <td>${UI.escapeHTML(row.message || '-')}</td>
+    </tr>
+  `).join('');
+}
+
+window.openBulkCheckoutModal = () => {
+  bulkCheckoutValidationRows = [];
+  renderBulkCheckoutValidation();
+  const receiptEl = document.getElementById('bulkCheckoutReceipt');
+  if (receiptEl) receiptEl.innerHTML = '';
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('bulkCheckoutModal'));
+  modal.show();
+};
+
+window.validateBulkCheckoutAssets = () => {
+  const codesRaw = document.getElementById('bulkCheckoutAssetCodes')?.value || '';
+  const ids = parseBulkCheckoutCodes(codesRaw);
+  const seen = new Set();
+  bulkCheckoutValidationRows = ids.map((id) => {
+    if (seen.has(id)) return { input: id, assetId: id, valid: false, message: 'Duplicate scan' };
+    seen.add(id);
+    const asset = currentAssets.find((entry) => entry.customId === id || String(entry.assetTag || '').trim() === id);
+    if (!asset) return { input: id, assetId: id, valid: true, message: 'Not on current page; server-side validation will run during confirm.' };
+    const lifecycle = normalizeLifecycleStatus(asset.lifecycleStatus);
+    if (['retired', 'disposed', 'lost_stolen'].includes(lifecycle)) {
+      return { input: id, assetId: asset.customId, valid: false, message: `Unavailable (${displayLifecycleStatus(lifecycle)})` };
+    }
+    return {
+      input: id,
+      assetId: asset.customId,
+      valid: true,
+      message: `${asset.name} • ${displayLocation(asset.location)} • ${displayDepartment(asset.department)}`,
+    };
+  });
+  renderBulkCheckoutValidation();
+  if (!ids.length) showMessage('Enter at least one asset code to validate.', 'warning');
+};
+
+window.confirmBulkCheckout = async () => {
+  const destinationType = String(document.getElementById('bulkCheckoutDestinationType')?.value || 'building').trim();
+  const destination = String(document.getElementById('bulkCheckoutDestination')?.value || '').trim();
+  const assignedToName = String(document.getElementById('bulkCheckoutAssignedTo')?.value || '').trim();
+  const assignedDepartment = String(document.getElementById('bulkCheckoutDepartment')?.value || '').trim();
+  const expectedReturnDate = String(document.getElementById('bulkCheckoutExpectedReturnDate')?.value || '').trim();
+  const includeRelated = Boolean(document.getElementById('bulkCheckoutIncludeRelated')?.checked);
+  const codesRaw = document.getElementById('bulkCheckoutAssetCodes')?.value || '';
+  const ids = parseBulkCheckoutCodes(codesRaw);
+  if (!ids.length) {
+    showMessage('Please provide asset IDs/tags first.', 'warning');
+    return;
+  }
+  if (!destination) {
+    showMessage('Destination is required for bulk checkout.', 'warning');
+    return;
+  }
+  if (!window.confirm(`Confirm bulk checkout of ${ids.length} item(s) to ${destinationType}: ${destination}?`)) return;
+  try {
+    const payload = {
+      assetIds: ids,
+      destinationType,
+      destination,
+      assignedToName: assignedToName || null,
+      assignedDepartment: assignedDepartment || null,
+      expectedReturnDate: expectedReturnDate || null,
+      includeRelated,
+      includeComponents: includeRelated,
+      includeAccessories: includeRelated,
+      includeLicenses: includeRelated,
+      includeConsumables: false,
+      actor: 'inventory-ui-kiosk',
+    };
+    const result = await postInventoryJson('/inventory/bulk-checkout', payload);
+    const receiptEl = document.getElementById('bulkCheckoutReceipt');
+    if (receiptEl) {
+      const summary = result?.receiptSummary || {};
+      receiptEl.innerHTML = `
+        <div class="alert alert-success mt-2 mb-0">
+          <div><strong>Checkout complete.</strong> Success: ${UI.escapeHTML(String(summary.successfulCount ?? 0))}, Failed: ${UI.escapeHTML(String(summary.failedCount ?? 0))}</div>
+          <div class="small mt-1">Related moved: components ${UI.escapeHTML(String(summary.relatedMoved?.components ?? 0))}, accessories ${UI.escapeHTML(String(summary.relatedMoved?.accessories ?? 0))}, licenses ${UI.escapeHTML(String(summary.relatedMoved?.licenses ?? 0))}, consumables ${UI.escapeHTML(String(summary.relatedMoved?.consumables ?? 0))}.</div>
+        </div>
+      `;
+    }
+    showMessage('Bulk checkout completed.', 'success');
+    await loadAssets();
+    if (document.getElementById('inventoryAssetMapModal')?.classList.contains('show')) {
+      await window.loadInventoryMapAssets(true);
+    }
+  } catch (error) {
+    showMessage(error.message || 'Bulk checkout failed.', 'error');
+  }
+};
+
+window.openLoanerBoardModal = async () => {
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('loanerBoardModal'));
+  modal.show();
+  await window.loadLoanerBoard();
+};
+
+window.loadLoanerBoard = async () => {
+  const summaryEl = document.getElementById('loanerSummaryText');
+  if (summaryEl) summaryEl.textContent = 'Loading loaner inventory...';
+  try {
+    loanerBoardRows = await readInventoryJson('/inventory/loaners');
+    window.renderLoanerBoard();
+  } catch (error) {
+    if (summaryEl) summaryEl.textContent = 'Could not load loaner inventory.';
+    showMessage(error.message || 'Failed to load loaner board.', 'error');
+  }
+};
+
+window.renderLoanerBoard = () => {
+  const bodyEl = document.getElementById('loanerTableBody');
+  const summaryEl = document.getElementById('loanerSummaryText');
+  if (!bodyEl || !summaryEl) return;
+  const search = String(document.getElementById('loanerSearchInput')?.value || '').trim().toLowerCase();
+  const rows = (loanerBoardRows || []).filter((row) => {
+    if (!search) return true;
+    const haystack = [
+      row.assetId,
+      row.name,
+      row.loanedTo,
+      row.location,
+      row.department,
+      row.loanerStatus,
+    ].join(' ').toLowerCase();
+    return haystack.includes(search);
+  });
+  summaryEl.textContent = `Showing ${rows.length} of ${loanerBoardRows.length} loaner record(s).`;
+  bodyEl.innerHTML = rows.map((row) => {
+    const status = String(row.loanerStatus || 'available').toLowerCase();
+    const badgeClass = status === 'overdue'
+      ? 'bg-danger'
+      : (status === 'checked_out' ? 'bg-warning text-dark' : 'bg-success');
+    const canCheckout = status !== 'checked_out' && status !== 'overdue';
+    return `
+      <tr>
+        <td>
+          <div class="fw-semibold">${UI.escapeHTML(row.name || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} • ${UI.escapeHTML(row.type || '-')}</div>
+        </td>
+        <td><span class="badge ${badgeClass}">${UI.escapeHTML(status.replace(/_/g, ' '))}</span></td>
+        <td>${UI.escapeHTML(row.loanedTo || '-')}</td>
+        <td>${row.expectedReturnDate ? UI.formatDateTime(row.expectedReturnDate) : '-'}</td>
+        <td>${UI.escapeHTML(row.location || '-')}</td>
+        <td class="text-end">
+          ${canCheckout
+            ? `<button type="button" class="btn btn-sm btn-outline-primary" data-loaner-checkout-id="${UI.escapeHTML(row.assetId)}">Checkout</button>`
+            : `<button type="button" class="btn btn-sm btn-outline-secondary" data-loaner-return-id="${UI.escapeHTML(row.assetId)}">Return</button>`
+          }
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="text-muted">No loaner rows found.</td></tr>';
+};
+
+window.loanerCheckoutAsset = async (assetId) => {
+  const loanedTo = window.prompt('Loan to (student/staff name):', '');
+  if (!loanedTo) return;
+  const expectedDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '');
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
+      loanedTo,
+      expectedReturnDate: expectedDate || null,
+      actor: 'inventory-ui-loaner',
+    });
+    showMessage(`Loaner checkout recorded for ${assetId}.`, 'success');
+    await Promise.all([window.loadLoanerBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Loaner checkout failed.', 'error');
+  }
+};
+
+window.loanerReturnAsset = async (assetId) => {
+  const returnLocation = window.prompt('Return location (optional):', '');
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-return`, {
+      location: returnLocation || null,
+      actor: 'inventory-ui-loaner',
+    });
+    showMessage(`Loaner return recorded for ${assetId}.`, 'success');
+    await Promise.all([window.loadLoanerBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Loaner return failed.', 'error');
+  }
+};
+
+window.openAuditBoardModal = async () => {
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('auditBoardModal'));
+  modal.show();
+  await window.loadAuditBoard();
+};
+
+window.loadAuditBoard = async () => {
+  const staleAfterDays = Number(document.getElementById('auditStaleDaysInput')?.value || 90);
+  const summaryEl = document.getElementById('auditBoardSummary');
+  if (summaryEl) summaryEl.textContent = 'Loading audit board...';
+  try {
+    const payload = await readInventoryJson(`/inventory/audit-board?staleAfterDays=${encodeURIComponent(String(staleAfterDays || 90))}`);
+    auditBoardRows = Array.isArray(payload?.assetsNeedingAttention) ? payload.assetsNeedingAttention : [];
+    window.renderAuditBoard(payload);
+  } catch (error) {
+    if (summaryEl) summaryEl.textContent = 'Could not load audit board.';
+    showMessage(error.message || 'Failed to load audit board.', 'error');
+  }
+};
+
+window.renderAuditBoard = (payload = null) => {
+  const bodyEl = document.getElementById('auditBoardTableBody');
+  const summaryEl = document.getElementById('auditBoardSummary');
+  const pointsEl = document.getElementById('auditBoardVerifierPoints');
+  if (!bodyEl || !summaryEl || !pointsEl) return;
+  const rows = Array.isArray(auditBoardRows) ? auditBoardRows : [];
+  const counts = payload?.counts || {};
+  summaryEl.textContent = `Needs verification: ${counts.needsVerification ?? '-'} • Missing: ${counts.missing ?? '-'} • Stale: ${counts.staleVerification ?? '-'} • Location mismatch: ${counts.locationMismatch ?? '-'}`;
+  pointsEl.textContent = Array.isArray(payload?.verifierPoints) && payload.verifierPoints.length
+    ? `Verifier points: ${payload.verifierPoints.map((entry) => `${entry.name} (${entry.points})`).join(', ')}`
+    : 'Verifier points: no data yet.';
+  bodyEl.innerHTML = rows.map((row) => `
+    <tr>
+      <td>
+        <div class="fw-semibold">${UI.escapeHTML(row.name || '-')}</div>
+        <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} • ${UI.escapeHTML(row.type || '-')}</div>
+      </td>
+      <td>${UI.escapeHTML(String(row.status || '-').replace(/_/g, ' '))}</td>
+      <td>${UI.escapeHTML(row.location || '-')}</td>
+      <td>${row.lastVerifiedAt ? UI.formatDateTime(row.lastVerifiedAt) : '-'}</td>
+      <td>${UI.escapeHTML(row.lastVerifiedBy || '-')}</td>
+      <td class="text-end">
+        <button type="button" class="btn btn-sm btn-outline-success me-1" data-audit-verify-id="${UI.escapeHTML(row.assetId)}">Verify</button>
+        <button type="button" class="btn btn-sm btn-outline-danger" data-audit-missing-id="${UI.escapeHTML(row.assetId)}">Mark Missing</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="text-muted">No audit issues found.</td></tr>';
+};
+
+window.auditVerifyAssetLocation = async (assetId) => {
+  const location = window.prompt('Verified location (leave blank to keep current):', '');
+  const verifier = window.prompt('Verifier name:', 'inventory-tech');
+  if (!verifier) return;
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/verify-location`, {
+      location: location || null,
+      verifier,
+      markMissing: false,
+    });
+    showMessage(`Asset ${assetId} verified.`, 'success');
+    await Promise.all([window.loadAuditBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to verify asset.', 'error');
+  }
+};
+
+window.auditMarkAssetMissing = async (assetId) => {
+  const verifier = window.prompt('Verifier name:', 'inventory-tech');
+  if (!verifier) return;
+  if (!window.confirm(`Mark asset ${assetId} as missing?`)) return;
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/verify-location`, {
+      verifier,
+      markMissing: true,
+    });
+    showMessage(`Asset ${assetId} marked missing.`, 'warning');
+    await Promise.all([window.loadAuditBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to mark asset missing.', 'error');
+  }
+};
+
 function cmdbStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
   const labels = {
@@ -3606,18 +4614,20 @@ function ensureCmdbModal() {
 }
 
 async function fetchCmdbData(customId) {
-  const [components, maintenance, custody, relationships, lifecycleEvents] = await Promise.all([
+  const [components, maintenance, custody, relationships, lifecycleEvents, kitHealth] = await Promise.all([
     readInventoryJson(`/assets/${encodeURIComponent(customId)}/components?includeRemoved=true`).catch(() => []),
     readInventoryJson(`/assets/${encodeURIComponent(customId)}/maintenance`).catch(() => []),
     readInventoryJson(`/assets/${encodeURIComponent(customId)}/custody`).catch(() => []),
     readInventoryJson(`/assets/${encodeURIComponent(customId)}/relationships`).catch(() => ({ outgoing: [], incoming: [] })),
     readInventoryJson(`/assets/${encodeURIComponent(customId)}/lifecycle-events`).catch(() => []),
+    readInventoryJson(`/assets/${encodeURIComponent(customId)}/kit-health`).catch(() => null),
   ]);
-  return { components, maintenance, custody, relationships, lifecycleEvents };
+  return { components, maintenance, custody, relationships, lifecycleEvents, kitHealth };
 }
 
 function renderCmdbBody(customId, data, asset) {
   const installedParent = getInstalledParentInfo(asset || {});
+  const specs = getAssetSpecs(asset || {});
   const categoryKey = getAssetCategoryKey(asset || {});
   const isComponentContext = isInstalledComponentAsset(asset || {});
   const isAccessoryContext = categoryKey === 'accessory';
@@ -3631,6 +4641,32 @@ function renderCmdbBody(customId, data, asset) {
   const maintenanceEmptyLabel = (isConsumableContext || isSparePartContext) ? 'No stock adjustments.' : 'No maintenance records.';
   const custodyTabLabel = isLicenseContext ? 'Assignment' : 'Assignment/Custody';
   const relationshipsTabLabel = isConsumableContext ? 'Usage/Relationships' : 'Relationships';
+  const kitHealth = data?.kitHealth?.kitHealth || null;
+  const kitStatus = String(kitHealth?.status || 'unknown').toLowerCase();
+  const kitBadgeClass = kitStatus === 'complete'
+    ? 'bg-success'
+    : (kitStatus === 'missing_child_item'
+      ? 'bg-danger'
+      : (kitStatus === 'under_repair'
+        ? 'bg-warning text-dark'
+        : (kitStatus === 'damaged_child_item' || kitStatus === 'degraded'
+          ? 'bg-warning text-dark'
+          : 'bg-secondary')));
+  const missingChildren = Array.isArray(kitHealth?.evidence?.missingChildren) ? kitHealth.evidence.missingChildren : [];
+  const damagedChildren = Array.isArray(kitHealth?.evidence?.damagedChildren) ? kitHealth.evidence.damagedChildren : [];
+  const repairChildren = Array.isArray(kitHealth?.evidence?.underRepairChildren) ? kitHealth.evidence.underRepairChildren : [];
+  const wifiInfo = {
+    macAddress: String(specs.macAddress || '').trim(),
+    lastSeenNetwork: String(specs.lastSeenNetwork || '').trim(),
+    lastSeenAccessPoint: String(specs.lastSeenAccessPoint || '').trim(),
+    lastSeenLocation: String(specs.lastSeenLocation || '').trim(),
+    lastSeenTimestamp: String(specs.lastSeenTimestamp || '').trim(),
+    mismatch: Boolean(specs.networkLocationMismatch),
+  };
+  const loanerEligible = Boolean(specs.loanerEligible);
+  const loanerStatus = String(specs.loanerStatus || '').trim().toLowerCase();
+  const showLoanerActions = !isConsumableContext && !isSparePartContext && !isLicenseContext;
+  const showWifiPanel = !isConsumableContext && !isSparePartContext && !isLicenseContext;
   const componentsRows = (data.components || []).map((component) => `
     <tr>
       <td>
@@ -3728,6 +4764,46 @@ function renderCmdbBody(customId, data, asset) {
   `).join('');
 
   return `
+    ${isParentContext ? `
+      <div class="alert alert-light border mb-3">
+        <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start">
+          <div>
+            <div class="small text-uppercase text-muted fw-semibold">Kit Health</div>
+            <div class="mt-1">
+              <span class="badge ${kitBadgeClass}">${UI.escapeHTML(String(kitHealth?.label || 'Unknown'))}</span>
+            </div>
+            <div class="small text-muted mt-1">${UI.escapeHTML(String(kitHealth?.summary || 'No kit-health summary available yet.'))}</div>
+          </div>
+          <div class="small">
+            <div><strong>Missing:</strong> ${UI.escapeHTML(String(missingChildren.length))}</div>
+            <div><strong>Damaged:</strong> ${UI.escapeHTML(String(damagedChildren.length))}</div>
+            <div><strong>Under Repair:</strong> ${UI.escapeHTML(String(repairChildren.length))}</div>
+          </div>
+        </div>
+        ${(missingChildren.length || damagedChildren.length || repairChildren.length) ? `
+          <div class="small mt-2">
+            ${missingChildren.length ? `<div><strong>Missing:</strong> ${UI.escapeHTML(missingChildren.map((item) => item.name || item.id || '-').join(', '))}</div>` : ''}
+            ${damagedChildren.length ? `<div><strong>Damaged:</strong> ${UI.escapeHTML(damagedChildren.map((item) => item.name || item.id || '-').join(', '))}</div>` : ''}
+            ${repairChildren.length ? `<div><strong>Under Repair:</strong> ${UI.escapeHTML(repairChildren.map((item) => item.name || item.id || '-').join(', '))}</div>` : ''}
+          </div>
+        ` : ''}
+      </div>
+    ` : ''}
+    ${showWifiPanel ? `
+      <div class="alert ${wifiInfo.mismatch ? 'alert-warning' : 'alert-light'} border mb-3">
+        <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start">
+          <div>
+            <div class="small text-uppercase text-muted fw-semibold">Mock Wi-Fi Ghost Tracker</div>
+            <div class="small mt-1">MAC: ${UI.escapeHTML(wifiInfo.macAddress || '-')} • Last Seen: ${UI.escapeHTML(wifiInfo.lastSeenLocation || '-')}</div>
+            <div class="small text-muted">Network: ${UI.escapeHTML(wifiInfo.lastSeenNetwork || '-')} • AP: ${UI.escapeHTML(wifiInfo.lastSeenAccessPoint || '-')} • Seen At: ${wifiInfo.lastSeenTimestamp ? UI.formatDateTime(wifiInfo.lastSeenTimestamp) : '-'}</div>
+            ${wifiInfo.mismatch ? `<div class="small text-warning-emphasis mt-1"><strong>Warning:</strong> Network location mismatch with assigned location.</div>` : ''}
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbMockWifiUpdate('${customId}')">Update Last Seen Network</button>
+          </div>
+        </div>
+      </div>
+    ` : ''}
     <ul class="nav nav-tabs" role="tablist">
       ${showComponentsTab ? `<li class="nav-item"><button class="nav-link" data-cmdb-tab="components" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-components" type="button">Components</button></li>` : ''}
       <li class="nav-item"><button class="nav-link" data-cmdb-tab="maintenance" data-bs-toggle="tab" data-bs-target="#${CMDB_MODAL_ID}-maintenance" type="button">${maintenanceTabLabel}</button></li>
@@ -3755,7 +4831,10 @@ function renderCmdbBody(customId, data, asset) {
         <div class="d-flex justify-content-end gap-2 mb-2">
           <button class="btn btn-sm btn-primary" onclick="window.cmdbAssignAsset('${customId}')">Assign/Checkout</button>
           <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbCheckinAsset('${customId}')">Check-in</button>
+          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-info" onclick="window.cmdbLoanerCheckout('${customId}')">Loaner Checkout</button>` : ''}
+          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-dark" onclick="window.cmdbLoanerReturn('${customId}')">Loaner Return</button>` : ''}
         </div>
+        ${showLoanerActions ? `<div class="small text-muted mb-2">Loaner: ${UI.escapeHTML(loanerEligible ? 'Eligible' : 'Not marked')} • Status: ${UI.escapeHTML(loanerStatus || 'available')} • Loaned To: ${UI.escapeHTML(String(specs.loanedTo || asset?.assignedToName || '-'))}</div>` : ''}
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Action</th><th>User</th><th>Checkout</th><th>Return</th><th>Reason</th></tr></thead><tbody>${custodyRows || '<tr><td colspan="5" class="text-muted">No custody history.</td></tr>'}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-relationships">
@@ -3771,12 +4850,28 @@ function renderCmdbBody(customId, data, asset) {
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-lifecycle">
         ${isParentContext ? `
-        <div class="d-flex justify-content-end mb-2">
+        <div class="d-flex justify-content-end flex-wrap gap-2 mb-2">
           <button class="btn btn-sm btn-outline-dark" onclick="window.cmdbAiHealthSummary('${customId}')">
             <i class="bi bi-stars me-1"></i>AI Health Summary
           </button>
+          <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbAiRiskScore('${customId}')">
+            <i class="bi bi-shield-exclamation me-1"></i>AI Risk Score
+          </button>
+          <button class="btn btn-sm btn-outline-success" onclick="window.cmdbDigitalTwin('${customId}')">
+            <i class="bi bi-diagram-3 me-1"></i>Digital Twin
+          </button>
+          <button class="btn btn-sm btn-outline-info" onclick="window.cmdbBlackBoxTimeline('${customId}')">
+            <i class="bi bi-clock-history me-1"></i>Black Box Timeline
+          </button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbAiDraftTicket('${customId}')">
+            <i class="bi bi-card-checklist me-1"></i>Draft Ticket
+          </button>
         </div>
         <div id="${CMDB_MODAL_ID}-ai-health" class="mb-2"></div>
+        <div id="${CMDB_MODAL_ID}-ai-risk" class="mb-2"></div>
+        <div id="${CMDB_MODAL_ID}-digital-twin" class="mb-2"></div>
+        <div id="${CMDB_MODAL_ID}-black-box" class="mb-2"></div>
+        <div id="${CMDB_MODAL_ID}-ai-ticket" class="mb-2"></div>
         ` : ''}
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>When</th><th>Event</th><th>Reason</th><th>Actor</th></tr></thead><tbody>${lifecycleRows || '<tr><td colspan="4" class="text-muted">No lifecycle events.</td></tr>'}</tbody></table></div>
       </div>
@@ -4345,6 +5440,236 @@ window.cmdbAiHealthSummary = async (assetId) => {
   }
 };
 
+window.cmdbAiRiskScore = async (assetId) => {
+  const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-risk`);
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="alert alert-secondary mb-0">
+      <div class="d-flex align-items-center gap-2">
+        <span class="spinner-border spinner-border-sm" role="status"></span>
+        <span>Calculating AI risk score...</span>
+      </div>
+    </div>
+  `;
+  try {
+    const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/ai-risk-score`, {});
+    const row = Array.isArray(result?.riskScores) ? result.riskScores[0] : null;
+    if (!row) {
+      panel.innerHTML = '<div class="alert alert-warning mb-0">No risk score available for this asset.</div>';
+      return;
+    }
+    const riskLabel = String(row.riskLevel || 'low').toLowerCase();
+    const badgeClass = riskLabel === 'critical'
+      ? 'danger'
+      : (riskLabel === 'high' ? 'warning text-dark' : (riskLabel === 'medium' ? 'info text-dark' : 'success'));
+    const reasons = Array.isArray(row.reasons) ? row.reasons : [];
+    const actions = Array.isArray(row.recommendedActions) ? row.recommendedActions : [];
+    const missingData = Array.isArray(result?.missingData) ? result.missingData : [];
+    panel.innerHTML = `
+      <div class="alert alert-primary mb-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>AI Risk Score</strong>
+          <span class="badge bg-${badgeClass}">${UI.escapeHTML(String(row.riskLevel || 'low').toUpperCase())} (${UI.escapeHTML(String(row.riskScore ?? '-'))})</span>
+        </div>
+        <div class="small mt-2">${UI.escapeHTML(result?.summary || 'Risk analysis completed.')}</div>
+      </div>
+      <div class="small"><strong>Reasons</strong></div>
+      ${reasons.length ? `<ul class="mb-2">${reasons.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>` : '<div class="text-muted small mb-2">No detailed reasons.</div>'}
+      <div class="small"><strong>Recommended Actions</strong></div>
+      ${actions.length ? `<ul class="mb-2">${actions.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>` : '<div class="text-muted small mb-2">No actions suggested.</div>'}
+      <div class="small"><strong>Missing Data</strong></div>
+      ${missingData.length ? `<ul class="mb-0">${missingData.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>` : '<div class="text-muted small mb-0">None.</div>'}
+    `;
+  } catch (error) {
+    panel.innerHTML = `
+      <div class="alert alert-warning mb-0">
+        <strong>AI risk score unavailable.</strong>
+        <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
+      </div>
+    `;
+    showMessage(error.message || 'Failed to generate AI risk score.', 'warning');
+  }
+};
+
+window.cmdbDigitalTwin = async (assetId) => {
+  const panel = document.getElementById(`${CMDB_MODAL_ID}-digital-twin`);
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="alert alert-secondary mb-0">
+      <div class="d-flex align-items-center gap-2">
+        <span class="spinner-border spinner-border-sm" role="status"></span>
+        <span>Loading Digital Twin...</span>
+      </div>
+    </div>
+  `;
+  try {
+    const result = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/digital-twin`);
+    const risk = result?.riskScore || {};
+    const kit = result?.kitHealth || {};
+    const related = result?.relatedCounts || {};
+    const issues = Array.isArray(result?.openIssues) ? result.openIssues : [];
+    panel.innerHTML = `
+      <div class="alert alert-success mb-2">
+        <div class="d-flex justify-content-between align-items-center gap-2">
+          <strong>Digital Twin Overview</strong>
+          <span class="badge bg-${result?.confidence === 'high' ? 'success' : result?.confidence === 'medium' ? 'warning text-dark' : 'danger'}">${UI.escapeHTML(String(result?.confidence || 'low').toUpperCase())}</span>
+        </div>
+        <div class="small mt-1">${UI.escapeHTML(String(result?.asset?.name || '-'))} (${UI.escapeHTML(String(result?.asset?.customId || '-'))})</div>
+      </div>
+      <div class="small">
+        <div><strong>Health Score:</strong> ${UI.escapeHTML(String(result?.healthScore ?? '-'))}</div>
+        <div><strong>Risk:</strong> ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
+        <div><strong>Kit Health:</strong> ${UI.escapeHTML(String(kit.label || kit.status || '-'))}</div>
+        <div><strong>EOL:</strong> ${UI.escapeHTML(String(result?.eolStatus?.status || '-'))}</div>
+        <div><strong>Warranty:</strong> ${UI.escapeHTML(String(result?.warrantyStatus?.status || '-'))}</div>
+        <div><strong>Telemetry:</strong> ${UI.escapeHTML(String(result?.telemetryStatus?.status || '-'))}</div>
+        <div><strong>Location:</strong> ${UI.escapeHTML(String(result?.currentLocation || '-'))}</div>
+        <div><strong>Last Transfer:</strong> ${UI.escapeHTML(String(result?.lastTransfer?.timestamp ? UI.formatDateTime(result.lastTransfer.timestamp) : '-'))}</div>
+        <div><strong>Last Maintenance:</strong> ${UI.escapeHTML(String(result?.lastMaintenance?.createdAt ? UI.formatDateTime(result.lastMaintenance.createdAt) : '-'))}</div>
+        <div><strong>Related Counts:</strong> Components ${UI.escapeHTML(String(related.components ?? 0))} • Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} • Licenses ${UI.escapeHTML(String(related.licenses ?? 0))} • Consumables ${UI.escapeHTML(String(related.consumables ?? 0))}</div>
+      </div>
+      ${issues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(issues.join(' | '))}</div>` : '<div class="small mt-2 text-muted">No open issues.</div>'}
+      ${result?.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
+    `;
+  } catch (error) {
+    panel.innerHTML = `
+      <div class="alert alert-warning mb-0">
+        <strong>Digital Twin unavailable.</strong>
+        <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
+      </div>
+    `;
+    showMessage(error.message || 'Failed to load digital twin.', 'warning');
+  }
+};
+
+window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
+  const panel = document.getElementById(`${CMDB_MODAL_ID}-black-box`);
+  if (!panel) return;
+  const requestedGroup = String(group || 'all').trim().toLowerCase();
+  const useCache = cmdbState.blackBoxTimelineAssetId === assetId && Array.isArray(cmdbState.blackBoxTimelineRows);
+  if (!useCache) {
+    panel.innerHTML = `
+      <div class="alert alert-secondary mb-0">
+        <div class="d-flex align-items-center gap-2">
+          <span class="spinner-border spinner-border-sm" role="status"></span>
+          <span>Loading Black Box Timeline...</span>
+        </div>
+      </div>
+    `;
+    try {
+      const payload = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/black-box-timeline?includeRelated=true`);
+      cmdbState.blackBoxTimelineAssetId = assetId;
+      cmdbState.blackBoxTimelineRows = Array.isArray(payload?.events) ? payload.events : [];
+    } catch (error) {
+      panel.innerHTML = `
+        <div class="alert alert-warning mb-0">
+          <strong>Black Box Timeline unavailable.</strong>
+          <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
+        </div>
+      `;
+      showMessage(error.message || 'Failed to load black box timeline.', 'warning');
+      return;
+    }
+  }
+
+  const rows = Array.isArray(cmdbState.blackBoxTimelineRows) ? cmdbState.blackBoxTimelineRows : [];
+  const groupedCounts = rows.reduce((acc, row) => {
+    const key = String(row?.eventGroup || 'all');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  const filtered = requestedGroup === 'all'
+    ? rows
+    : rows.filter((row) => String(row?.eventGroup || 'all') === requestedGroup);
+
+  const groups = ['all', 'transfer', 'maintenance', 'components', 'audit', 'ai_risk_eol', 'loaner', 'telemetry'];
+  const controls = groups.map((key) => `
+    <button type="button"
+      class="btn btn-sm ${requestedGroup === key ? 'btn-primary' : 'btn-outline-primary'}"
+      onclick="window.cmdbBlackBoxTimeline('${assetId}','${key}')">
+      ${UI.escapeHTML(key.replace(/_/g, ' '))} (${UI.escapeHTML(String(key === 'all' ? rows.length : (groupedCounts[key] || 0)))})
+    </button>
+  `).join('');
+
+  const timelineRows = filtered.slice(0, 120).map((row) => `
+    <tr>
+      <td>${row.timestamp ? UI.formatDateTime(row.timestamp) : '-'}</td>
+      <td>${UI.escapeHTML(row.label || row.eventType || '-')}</td>
+      <td>${UI.escapeHTML(row.sourceItemType || '-')}</td>
+      <td>${UI.escapeHTML(row.sourceItemName || row.sourceItemCustomId || '-')}</td>
+      <td>${UI.escapeHTML(row.reason || row.notes || '-')}</td>
+      <td><span class="badge bg-${row.severity === 'critical' ? 'danger' : (row.severity === 'warning' ? 'warning text-dark' : 'secondary')}">${UI.escapeHTML(String(row.severity || 'info'))}</span></td>
+    </tr>
+  `).join('');
+
+  panel.innerHTML = `
+    <div class="alert alert-light border mb-2">
+      <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
+        <strong>Black Box Timeline</strong>
+        <span class="small text-muted">Events: ${UI.escapeHTML(String(rows.length))}</span>
+      </div>
+      <div class="d-flex flex-wrap gap-2 mt-2">${controls}</div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm">
+        <thead><tr><th>When</th><th>Event</th><th>Type</th><th>Item</th><th>Reason/Notes</th><th>Severity</th></tr></thead>
+        <tbody>${timelineRows || '<tr><td colspan="6" class="text-muted">No events.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+};
+
+window.cmdbAiDraftTicket = async (assetId) => {
+  const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-ticket`);
+  if (!panel) return;
+  const issue = window.prompt('Describe the issue for ticket draft:', 'Asset risk or maintenance follow-up');
+  if (!issue) return;
+  panel.innerHTML = `
+    <div class="alert alert-secondary mb-0">
+      <div class="d-flex align-items-center gap-2">
+        <span class="spinner-border spinner-border-sm" role="status"></span>
+        <span>Drafting inventory ticket...</span>
+      </div>
+    </div>
+  `;
+  try {
+    const result = await postInventoryJson('/inventory/ai/ticket-draft', {
+      assetId,
+      issue,
+    });
+    const draft = result?.ticketDraft || {};
+    const draftText = [
+      `Title: ${draft.title || '-'}`,
+      `Priority: ${draft.priority || '-'}`,
+      `Category: ${draft.category || '-'}`,
+      `Asset: ${draft.assetName || '-'} (${draft.assetId || '-'})`,
+      `Suggested Assignee: ${draft.suggestedAssignee || '-'}`,
+      `Recommended Due Date: ${draft.recommendedDueDate || '-'}`,
+      '',
+      `Description:`,
+      `${draft.description || '-'}`,
+    ].join('\n');
+    panel.innerHTML = `
+      <div class="alert alert-secondary mb-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>AI Ticket Draft</strong>
+          <span class="badge bg-${result?.confidence === 'high' ? 'success' : (result?.confidence === 'medium' ? 'warning text-dark' : 'danger')}">${UI.escapeHTML(String(result?.confidence || 'low').toUpperCase())}</span>
+        </div>
+        <div class="small mt-1">Review before creating a real ticket.</div>
+      </div>
+      <textarea class="form-control form-control-sm" rows="8" readonly>${UI.escapeHTML(draftText)}</textarea>
+    `;
+  } catch (error) {
+    panel.innerHTML = `
+      <div class="alert alert-warning mb-0">
+        <strong>AI ticket draft unavailable.</strong>
+        <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
+      </div>
+    `;
+    showMessage(error.message || 'Failed to draft inventory ticket.', 'warning');
+  }
+};
+
 window.cmdbViewComponentHistory = async (assetId, componentId) => {
   try {
     const rows = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/history`);
@@ -4702,6 +6027,68 @@ window.openSpareStockModalForType = async (componentType = '') => {
   }
 };
 
+window.cmdbLoanerCheckout = async (assetId) => {
+  const loanedTo = window.prompt('Loan to (student/staff):', '');
+  if (!loanedTo) return;
+  const expectedReturnDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '') || '';
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
+      loanedTo,
+      expectedReturnDate: expectedReturnDate || null,
+      actor: 'inventory-ui-cmdb',
+    });
+    showMessage('Loaner checkout recorded.', 'success');
+    await loadAssets();
+    await refreshCmdbModal(assetId, 'custody');
+  } catch (error) {
+    showMessage(error.message || 'Failed to run loaner checkout.', 'error');
+  }
+};
+
+window.cmdbLoanerReturn = async (assetId) => {
+  const location = window.prompt('Return location (optional):', '') || '';
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-return`, {
+      location: location || null,
+      actor: 'inventory-ui-cmdb',
+    });
+    showMessage('Loaner return recorded.', 'success');
+    await loadAssets();
+    await refreshCmdbModal(assetId, 'custody');
+  } catch (error) {
+    showMessage(error.message || 'Failed to run loaner return.', 'error');
+  }
+};
+
+window.cmdbMockWifiUpdate = async (assetId) => {
+  const macAddress = window.prompt('MAC address (optional):', '') || '';
+  const network = window.prompt('Last seen network (optional):', '') || '';
+  const accessPoint = window.prompt('Last seen access point (optional):', '') || '';
+  const location = window.prompt('Last seen location (e.g., N Building):', '') || '';
+  if (!location && !network && !accessPoint && !macAddress) {
+    showMessage('No Wi-Fi update values were provided.', 'warning');
+    return;
+  }
+  try {
+    const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/mock-wifi-location`, {
+      macAddress: macAddress || null,
+      lastSeenNetwork: network || null,
+      lastSeenAccessPoint: accessPoint || null,
+      lastSeenLocation: location || null,
+      actor: 'inventory-ui-cmdb',
+    });
+    if (result?.wifiTracking?.warning) {
+      showMessage(result.wifiTracking.warning, 'warning');
+    } else {
+      showMessage('Mock Wi-Fi location updated.', 'success');
+    }
+    await loadAssets();
+    await refreshCmdbModal(assetId, cmdbState.activeTab || 'maintenance');
+  } catch (error) {
+    showMessage(error.message || 'Failed to update mock Wi-Fi location.', 'error');
+  }
+};
+
 window.addSpareStockItem = async () => {
   const partName = window.prompt('Part name:', '');
   if (!partName) return;
@@ -4784,7 +6171,10 @@ function inventoryAiStatusLabel(status) {
   const map = {
     online: { text: 'Online', dotClass: '' },
     gemma: { text: 'Gemma ready', dotClass: '' },
+    ready: { text: 'Gemma ready', dotClass: '' },
     fallback: { text: 'Fallback mode', dotClass: 'warning' },
+    disabled: { text: 'Fallback mode', dotClass: 'warning' },
+    offline: { text: 'Offline', dotClass: 'error' },
     loading: { text: 'Thinking...', dotClass: 'warning' },
     error: { text: 'Offline', dotClass: 'error' },
   };
@@ -4795,12 +6185,51 @@ function setInventoryAiChatStatus(status) {
   inventoryAiChatState.status = status;
   const statusText = document.getElementById('inventoryAiChatStatusText');
   const statusDot = document.getElementById('inventoryAiChatStatusDot');
+  const statusBadge = document.getElementById('inventoryAiChatStatusBadge');
   const meta = inventoryAiStatusLabel(status);
   if (statusText) statusText.textContent = meta.text;
   if (statusDot) {
     statusDot.className = 'inventory-ai-status-dot';
     if (meta.dotClass) statusDot.classList.add(meta.dotClass);
   }
+  if (statusBadge) {
+    const normalized = String(status || '').toLowerCase();
+    statusBadge.dataset.mode = normalized === 'fallback' || normalized === 'disabled'
+      ? 'fallback'
+      : ((normalized === 'error' || normalized === 'offline') ? 'offline' : 'online');
+    if (status === 'fallback') {
+      statusBadge.title = 'Using rule-based fallback because Gemma is unavailable or slow.';
+    } else if (normalized === 'disabled') {
+      statusBadge.title = 'LLM is disabled. Using rule-based fallback.';
+    } else if (status === 'error' || normalized === 'offline') {
+      statusBadge.title = 'Inventory AI service is currently unreachable.';
+    } else {
+      statusBadge.title = 'Gemma and inventory AI service are available.';
+    }
+  }
+}
+
+function updateInventoryAiFloatingOffset() {
+  const desktopBottom = 22;
+  const mobileBottom = 16;
+  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom', `${desktopBottom}px`);
+  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom-mobile', `${mobileBottom}px`);
+}
+
+function formatInventoryAiChatTime(timeValue) {
+  const time = new Date(timeValue || Date.now());
+  if (Number.isNaN(time.getTime())) {
+    return '';
+  }
+  return time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function normalizeInventoryAiSuggestions(actions = []) {
+  if (!Array.isArray(actions)) return [];
+  return actions
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
 }
 
 function getInventoryAiChatContext() {
@@ -4825,24 +6254,741 @@ function getInventoryAiChatContext() {
   };
 }
 
+function getInventoryMapUiFilters() {
+  return {
+    search: String(document.getElementById('assetMapSearchInput')?.value || '').trim().toLowerCase(),
+    view: inventoryMapViewToCategory(document.getElementById('assetMapViewFilter')?.value || 'all'),
+    type: String(document.getElementById('assetMapTypeFilter')?.value || '').trim().toLowerCase(),
+    location: String(document.getElementById('assetMapLocationFilter')?.value || '').trim().toLowerCase(),
+    department: String(document.getElementById('assetMapDepartmentFilter')?.value || '').trim().toLowerCase(),
+    lifecycle: String(document.getElementById('assetMapLifecycleFilter')?.value || 'all').trim().toLowerCase(),
+    telemetryOnly: Boolean(document.getElementById('assetMapTelemetryOnly')?.checked),
+    nearEolOnly: Boolean(document.getElementById('assetMapNearEolOnly')?.checked),
+    highRiskOnly: Boolean(document.getElementById('assetMapHighRiskOnly')?.checked),
+    maintenanceOnly: Boolean(document.getElementById('assetMapMaintenanceOnly')?.checked),
+  };
+}
+
+function normalizeInventoryMapAsset(asset) {
+  const specs = getAssetSpecs(asset);
+  const profile = getAssetProfile(asset);
+  const viewType = inventoryMapViewToCategory(asset.inventoryViewType || (asset.category || 'parents'));
+  const rawLocation = specs.mapLocationHint
+    || specs.mapLocation
+    || specs.importedLocation
+    || asset.location
+    || asset.installedParentLocation
+    || asset.relatedParentLocation
+    || asset.parentLocation
+    || '';
+  const locationLabel = displayLocation(rawLocation);
+  const mapLocation = resolveInventoryMapLocation(locationLabel);
+  const lifecycle = String(asset.lifecycleStatus || '').toLowerCase();
+  const status = String(asset.status || '').toLowerCase();
+  const telemetryEnabled = Boolean(
+    (profile.trackWorkingHours
+      || profile.hasTelemetry
+      || toBoolean(profile.specs?.telemetryApplicable)
+      || toBoolean(profile.specs?.telemetryEnabled)
+      || toBoolean(asset.telemetryEnabledDerived)
+      || toBoolean(asset.telemetryCapableDerived))
+    && profile.telemetryStatus !== 'unavailable'
+  );
+  const riskLevel = String(specs.riskLevel || specs.risk_score_level || '').toLowerCase();
+  const highRisk = riskLevel === 'high' || riskLevel === 'critical';
+  const nearEol = shouldTreatMapItemAsNearEol(asset);
+  const needsMaintenance = ['maintenance', 'repair'].includes(status)
+    || lifecycle.includes('maintenance')
+    || lifecycle.includes('repair');
+
+  return {
+    ...asset,
+    mapViewType: viewType,
+    mapLocationKey: mapLocation?.key || null,
+    mapLocationName: mapLocation?.name || null,
+    mapXPercent: mapLocation?.xPercent ?? null,
+    mapYPercent: mapLocation?.yPercent ?? null,
+    mapDisplayLocation: locationLabel || 'Unknown',
+    mapTelemetryEnabled: telemetryEnabled,
+    mapNearEol: nearEol,
+    mapHighRisk: highRisk,
+    mapNeedsMaintenance: needsMaintenance,
+    mapRiskLevel: riskLevel || 'unknown',
+    mapTelemetryStatus: String(profile.telemetryStatus || 'unavailable'),
+    mapParentLabel: asset.installedParentName || asset.relatedParentName || null,
+    mapTypeLabel: String(asset.componentType || asset.type || '').trim(),
+    mapSerial: String(asset.serialNumber || '').trim(),
+    mapTag: String(asset.assetTag || '').trim(),
+    mapRawLocationValue: String(rawLocation || '').trim() || 'Unknown',
+    mapMatchedAlias: mapLocation?.matchedAlias || null,
+    mapMatchMethod: mapLocation?.matchMethod || null,
+  };
+}
+
+function buildInventoryMapLocationStats(assets = []) {
+  const rawCounts = new Map();
+  const normalizedCounts = new Map();
+  let unmappedCount = 0;
+  assets.forEach((asset) => {
+    const rawLocation = String(asset.mapRawLocationValue || asset.location || 'Unknown').trim() || 'Unknown';
+    rawCounts.set(rawLocation, (rawCounts.get(rawLocation) || 0) + 1);
+    if (asset.mapLocationKey) {
+      const normalizedLabel = String(asset.mapLocationName || asset.mapLocationKey || 'Unknown').trim() || 'Unknown';
+      normalizedCounts.set(normalizedLabel, (normalizedCounts.get(normalizedLabel) || 0) + 1);
+    } else {
+      unmappedCount += 1;
+    }
+  });
+  const topRaw = Array.from(rawCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const topNormalized = Array.from(normalizedCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  return {
+    rawLocationCount: rawCounts.size,
+    normalizedLocationCount: normalizedCounts.size,
+    unmappedCount,
+    topRaw,
+    topNormalized,
+  };
+}
+
+function assetMatchesInventoryMapFilters(asset, filters) {
+  if (filters.view && filters.view !== 'all' && inventoryMapViewToCategory(asset.mapViewType) !== filters.view) return false;
+  if (filters.lifecycle && filters.lifecycle !== 'all') {
+    const lifecycle = String(asset.lifecycleStatus || '').trim().toLowerCase();
+    if (lifecycle !== filters.lifecycle) return false;
+  }
+  if (filters.telemetryOnly && !asset.mapTelemetryEnabled) return false;
+  if (filters.nearEolOnly && !asset.mapNearEol) return false;
+  if (filters.highRiskOnly && !asset.mapHighRisk) return false;
+  if (filters.maintenanceOnly && !asset.mapNeedsMaintenance) return false;
+
+  const haystack = [
+    asset.customId,
+    asset.name,
+    asset.mapTypeLabel,
+    asset.mapDisplayLocation,
+    displayLocation(asset.installedParentLocation || ''),
+    displayLocation(asset.location || ''),
+    String(asset.department || ''),
+    String(asset.serialNumber || ''),
+    String(asset.assetTag || ''),
+    String(asset.mapParentLabel || ''),
+  ].join(' ').toLowerCase();
+  if (filters.search && !haystack.includes(filters.search)) return false;
+  if (filters.type) {
+    const typeHaystack = `${String(asset.mapTypeLabel || '')} ${String(asset.type || '')} ${String(asset.componentType || '')}`.toLowerCase();
+    if (!typeHaystack.includes(filters.type)) return false;
+  }
+  if (filters.location) {
+    const locationHaystack = `${String(asset.mapDisplayLocation || '')} ${String(asset.mapLocationName || '')}`.toLowerCase();
+    if (!locationHaystack.includes(filters.location)) return false;
+  }
+  if (filters.department) {
+    const deptHaystack = String(asset.department || '').toLowerCase();
+    if (!deptHaystack.includes(filters.department)) return false;
+  }
+  return true;
+}
+
+function markerCategoryClass(category) {
+  const view = inventoryMapViewToCategory(category || 'parents');
+  if (view === 'components') return 'components';
+  if (view === 'accessories') return 'accessories';
+  if (view === 'consumables') return 'consumables';
+  if (view === 'spare_stock') return 'spare_stock';
+  if (view === 'licenses') return 'licenses';
+  return 'parents';
+}
+
+function setInventoryMapCalibrationEnabled(enabled) {
+  const next = Boolean(enabled);
+  inventoryMapCalibrationState.enabled = next;
+  inventoryMapCalibrationState.draggingKey = null;
+  if (next && !inventoryMapCalibrationState.selectedKey) {
+    inventoryMapCalibrationState.selectedKey = INVENTORY_MAP_LOCATION_DEFINITIONS[0]?.key || null;
+  }
+  if (!next) inventoryMapCalibrationState.selectedKey = null;
+  const panel = document.getElementById('assetMapCalibrationPanel');
+  const copyBtn = document.getElementById('assetMapCopyCoordsBtn');
+  const toggleBtn = document.getElementById('assetMapCalibrateToggleBtn');
+  if (panel) panel.classList.toggle('d-none', !next);
+  if (copyBtn) copyBtn.disabled = !next;
+  if (toggleBtn) toggleBtn.classList.toggle('btn-outline-warning', !next);
+  if (toggleBtn) toggleBtn.classList.toggle('btn-warning', next);
+  renderInventoryMapCalibrationPanel();
+  window.renderInventoryMapCalibrationMarkers();
+  setTimeout(() => {
+    updateInventoryMapCanvasLayout();
+    window.renderInventoryMapMarkers();
+    window.renderInventoryMapCalibrationMarkers();
+  }, 30);
+}
+
+function copyInventoryMapCalibrationJson() {
+  const rows = INVENTORY_MAP_LOCATION_DEFINITIONS.map((entry) => {
+    const base = getCalibrationBaseCoordinates(entry.key) || { xPercent: entry.xPercent, yPercent: entry.yPercent };
+    return {
+      key: entry.key,
+      label: entry.name,
+      xPercent: Number(base.xPercent.toFixed(2)),
+      yPercent: Number(base.yPercent.toFixed(2)),
+      aliases: entry.aliases || [],
+    };
+  });
+  const payload = JSON.stringify(rows, null, 2);
+  const clipboardApi = navigator.clipboard && typeof navigator.clipboard.writeText === 'function'
+    ? navigator.clipboard
+    : null;
+  if (clipboardApi) {
+    clipboardApi.writeText(payload)
+      .then(() => showMessage('Map coordinates JSON copied to clipboard.', 'success'))
+      .catch(() => {
+        window.prompt('Copy map coordinates JSON:', payload);
+        showMessage('Clipboard unavailable. JSON opened in prompt for manual copy.', 'warning');
+      });
+  } else {
+    window.prompt('Copy map coordinates JSON:', payload);
+    showMessage('Clipboard unavailable. JSON opened in prompt for manual copy.', 'warning');
+  }
+  console.log('[InventoryMapCalibration]', payload);
+}
+
+function renderInventoryMapCalibrationPanel() {
+  const panel = document.getElementById('assetMapCalibrationPanel');
+  if (!panel) return;
+  if (!inventoryMapCalibrationState.enabled) {
+    panel.innerHTML = 'Calibration mode is OFF.';
+    return;
+  }
+  const selectedKey = inventoryMapCalibrationState.selectedKey || INVENTORY_MAP_LOCATION_DEFINITIONS[0]?.key || '';
+  const selectedEntry = getMapLocationDefinitionByKey(selectedKey);
+  const coords = selectedEntry ? (getCalibrationBaseCoordinates(selectedEntry.key) || selectedEntry) : null;
+  const aliases = selectedEntry ? [selectedEntry.name, ...(selectedEntry.aliases || [])] : [];
+  panel.innerHTML = `
+    <div class="fw-semibold mb-1">Calibration mode is ON</div>
+    <div class="small mb-1">Drag yellow markers to align with buildings, then use Copy Coords.</div>
+    <div class="small"><strong>Selected:</strong> ${UI.escapeHTML(selectedEntry?.name || 'None')}</div>
+    <div class="small"><strong>xPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.xPercent).toFixed(2) : '-')}</div>
+    <div class="small"><strong>yPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.yPercent).toFixed(2) : '-')}</div>
+    <div class="small mt-1"><strong>Aliases:</strong> ${UI.escapeHTML(aliases.join(' • ') || '-')}</div>
+  `;
+}
+
+window.renderInventoryMapCalibrationMarkers = () => {
+  const layer = document.getElementById('inventoryAssetMapCalibrationMarkers');
+  if (!layer) return;
+  if (!inventoryMapCalibrationState.enabled) {
+    layer.innerHTML = '';
+    layer.style.pointerEvents = 'none';
+    return;
+  }
+  layer.style.pointerEvents = 'auto';
+  layer.innerHTML = INVENTORY_MAP_LOCATION_DEFINITIONS.map((entry) => {
+    const base = getCalibrationBaseCoordinates(entry.key) || { xPercent: entry.xPercent, yPercent: entry.yPercent };
+    const projected = projectInventoryMapCoordinates(base.xPercent, base.yPercent) || base;
+    const draggingClass = inventoryMapCalibrationState.draggingKey === entry.key ? 'dragging' : '';
+    const selectedClass = inventoryMapCalibrationState.selectedKey === entry.key ? 'active' : '';
+    return `
+      <div
+        class="inventory-map-calibration-marker ${draggingClass} ${selectedClass}"
+        data-calibration-location-key="${UI.escapeHTML(entry.key)}"
+        style="left:${UI.escapeHTML(String(projected.xPercent))}%;top:${UI.escapeHTML(String(projected.yPercent))}%;"
+        title="Drag to calibrate ${UI.escapeHTML(entry.name)}"
+      >${UI.escapeHTML(entry.name)}</div>
+    `;
+  }).join('');
+};
+
+window.renderInventoryMapMarkers = () => {
+  const layer = document.getElementById('inventoryAssetMapMarkers');
+  if (!layer) return;
+  const groups = new Map();
+  inventoryMapState.filteredAssets.forEach((asset) => {
+    if (!asset.mapLocationKey || asset.mapXPercent === null || asset.mapYPercent === null) return;
+    if (!groups.has(asset.mapLocationKey)) {
+      groups.set(asset.mapLocationKey, {
+        locationKey: asset.mapLocationKey,
+        locationName: asset.mapLocationName || asset.mapDisplayLocation || asset.mapLocationKey,
+        xPercent: asset.mapXPercent,
+        yPercent: asset.mapYPercent,
+        items: [],
+      });
+    }
+    groups.get(asset.mapLocationKey).items.push(asset);
+  });
+  inventoryMapState.groupedMarkers = Array.from(groups.values());
+  if (!inventoryMapState.groupedMarkers.length) {
+    layer.innerHTML = '<div class="small text-muted p-2">No mapped locations for the current filters.</div>';
+    return;
+  }
+  layer.innerHTML = inventoryMapState.groupedMarkers.map((group) => {
+    const first = group.items[0];
+    const baseClass = markerCategoryClass(first.mapViewType);
+    const statusAlert = group.items.some((item) => item.mapNeedsMaintenance) ? 'status-alert' : '';
+    const riskAlert = group.items.some((item) => item.mapNearEol || item.mapHighRisk) ? 'risk-alert' : '';
+    const activeClass = inventoryMapState.selectedLocationKey && inventoryMapState.selectedLocationKey === group.locationKey ? 'active' : '';
+    const overrideCoords = getCalibrationBaseCoordinates(group.locationKey);
+    const baseX = overrideCoords?.xPercent ?? group.xPercent;
+    const baseY = overrideCoords?.yPercent ?? group.yPercent;
+    const projected = projectInventoryMapCoordinates(baseX, baseY) || { xPercent: baseX, yPercent: baseY };
+    return `
+      <button
+        type="button"
+        class="inventory-map-marker ${baseClass} ${statusAlert} ${riskAlert} ${activeClass}"
+        data-location-key="${UI.escapeHTML(group.locationKey)}"
+        style="left:${UI.escapeHTML(String(projected.xPercent))}%;top:${UI.escapeHTML(String(projected.yPercent))}%;"
+        title="${UI.escapeHTML(group.locationName)} (${group.items.length})"
+      >${UI.escapeHTML(String(group.items.length))}</button>
+    `;
+  }).join('');
+};
+
+window.renderInventoryMapLocationAssets = () => {
+  const titleEl = document.getElementById('assetMapLocationTitle');
+  const listEl = document.getElementById('assetMapLocationAssets');
+  const unmappedEl = document.getElementById('assetMapUnmappedList');
+  if (!titleEl || !listEl || !unmappedEl) return;
+
+  const selectedKey = inventoryMapState.selectedLocationKey;
+  const selectedMarker = inventoryMapState.groupedMarkers.find((marker) => marker.locationKey === selectedKey) || null;
+  if (!selectedMarker) {
+    titleEl.textContent = 'Map Summary';
+    const sortedLocations = [...inventoryMapState.groupedMarkers]
+      .sort((a, b) => b.items.length - a.items.length)
+      .slice(0, 8);
+    const total = inventoryMapState.filteredAssets.length;
+    const locationStats = buildInventoryMapLocationStats(inventoryMapState.filteredAssets);
+    const unmappedTotal = locationStats.unmappedCount;
+    const telemetryEnabled = inventoryMapState.filteredAssets.filter((asset) => asset.mapTelemetryEnabled).length;
+    const nearEol = inventoryMapState.filteredAssets.filter((asset) => asset.mapNearEol || asset.mapHighRisk).length;
+    const maintenance = inventoryMapState.filteredAssets.filter((asset) => asset.mapNeedsMaintenance).length;
+    const topRawHtml = locationStats.topRaw.length
+      ? locationStats.topRaw.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' • ')
+      : 'None';
+    const topNormalizedHtml = locationStats.topNormalized.length
+      ? locationStats.topNormalized.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' • ')
+      : 'None';
+    listEl.innerHTML = `
+      <div class="inventory-map-summary-card">
+        <div><strong>Total displayed:</strong> ${UI.escapeHTML(String(total))}</div>
+        <div><strong>Raw locations:</strong> ${UI.escapeHTML(String(locationStats.rawLocationCount))}</div>
+        <div><strong>Normalized locations:</strong> ${UI.escapeHTML(String(locationStats.normalizedLocationCount))}</div>
+        <div><strong>Locations with markers:</strong> ${UI.escapeHTML(String(inventoryMapState.groupedMarkers.length))}</div>
+        <div><strong>Unmapped:</strong> ${UI.escapeHTML(String(unmappedTotal))}</div>
+        <div><strong>Telemetry enabled:</strong> ${UI.escapeHTML(String(telemetryEnabled))}</div>
+        <div><strong>Near EOL / High risk:</strong> ${UI.escapeHTML(String(nearEol))}</div>
+        <div><strong>Needs maintenance:</strong> ${UI.escapeHTML(String(maintenance))}</div>
+        <div class="mt-1"><strong>Top raw locations:</strong> ${topRawHtml}</div>
+        <div><strong>Top normalized locations:</strong> ${topNormalizedHtml}</div>
+      </div>
+      <div class="small fw-semibold mb-1">Top Locations</div>
+      ${
+        sortedLocations.length
+          ? sortedLocations.map((entry) => `
+            <div class="inventory-map-asset-card p-2">
+              <div class="d-flex justify-content-between align-items-center">
+                <div class="fw-semibold small">${UI.escapeHTML(entry.locationName)}</div>
+                <span class="badge text-bg-primary">${UI.escapeHTML(String(entry.items.length))}</span>
+              </div>
+            </div>
+          `).join('')
+          : '<div class="small text-muted">No mapped assets for current filters.</div>'
+      }
+      <div class="small text-muted mt-2">Click any marker on the map to view detailed assets for that location.</div>
+    `;
+  } else {
+    titleEl.textContent = `${selectedMarker.locationName} (${selectedMarker.items.length})`;
+    const aliasEntry = INVENTORY_MAP_LOCATION_DEFINITIONS.find((entry) => entry.key === selectedMarker.locationKey);
+    const acceptedAliases = aliasEntry ? [aliasEntry.name, ...(aliasEntry.aliases || [])] : [];
+    const rawExamples = Array.from(
+      new Set(
+        selectedMarker.items
+          .map((asset) => String(asset.mapRawLocationValue || asset.location || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 6);
+    const matchedAliases = Array.from(
+      new Set(
+        selectedMarker.items
+          .map((asset) => String(asset.mapMatchedAlias || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 6);
+    const matchMethods = Array.from(
+      new Set(
+        selectedMarker.items
+          .map((asset) => String(asset.mapMatchMethod || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 6);
+    listEl.innerHTML = selectedMarker.items.map((asset) => {
+      const isVirtualSpare = String(asset.customId || '').startsWith('spare-stock-');
+      const actionButtons = isVirtualSpare
+        ? '<div class="small text-muted mt-2">Stock record (view/edit in Spare Stock workflow).</div>'
+        : `
+          <div class="d-flex gap-1 mt-2">
+            <button type="button" class="btn btn-sm btn-outline-primary inventory-map-view-btn" data-asset-id="${UI.escapeHTML(asset.customId)}">View CMDB</button>
+            <button type="button" class="btn btn-sm btn-outline-info inventory-map-transfer-btn" data-asset-id="${UI.escapeHTML(asset.customId)}">Transfer</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary inventory-map-history-btn" data-asset-id="${UI.escapeHTML(asset.customId)}">History</button>
+          </div>
+        `;
+      return `
+        <div class="inventory-map-asset-card">
+          <div class="fw-semibold small">${UI.escapeHTML(asset.name || 'Asset')}</div>
+          <div class="small text-muted">${UI.escapeHTML(asset.customId || '-')} • ${UI.escapeHTML(asset.mapViewType || asset.category || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(displayLocation(asset.location || '-'))} • ${UI.escapeHTML(String(asset.department || '-'))}</div>
+          <div class="small text-muted">${UI.escapeHTML(String(asset.lifecycleStatus || asset.status || '-'))}${asset.mapTelemetryEnabled ? ' • telemetry' : ''}${asset.mapNearEol ? ' • near EOL' : ''}${asset.mapHighRisk ? ' • high risk' : ''}</div>
+          ${actionButtons}
+        </div>
+      `;
+    }).join('');
+    listEl.insertAdjacentHTML('beforeend', `
+      <div class="inventory-map-summary-card mt-2">
+        <div><strong>Normalized key:</strong> ${UI.escapeHTML(String(selectedMarker.locationKey || '-'))}</div>
+        <div><strong>Normalized location:</strong> ${UI.escapeHTML(selectedMarker.locationName)}</div>
+        <div><strong>Asset count:</strong> ${UI.escapeHTML(String(selectedMarker.items.length))}</div>
+        <div class="mt-1"><strong>Accepted aliases:</strong> ${UI.escapeHTML(acceptedAliases.join(' • ') || '-')}</div>
+        <div class="mt-1"><strong>Matched alias examples:</strong> ${UI.escapeHTML(matchedAliases.join(' • ') || '-')}</div>
+        <div class="mt-1"><strong>Match methods:</strong> ${UI.escapeHTML(matchMethods.join(' • ') || '-')}</div>
+        <div class="mt-1"><strong>Raw location examples:</strong> ${UI.escapeHTML(rawExamples.join(' • ') || '-')}</div>
+      </div>
+    `);
+  }
+
+  const unmapped = inventoryMapState.filteredAssets.filter((asset) => !asset.mapLocationKey);
+  if (!unmapped.length) {
+    unmappedEl.textContent = 'No unmapped assets.';
+  } else {
+    const grouped = new Map();
+    unmapped.forEach((asset) => {
+      const key = String(asset.mapDisplayLocation || asset.location || 'Unknown').trim() || 'Unknown';
+      grouped.set(key, (grouped.get(key) || 0) + 1);
+    });
+    unmappedEl.innerHTML = Array.from(grouped.entries())
+      .slice(0, 40)
+      .map(([location, count]) => `<div>${UI.escapeHTML(location)} <span class="text-muted">(${UI.escapeHTML(String(count))})</span></div>`)
+      .join('');
+  }
+};
+
+window.filterInventoryMapAssets = () => {
+  const filters = getInventoryMapUiFilters();
+  const filtered = (inventoryMapState.allAssets || []).filter((asset) => assetMatchesInventoryMapFilters(asset, filters));
+  inventoryMapState.filteredAssets = filtered;
+  window.renderInventoryMapMarkers();
+  window.renderInventoryMapCalibrationMarkers();
+  const countsEl = document.getElementById('assetMapCountsSummary');
+  if (countsEl) {
+    const stats = buildInventoryMapLocationStats(filtered);
+    countsEl.textContent = `Displayed: ${filtered.length} / ${inventoryMapState.allAssets.length} asset(s) • Raw locations: ${stats.rawLocationCount} • Normalized locations: ${stats.normalizedLocationCount} • Unmapped: ${stats.unmappedCount}`;
+  }
+  if (inventoryMapState.selectedLocationKey) {
+    const stillExists = inventoryMapState.groupedMarkers.some((marker) => marker.locationKey === inventoryMapState.selectedLocationKey);
+    if (!stillExists) inventoryMapState.selectedLocationKey = null;
+  }
+  window.renderInventoryMapLocationAssets();
+};
+
+window.loadInventoryMapAssets = async (forceReload = false) => {
+  if (inventoryMapState.loading) return;
+  const countsEl = document.getElementById('assetMapCountsSummary');
+  const imageEl = document.getElementById('inventoryAssetMapImage');
+  if (!imageEl) return;
+  if (forceReload) {
+    inventoryMapState.allAssets = [];
+    inventoryMapState.filteredAssets = [];
+    inventoryMapState.groupedMarkers = [];
+    inventoryMapState.selectedLocationKey = null;
+  }
+  inventoryMapState.loading = true;
+  if (countsEl) countsEl.textContent = 'Loading map assets...';
+  try {
+    const pages = [];
+    let page = 1;
+    let totalPages = 1;
+    do {
+      const payload = await readInventoryJson(`/assets?paginate=true&page=${page}&pageSize=${INVENTORY_MAP_DEFAULT_PAGE_SIZE}`);
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      pages.push(...items);
+      totalPages = Number(payload?.totalPages || 1);
+      page += 1;
+    } while (page <= totalPages);
+    let spareStockRows = [];
+    try {
+      const sparePayload = await readInventoryJson('/inventory/spare-stock');
+      spareStockRows = Array.isArray(sparePayload) ? sparePayload : [];
+    } catch (_spareErr) {
+      spareStockRows = [];
+    }
+    const spareAsAssets = spareStockRows.map((row) => ({
+      customId: `spare-stock-${row.id}`,
+      name: row.partName,
+      category: 'spare_part',
+      type: row.componentType || 'component',
+      status: 'ACTIVE',
+      lifecycleStatus: 'IN_STOCK',
+      location: row.location || 'Central Warehouse',
+      department: 'UNASSIGNED',
+      assetTag: null,
+      serialNumber: null,
+      componentType: row.componentType || null,
+      stockQuantity: Number(row.quantityAvailable ?? 0),
+      reorderPoint: Number(row.reorderPoint ?? row.minimumStockLevel ?? 0),
+      minimumStockLevel: Number(row.minimumStockLevel ?? 0),
+      specifications: {
+        quantityAvailable: Number(row.quantityAvailable ?? 0),
+        minimumStockLevel: Number(row.minimumStockLevel ?? 0),
+        reorderPoint: Number(row.reorderPoint ?? row.minimumStockLevel ?? 0),
+      },
+      inventoryViewType: 'spare_stock',
+    }));
+    inventoryMapState.allAssets = [...pages, ...spareAsAssets].map((asset) => normalizeInventoryMapAsset(asset));
+    inventoryMapState.mapImageReady = true;
+    inventoryMapState.mapImageMissing = false;
+    updateInventoryMapCanvasLayout();
+    window.filterInventoryMapAssets();
+  } catch (error) {
+    inventoryMapState.mapImageReady = false;
+    if (countsEl) countsEl.textContent = 'Could not load map assets.';
+    showMessage(error.message || 'Failed to load inventory map assets.', 'error');
+  } finally {
+    inventoryMapState.loading = false;
+  }
+};
+
+window.openInventoryAssetMap = async () => {
+  const modalEl = document.getElementById('inventoryAssetMapModal');
+  const mapImageEl = document.getElementById('inventoryAssetMapImage');
+  if (!modalEl || !mapImageEl) return;
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  modal.show();
+  setTimeout(() => {
+    updateInventoryMapCanvasLayout();
+    window.renderInventoryMapMarkers();
+  }, 60);
+  try {
+    if (!mapImageEl.complete || !mapImageEl.naturalWidth) {
+      await new Promise((resolve, reject) => {
+        const onLoad = () => {
+          mapImageEl.removeEventListener('load', onLoad);
+          mapImageEl.removeEventListener('error', onError);
+          resolve(true);
+        };
+        const onError = () => {
+          mapImageEl.removeEventListener('load', onLoad);
+          mapImageEl.removeEventListener('error', onError);
+          reject(new Error('Campus map image could not be loaded from /assets/images/miu-campus-map.png'));
+        };
+        mapImageEl.addEventListener('load', onLoad, { once: true });
+        mapImageEl.addEventListener('error', onError, { once: true });
+      });
+    }
+  } catch (error) {
+    const countsEl = document.getElementById('assetMapCountsSummary');
+    if (countsEl) countsEl.textContent = String(error.message || 'Campus map image is missing.');
+    showMessage(String(error.message || 'Campus map image is missing.'), 'error');
+    return;
+  }
+  updateInventoryMapCanvasLayout();
+  await window.loadInventoryMapAssets(!inventoryMapState.allAssets.length);
+};
+
 function renderInventoryAiMatchedItems(items = []) {
   if (!Array.isArray(items) || !items.length) return '';
+  const visibleItems = items.slice(0, 4);
+  const hiddenItems = items.slice(4, 12);
+  const renderItems = (list = []) => list.map((item) => `
+    <div class="inventory-ai-chat-match">
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <div>
+          <div class="fw-semibold small">${UI.escapeHTML(item.name || item.assetName || 'Asset')}</div>
+          <div class="small text-muted">${UI.escapeHTML(item.assetId || item.customId || '-')} • ${UI.escapeHTML(item.category || item.type || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(item.location || '-')} • ${UI.escapeHTML(item.status || item.lifecycleStatus || '-')}</div>
+        </div>
+        ${(item.assetId || item.customId) ? `<button type="button" class="btn btn-sm btn-outline-primary inventory-ai-view-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View</button>` : ''}
+      </div>
+    </div>
+  `).join('');
   return `
     <div class="mt-2">
-      ${items.slice(0, 6).map((item) => `
-        <div class="inventory-ai-chat-match">
-          <div class="d-flex justify-content-between align-items-start gap-2">
-            <div>
-              <div class="fw-semibold small">${UI.escapeHTML(item.name || item.assetName || 'Asset')}</div>
-              <div class="small text-muted">${UI.escapeHTML(item.assetId || item.customId || '-')} • ${UI.escapeHTML(item.category || item.type || '-')}</div>
-              <div class="small text-muted">${UI.escapeHTML(item.location || '-')} • ${UI.escapeHTML(item.status || item.lifecycleStatus || '-')}</div>
-            </div>
-            ${(item.assetId || item.customId) ? `<button type="button" class="btn btn-sm btn-outline-primary inventory-ai-view-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View</button>` : ''}
+      <div class="small text-muted mb-1"><strong>Matched items</strong></div>
+      ${renderItems(visibleItems)}
+      ${hiddenItems.length ? `
+        <details class="mt-2">
+          <summary class="small text-primary">Show more results (${hiddenItems.length})</summary>
+          <div class="mt-1">
+            ${renderItems(hiddenItems)}
           </div>
-        </div>
-      `).join('')}
+        </details>
+      ` : ''}
     </div>
   `;
+}
+
+function normalizeInventoryAiConfidenceLabel(value) {
+  const label = String(value || '').trim().toLowerCase();
+  if (label === 'high' || label === 'medium' || label === 'low') return label;
+  return 'low';
+}
+
+function resolveInventoryAiEntryConfidence(entry = {}) {
+  const base = normalizeInventoryAiConfidenceLabel(entry.confidence);
+  const intent = String(entry.intent || '').trim().toLowerCase();
+  const dataScope = String(entry.dataScope || '').trim().toLowerCase();
+  const scannedCount = Number(entry.scannedCount || 0);
+  const missingCount = Number.isFinite(Number(entry.missingCount)) ? Number(entry.missingCount) : null;
+  if (
+    (intent === 'missing_serial' || intent === 'missing_serials')
+    && dataScope === 'full_inventory'
+    && scannedCount > 0
+    && missingCount === 0
+  ) {
+    return 'high';
+  }
+  return base;
+}
+
+function renderInventoryAiActionCard(entry = {}) {
+  const mode = String(entry.routedAction || '').trim().toLowerCase();
+  const result = entry.actionResult && typeof entry.actionResult === 'object' ? entry.actionResult : null;
+  if (!mode || !result) return '';
+
+  if (mode === 'monthly_report') {
+    const metrics = result.metrics && typeof result.metrics === 'object' ? result.metrics : {};
+    const recommendations = Array.isArray(result.recommendations) ? result.recommendations.slice(0, 8) : [];
+    const sections = Array.isArray(result.sections) ? result.sections.slice(0, 6) : [];
+    const reportText = [
+      `Title: ${result.reportTitle || result.report_title || 'Monthly Inventory Report'}`,
+      `Range: ${result.dateRange || result.date_range || '-'}`,
+      `Summary: ${result.executiveSummary || result.executive_summary || entry.text || '-'}`,
+      `Recommendations: ${recommendations.join(' | ') || '-'}`,
+    ].join('\n');
+    const encodedReport = encodeURIComponent(reportText);
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+          <div>
+            <div class="fw-semibold small">Monthly Inventory Report</div>
+            <div class="small text-muted">${UI.escapeHTML(String(result.reportTitle || result.report_title || '-'))}</div>
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-copy-report-btn" data-report-encoded="${UI.escapeHTML(encodedReport)}">Copy</button>
+        </div>
+        <div class="small mt-2">${UI.escapeHTML(String(result.executiveSummary || result.executive_summary || entry.text || '-'))}</div>
+        <div class="small text-muted mt-2">Range: ${UI.escapeHTML(String(result.dateRange || result.date_range || '-'))}</div>
+        <div class="small mt-2">
+          <strong>Metrics:</strong>
+          <div class="mt-1">
+            Total Assets: ${UI.escapeHTML(String(metrics.totalAssets ?? '-'))} •
+            High Risk: ${UI.escapeHTML(String(metrics.highRiskAssets ?? '-'))} •
+            Near EOL: ${UI.escapeHTML(String(metrics.nearEolAssets ?? '-'))} •
+            Expiring Licenses: ${UI.escapeHTML(String(metrics.expiringLicenses ?? '-'))}
+          </div>
+        </div>
+        ${sections.length ? `<div class="small mt-2"><strong>Sections:</strong> ${UI.escapeHTML(sections.map((item) => item.title || item.key).join(' | '))}</div>` : ''}
+        ${recommendations.length ? `<div class="small mt-2"><strong>Recommendations:</strong> ${UI.escapeHTML(recommendations.join(' | '))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (mode === 'daily_brief') {
+    const metrics = result.metrics && typeof result.metrics === 'object' ? result.metrics : {};
+    const highlights = Array.isArray(result.highlights) ? result.highlights.slice(0, 8) : [];
+    const risks = Array.isArray(result.risks) ? result.risks.slice(0, 8) : [];
+    const actions = Array.isArray(result.recommendedActions) ? result.recommendedActions.slice(0, 8) : [];
+    const briefText = [
+      `Title: ${result.title || 'Inventory Daily Brief'}`,
+      `Range: ${result.dateRange || '-'}`,
+      `Summary: ${result.summary || entry.text || '-'}`,
+      `Highlights: ${highlights.join(' | ') || '-'}`,
+    ].join('\n');
+    const encodedBrief = encodeURIComponent(briefText);
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+          <div>
+            <div class="fw-semibold small">Inventory Daily Brief</div>
+            <div class="small text-muted">${UI.escapeHTML(String(result.dateRange || '-'))}</div>
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-copy-report-btn" data-report-encoded="${UI.escapeHTML(encodedBrief)}">Copy</button>
+        </div>
+        <div class="small mt-2">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
+        <div class="small text-muted mt-2">Transfers: ${UI.escapeHTML(String(metrics.transfers ?? 0))} • Maintenance: ${UI.escapeHTML(String(metrics.maintenanceEvents ?? 0))} • Audit: ${UI.escapeHTML(String(metrics.auditEvents ?? 0))}</div>
+        ${highlights.length ? `<div class="small mt-2"><strong>Highlights:</strong> ${UI.escapeHTML(highlights.join(' | '))}</div>` : ''}
+        ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
+        ${actions.length ? `<div class="small mt-2"><strong>Actions:</strong> ${UI.escapeHTML(actions.join(' | '))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (mode === 'executive_dashboard') {
+    const byCategory = result.assetsByCategory && typeof result.assetsByCategory === 'object' ? result.assetsByCategory : {};
+    const byLocation = result.assetsByLocation && typeof result.assetsByLocation === 'object' ? result.assetsByLocation : {};
+    const recommendations = Array.isArray(result.recommendations) ? result.recommendations.slice(0, 8) : [];
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="fw-semibold small">Executive Inventory Dashboard</div>
+        <div class="small text-muted mt-1">Total Assets: ${UI.escapeHTML(String(result.totalAssets ?? 0))} • High Risk: ${UI.escapeHTML(String(result.highRisk ?? 0))} • Near EOL: ${UI.escapeHTML(String(result.nearEol ?? 0))}</div>
+        <div class="small text-muted mt-1">Low Stock: ${UI.escapeHTML(String(result.lowStock ?? 0))} • Maintenance Issues: ${UI.escapeHTML(String(result.openMaintenanceIssues ?? 0))} • Recent Transfers: ${UI.escapeHTML(String(result.recentTransfers ?? 0))}</div>
+        <div class="small mt-2"><strong>Categories:</strong> ${UI.escapeHTML(Object.entries(byCategory).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
+        <div class="small mt-2"><strong>Locations:</strong> ${UI.escapeHTML(Object.entries(byLocation).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
+        ${recommendations.length ? `<div class="small mt-2"><strong>Recommendations:</strong> ${UI.escapeHTML(recommendations.join(' | '))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (mode === 'digital_twin') {
+    const asset = result.asset || {};
+    const risk = result.riskScore || {};
+    const kit = result.kitHealth || {};
+    const related = result.relatedCounts || {};
+    const openIssues = Array.isArray(result.openIssues) ? result.openIssues.slice(0, 8) : [];
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="fw-semibold small">Digital Twin: ${UI.escapeHTML(String(asset.name || asset.customId || '-'))}</div>
+        <div class="small text-muted mt-1">${UI.escapeHTML(String(asset.customId || '-'))} • ${UI.escapeHTML(String(asset.type || '-'))} • ${UI.escapeHTML(String(result.currentLocation || '-'))}</div>
+        <div class="small mt-2">Health Score: ${UI.escapeHTML(String(result.healthScore ?? '-'))} • Risk: ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
+        <div class="small mt-1">Kit Health: ${UI.escapeHTML(String(kit.label || kit.status || '-'))} • EOL: ${UI.escapeHTML(String(result.eolStatus?.status || '-'))} • Warranty: ${UI.escapeHTML(String(result.warrantyStatus?.status || '-'))}</div>
+        <div class="small mt-1">Related: Components ${UI.escapeHTML(String(related.components ?? 0))} • Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} • Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}</div>
+        ${openIssues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(openIssues.join(' | '))}</div>` : ''}
+        ${result.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (mode === 'black_box_timeline') {
+    const allEvents = Array.isArray(result.events) ? result.events : [];
+    const events = allEvents.slice(0, 12);
+    const grouped = allEvents.reduce((acc, event) => {
+      const key = String(event?.eventGroup || 'all');
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="fw-semibold small">Black Box Timeline</div>
+        <div class="small text-muted mt-1">Total Events: ${UI.escapeHTML(String(result.totalEvents ?? events.length))} • Returned: ${UI.escapeHTML(String(result.returnedEvents ?? events.length))}</div>
+        <div class="small mt-2"><strong>Groups:</strong> ${UI.escapeHTML(Object.entries(grouped).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
+        <div class="small mt-2">
+          ${events.map((event) => `${event.timestamp ? UI.formatDateTime(event.timestamp) : '-'} • ${event.label || event.eventType || 'Event'}`).join('<br>') || 'No events.'}
+        </div>
+      </div>
+    `;
+  }
+
+  if (mode === 'plan_action') {
+    const affected = Array.isArray(result.affectedItems) ? result.affectedItems.length : 0;
+    const proposed = Array.isArray(result.proposedChanges) ? result.proposedChanges.length : 0;
+    const risks = Array.isArray(result.risks) ? result.risks.slice(0, 6) : [];
+    return `
+      <div class="inventory-ai-chat-match mt-2">
+        <div class="fw-semibold small">Action Plan (Review Before Execute)</div>
+        <div class="small text-muted mt-1">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
+        <div class="small mt-2">Affected Items: ${UI.escapeHTML(String(affected))} • Proposed Changes: ${UI.escapeHTML(String(proposed))}</div>
+        ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  return '';
 }
 
 function renderInventoryAiChatMessages() {
@@ -4853,23 +6999,66 @@ function renderInventoryAiChatMessages() {
   const messages = inventoryAiChatState.messages || [];
   const emptyState = `
     <div class="inventory-ai-chat-empty">
-      Hi, I’m your Inventory AI Assistant. Ask me about assets, maintenance, stock, duplicates, EOL, or imports.
+      <div class="inventory-ai-chat-empty-title"><i class="bi bi-stars me-1"></i>Hi Ismail 👋</div>
+      <div class="inventory-ai-chat-empty-sub">I can help you understand inventory health, missing data, stock, EOL, maintenance, duplicates, and imports.</div>
     </div>
   `;
   const rows = messages.map((entry) => {
     const role = entry.role === 'user' ? 'user' : 'assistant';
+    const resolvedConfidence = resolveInventoryAiEntryConfidence(entry);
     const metaPills = [];
-    if (entry.confidence) metaPills.push(`<span class="inventory-ai-chat-pill">Confidence: ${UI.escapeHTML(String(entry.confidence).toUpperCase())}</span>`);
+    if (resolvedConfidence) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Confidence: ${UI.escapeHTML(String(resolvedConfidence).toUpperCase())}</span>`);
+    }
     if (entry.fallbackUsed) metaPills.push('<span class="inventory-ai-chat-pill">Fallback mode</span>');
+    if (entry.fallbackReason) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Reason: ${UI.escapeHTML(String(entry.fallbackReason))}</span>`);
+    }
+    if (entry.dataScope) {
+      const scopeLabel = String(entry.dataScope) === 'filtered_view' ? 'Based on current filtered view' : 'Based on full inventory';
+      metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(scopeLabel)}</span>`);
+    }
+    if (Number.isFinite(Number(entry.scannedCount)) && Number(entry.scannedCount) > 0) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Scanned: ${UI.escapeHTML(String(entry.scannedCount))}</span>`);
+    }
+    if (entry.missingCount !== null && entry.missingCount !== undefined && Number.isFinite(Number(entry.missingCount)) && Number(entry.missingCount) >= 0) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Missing serials: ${UI.escapeHTML(String(entry.missingCount))}</span>`);
+    }
+    if (Array.isArray(entry.excludedCategories) && entry.excludedCategories.length) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Excluded: ${UI.escapeHTML(entry.excludedCategories.join(', '))}</span>`);
+    }
+    if (entry.llmUsed) {
+      metaPills.push('<span class="inventory-ai-chat-pill">Gemma used</span>');
+    }
+    if (entry.intent) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Intent: ${UI.escapeHTML(String(entry.intent))}</span>`);
+    }
+    if (entry.routedAction) {
+      metaPills.push(`<span class="inventory-ai-chat-pill">Routed: ${UI.escapeHTML(String(entry.routedAction))}</span>`);
+    }
     if (entry.actionLabel) metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(entry.actionLabel)}</span>`);
-    const suggestionPills = Array.isArray(entry.suggestedActions)
-      ? entry.suggestedActions.slice(0, 5).map((action) => `<span class="inventory-ai-chat-pill">${UI.escapeHTML(String(action || ''))}</span>`).join('')
-      : '';
+    const suggestionItems = normalizeInventoryAiSuggestions(entry.suggestedActions);
+    const suggestionPills = suggestionItems
+      .map((action) => `<span class="inventory-ai-chat-pill">${UI.escapeHTML(action)}</span>`)
+      .join('');
+    const senderLabel = role === 'user' ? 'You' : 'Inventory AI';
+    const senderIcon = role === 'user' ? 'bi-person-fill' : 'bi-robot';
+    const timestamp = formatInventoryAiChatTime(entry.createdAt);
+    const timestampHtml = timestamp ? `<span class="ms-auto">${timestamp}</span>` : '';
+    const matchedItemsHtml = renderInventoryAiMatchedItems(entry.matchedItems || []);
+    const actionCardHtml = renderInventoryAiActionCard(entry);
     return `
       <div class="inventory-ai-chat-msg ${role}">
-        <div>${UI.escapeHTML(String(entry.text || ''))}</div>
-        ${(metaPills.length || suggestionPills) ? `<div class="inventory-ai-chat-meta">${metaPills.join('')}${suggestionPills ? `<div class="mt-1">${suggestionPills}</div>` : ''}</div>` : ''}
-        ${renderInventoryAiMatchedItems(entry.matchedItems || [])}
+        <div class="inventory-ai-msg-head"><i class="bi ${senderIcon}"></i><span>${senderLabel}</span>${timestampHtml}</div>
+        <div>${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${UI.escapeHTML(String(entry.text || ''))}</div>
+        ${(metaPills.length || suggestionPills || matchedItemsHtml) ? `
+          <div class="inventory-ai-chat-meta">
+            ${metaPills.length ? `<div>${metaPills.join('')}</div>` : ''}
+            ${suggestionPills ? `<div class="mt-1"><strong>Suggested Actions:</strong><div class="mt-1">${suggestionPills}</div></div>` : ''}
+            ${matchedItemsHtml}
+            ${actionCardHtml}
+          </div>
+        ` : (actionCardHtml ? `<div class="inventory-ai-chat-meta">${actionCardHtml}</div>` : '')}
       </div>
     `;
   }).join('');
@@ -4886,9 +7075,10 @@ function ensureInventoryAiWelcomeMessage() {
   if (inventoryAiChatState.messages.length) return;
   inventoryAiChatState.messages.push({
     role: 'assistant',
-    text: 'Hello, I can help with inventory status, maintenance, warranty, EOL, stock, duplicates, and procurement questions.',
+    text: 'Ask me about inventory status, stock health, maintenance priorities, duplicates, EOL risk, or import quality.',
     confidence: 'medium',
     fallbackUsed: false,
+    createdAt: Date.now(),
   });
 }
 
@@ -4898,12 +7088,12 @@ window.toggleInventoryAiChat = (forceState = null) => {
   if (!panel || !launcher) return;
   const nextOpen = typeof forceState === 'boolean' ? forceState : !inventoryAiChatState.open;
   inventoryAiChatState.open = nextOpen;
-  panel.classList.toggle('d-none', !nextOpen);
+  panel.classList.toggle('is-open', nextOpen);
   launcher.classList.toggle('d-none', nextOpen);
   if (nextOpen) {
     ensureInventoryAiWelcomeMessage();
     renderInventoryAiChatMessages();
-    setInventoryAiChatStatus(inventoryAiChatState.status || 'online');
+    setInventoryAiChatStatus(inventoryAiChatState.status || 'gemma');
     const input = document.getElementById('inventoryAiChatInput');
     if (input) input.focus();
   }
@@ -4918,7 +7108,76 @@ window.openInventoryAiChatWithPrompt = async (prompt) => {
   await window.sendInventoryAiChatMessage();
 };
 
-window.runInventoryAiQuickAction = async (mode) => {
+function detectInventoryAiActionFromMessage(queryText) {
+  const q = String(queryText || '')
+    .toLowerCase()
+    .replace(/[’‘`´]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!q) return null;
+  const has = (...phrases) => phrases.some((phrase) => q.includes(phrase));
+
+  if (
+    /(?:what changed|show changes|daily brief|today(?:'s)? inventory brief|inventory changes this week)/.test(q)
+    || has('what changed today', "today's inventory brief", 'show inventory changes this week', 'daily brief')
+  ) return 'daily_brief';
+  if (
+    /(?:generate|create|give|show|build).*(?:monthly).*(?:inventory|asset).*(?:report|summary)/.test(q)
+    || has('monthly inventory report', 'monthly asset report', 'inventory monthly summary', "this month's inventory report")
+  ) return 'monthly_report';
+  if (
+    /(?:executive dashboard|management summary|executive summary).*(?:inventory|asset)/.test(q)
+    || has('show executive dashboard', 'generate executive inventory dashboard summary', 'inventory management summary')
+  ) return 'executive_dashboard';
+  if (has('digital twin', 'asset digital twin', 'show digital twin for this asset')) return 'digital_twin';
+  if (has('black box timeline', 'blackbox timeline', 'show black box timeline for this asset', 'asset timeline')) return 'black_box_timeline';
+  if ((has('missing serial', 'without serial', 'missing data', 'data quality')) && !has('ticket')) return 'missing_data';
+  if (has('license') && has('expire', 'expiring', 'expiry', 'renew')) return 'search';
+  if (has('low stock', 'stock forecast', 'spare stock forecast')) return 'spare_stock_forecast';
+  if (has('tech exchange', 'reallocation', 're-allocate', 'reuse before buy', 'internal transfer suggestion')) return 'reallocation';
+  if (has('buy next', 'what should we buy', 'procurement', 'purchase next')) return 'procurement';
+  if (has('duplicate assets', 'duplicate serial', 'duplicate asset tag', 'find duplicates')) return 'duplicates';
+  if (has('need maintenance', 'maintenance recommendation', 'maintenance priorities')) return 'maintenance';
+  if (has('near eol', 'end of life', 'replacement priority', 'replace first')) return 'replacement_priority';
+  if (has('risk score', 'risk scores', 'high risk assets', 'critical assets')) return 'risk_scores';
+  if (has('suggest relationships', 'relationship suggestions', 'build relationships')) return 'relationship_suggestions';
+  if ((has('draft ticket', 'create ticket', 'ticket draft')) && !has('transfer')) return 'ticket_draft';
+  if (has('transfer all', 'move all', 'assign all', 'plan transfer')) return 'plan_action';
+  if (has('show assets named', 'find assets named', 'search assets')) return 'search';
+  return null;
+}
+
+function inventoryAiEndpointForMode(mode, context = {}) {
+  const selectedId = String(context?.selectedAssetCustomId || cmdbState.assetId || selectedAssetCustomId || '').trim();
+  const map = {
+    assistant: '/inventory/ai/assistant',
+    search: '/inventory/ai/search',
+    missing_data: '/inventory/ai/missing-data',
+    data_corrections: '/inventory/ai/data-corrections',
+    risk_scores: '/inventory/ai/risk-score',
+    replacement_priority: '/inventory/ai/replacement-priority',
+    spare_stock_forecast: '/inventory/ai/spare-stock-forecast',
+    reallocation: '/inventory/ai/reallocation-suggestions',
+    maintenance: '/inventory/ai/maintenance-recommendations',
+    procurement: '/inventory/ai/procurement-recommendations',
+    duplicates: '/inventory/ai/duplicate-detection',
+    relationship_suggestions: '/inventory/ai/relationship-suggestions',
+    ticket_draft: '/inventory/ai/ticket-draft',
+    daily_brief: '/inventory/ai/daily-brief',
+    monthly_report: '/inventory/ai/monthly-report',
+    executive_dashboard: '/inventory/executive-dashboard',
+    plan_action: '/inventory/ai/plan-action',
+  };
+  if (mode === 'digital_twin') {
+    return selectedId ? `/assets/${encodeURIComponent(selectedId)}/digital-twin` : '';
+  }
+  if (mode === 'black_box_timeline') {
+    return selectedId ? `/assets/${encodeURIComponent(selectedId)}/black-box-timeline?includeRelated=true` : '';
+  }
+  return map[mode] || map.assistant;
+}
+
+window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
   const actionMode = String(mode || '').trim();
   if (!actionMode || inventoryAiChatState.loading) return;
   window.toggleInventoryAiChat(true);
@@ -4926,22 +7185,53 @@ window.runInventoryAiQuickAction = async (mode) => {
   setInventoryAiChatStatus('loading');
   renderInventoryAiChatMessages();
   try {
-    const endpoint = inventoryAiEndpointForMode(actionMode);
     const context = getInventoryAiChatContext();
-    const needsQuery = actionMode === 'search';
+    const endpoint = inventoryAiEndpointForMode(actionMode, context);
+    if (!endpoint) {
+      throw new Error('Select/open an asset first, then run this action.');
+    }
+    const needsQuery = actionMode === 'search' || actionMode === 'plan_action' || actionMode === 'ticket_draft';
     const query = needsQuery
-      ? (String(document.getElementById('inventoryAiChatInput')?.value || '').trim() || `important inventory risks in ${context.view}`)
+      ? (String(queryOverride || '').trim()
+        || String(document.getElementById('inventoryAiChatInput')?.value || '').trim()
+        || (actionMode === 'plan_action'
+          ? 'Transfer all selected lab PCs to the target location'
+          : (actionMode === 'ticket_draft'
+            ? 'Draft maintenance ticket for high-risk inventory issue'
+            : `important inventory risks in ${context.view}`)))
       : '';
-    const payload = needsQuery
-      ? {
-        query,
-        currentView: context.view,
-        search: context.search,
-        filters: context.filters,
-        selectedAssetCustomId: context.selectedAssetCustomId,
+    const payload = {
+      context,
+      currentView: context.view,
+      search: context.search,
+      filters: context.filters,
+      selectedAssetCustomId: context.selectedAssetCustomId,
+    };
+    if (needsQuery) payload.query = query;
+    if (actionMode === 'ticket_draft') {
+      payload.issue = query;
+      if (context.selectedAssetCustomId) payload.assetId = context.selectedAssetCustomId;
+    }
+    if (actionMode === 'monthly_report') {
+      const now = new Date();
+      payload.month = now.getMonth() + 1;
+      payload.year = now.getFullYear();
+    }
+    const usesGet = actionMode === 'executive_dashboard' || actionMode === 'digital_twin' || actionMode === 'black_box_timeline';
+    let result;
+    if (usesGet) {
+      let query = '';
+      if (actionMode === 'executive_dashboard') {
+        const params = new URLSearchParams();
+        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', payload.filters.department);
+        if (payload?.filters?.building && payload.filters.building !== 'all') params.set('location', payload.filters.building);
+        if (payload?.filters?.type && payload.filters.type !== 'all') params.set('type', payload.filters.type);
+        query = params.toString() ? `?${params.toString()}` : '';
       }
-      : {};
-    const result = await postInventoryJson(endpoint, payload);
+      result = await readInventoryJson(`${endpoint}${query}`);
+    } else {
+      result = await postInventoryJson(endpoint, payload);
+    }
     const response = buildChatResponseFromMode(actionMode, result || {});
     inventoryAiChatState.messages.push({
       role: 'assistant',
@@ -4951,15 +7241,27 @@ window.runInventoryAiQuickAction = async (mode) => {
       matchedItems: response.matchedItems || [],
       suggestedActions: response.suggestedActions || [],
       actionLabel: inventoryAiQuickActionLabel(actionMode),
+      createdAt: Date.now(),
+      dataScope: response.dataScope || null,
+      llmUsed: Boolean(response.llmUsed),
+      fallbackReason: String(response.fallbackReason || ''),
+      intent: String(result?.intent || actionMode),
+      routedAction: actionMode,
+      routedEndpoint: endpoint,
+      actionResult: result || null,
     });
-    setInventoryAiChatStatus(response.fallbackUsed ? 'fallback' : 'gemma');
+    setInventoryAiChatStatus(
+      response.llmStatus
+      || (response.fallbackUsed ? 'fallback' : 'gemma')
+    );
   } catch (error) {
     inventoryAiChatState.messages.push({
       role: 'assistant',
-      text: `AI action failed. ${error.message || 'Please try again.'}`,
+      text: 'I could not reach the Inventory AI service for that action. You can still use regular filters/search and try again in a moment.',
       confidence: 'low',
       fallbackUsed: true,
       actionLabel: inventoryAiQuickActionLabel(actionMode),
+      createdAt: Date.now(),
     });
     setInventoryAiChatStatus('error');
     showMessage(error.message || 'Inventory AI action failed.', 'error');
@@ -4973,6 +7275,7 @@ window.openInventoryAiMatchedAsset = async (customId) => {
   const assetId = String(customId || '').trim();
   if (!assetId) return;
   try {
+    window.toggleInventoryAiChat(false);
     await window.openAssetCmdb(assetId);
   } catch (_error) {
     showMessage('Could not open asset details from AI result.', 'warning');
@@ -4984,18 +7287,33 @@ window.sendInventoryAiChatMessage = async () => {
   const input = document.getElementById('inventoryAiChatInput');
   const message = String(input?.value || '').trim();
   if (!message) return;
-  inventoryAiChatState.messages.push({ role: 'user', text: message });
+  inventoryAiChatState.messages.push({ role: 'user', text: message, createdAt: Date.now() });
   if (input) input.value = '';
   inventoryAiChatState.loading = true;
   setInventoryAiChatStatus('loading');
   renderInventoryAiChatMessages();
 
   try {
+    const detectedAction = detectInventoryAiActionFromMessage(message);
+    if (detectedAction && detectedAction !== 'assistant') {
+      inventoryAiChatState.loading = false;
+      renderInventoryAiChatMessages();
+      await window.runInventoryAiQuickAction(detectedAction, message);
+      return;
+    }
     const context = getInventoryAiChatContext();
+    const recentMessages = (inventoryAiChatState.messages || [])
+      .slice(-8)
+      .map((entry) => ({
+        role: entry.role === 'user' ? 'user' : 'assistant',
+        text: String(entry.text || ''),
+        createdAt: entry.createdAt || Date.now(),
+      }));
     const payload = {
       query: message,
       message,
       context,
+      recentMessages,
       currentView: context.view,
       search: context.search,
       filters: context.filters,
@@ -5008,17 +7326,32 @@ window.sendInventoryAiChatMessage = async () => {
       text: answer,
       confidence: String(result?.confidence || 'low'),
       fallbackUsed: Boolean(result?.fallbackUsed),
+      intent: String(result?.intent || ''),
+      scannedCount: Number(result?.scannedCount || 0),
+      missingCount: result?.missingCount ?? null,
+      excludedCategories: Array.isArray(result?.excludedCategories) ? result.excludedCategories : [],
       matchedItems: Array.isArray(result?.matchedItems) ? result.matchedItems : [],
-      suggestedActions: Array.isArray(result?.suggestedActions) ? result.suggestedActions : [],
+      suggestedActions: normalizeInventoryAiSuggestions(result?.suggestedActions),
       actionLabel: 'Inventory AI assistant',
+      createdAt: Date.now(),
+      dataScope: String(result?.dataScope || ''),
+      llmUsed: Boolean(result?.llmUsed),
+      fallbackReason: String(result?.fallbackReason || ''),
+      routedAction: String(result?.routedAction || ''),
+      routedEndpoint: String(result?.routedEndpoint || ''),
+      actionResult: result?.actionResult || null,
     });
-    setInventoryAiChatStatus(result?.fallbackUsed ? 'fallback' : 'gemma');
+    setInventoryAiChatStatus(
+      String(result?.llmStatus || '')
+      || (result?.fallbackUsed ? 'fallback' : 'gemma')
+    );
   } catch (error) {
     inventoryAiChatState.messages.push({
       role: 'assistant',
-      text: `I could not complete that request right now. ${error.message || 'Please try again.'}`,
+      text: 'I could not reach the Inventory AI service. You can still use filters/search, or try again.',
       confidence: 'low',
       fallbackUsed: true,
+      createdAt: Date.now(),
     });
     setInventoryAiChatStatus('error');
     showMessage(error.message || 'Inventory AI assistant request failed.', 'error');
@@ -5078,21 +7411,34 @@ function renderInventoryAiResult(payload) {
     return;
   }
 
-  if (mode === 'maintenance' || mode === 'procurement') {
-    const rows = Array.isArray(payload?.recommendations || payload?.recommendedPurchases) ? (payload.recommendations || payload.recommendedPurchases).slice(0, 80) : [];
+  if (mode === 'maintenance' || mode === 'procurement' || mode === 'reallocation') {
+    const rows = mode === 'maintenance'
+      ? (Array.isArray(payload?.recommendations) ? payload.recommendations.slice(0, 80) : [])
+      : (mode === 'procurement'
+        ? (Array.isArray(payload?.recommendedPurchases) ? payload.recommendedPurchases.slice(0, 80) : [])
+        : (Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 80) : []));
     const isProcurement = mode === 'procurement';
+    const isReallocation = mode === 'reallocation';
     resultEl.innerHTML = `
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <strong>${isProcurement ? 'Procurement' : 'Maintenance'} Recommendations</strong>
+        <strong>${isProcurement ? 'Procurement' : (isReallocation ? 'Reallocation / Tech Exchange' : 'Maintenance')} Recommendations</strong>
         <span class="badge ${badgeClass}">${UI.escapeHTML(confidence.toUpperCase())}</span>
       </div>
       <div class="mb-2">${summary}</div>
       <div class="table-responsive"><table class="table table-sm"><thead><tr>
-      ${isProcurement ? '<th>Item</th><th>Type</th><th>Qty</th><th>Priority</th><th>Reason</th>' : '<th>Asset</th><th>Priority</th><th>Action</th><th>Due</th><th>Reason</th>'}
+      ${
+        isProcurement
+          ? '<th>Item</th><th>Type</th><th>Qty</th><th>Priority</th><th>Reason</th>'
+          : (isReallocation
+            ? '<th>Available Asset</th><th>Need</th><th>Source</th><th>Destination</th><th>Reason</th>'
+            : '<th>Asset</th><th>Priority</th><th>Action</th><th>Due</th><th>Reason</th>')
+      }
       </tr></thead><tbody>
       ${rows.map((row) => isProcurement
         ? `<tr><td>${UI.escapeHTML(row.itemName || '-')}</td><td>${UI.escapeHTML(row.type || '-')}</td><td>${UI.escapeHTML(String(row.recommendedQuantity ?? '-'))}</td><td>${UI.escapeHTML(row.priority || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`
-        : `<tr><td>${UI.escapeHTML(`${row.assetName || '-'} (${row.assetId || '-'})`)}</td><td>${UI.escapeHTML(row.priority || '-')}</td><td>${UI.escapeHTML(row.recommendedAction || '-')}</td><td>${UI.escapeHTML(row.dueDateSuggestion || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`
+        : (isReallocation
+          ? `<tr><td>${UI.escapeHTML(`${row.availableAssetName || '-'} (${row.availableAssetId || '-'})`)}</td><td>${UI.escapeHTML(row.requestedNeed || '-')}</td><td>${UI.escapeHTML(row.sourceLocation || '-')}</td><td>${UI.escapeHTML(row.suggestedDestination || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`
+          : `<tr><td>${UI.escapeHTML(`${row.assetName || '-'} (${row.assetId || '-'})`)}</td><td>${UI.escapeHTML(row.priority || '-')}</td><td>${UI.escapeHTML(row.recommendedAction || '-')}</td><td>${UI.escapeHTML(row.dueDateSuggestion || '-')}</td><td>${UI.escapeHTML(row.reason || '-')}</td></tr>`)
       ).join('') || `<tr><td colspan="5" class="text-muted">No recommendations.</td></tr>`}
       </tbody></table></div>
     `;
@@ -5124,36 +7470,44 @@ function renderInventoryAiResult(payload) {
   `;
 }
 
-function inventoryAiEndpointForMode(mode) {
-  const map = {
-    assistant: '/inventory/ai/assistant',
-    search: '/inventory/ai/search',
-    missing_data: '/inventory/ai/missing-data',
-    maintenance: '/inventory/ai/maintenance-recommendations',
-    procurement: '/inventory/ai/procurement-recommendations',
-    duplicates: '/inventory/ai/duplicate-detection',
-  };
-  return map[mode] || map.assistant;
-}
-
 function inventoryAiQuickActionLabel(mode) {
   const map = {
     search: 'AI inventory search result',
     missing_data: 'Data quality check completed',
+    data_corrections: 'Data correction suggestions ready',
+    risk_scores: 'Risk score analysis completed',
+    replacement_priority: 'Replacement priority ranking ready',
+    spare_stock_forecast: 'Spare stock forecast completed',
+    reallocation: 'AI reallocation suggestions ready',
     maintenance: 'Maintenance recommendations ready',
     procurement: 'Procurement recommendations ready',
     duplicates: 'Duplicate detection completed',
+    relationship_suggestions: 'Relationship suggestions generated',
+    ticket_draft: 'Inventory ticket draft prepared',
+    daily_brief: 'Daily inventory brief generated',
+    monthly_report: 'Monthly inventory report generated',
+    executive_dashboard: 'Executive dashboard summary generated',
+    digital_twin: 'Digital Twin loaded',
+    black_box_timeline: 'Black Box Timeline loaded',
+    plan_action: 'Natural language action plan ready',
   };
   return map[mode] || 'Inventory AI action completed';
 }
 
 function buildChatResponseFromMode(mode, payload) {
   const confidence = String(payload?.confidence || 'low');
+  const baseMeta = {
+    confidence,
+    fallbackUsed: Boolean(payload?.fallbackUsed),
+    dataScope: payload?.dataScope || null,
+    llmUsed: Boolean(payload?.llmUsed),
+    llmStatus: String(payload?.llmStatus || ''),
+    fallbackReason: String(payload?.fallbackReason || ''),
+  };
   if (mode === 'missing_data') {
     return {
+      ...baseMeta,
       text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
-      confidence,
-      fallbackUsed: Boolean(payload?.fallbackUsed),
       matchedItems: Array.isArray(payload?.assetsWithIssues)
         ? payload.assetsWithIssues.slice(0, 10).map((item) => ({
           assetId: item.assetId,
@@ -5168,11 +7522,108 @@ function buildChatResponseFromMode(mode, payload) {
     };
   }
 
+  if (mode === 'data_corrections') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.suggestions)
+        ? payload.suggestions.slice(0, 10).map((item) => ({
+          assetId: item.assetId,
+          name: item.assetName || item.assetId || 'Asset',
+          category: item.severity || 'Issue',
+          type: item.issueType || 'Data Correction',
+          location: '-',
+          status: item.reason || item.currentValue || '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.suggestedActions)
+        ? payload.suggestedActions
+        : ['Review and apply only safe corrections with confirmation.'],
+    };
+  }
+
+  if (mode === 'risk_scores') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.riskScores)
+        ? payload.riskScores.slice(0, 10).map((item) => ({
+          assetId: item.assetId,
+          name: item.assetName || item.assetId || 'Asset',
+          category: item.riskLevel || 'Risk',
+          type: `Score ${item.riskScore ?? '-'}`,
+          location: '-',
+          status: Array.isArray(item.reasons) ? item.reasons.slice(0, 2).join(' | ') : '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.suggestedActions)
+        ? payload.suggestedActions
+        : ['Prioritize high-risk assets for maintenance and replacement planning.'],
+    };
+  }
+
+  if (mode === 'replacement_priority') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.rankedItems)
+        ? payload.rankedItems.slice(0, 10).map((item) => ({
+          assetId: item.assetId,
+          name: item.assetName || item.itemName || item.assetId || 'Asset',
+          category: item.priority || item.urgency || 'Priority',
+          type: item.itemType || 'Replacement',
+          location: '-',
+          status: item.reason || '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.suggestedActions)
+        ? payload.suggestedActions
+        : ['Start with top-ranked items and validate budget/stock constraints.'],
+    };
+  }
+
+  if (mode === 'spare_stock_forecast') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.forecasts)
+        ? payload.forecasts.slice(0, 10).map((item) => ({
+          assetId: item.itemName || '-',
+          name: item.itemName || 'Spare Stock Item',
+          category: item.componentType || 'Spare Stock',
+          type: `Current ${item.currentQuantity ?? '-'} → Recommended ${item.recommendedQuantity ?? '-'}`,
+          location: '-',
+          status: item.reason || '-',
+        }))
+        : [],
+      suggestedActions: Array.isArray(payload?.suggestedActions)
+        ? payload.suggestedActions
+        : ['Raise reorder requests for forecasted low-stock gaps.'],
+    };
+  }
+
+  if (mode === 'reallocation') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.suggestions)
+        ? payload.suggestions.slice(0, 10).map((item) => ({
+          assetId: item.availableAssetId || '-',
+          name: item.availableAssetName || 'Available Asset',
+          category: 'Tech Exchange',
+          type: item.requestedNeed || '-',
+          location: item.sourceLocation || '-',
+          status: item.reason || '-',
+        }))
+        : [],
+      suggestedActions: ['Review and confirm transfer manually. No auto-transfer is performed.'],
+    };
+  }
+
   if (mode === 'maintenance') {
     return {
+      ...baseMeta,
       text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
-      confidence,
-      fallbackUsed: Boolean(payload?.fallbackUsed),
       matchedItems: Array.isArray(payload?.recommendations)
         ? payload.recommendations.slice(0, 10).map((item) => ({
           assetId: item.assetId,
@@ -5191,9 +7642,8 @@ function buildChatResponseFromMode(mode, payload) {
 
   if (mode === 'procurement') {
     return {
+      ...baseMeta,
       text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
-      confidence,
-      fallbackUsed: Boolean(payload?.fallbackUsed),
       matchedItems: Array.isArray(payload?.recommendedPurchases)
         ? payload.recommendedPurchases.slice(0, 10).map((item) => ({
           assetId: item.itemName || '-',
@@ -5212,9 +7662,8 @@ function buildChatResponseFromMode(mode, payload) {
 
   if (mode === 'duplicates') {
     return {
+      ...baseMeta,
       text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
-      confidence,
-      fallbackUsed: Boolean(payload?.fallbackUsed),
       matchedItems: Array.isArray(payload?.duplicateGroups)
         ? payload.duplicateGroups.slice(0, 10).flatMap((group) => (group.assets || []).slice(0, 3).map((asset) => ({
           assetId: asset.assetId,
@@ -5231,10 +7680,127 @@ function buildChatResponseFromMode(mode, payload) {
     };
   }
 
+  if (mode === 'relationship_suggestions') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.suggestions)
+        ? payload.suggestions.slice(0, 10).map((item) => ({
+          assetId: item.sourceAssetId,
+          name: item.sourceAssetName || item.sourceAssetId || 'Source Asset',
+          category: item.relationshipType || 'Relationship',
+          type: item.targetAssetName || item.targetAssetId || 'Target',
+          location: '-',
+          status: item.reason || '-',
+        }))
+        : [],
+      suggestedActions: ['Review suggestions and apply only safe-to-apply links.'],
+    };
+  }
+
+  if (mode === 'ticket_draft') {
+    const draft = payload?.ticketDraft || {};
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || draft?.title || inventoryAiQuickActionLabel(mode)),
+      matchedItems: [{
+        assetId: draft.assetId || '-',
+        name: draft.assetName || 'Inventory Ticket Draft',
+        category: draft.priority || 'Priority',
+        type: draft.category || 'Ticket',
+        location: '-',
+        status: draft.description || '-',
+      }],
+      suggestedActions: ['Review draft and create ticket in draft mode only.'],
+    };
+  }
+
+  if (mode === 'daily_brief') {
+    const highlights = Array.isArray(payload?.highlights) ? payload.highlights : [];
+    const risks = Array.isArray(payload?.risks) ? payload.risks : [];
+    const recs = Array.isArray(payload?.recommendedActions) ? payload.recommendedActions : [];
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || payload?.title || inventoryAiQuickActionLabel(mode)),
+      matchedItems: [],
+      suggestedActions: [...highlights.slice(0, 3), ...risks.slice(0, 3), ...recs.slice(0, 5)].filter(Boolean),
+    };
+  }
+
+  if (mode === 'monthly_report') {
+    const recs = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+    return {
+      ...baseMeta,
+      text: String(payload?.executiveSummary || payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: [],
+      suggestedActions: recs.slice(0, 8),
+    };
+  }
+
+  if (mode === 'executive_dashboard') {
+    const recs = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || `Executive dashboard loaded for ${payload?.totalAssets ?? 0} asset(s).`),
+      matchedItems: [],
+      suggestedActions: recs.slice(0, 8),
+    };
+  }
+
+  if (mode === 'digital_twin') {
+    const asset = payload?.asset || {};
+    const related = payload?.relatedCounts || {};
+    return {
+      ...baseMeta,
+      text: String(payload?.recommendedAction || payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: [{
+        assetId: asset.customId || '-',
+        name: asset.name || 'Asset Digital Twin',
+        category: payload?.riskScore?.riskLevel || payload?.kitHealth?.label || 'Digital Twin',
+        type: `Health ${payload?.healthScore ?? '-'} / Risk ${payload?.riskScore?.riskScore ?? '-'}`,
+        location: payload?.currentLocation || '-',
+        status: `Components ${related.components ?? 0} • Accessories ${related.accessories ?? 0} • Licenses ${related.licenses ?? 0}`,
+      }],
+      suggestedActions: Array.isArray(payload?.openIssues) && payload.openIssues.length
+        ? payload.openIssues.slice(0, 6)
+        : ['No critical Digital Twin issues detected.'],
+    };
+  }
+
+  if (mode === 'black_box_timeline') {
+    const events = Array.isArray(payload?.events) ? payload.events : [];
+    const grouped = events.reduce((acc, event) => {
+      const key = String(event.eventGroup || 'all');
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || `Black Box Timeline loaded with ${events.length} event(s).`),
+      matchedItems: [],
+      suggestedActions: Object.entries(grouped).map(([key, count]) => `${key}: ${count}`),
+    };
+  }
+
+  if (mode === 'plan_action') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.affectedItems) ? payload.affectedItems.slice(0, 10).map((item) => ({
+        assetId: item.assetId || item.customId || '-',
+        name: item.name || item.assetName || 'Affected Asset',
+        category: payload?.actionType || 'Action Plan',
+        type: item.type || '-',
+        location: item.location || '-',
+        status: item.reason || '-',
+      })) : [],
+      suggestedActions: [String(payload?.confirmationInstructions || 'Review plan and confirm through safe workflows.')],
+    };
+  }
+
   return {
+    ...baseMeta,
     text: String(payload?.answer || payload?.summary || inventoryAiQuickActionLabel(mode)),
-    confidence,
-    fallbackUsed: Boolean(payload?.fallbackUsed),
     matchedItems: Array.isArray(payload?.results) ? payload.results : [],
     suggestedActions: Array.isArray(payload?.suggestedActions) ? payload.suggestedActions : [],
   };
@@ -5245,9 +7811,22 @@ function inventoryAiModeMeta(mode) {
     assistant: { title: 'Inventory AI Assistant', queryRequired: true, placeholder: 'Ask inventory questions (e.g., Which assets are missing serial numbers?)' },
     search: { title: 'AI Search', queryRequired: true, placeholder: 'Search in natural language (e.g., licenses expiring soon)' },
     missing_data: { title: 'AI Data Quality Check', queryRequired: false, placeholder: '' },
+    data_corrections: { title: 'AI Data Corrections', queryRequired: false, placeholder: '' },
+    risk_scores: { title: 'AI Risk Scores', queryRequired: false, placeholder: '' },
+    replacement_priority: { title: 'AI Replacement Priorities', queryRequired: false, placeholder: '' },
+    spare_stock_forecast: { title: 'AI Spare Stock Forecast', queryRequired: false, placeholder: '' },
+    reallocation: { title: 'AI Reallocation / Tech Exchange', queryRequired: false, placeholder: '' },
     maintenance: { title: 'AI Maintenance Recommendations', queryRequired: false, placeholder: '' },
     procurement: { title: 'AI Procurement Recommendations', queryRequired: false, placeholder: '' },
     duplicates: { title: 'AI Duplicate Check', queryRequired: false, placeholder: '' },
+    relationship_suggestions: { title: 'AI Relationship Suggestions', queryRequired: false, placeholder: '' },
+    ticket_draft: { title: 'AI Ticket Draft', queryRequired: true, placeholder: 'Describe the issue to draft a ticket' },
+    daily_brief: { title: 'Inventory Daily Brief', queryRequired: false, placeholder: '' },
+    monthly_report: { title: 'AI Monthly Inventory Report', queryRequired: false, placeholder: '' },
+    executive_dashboard: { title: 'Inventory Executive Dashboard', queryRequired: false, placeholder: '' },
+    digital_twin: { title: 'Asset Digital Twin', queryRequired: false, placeholder: '' },
+    black_box_timeline: { title: 'Asset Black Box Timeline', queryRequired: false, placeholder: '' },
+    plan_action: { title: 'AI Natural Language Action Plan', queryRequired: true, placeholder: 'Example: Transfer all Lab A PCs to Computer Lab B' },
   };
   return map[mode] || map.assistant;
 }
@@ -5280,7 +7859,6 @@ window.openInventoryAiModal = async (mode = 'assistant') => {
 
 window.runInventoryAiAction = async () => {
   const mode = inventoryAiState.mode || 'assistant';
-  const endpoint = inventoryAiEndpointForMode(mode);
   const meta = inventoryAiModeMeta(mode);
   const queryInput = document.getElementById('inventoryAiQueryInput');
   const runBtn = document.getElementById('inventoryAiRunBtn');
@@ -5295,8 +7873,43 @@ window.runInventoryAiAction = async () => {
   }
   if (statusEl) statusEl.textContent = 'Running AI analysis...';
   try {
-    const payload = meta.queryRequired ? { query: String(queryInput?.value || '').trim() } : {};
-    const result = await postInventoryJson(endpoint, payload);
+    const context = getInventoryAiChatContext();
+    const endpoint = inventoryAiEndpointForMode(mode, context);
+    if (!endpoint) {
+      throw new Error('Select/open an asset first, then run this action.');
+    }
+    const payload = {
+      context,
+      currentView: context.view,
+      search: context.search,
+      filters: context.filters,
+      selectedAssetCustomId: context.selectedAssetCustomId,
+    };
+    if (meta.queryRequired) payload.query = String(queryInput?.value || '').trim();
+    if (mode === 'ticket_draft') {
+      payload.issue = payload.query || 'Draft maintenance ticket for inventory issue';
+      if (context.selectedAssetCustomId) payload.assetId = context.selectedAssetCustomId;
+    }
+    if (mode === 'monthly_report') {
+      const now = new Date();
+      payload.month = now.getMonth() + 1;
+      payload.year = now.getFullYear();
+    }
+    const usesGet = mode === 'executive_dashboard' || mode === 'digital_twin' || mode === 'black_box_timeline';
+    let result;
+    if (usesGet) {
+      let query = '';
+      if (mode === 'executive_dashboard') {
+        const params = new URLSearchParams();
+        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', payload.filters.department);
+        if (payload?.filters?.building && payload.filters.building !== 'all') params.set('location', payload.filters.building);
+        if (payload?.filters?.type && payload.filters.type !== 'all') params.set('type', payload.filters.type);
+        query = params.toString() ? `?${params.toString()}` : '';
+      }
+      result = await readInventoryJson(`${endpoint}${query}`);
+    } else {
+      result = await postInventoryJson(endpoint, payload);
+    }
     renderInventoryAiResult(result || {});
     if (statusEl) statusEl.textContent = `Completed (${result?.fallbackUsed ? 'fallback path used' : 'LLM-assisted path used'}).`;
   } catch (error) {
@@ -5339,29 +7952,387 @@ function renderImportPreviewRows(rows = []) {
   }).join('');
 }
 
-function resetImportAssetsState() {
-  importPreviewCache = null;
-  importAiHeaderMappings = null;
+function setImportPreviewUiState(preview = null) {
   const summary = document.getElementById('importPreviewSummary');
   const commitSummary = document.getElementById('importCommitSummary');
   const commitBtn = document.getElementById('commitImportBtn');
+  if (!preview || !Array.isArray(preview.normalizedRows)) {
+    if (summary) summary.textContent = 'No preview yet.';
+    if (commitSummary) {
+      commitSummary.textContent = '';
+      commitSummary.className = 'small mt-2';
+    }
+    if (commitBtn) commitBtn.disabled = true;
+    renderImportPreviewRows([]);
+    return;
+  }
+  renderImportPreviewRows(preview.normalizedRows || []);
+  if (summary) {
+    summary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
+  }
+  if (commitSummary) {
+    const msg = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
+    commitSummary.textContent = msg || '';
+    commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
+  }
+  if (commitBtn) commitBtn.disabled = !preview.canImport;
+}
+
+function resetImportRepairState() {
+  importAiRepairState = {
+    suggestions: [],
+    beforeMetrics: null,
+    lastApplySummary: '',
+  };
+  renderImportRepairSuggestions();
+}
+
+function normalizeImportRepairStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'applied' || normalized === 'ignored' || normalized === 'failed') return normalized;
+  return 'pending';
+}
+
+function formatImportRepairValue(value) {
+  if (value === null || typeof value === 'undefined') return '-';
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+  const text = String(value).trim();
+  return text || '-';
+}
+
+function toImportRepairFieldLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  return raw
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function normalizeImportRepairSuggestions(fixes = []) {
+  const suggestions = Array.isArray(fixes) ? fixes.map((fix, index) => {
+    const rowNumber = Number(fix?.rowNumber || 0);
+    const field = String(fix?.field || '').trim();
+    const confidenceValue = Number(fix?.confidence);
+    return {
+      id: `repair-fix-${index + 1}-${rowNumber || 'x'}-${field || 'field'}`,
+      rowNumber: Number.isFinite(rowNumber) ? rowNumber : 0,
+      field,
+      oldValue: Object.prototype.hasOwnProperty.call(fix || {}, 'oldValue') ? fix.oldValue : fix?.originalValue,
+      suggestedValue: fix?.suggestedValue,
+      reason: String(fix?.reason || '').trim() || 'No reason provided.',
+      confidence: Number.isFinite(confidenceValue) ? Math.max(0, Math.min(1, confidenceValue)) : null,
+      safeToApply: Boolean(fix?.safeToApply || fix?.canAutoApply),
+      canAutoApply: Boolean(fix?.safeToApply || fix?.canAutoApply),
+      severity: String(fix?.severity || '').trim().toLowerCase() || (Boolean(fix?.safeToApply || fix?.canAutoApply) ? 'info' : 'warning'),
+      conflictKey: `${rowNumber || 0}::${field.toLowerCase()}`,
+      conflict: false,
+      status: 'pending',
+      selected: Boolean(fix?.safeToApply || fix?.canAutoApply),
+      appliedAt: null,
+      ignoredAt: null,
+      failedReason: '',
+    };
+  }) : [];
+
+  const conflictBuckets = new Map();
+  suggestions.forEach((fix) => {
+    const key = String(fix.conflictKey || '');
+    conflictBuckets.set(key, [...(conflictBuckets.get(key) || []), fix.id]);
+  });
+
+  return suggestions.map((fix) => {
+    const conflictIds = conflictBuckets.get(String(fix.conflictKey || '')) || [];
+    if (conflictIds.length <= 1) return fix;
+    return {
+      ...fix,
+      conflict: true,
+      canAutoApply: false,
+      selected: false,
+      reason: `${fix.reason} (Conflict: multiple suggestions target the same row/field.)`,
+    };
+  });
+}
+
+function renderImportRepairSuggestions() {
+  const panelEl = document.getElementById('importAiRepairPanel');
+  const metaEl = document.getElementById('importAiRepairMeta');
+  const summaryEl = document.getElementById('importAiRepairApplySummary');
+  const tableBody = document.getElementById('importAiRepairTableBody');
+  const applySafeBtn = document.getElementById('importAiRepairApplySafeBtn');
+  const applySelectedBtn = document.getElementById('importAiRepairApplySelectedBtn');
+  const ignoreAllBtn = document.getElementById('importAiRepairIgnoreAllBtn');
+  if (!panelEl || !metaEl || !summaryEl || !tableBody) return;
+
+  const suggestions = Array.isArray(importAiRepairState.suggestions) ? importAiRepairState.suggestions : [];
+  if (!suggestions.length) {
+    panelEl.classList.add('d-none');
+    metaEl.textContent = 'No suggestions loaded.';
+    summaryEl.textContent = 'No fixes applied yet.';
+    summaryEl.className = 'small text-muted mb-2';
+    tableBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-3">Run AI Fix Import Errors to generate suggestions.</td></tr>';
+    if (applySafeBtn) applySafeBtn.disabled = true;
+    if (applySelectedBtn) applySelectedBtn.disabled = true;
+    if (ignoreAllBtn) ignoreAllBtn.disabled = true;
+    return;
+  }
+
+  panelEl.classList.remove('d-none');
+  const counts = suggestions.reduce((acc, fix) => {
+    const status = normalizeImportRepairStatus(fix.status);
+    acc[status] = (acc[status] || 0) + 1;
+    if (fix.conflict) acc.conflicts += 1;
+    if (fix.selected && status === 'pending') acc.selectedPending += 1;
+    if (fix.canAutoApply && status === 'pending') acc.safePending += 1;
+    return acc;
+  }, {
+    pending: 0,
+    applied: 0,
+    ignored: 0,
+    failed: 0,
+    conflicts: 0,
+    selectedPending: 0,
+    safePending: 0,
+  });
+
+  metaEl.textContent = `Suggestions: ${suggestions.length} | Pending: ${counts.pending} | Applied: ${counts.applied} | Ignored: ${counts.ignored} | Failed: ${counts.failed}${counts.conflicts ? ` | Conflicts: ${counts.conflicts}` : ''}`;
+  summaryEl.textContent = importAiRepairState.lastApplySummary || 'No fixes applied yet.';
+  summaryEl.className = `small mb-2 ${counts.failed ? 'text-warning' : 'text-muted'}`;
+
+  tableBody.innerHTML = suggestions.map((fix) => {
+    const status = normalizeImportRepairStatus(fix.status);
+    const statusBadge = status === 'applied'
+      ? '<span class="badge bg-success">Applied</span>'
+      : (status === 'ignored'
+        ? '<span class="badge bg-secondary">Ignored</span>'
+        : (status === 'failed'
+          ? '<span class="badge bg-danger">Failed</span>'
+          : '<span class="badge bg-warning text-dark">Pending</span>'));
+    const confidence = fix.confidence === null || typeof fix.confidence === 'undefined'
+      ? '-'
+      : `${Math.round(Number(fix.confidence || 0) * 100)}%`;
+    const reason = fix.failedReason
+      ? `${fix.reason} Failed: ${fix.failedReason}`
+      : fix.reason;
+    return `
+      <tr>
+        <td>
+          <input
+            type="checkbox"
+            class="form-check-input"
+            data-import-repair-select-id="${UI.escapeHTML(String(fix.id || ''))}"
+            ${fix.selected ? 'checked' : ''}
+            ${status !== 'pending' ? 'disabled' : ''}
+          />
+        </td>
+        <td>${UI.escapeHTML(String(fix.rowNumber || '-'))}</td>
+        <td>${UI.escapeHTML(toImportRepairFieldLabel(fix.field))}</td>
+        <td><code>${UI.escapeHTML(formatImportRepairValue(fix.oldValue))}</code></td>
+        <td><code>${UI.escapeHTML(formatImportRepairValue(fix.suggestedValue))}</code></td>
+        <td class="small">${UI.escapeHTML(reason || '-')}</td>
+        <td>${UI.escapeHTML(confidence)}</td>
+        <td>${statusBadge}</td>
+        <td>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-success me-1"
+            data-import-repair-apply-id="${UI.escapeHTML(String(fix.id || ''))}"
+            ${status !== 'pending' ? 'disabled' : ''}
+          >Apply</button>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            data-import-repair-ignore-id="${UI.escapeHTML(String(fix.id || ''))}"
+            ${status !== 'pending' ? 'disabled' : ''}
+          >Ignore</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  if (applySafeBtn) applySafeBtn.disabled = counts.safePending === 0;
+  if (applySelectedBtn) applySelectedBtn.disabled = counts.selectedPending === 0;
+  if (ignoreAllBtn) ignoreAllBtn.disabled = counts.pending === 0;
+}
+
+function coerceImportRepairValue(field, value) {
+  const key = String(field || '').trim();
+  if (['quantity', 'minimumStockLevel', 'reorderPoint'].includes(key)) {
+    const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  if (key === 'purchaseCost') {
+    const parsed = Number.parseFloat(String(value ?? '').trim());
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}
+
+function cloneImportPreviewRows(rows = []) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => ({
+    ...row,
+    errors: Array.isArray(row?.errors) ? [...row.errors] : [],
+    warnings: Array.isArray(row?.warnings) ? [...row.warnings] : [],
+  }));
+}
+
+async function revalidateImportPreviewRows() {
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows)) {
+    throw new Error('No preview rows available for validation.');
+  }
+  const payload = await postInventoryJson('/assets/import/preview', {
+    filename: importPreviewCache.filename || 'import.csv',
+    rows: importPreviewCache.normalizedRows,
+  });
+  importPreviewCache = {
+    ...importPreviewCache,
+    ...payload,
+    normalizedRows: Array.isArray(payload?.normalizedRows) ? payload.normalizedRows : [],
+  };
+  setImportPreviewUiState(importPreviewCache);
+  return importPreviewCache;
+}
+
+async function applyImportRepairsByIds(ids = [], options = {}) {
+  const requestedIds = Array.isArray(ids) ? ids.map((entry) => String(entry || '').trim()).filter(Boolean) : [];
+  if (!requestedIds.length) {
+    showMessage('Select at least one pending suggestion.', 'warning');
+    return;
+  }
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows)) {
+    showMessage('Run preview first.', 'warning');
+    return;
+  }
+
+  const requireSafe = Boolean(options?.requireSafe);
+  const snapshotBefore = {
+    invalidRows: Number(importPreviewCache.invalidRows || 0),
+    validRows: Number(importPreviewCache.validRows || 0),
+  };
+
+  const suggestionById = new Map((importAiRepairState.suggestions || []).map((fix) => [String(fix.id || ''), fix]));
+  const selectedFixes = requestedIds
+    .map((id) => suggestionById.get(id))
+    .filter(Boolean)
+    .filter((fix) => normalizeImportRepairStatus(fix.status) === 'pending');
+
+  if (!selectedFixes.length) {
+    showMessage('No pending suggestions selected.', 'warning');
+    return;
+  }
+
+  const conflictingSelections = new Map();
+  selectedFixes.forEach((fix) => {
+    const key = String(fix.conflictKey || '');
+    conflictingSelections.set(key, [...(conflictingSelections.get(key) || []), fix]);
+  });
+
+  let appliedCount = 0;
+  const appliedFixIds = [];
+  const nextRows = cloneImportPreviewRows(importPreviewCache.normalizedRows);
+  const nextSuggestions = (importAiRepairState.suggestions || []).map((fix) => ({ ...fix }));
+
+  selectedFixes.forEach((fix) => {
+    const nextFix = nextSuggestions.find((entry) => String(entry.id || '') === String(fix.id || ''));
+    if (!nextFix) return;
+    if (requireSafe && !nextFix.canAutoApply) return;
+    const sameFieldSelections = conflictingSelections.get(String(nextFix.conflictKey || '')) || [];
+    if (sameFieldSelections.length > 1) {
+      nextFix.status = 'failed';
+      nextFix.failedReason = 'Multiple conflicting suggestions selected for the same row/field.';
+      return;
+    }
+    const rowIndex = nextRows.findIndex((row) => Number(row?.rowNumber || 0) === Number(nextFix.rowNumber || 0));
+    if (rowIndex < 0) {
+      nextFix.status = 'failed';
+      nextFix.failedReason = 'Target row not found in current preview.';
+      return;
+    }
+    const field = String(nextFix.field || '').trim();
+    if (!field || !Object.prototype.hasOwnProperty.call(nextRows[rowIndex], field)) {
+      nextFix.status = 'failed';
+      nextFix.failedReason = `Field "${field || '-'}" was not found in preview row schema.`;
+      return;
+    }
+    nextRows[rowIndex][field] = coerceImportRepairValue(field, nextFix.suggestedValue);
+    nextFix.status = 'applied';
+    nextFix.appliedAt = new Date().toISOString();
+    nextFix.selected = false;
+    nextFix.failedReason = '';
+    appliedCount += 1;
+    appliedFixIds.push(String(nextFix.id || ''));
+  });
+
+  importAiRepairState.suggestions = nextSuggestions;
+  if (!appliedCount) {
+    importAiRepairState.lastApplySummary = 'No fixes were applied. Select safe pending suggestions or resolve conflicts first.';
+    renderImportRepairSuggestions();
+    showMessage('No fixes were applied.', 'warning');
+    return;
+  }
+
+  importPreviewCache = {
+    ...importPreviewCache,
+    normalizedRows: nextRows,
+  };
+  await revalidateImportPreviewRows();
+
+  if (appliedFixIds.length) {
+    importAiRepairState.suggestions = (importAiRepairState.suggestions || []).map((fix) => {
+      const fixId = String(fix.id || '');
+      if (!appliedFixIds.includes(fixId)) return fix;
+      const targetRow = (importPreviewCache?.normalizedRows || []).find((row) => Number(row?.rowNumber || 0) === Number(fix.rowNumber || 0));
+      if (!targetRow) {
+        return {
+          ...fix,
+          status: 'failed',
+          failedReason: 'Target row disappeared after revalidation.',
+        };
+      }
+      const fieldToken = String(fix.field || '').trim().toLowerCase();
+      const rowErrors = Array.isArray(targetRow.errors) ? targetRow.errors.map((entry) => String(entry || '').toLowerCase()) : [];
+      const stillInvalid = rowErrors.some((msg) => msg.includes(fieldToken) || msg.includes(`invalid ${fieldToken}`));
+      if (!stillInvalid) return fix;
+      return {
+        ...fix,
+        status: 'failed',
+        failedReason: 'Suggested value still fails validation after preview recheck.',
+      };
+    });
+  }
+
+  const afterInvalid = Number(importPreviewCache.invalidRows || 0);
+  const remainingErrors = Number(importPreviewCache.invalidRows || 0);
+  importAiRepairState.beforeMetrics = snapshotBefore;
+  importAiRepairState.lastApplySummary = `Before invalid: ${snapshotBefore.invalidRows} | After invalid: ${afterInvalid} | Fixes applied: ${appliedCount} | Remaining errors: ${remainingErrors}.`;
+  renderImportRepairSuggestions();
+  showMessage(`Applied ${appliedCount} fix(es). Preview revalidated.`, 'success');
+}
+
+function resetImportAssetsState() {
+  importPreviewCache = null;
+  importAiHeaderMappings = null;
   const fileInput = document.getElementById('importAssetsFile');
   const dropHint = document.getElementById('importDropZoneHint');
   const aiMappingSummary = document.getElementById('importAiMappingSummary');
+  const aiRepairSummary = document.getElementById('importAiRepairSummary');
   const docText = document.getElementById('importDocumentText');
   const docSummary = document.getElementById('importDocumentSummary');
-  if (summary) summary.textContent = 'No preview yet.';
-  if (commitSummary) {
-    commitSummary.textContent = '';
-    commitSummary.className = 'small mt-2';
-  }
+  setImportPreviewUiState(null);
+  resetImportRepairState();
   if (aiMappingSummary) aiMappingSummary.textContent = 'No AI mapping yet.';
+  if (aiRepairSummary) aiRepairSummary.textContent = 'No AI repair run yet.';
   if (docText) docText.value = '';
   if (docSummary) docSummary.textContent = 'No document extraction run yet.';
-  if (commitBtn) commitBtn.disabled = true;
   if (fileInput) fileInput.value = '';
   if (dropHint) dropHint.textContent = 'No file selected.';
-  renderImportPreviewRows([]);
 }
 
 window.openImportAssetsModal = async () => {
@@ -5390,9 +8361,6 @@ window.copyImportTemplateCsv = async () => {
 
 window.previewImportAssets = async () => {
   const fileInput = document.getElementById('importAssetsFile');
-  const summary = document.getElementById('importPreviewSummary');
-  const commitSummary = document.getElementById('importCommitSummary');
-  const commitBtn = document.getElementById('commitImportBtn');
   if (!fileInput || !fileInput.files || !fileInput.files.length) {
     showMessage('Please choose a CSV or XLSX file.', 'warning');
     return;
@@ -5418,16 +8386,8 @@ window.previewImportAssets = async () => {
       headerMappings: importAiHeaderMappings || undefined,
     });
     importPreviewCache = preview;
-    renderImportPreviewRows(preview.normalizedRows || []);
-    if (summary) {
-      summary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
-    }
-    if (commitSummary) {
-      const msg = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
-      commitSummary.textContent = msg || '';
-      commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
-    }
-    if (commitBtn) commitBtn.disabled = !preview.canImport;
+    setImportPreviewUiState(importPreviewCache);
+    resetImportRepairState();
   } catch (error) {
     showMessage(error.message || 'Failed to preview import.', 'error');
   }
@@ -5477,11 +8437,167 @@ window.runImportAiColumnMapping = async () => {
   }
 };
 
+window.runImportAiRepairErrors = async () => {
+  const summaryEl = document.getElementById('importAiRepairSummary');
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows) || !importPreviewCache.normalizedRows.length) {
+    showMessage('Run preview first before AI error repair.', 'warning');
+    return;
+  }
+  if (summaryEl) {
+    summaryEl.textContent = 'Running AI import error repair...';
+    summaryEl.className = 'small text-muted mb-2';
+  }
+  try {
+    const result = await postInventoryJson('/assets/import/ai-repair-errors', {
+      normalizedRows: importPreviewCache.normalizedRows,
+    });
+    const fixes = Array.isArray(result?.fixes) ? result.fixes : [];
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    importAiRepairState.suggestions = normalizeImportRepairSuggestions(fixes);
+    importAiRepairState.beforeMetrics = {
+      invalidRows: Number(importPreviewCache.invalidRows || 0),
+      validRows: Number(importPreviewCache.validRows || 0),
+      totalRows: Number(importPreviewCache.totalRows || (importPreviewCache.normalizedRows || []).length),
+    };
+    importAiRepairState.lastApplySummary = `Before invalid: ${importAiRepairState.beforeMetrics.invalidRows}. Apply fixes and re-run validation.`;
+    renderImportRepairSuggestions();
+    if (summaryEl) {
+      summaryEl.textContent = `${result?.summary || 'AI repair suggestions generated.'} Fixes: ${fixes.length}. Safe fixes: ${importAiRepairState.suggestions.filter((fix) => fix.canAutoApply).length}. ${warnings.length ? `Warnings: ${warnings.slice(0, 4).join(' | ')}` : ''}`;
+      summaryEl.className = `small mb-2 ${fixes.length ? 'text-success' : 'text-warning'}`;
+    }
+    showMessage('AI repair suggestions generated. Review and apply fixes before confirming import.', fixes.length ? 'success' : 'warning');
+  } catch (error) {
+    if (summaryEl) {
+      summaryEl.textContent = 'AI import error repair failed.';
+      summaryEl.className = 'small mb-2 text-danger';
+    }
+    showMessage(error.message || 'Failed to run AI import error repair.', 'error');
+  }
+};
+
+window.applySingleImportRepair = async (fixId) => {
+  await applyImportRepairsByIds([fixId], { requireSafe: false });
+};
+
+window.ignoreSingleImportRepair = async (fixId) => {
+  const targetId = String(fixId || '').trim();
+  if (!targetId) return;
+  importAiRepairState.suggestions = (importAiRepairState.suggestions || []).map((fix) => {
+    if (String(fix.id || '') !== targetId) return fix;
+    if (normalizeImportRepairStatus(fix.status) !== 'pending') return fix;
+    return {
+      ...fix,
+      status: 'ignored',
+      ignoredAt: new Date().toISOString(),
+      selected: false,
+    };
+  });
+  importAiRepairState.lastApplySummary = 'Marked 1 suggestion as ignored.';
+  renderImportRepairSuggestions();
+};
+
+window.applyAllSafeImportRepairs = async () => {
+  const ids = (importAiRepairState.suggestions || [])
+    .filter((fix) => normalizeImportRepairStatus(fix.status) === 'pending' && fix.canAutoApply)
+    .map((fix) => fix.id);
+  await applyImportRepairsByIds(ids, { requireSafe: true });
+};
+
+window.applySelectedImportRepairs = async () => {
+  const ids = (importAiRepairState.suggestions || [])
+    .filter((fix) => normalizeImportRepairStatus(fix.status) === 'pending' && fix.selected)
+    .map((fix) => fix.id);
+  await applyImportRepairsByIds(ids, { requireSafe: false });
+};
+
+window.ignoreAllImportRepairs = async () => {
+  const pending = (importAiRepairState.suggestions || []).filter((fix) => normalizeImportRepairStatus(fix.status) === 'pending');
+  if (!pending.length) {
+    showMessage('No pending suggestions to ignore.', 'warning');
+    return;
+  }
+  const now = new Date().toISOString();
+  importAiRepairState.suggestions = (importAiRepairState.suggestions || []).map((fix) => {
+    if (normalizeImportRepairStatus(fix.status) !== 'pending') return fix;
+    return {
+      ...fix,
+      status: 'ignored',
+      ignoredAt: now,
+      selected: false,
+    };
+  });
+  importAiRepairState.lastApplySummary = `Ignored ${pending.length} pending suggestion(s).`;
+  renderImportRepairSuggestions();
+  showMessage(`Ignored ${pending.length} suggestion(s).`, 'info');
+};
+
+window.rerunImportPreviewValidation = async () => {
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows)) {
+    showMessage('Run preview first.', 'warning');
+    return;
+  }
+  const summaryEl = document.getElementById('importAiRepairSummary');
+  if (summaryEl) {
+    summaryEl.textContent = 'Revalidating preview rows...';
+    summaryEl.className = 'small mb-2 text-muted';
+  }
+  const beforeInvalid = Number(importPreviewCache.invalidRows || 0);
+  try {
+    await revalidateImportPreviewRows();
+    const afterInvalid = Number(importPreviewCache.invalidRows || 0);
+    const appliedCount = (importAiRepairState.suggestions || []).filter((fix) => normalizeImportRepairStatus(fix.status) === 'applied').length;
+    importAiRepairState.lastApplySummary = `Before invalid: ${beforeInvalid} | After invalid: ${afterInvalid} | Fixes applied: ${appliedCount} | Remaining errors: ${afterInvalid}.`;
+    renderImportRepairSuggestions();
+    if (summaryEl) {
+      summaryEl.textContent = `Preview revalidated. Invalid rows: ${afterInvalid}.`;
+      summaryEl.className = `small mb-2 ${afterInvalid ? 'text-warning' : 'text-success'}`;
+    }
+    showMessage('Preview revalidated successfully.', 'success');
+  } catch (error) {
+    if (summaryEl) {
+      summaryEl.textContent = 'Preview revalidation failed.';
+      summaryEl.className = 'small mb-2 text-danger';
+    }
+    showMessage(error.message || 'Failed to revalidate preview rows.', 'error');
+  }
+};
+
+window.runImportAiInvoiceMatch = async () => {
+  const summaryEl = document.getElementById('importAiRepairSummary');
+  if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows) || !importPreviewCache.normalizedRows.length) {
+    showMessage('Run preview first before invoice matching.', 'warning');
+    return;
+  }
+  if (summaryEl) {
+    summaryEl.textContent = 'Running AI invoice/warranty matching...';
+    summaryEl.className = 'small text-muted mb-2';
+  }
+  try {
+    const result = await postInventoryJson('/assets/import/ai-match-invoice', {
+      extractedRows: importPreviewCache.normalizedRows,
+    });
+    const matches = Array.isArray(result?.matches) ? result.matches : [];
+    const unmatchedItems = Array.isArray(result?.unmatchedItems) ? result.unmatchedItems : [];
+    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    if (summaryEl) {
+      summaryEl.textContent = `${result?.summary || 'Invoice matching completed.'} Matches: ${matches.length}. Unmatched: ${unmatchedItems.length}. ${warnings.length ? `Warnings: ${warnings.slice(0, 3).join(' | ')}` : ''}`;
+      summaryEl.className = `small mb-2 ${matches.length ? 'text-success' : 'text-warning'}`;
+    }
+    showMessage(matches.length
+      ? `Invoice matching suggested ${matches.length} update(s). Review before applying.`
+      : 'Invoice matching completed with no confident matches.', matches.length ? 'success' : 'warning');
+  } catch (error) {
+    if (summaryEl) {
+      summaryEl.textContent = 'AI invoice matching failed.';
+      summaryEl.className = 'small mb-2 text-danger';
+    }
+    showMessage(error.message || 'Failed to run AI invoice matching.', 'error');
+  }
+};
+
 window.previewDocumentImportRows = async () => {
   const textInput = document.getElementById('importDocumentText');
   const summary = document.getElementById('importDocumentSummary');
-  const commitSummary = document.getElementById('importCommitSummary');
-  const commitBtn = document.getElementById('commitImportBtn');
   const documentText = String(textInput?.value || '').trim();
   if (!documentText) {
     showMessage('Paste document text first.', 'warning');
@@ -5494,21 +8610,12 @@ window.previewDocumentImportRows = async () => {
       documentText,
     });
     importPreviewCache = preview;
-    renderImportPreviewRows(preview.normalizedRows || preview.extractedRows || []);
+    setImportPreviewUiState(importPreviewCache);
+    resetImportRepairState();
     if (summary) {
       summary.textContent = `${preview.sourceDocumentSummary || 'Extraction completed.'} Confidence: ${Math.round(Number(preview.confidence || 0) * 100)}%.`;
       summary.className = 'small text-muted mt-2';
     }
-    const previewSummary = document.getElementById('importPreviewSummary');
-    if (previewSummary) {
-      previewSummary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
-    }
-    if (commitSummary) {
-      const msgs = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
-      commitSummary.textContent = msgs || '';
-      commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
-    }
-    if (commitBtn) commitBtn.disabled = !preview.canImport;
     showMessage('Document extraction preview ready. Review rows before confirming import.', 'success');
   } catch (error) {
     if (summary) {
@@ -6124,6 +9231,10 @@ window.submitTransfer = async () => {
     if (uniqueTouched.length) {
       refreshDerivedStateForAssets(uniqueTouched).catch(() => {});
     }
+    const mapModalEl = document.getElementById('inventoryAssetMapModal');
+    if (mapModalEl && mapModalEl.classList.contains('show')) {
+      window.loadInventoryMapAssets(true).catch(() => {});
+    }
     const relatedSummaries = allTransferPayloads
       .map((payload) => String(payload?.relatedTransferSummary || '').trim())
       .filter(Boolean);
@@ -6499,77 +9610,64 @@ window.exportAssetsToDetailedPDF = function() {
   showMessage('Inventory PDF exported successfully.', 'success');
 };
 
-window.generateEOLReport = function() {
-  if (currentAssets.length === 0) {
-    showMessage('No assets available to analyze.', 'warning');
-    return;
+window.generateEOLReport = async function() {
+  const monthsInput = window.prompt('EOL horizon months (3 / 6 / 12 / custom):', '12');
+  if (monthsInput === null) return;
+  const monthsAhead = Number(monthsInput) > 0 ? Number(monthsInput) : 12;
+  const departmentInput = window.prompt('Department filter (optional):', String(document.getElementById('filterDept')?.value || 'all'));
+  if (departmentInput === null) return;
+  const locationInput = window.prompt('Location filter (optional):', String(document.getElementById('filterBuilding')?.value || 'all'));
+  if (locationInput === null) return;
+  const typeInput = window.prompt('Type filter (optional):', String(document.getElementById('filterType')?.value || 'all'));
+  if (typeInput === null) return;
+  const payload = {
+    monthsAhead,
+    department: departmentInput && departmentInput !== 'all' ? departmentInput : null,
+    location: locationInput && locationInput !== 'all' ? locationInput : null,
+    type: typeInput && typeInput !== 'all' ? typeInput : null,
+  };
+  try {
+    const report = await postInventoryJson('/inventory/eol-budget-report', payload);
+    const rows = Array.isArray(report?.rows) ? report.rows : [];
+    const missingCost = Array.isArray(report?.missingCostRows) ? report.missingCostRows : [];
+    const recommendations = Array.isArray(report?.recommendations) ? report.recommendations : [];
+    const lines = [
+      'OpsMind Predictive EOL Budget Report',
+      `Generated: ${new Date().toLocaleString()}`,
+      `Summary: ${report?.summary || '-'}`,
+      `Range: ${report?.totals?.range || '-'}`,
+      `Matched Assets: ${report?.totals?.matchedAssets ?? 0}`,
+      `Estimated Budget: ${report?.totals?.estimatedBudget ?? 0}`,
+      `Missing Cost Data: ${report?.totals?.missingCostAssets ?? 0}`,
+      '',
+      'Department Breakdown:',
+      ...Object.entries(report?.breakdowns?.byDepartment || {}).map(([key, value]) => `- ${key}: ${value}`),
+      '',
+      'Location Breakdown:',
+      ...Object.entries(report?.breakdowns?.byLocation || {}).map(([key, value]) => `- ${key}: ${value}`),
+      '',
+      'Category Breakdown:',
+      ...Object.entries(report?.breakdowns?.byCategory || {}).map(([key, value]) => `- ${key}: ${value}`),
+      '',
+      'Top EOL Rows:',
+      ...rows.slice(0, 50).map((row) => `- ${row.assetName} (${row.assetId}) | ${row.department} | ${row.location} | EOL: ${row.eolDate?.slice(0, 10) || '-'} | Risk: ${row.riskLevel} | Replacement Cost: ${row.estimatedReplacementCost ?? 'cost data missing'}`),
+      '',
+      'Missing Cost Data Assets:',
+      ...missingCost.slice(0, 50).map((row) => `- ${row.assetName} (${row.assetId}) | ${row.department} | ${row.location}`),
+      '',
+      'Recommended Actions:',
+      ...recommendations.map((item) => `- ${item}`),
+    ];
+    const reportText = lines.join('\n');
+    const encoded = encodeURIComponent(reportText);
+    const anchor = document.createElement('a');
+    anchor.href = `data:text/plain;charset=utf-8,${encoded}`;
+    anchor.download = `opsmind_eol_budget_report_${new Date().toISOString().slice(0, 10)}.txt`;
+    anchor.click();
+    showMessage(`EOL budget report generated for ${rows.length} asset(s).`, 'success');
+  } catch (error) {
+    showMessage(error.message || 'Failed to generate EOL budget report.', 'error');
   }
-
-  // ðŸ› FIX: Dynamically maps the global jsPDF regardless of ES6 module restrictions
-  const jsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
-
-  if (!jsPDF) {
-    showMessage('jsPDF is not loaded. Please check your network or ad blocker.', 'error');
-    return;
-  }
-
-  const doc = new jsPDF();
-  
-  if (typeof doc.autoTable !== 'function') {
-    showMessage('jsPDF autoTable is not loaded correctly.', 'error');
-    return;
-  }
-
-  const reportData = [];
-  let totalEstimatedBudget = 0;
-
-  currentAssets.forEach(asset => {
-    const eol = getEOLDetails(asset);
-
-    if (!eol.isClosedLifecycle && eol.procurementRecommended && !eol.lowConfidence) {
-      totalEstimatedBudget += eol.metrics.cost;
-
-      reportData.push([
-        asset.name, 
-        displayDepartment(asset.department),
-        formatType(asset.type),
-        `${eol.metrics.years} years`,
-        `${Math.round((eol.failureRisk || 0) * 100)}%`,
-        eol.expiryDate.toLocaleDateString(),
-        eol.daysRemaining < 0 ? 'âš ï¸ EXPIRED' : `${Math.ceil(eol.daysRemaining / 30)} Months`,
-        `$${eol.metrics.cost.toLocaleString()}`
-      ]);
-    }
-  });
-
-  if (reportData.length === 0) {
-    showMessage('Great news: no assets are reaching End-of-Life within the next 12 months.', 'success');
-    return;
-  }
-
-  doc.setFontSize(18);
-  doc.setTextColor(220, 53, 69);
-  doc.text('Predictive End-of-Life (EOL) Budget Report', 14, 20);
-  
-  doc.setFontSize(11);
-  doc.setTextColor(100);
-  doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 28);
-  
-  doc.setFontSize(12);
-  doc.setTextColor(0);
-  doc.text(`Estimated Replacement Funding Needed (Next 12 Months): $${totalEstimatedBudget.toLocaleString()}`, 14, 38);
-
-  doc.autoTable({
-    head: [['Asset Name', 'Department', 'Type', 'AI Lifespan', 'Failure Risk', 'Est. Expiry Date', 'Time Remaining', 'Est. Replacement Cost']],
-    body: reportData,
-    startY: 45,
-    styles: { fontSize: 9 },
-    headStyles: { fillColor: [220, 53, 69] },
-    alternateRowStyles: { fillColor: [250, 240, 240] }
-  });
-
-  doc.save('OpsMind_Predictive_EOL_Budget.pdf');
-  showMessage('Predictive EOL budget report exported successfully.', 'success');
 };
 
 // --- UI Helper Functions ---

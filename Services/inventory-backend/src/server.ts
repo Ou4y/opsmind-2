@@ -245,17 +245,137 @@ function mapToCustodyStatus(value: unknown): AssetCustodyStatus {
     return custodyMap[normalized] || 'UNASSIGNED';
 }
 
-function mapToAssetLocation(value: string): AssetLocation {
-    const locationMap: Record<string, AssetLocation> = {
-        'Central Warehouse': 'CENTRAL_WAREHOUSE',
-        'Main Building': 'MAIN_BUILDING',
-        'K Building': 'K_BUILDING',
-        'N Building': 'N_BUILDING',
-        'S Building': 'S_BUILDING',
-        'R Building': 'R_BUILDING',
-        'Pharmacy Building': 'PHARMACY_BUILDING'
+function normalizeLocationToken(value: unknown): string {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+const LOCATION_ALIAS_REGISTRY: Array<{
+    key: string;
+    location: AssetLocation;
+    friendlyName: string;
+    aliases: string[];
+}> = [
+    {
+        key: 'central_warehouse',
+        location: 'CENTRAL_WAREHOUSE',
+        friendlyName: 'Central Warehouse',
+        aliases: [
+            'central warehouse',
+            'central_warehouse',
+            'warehouse',
+            'main warehouse',
+            'warehouse staging',
+        ],
+    },
+    {
+        key: 'main',
+        location: 'MAIN_BUILDING',
+        friendlyName: 'Main Building',
+        aliases: ['main', 'main building', 'building main', 'main block'],
+    },
+    {
+        key: 'k',
+        location: 'K_BUILDING',
+        friendlyName: 'K Building',
+        aliases: ['k', 'k building', 'building k', 'k_block'],
+    },
+    {
+        key: 'n',
+        location: 'N_BUILDING',
+        friendlyName: 'N Building',
+        aliases: ['n', 'n building', 'building n', 'n_block'],
+    },
+    {
+        key: 's',
+        location: 'S_BUILDING',
+        friendlyName: 'S Building',
+        aliases: ['s', 's building', 'building s', 's_block'],
+    },
+    {
+        key: 'r',
+        location: 'R_BUILDING',
+        friendlyName: 'R Building',
+        aliases: ['r', 'r building', 'building r', 'r_block'],
+    },
+    {
+        key: 'pharmacy',
+        location: 'PHARMACY_BUILDING',
+        friendlyName: 'Pharmacy Building',
+        aliases: ['pharmacy', 'pharmacy building', 'building pharmacy'],
+    },
+    {
+        key: 'copy_center',
+        location: 'CENTRAL_WAREHOUSE',
+        friendlyName: 'Copy Center',
+        aliases: ['copy center', 'copycenter', 'copy-centre', 'copy center building'],
+    },
+    {
+        key: 'mosque',
+        location: 'CENTRAL_WAREHOUSE',
+        friendlyName: 'Mosque',
+        aliases: ['mosque', 'university mosque'],
+    },
+    {
+        key: 'workshop',
+        location: 'CENTRAL_WAREHOUSE',
+        friendlyName: 'Workshop',
+        aliases: ['workshop', 'work shop'],
+    },
+];
+
+const LOCATION_ALIAS_LOOKUP = new Map<string, {
+    key: string;
+    location: AssetLocation;
+    friendlyName: string;
+}>();
+LOCATION_ALIAS_REGISTRY.forEach((entry) => {
+    const mergedAliases = [entry.friendlyName, ...entry.aliases];
+    mergedAliases.forEach((alias) => {
+        const token = normalizeLocationToken(alias);
+        if (!token) return;
+        LOCATION_ALIAS_LOOKUP.set(token, {
+            key: entry.key,
+            location: entry.location,
+            friendlyName: entry.friendlyName,
+        });
+    });
+});
+
+function resolveAssetLocationForStorage(value: unknown): {
+    location: AssetLocation;
+    mapLocationHint: string | null;
+    matchedAlias: string | null;
+    matchMethod: 'exact' | 'fallback' | null;
+} {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        return {
+            location: 'CENTRAL_WAREHOUSE',
+            mapLocationHint: null,
+            matchedAlias: null,
+            matchMethod: null,
+        };
+    }
+    const normalized = normalizeLocationToken(raw);
+    const matched = LOCATION_ALIAS_LOOKUP.get(normalized);
+    if (matched) {
+        return {
+            location: matched.location,
+            mapLocationHint: matched.friendlyName,
+            matchedAlias: raw,
+            matchMethod: 'exact',
+        };
+    }
+    return {
+        location: 'CENTRAL_WAREHOUSE',
+        mapLocationHint: raw,
+        matchedAlias: null,
+        matchMethod: 'fallback',
     };
-    return locationMap[value] || 'CENTRAL_WAREHOUSE';
+}
+
+function mapToAssetLocation(value: string): AssetLocation {
+    return resolveAssetLocationForStorage(value).location;
 }
 
 function mapToAssetDepartment(value: string): AssetDepartment {
@@ -285,6 +405,14 @@ function mapLocationToFriendly(value: AssetLocation | string): string {
         PHARMACY_BUILDING: 'Pharmacy Building',
     };
     return mapping[String(value || '').toUpperCase()] || String(value || '');
+}
+
+function isCentralWarehouseLocationValue(value: unknown): boolean {
+    const token = normalizeLocationToken(value);
+    return token === 'centralwarehouse'
+        || token === 'mainwarehouse'
+        || token === 'warehouse'
+        || token === 'centralwarehousestaging';
 }
 
 function mapDepartmentToFriendly(value: AssetDepartment | string): string {
@@ -393,6 +521,40 @@ function parseJsonArrayInput(value: unknown): string[] {
         .split(/\r?\n|,/)
         .map((entry) => entry.trim())
         .filter(Boolean);
+}
+
+function readAssetSpecifications(asset: { specifications?: unknown }): Record<string, any> {
+    if (!asset || typeof asset !== 'object') return {};
+    if (!asset.specifications || typeof asset.specifications !== 'object' || Array.isArray(asset.specifications)) {
+        return {};
+    }
+    return { ...(asset.specifications as Record<string, any>) };
+}
+
+function mergeAssetSpecifications(
+    existing: unknown,
+    patch: Record<string, any>,
+): Record<string, any> {
+    const base = (existing && typeof existing === 'object' && !Array.isArray(existing))
+        ? { ...(existing as Record<string, any>) }
+        : {};
+    return {
+        ...base,
+        ...patch,
+    };
+}
+
+function normalizeLocationForComparison(value: unknown): string {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return normalizeValue(mapLocationToFriendly(raw as any) || raw);
+}
+
+function computeWifiLocationMismatch(assetLocation: unknown, lastSeenLocation: unknown): boolean {
+    const current = normalizeLocationForComparison(assetLocation);
+    const seen = normalizeLocationForComparison(lastSeenLocation);
+    if (!current || !seen) return false;
+    return current !== seen;
 }
 
 function normalizeComponentStatus(value: unknown, fallback = 'installed'): string {
@@ -1332,7 +1494,9 @@ async function callInventoryAiHelper(path: string, body: Record<string, unknown>
         }
         return await response.json();
     } catch (error: any) {
-        console.warn(`[InventoryAIHelpers] ${path} request failed: ${error?.message || error}`);
+        const message = String(error?.message || error || 'unknown_error');
+        const timeoutLike = message.toLowerCase().includes('aborted') || message.toLowerCase().includes('timeout');
+        console.warn(`[InventoryAIHelpers] ${path} request failed${timeoutLike ? ' (timeout_or_abort)' : ''}: ${message}`);
         return null;
     } finally {
         clearTimeout(timer);
@@ -1584,6 +1748,7 @@ type InventoryAiSnapshot = {
         unitCost: Prisma.Decimal | null;
         vendor: string | null;
         location: string | null;
+        compatibleAssetTypes: Prisma.JsonValue | null;
     }>;
 };
 
@@ -1655,6 +1820,7 @@ async function buildInventoryAiSnapshot(): Promise<InventoryAiSnapshot> {
                 unitCost: true,
                 vendor: true,
                 location: true,
+                compatibleAssetTypes: true,
             },
             orderBy: { updatedAt: 'desc' },
             take: INVENTORY_AI_MAX_SPARE_STOCK,
@@ -1682,17 +1848,48 @@ function buildAiMatchedItem(asset: Asset, reason: string, parentAssetId: string 
 }
 
 function classifyAiQueryIntent(query: string): string {
-    const q = String(query || '').toLowerCase();
+    const q = String(query || '')
+        .toLowerCase()
+        .replace(/[’‘`´]/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim();
     if (!q.trim()) return 'unknown';
-    if ((q.includes('missing') || q.includes('without')) && q.includes('serial')) return 'missing_serial';
-    if (q.includes('duplicate')) return 'duplicates';
-    if (q.includes('warranty') && (q.includes('expired') || q.includes('expire'))) return 'warranty_expiry';
-    if (q.includes('maintenance')) return 'maintenance';
-    if (q.includes('component') && (q.includes('fail') || q.includes('replace') || q.includes('repair'))) return 'component_failures';
-    if (q.includes('low stock') || q.includes('reorder') || q.includes('spare')) return 'low_stock';
-    if (q.includes('buy') || q.includes('procurement') || q.includes('purchase')) return 'procurement';
-    if (q.includes('eol') || q.includes('end of life')) return 'eol';
-    if (q.includes('license') && q.includes('expir')) return 'license_expiry';
+    const has = (...phrases: string[]) => phrases.some((phrase) => q.includes(phrase));
+
+    if (
+        /(?:what changed|show changes|daily brief|today(?:'s)? inventory brief|inventory changes this week)/.test(q)
+        || has('what changed today', "today's inventory brief", 'give me todays inventory brief', 'show inventory changes this week', 'daily brief')
+    ) return 'daily_brief';
+    if (
+        /(?:generate|create|give|show|build).*(?:monthly).*(?:inventory|asset).*(?:report|summary)/.test(q)
+        || has('monthly inventory report', 'monthly asset report', 'inventory monthly summary', "this month's inventory report", 'inventory report this month')
+    ) return 'monthly_report';
+    if (
+        /(?:executive dashboard|management summary|executive summary).*(?:inventory|asset)/.test(q)
+        || has('show executive dashboard', 'generate executive inventory dashboard summary', 'inventory management summary')
+    ) return 'executive_dashboard';
+    if (has('digital twin', 'show digital twin for this asset', 'asset digital twin')) return 'digital_twin';
+    if (has('black box timeline', 'blackbox timeline', 'show black box timeline for this asset', 'asset black box timeline')) return 'black_box_timeline';
+    if ((has('missing', 'without') && has('serial'))) return 'missing_serials';
+    if ((has('missing', 'without') && has('data')) || has('data quality')) return 'missing_data';
+    if (has('duplicate serial', 'same serial')) return 'duplicate_serials';
+    if (has('duplicate asset tag', 'same asset tag', 'duplicate tag')) return 'duplicate_asset_tags';
+    if (has('find duplicate', 'possible duplicate', 'duplicate assets', 'duplicate records')) return 'duplicates';
+    if (has('warranty') && has('expired', 'expire', 'expiring')) return 'warranty_expiry';
+    if (has('maintenance', 'repair priority', 'maintenance priority', 'need maintenance')) return 'maintenance';
+    if (has('component') && has('fail', 'replace', 'repair', 'damag')) return 'component_failures';
+    if (has('low stock', 'reorder', 'spare stock', 'stock forecast')) return 'low_stock';
+    if (has('buy next', 'what should we buy', 'procurement', 'purchase next', 'what to buy')) return 'procurement';
+    if (has('reallocation', 're-allocate', 'tech exchange', 'internal transfer suggestion', 'reuse before buy')) return 'reallocation';
+    if (has('eol', 'end of life', 'near eol', 'expired lifecycle')) return 'eol';
+    if (has('license') && has('expire', 'expir', 'renew')) return 'license_expiry';
+    if (has('risk score', 'risk scores', 'high risk assets', 'critical assets')) return 'risk_score';
+    if (has('replacement priority', 'replace first', 'replacement ranking')) return 'replacement_priority';
+    if (has('relationship') && has('suggest', 'build', 'link')) return 'relationship_suggestions';
+    if (has('ticket draft', 'draft ticket', 'create ticket draft')) return 'ticket_draft';
+    if (has('transfer all', 'plan transfer', 'move all', 'assign all') || (has('transfer') && has('to'))) return 'natural_language_action';
+    if (has('history') && has('component')) return 'component_history';
+    if (has('find asset', 'lookup', 'show assets named', 'find assets named', 'search assets')) return 'asset_lookup';
     return 'unknown';
 }
 
@@ -1700,7 +1897,11 @@ function normalizeLifecycleKey(value: unknown): string {
     return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
-function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string): {
+type InventoryAssistantDataScope = 'full_inventory' | 'filtered_view';
+type InventoryInsightDataScope = InventoryAssistantDataScope | 'selected_asset';
+type InventoryAiConfidence = 'low' | 'medium' | 'high';
+
+type InventoryAssistantDeterministicResult = {
     answer: string;
     matchedItems: InventoryAiMatchedItem[];
     filtersUsed: Record<string, any>;
@@ -1708,26 +1909,269 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
     missingData: string[];
     suggestedActions: string[];
     supported: boolean;
-} {
+    intent: string;
+    scannedCount: number;
+    missingCount: number | null;
+    excludedCategories: string[];
+    partialFailure: boolean;
+};
+
+function buildInventoryInsightConfidence(params: {
+    dataScope: InventoryInsightDataScope;
+    scannedCount: number;
+    matchedCount: number;
+    partialFailure?: boolean;
+}): InventoryAiConfidence {
+    if (params.partialFailure) return 'low';
+    if (params.scannedCount <= 0) return 'low';
+    if (params.dataScope === 'full_inventory' || params.dataScope === 'selected_asset') return 'high';
+    return params.matchedCount > 0 ? 'high' : 'medium';
+}
+
+const FACTUAL_ASSISTANT_INTENTS = new Set([
+    'missing_serial',
+    'missing_serials',
+    'missing_data',
+    'duplicate_serials',
+    'duplicate_asset_tags',
+    'duplicates',
+    'low_stock',
+    'license_expiry',
+    'warranty_expiry',
+]);
+
+const ASSISTANT_ROUTED_ACTION_BY_INTENT: Record<string, { action: string; endpoint: string }> = {
+    daily_brief: { action: 'daily_brief', endpoint: '/api/inventory/ai/daily-brief' },
+    monthly_report: { action: 'monthly_report', endpoint: '/api/inventory/ai/monthly-report' },
+    executive_dashboard: { action: 'executive_dashboard', endpoint: '/api/inventory/executive-dashboard' },
+    digital_twin: { action: 'digital_twin', endpoint: '/api/assets/:id/digital-twin' },
+    black_box_timeline: { action: 'black_box_timeline', endpoint: '/api/assets/:id/black-box-timeline' },
+    procurement: { action: 'procurement', endpoint: '/api/inventory/ai/procurement-recommendations' },
+    reallocation: { action: 'reallocation', endpoint: '/api/inventory/ai/reallocation-suggestions' },
+    low_stock: { action: 'spare_stock_forecast', endpoint: '/api/inventory/ai/spare-stock-forecast' },
+    maintenance: { action: 'maintenance', endpoint: '/api/inventory/ai/maintenance-recommendations' },
+    risk_score: { action: 'risk_scores', endpoint: '/api/inventory/ai/risk-score' },
+    replacement_priority: { action: 'replacement_priority', endpoint: '/api/inventory/ai/replacement-priority' },
+    relationship_suggestions: { action: 'relationship_suggestions', endpoint: '/api/inventory/ai/relationship-suggestions' },
+    duplicates: { action: 'duplicates', endpoint: '/api/inventory/ai/duplicate-detection' },
+    duplicate_serials: { action: 'duplicates', endpoint: '/api/inventory/ai/duplicate-detection' },
+    duplicate_asset_tags: { action: 'duplicates', endpoint: '/api/inventory/ai/duplicate-detection' },
+    missing_serial: { action: 'missing_data', endpoint: '/api/inventory/ai/missing-data' },
+    missing_serials: { action: 'missing_data', endpoint: '/api/inventory/ai/missing-data' },
+    missing_data: { action: 'missing_data', endpoint: '/api/inventory/ai/missing-data' },
+    license_expiry: { action: 'search', endpoint: '/api/inventory/ai/search' },
+    natural_language_action: { action: 'plan_action', endpoint: '/api/inventory/ai/plan-action' },
+    ticket_draft: { action: 'ticket_draft', endpoint: '/api/inventory/ai/ticket-draft' },
+    eol: { action: 'replacement_priority', endpoint: '/api/inventory/ai/replacement-priority' },
+};
+
+function deriveAssistantConfidence(params: {
+    intent: string;
+    dataScope: InventoryInsightDataScope;
+    scannedCount: number;
+    matchedCount: number;
+    supported: boolean;
+    partialFailure: boolean;
+}): 'low' | 'medium' | 'high' {
+    if (params.partialFailure) return 'low';
+    if (!params.supported) return 'low';
+    const isFactual = FACTUAL_ASSISTANT_INTENTS.has(String(params.intent || '').toLowerCase());
+    if (isFactual) {
+        if (params.dataScope === 'full_inventory' && params.scannedCount > 0) return 'high';
+        if (params.dataScope === 'filtered_view' && params.scannedCount > 0) return params.matchedCount > 0 ? 'high' : 'medium';
+        return params.dataScope === 'full_inventory' ? 'medium' : 'low';
+    }
+    const actionIntent = String(params.intent || '').toLowerCase();
+    const highConfidenceActionIntents = new Set([
+        'daily_brief',
+        'monthly_report',
+        'executive_dashboard',
+        'digital_twin',
+        'black_box_timeline',
+        'natural_language_action',
+        'risk_score',
+        'replacement_priority',
+        'maintenance',
+        'procurement',
+        'reallocation',
+        'low_stock',
+        'relationship_suggestions',
+        'ticket_draft',
+        'license_expiry',
+        'eol',
+    ]);
+    if (highConfidenceActionIntents.has(actionIntent) && params.scannedCount > 0) {
+        return params.dataScope === 'filtered_view' ? 'medium' : 'high';
+    }
+    if (params.matchedCount > 20) return 'high';
+    if (params.matchedCount > 0) return 'medium';
+    return 'low';
+}
+
+function normalizeAssistantView(value: unknown): string {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const allowed = new Set(['parents', 'components', 'accessories', 'consumables', 'spare_stock', 'licenses']);
+    return allowed.has(normalized) ? normalized : 'parents';
+}
+
+function assetMatchesAssistantView(asset: Asset, view: string): boolean {
+    const category = String(asset.category || '').toLowerCase();
+    if (view === 'components') return category === 'component';
+    if (view === 'accessories') return category === 'accessory';
+    if (view === 'consumables') return category === 'consumable';
+    if (view === 'licenses') return category === 'license';
+    if (view === 'spare_stock') return false;
+    return !['component', 'accessory', 'consumable', 'spare_part', 'license'].includes(category);
+}
+
+function shouldUseFilteredScopeForAssistant(query: string, context: Record<string, any>): boolean {
+    const q = String(query || '').toLowerCase();
+    if (/(\bthis\b|\bcurrent\b).*(\bview\b|\btab\b)|\bfiltered\b/.test(q)) return true;
+    if (parseBooleanFlag(context?.forceFilteredScope)) return true;
+    return false;
+}
+
+function resolveInventoryAiScopeFromContext(
+    fullSnapshot: InventoryAiSnapshot,
+    context: Record<string, any> = {},
+    query = '',
+): { snapshot: InventoryAiSnapshot; dataScope: InventoryInsightDataScope } {
+    const selectedAssetCustomId = normalizeSerialValue(context?.selectedAssetCustomId);
+    if (selectedAssetCustomId) {
+        const selectedAssets = fullSnapshot.assets.filter((asset) => asset.customId === selectedAssetCustomId);
+        const selectedSet = new Set(selectedAssets.map((asset) => asset.customId));
+        const selectedComponents = fullSnapshot.components.filter((row) => (
+            selectedSet.has(row.parentAssetId) || (row.childAssetId ? selectedSet.has(row.childAssetId) : false)
+        ));
+        const selectedMaintenance = fullSnapshot.maintenance.filter((row) => selectedSet.has(row.assetId));
+        const selectedLifecycle = fullSnapshot.lifecycleEvents.filter((row) => selectedSet.has(row.assetId));
+        return {
+            snapshot: {
+                assets: selectedAssets,
+                components: selectedComponents,
+                maintenance: selectedMaintenance,
+                lifecycleEvents: selectedLifecycle,
+                spareStock: fullSnapshot.spareStock,
+            },
+            dataScope: 'selected_asset',
+        };
+    }
+    const useFilteredScope = shouldUseFilteredScopeForAssistant(query, context);
+    if (!useFilteredScope) {
+        return { snapshot: fullSnapshot, dataScope: 'full_inventory' };
+    }
+    return {
+        snapshot: filterSnapshotForAssistantContext(fullSnapshot, context),
+        dataScope: 'filtered_view',
+    };
+}
+
+function filterSnapshotForAssistantContext(
+    snapshot: InventoryAiSnapshot,
+    context: Record<string, any>,
+): InventoryAiSnapshot {
+    const view = normalizeAssistantView(context?.view);
+    const filters = (context?.filters && typeof context.filters === 'object') ? context.filters : {};
+    const search = String(context?.search || '').trim().toLowerCase();
+    const building = String(filters.building || '').trim();
+    const department = String(filters.department || '').trim();
+    const lifecycleStatus = String(filters.lifecycleStatus || '').trim().toLowerCase();
+    const type = String(filters.type || '').trim().toLowerCase();
+    const selectedAssetCustomId = String(context?.selectedAssetCustomId || '').trim();
+
+    let assets = snapshot.assets.filter((asset) => assetMatchesAssistantView(asset, view));
+    assets = assets.filter((asset) => {
+        const friendlyLocation = mapLocationToFriendly(asset.location);
+        const friendlyDept = mapDepartmentToFriendly(asset.department);
+        const assetType = canonicalAssetType(asset.type);
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        if (building && building !== 'all' && normalizeValue(friendlyLocation) !== normalizeValue(building)) return false;
+        if (department && department !== 'all' && normalizeValue(friendlyDept) !== normalizeValue(department)) return false;
+        if (type && type !== 'all' && normalizeValue(assetType) !== normalizeValue(type)) return false;
+        if (lifecycleStatus && lifecycleStatus !== 'all' && normalizeValue(lifecycle) !== normalizeValue(lifecycleStatus)) return false;
+        if (selectedAssetCustomId && asset.customId !== selectedAssetCustomId) return false;
+        if (!search) return true;
+        const haystack = [
+            asset.customId,
+            asset.name,
+            canonicalAssetType(asset.type),
+            String(asset.category || ''),
+            mapLocationToFriendly(asset.location),
+            mapDepartmentToFriendly(asset.department),
+            normalizeSerialValue(asset.serialNumber) || '',
+            normalizeSerialValue(asset.assetTag) || '',
+            normalizeSerialValue(asset.manufacturerPartNumber) || '',
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+    });
+
+    const allowedAssetIds = new Set(assets.map((asset) => asset.customId));
+    const components = snapshot.components.filter((component) => (
+        allowedAssetIds.has(component.parentAssetId) || (component.childAssetId ? allowedAssetIds.has(component.childAssetId) : false)
+    ));
+    const maintenance = snapshot.maintenance.filter((row) => allowedAssetIds.has(row.assetId));
+    const lifecycleEvents = snapshot.lifecycleEvents.filter((row) => allowedAssetIds.has(row.assetId));
+    const spareStock = snapshot.spareStock;
+    return { assets, components, maintenance, lifecycleEvents, spareStock };
+}
+
+function buildAssistantLlmInput(result: InventoryAssistantDeterministicResult, query: string): Record<string, any> {
+    const topMatched = (result.matchedItems || []).slice(0, 18).map((item) => ({
+        assetId: item.assetId,
+        name: item.name,
+        category: item.category,
+        type: item.type,
+        location: item.location,
+        status: item.status,
+        lifecycleStatus: item.lifecycleStatus,
+        reason: item.reason,
+    }));
+    return {
+        query,
+        answer: result.answer,
+        intent: result.intent,
+        filtersUsed: result.filtersUsed,
+        confidence: result.confidence,
+        missingData: result.missingData.slice(0, 10),
+        suggestedActions: result.suggestedActions.slice(0, 10),
+        scannedCount: result.scannedCount,
+        missingCount: result.missingCount,
+        excludedCategories: result.excludedCategories.slice(0, 12),
+        matchedCount: result.matchedItems.length,
+        matchedItems: topMatched,
+        supported: result.supported,
+    };
+}
+
+function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string): InventoryAssistantDeterministicResult {
     const intent = classifyAiQueryIntent(query);
     const now = new Date();
     const matchedItems: InventoryAiMatchedItem[] = [];
     const suggestedActions: string[] = [];
     const missingData: string[] = [];
     const filtersUsed: Record<string, any> = { intent };
+    let scannedCount = 0;
+    let missingCount: number | null = null;
+    let excludedCategories: string[] = [];
+    const partialFailure = false;
 
-    if (intent === 'missing_serial') {
-        snapshot.assets.forEach((asset) => {
+    if (intent === 'missing_serial' || intent === 'missing_serials') {
+        excludedCategories = ['license', 'consumable', 'spare_part'];
+        const assetsToScan = snapshot.assets.filter((asset) => !excludedCategories.includes(String(asset.category || '').toLowerCase()));
+        scannedCount = assetsToScan.length;
+        assetsToScan.forEach((asset) => {
             const category = String(asset.category || '').toLowerCase();
-            if (['consumable', 'spare_part'].includes(category)) return;
+            if (excludedCategories.includes(category)) return;
             if (!normalizeSerialValue(asset.serialNumber)) {
                 matchedItems.push(buildAiMatchedItem(asset, 'Missing serial number'));
             }
         });
+        missingCount = matchedItems.length;
         suggestedActions.push('Backfill serial numbers for high-priority and assigned assets first.');
     } else if (intent === 'warranty_expiry') {
         const soonDays = 90;
         filtersUsed.windowDays = soonDays;
+        scannedCount = snapshot.assets.length;
         snapshot.assets.forEach((asset) => {
             if (!asset.warrantyEndDate) return;
             const diff = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
@@ -1741,6 +2185,7 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         const currentMonth = now.getMonth();
         const currentYear = now.getFullYear();
         const impacted = new Set<string>();
+        scannedCount = snapshot.assets.length;
         snapshot.maintenance.forEach((row) => {
             const targetDate = row.nextMaintenanceDate || row.performedAt;
             if (!targetDate) return;
@@ -1756,6 +2201,7 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         suggestedActions.push('Schedule this month maintenance items and assign responsible technicians.');
     } else if (intent === 'component_failures') {
         const failures = new Map<string, number>();
+        scannedCount = snapshot.assets.length;
         snapshot.lifecycleEvents.forEach((event) => {
             const key = normalizeValue(event.eventType);
             if (key.includes('failed') || key.includes('repair') || key.includes('replace')) {
@@ -1770,6 +2216,8 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         });
         suggestedActions.push('Inspect repeated component failures and evaluate preventive replacement plans.');
     } else if (intent === 'low_stock') {
+        const consumableCount = snapshot.assets.filter((asset) => String(asset.category || '').toLowerCase() === 'consumable').length;
+        scannedCount = snapshot.spareStock.length + consumableCount;
         snapshot.spareStock.forEach((item) => {
             const reorder = item.reorderPoint ?? item.minimumStockLevel;
             if (item.quantityAvailable <= reorder) {
@@ -1788,8 +2236,18 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
                 });
             }
         });
+        snapshot.assets.forEach((asset) => {
+            const category = String(asset.category || '').toLowerCase();
+            if (category !== 'consumable') return;
+            const qty = Number(asset.quantity || 0);
+            if (qty <= 5) {
+                matchedItems.push(buildAiMatchedItem(asset, `Low consumable stock (${qty})`));
+            }
+        });
         suggestedActions.push('Create purchase requests for low-stock spare parts.');
     } else if (intent === 'procurement') {
+        const consumableCount = snapshot.assets.filter((asset) => String(asset.category || '').toLowerCase() === 'consumable').length;
+        scannedCount = snapshot.spareStock.length + consumableCount;
         snapshot.spareStock.forEach((item) => {
             const reorder = item.reorderPoint ?? item.minimumStockLevel;
             if (item.quantityAvailable <= reorder) {
@@ -1808,8 +2266,17 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
                 });
             }
         });
+        snapshot.assets.forEach((asset) => {
+            const category = String(asset.category || '').toLowerCase();
+            if (category !== 'consumable') return;
+            const qty = Number(asset.quantity || 0);
+            if (qty <= 5) {
+                matchedItems.push(buildAiMatchedItem(asset, `Consumable restock suggested (${qty})`));
+            }
+        });
         suggestedActions.push('Prioritize procurement by stock criticality and failure trends.');
     } else if (intent === 'eol') {
+        scannedCount = snapshot.assets.length;
         snapshot.assets.forEach((asset) => {
             const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
             if (lifecycle === 'eol_expired') {
@@ -1825,7 +2292,9 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         });
         suggestedActions.push('Review EOL-risk assets for replacement planning.');
     } else if (intent === 'license_expiry') {
-        snapshot.assets.forEach((asset) => {
+        const licenses = snapshot.assets.filter((asset) => String(asset.category || '').toLowerCase() === 'license');
+        scannedCount = licenses.length;
+        licenses.forEach((asset) => {
             if (String(asset.category || '').toLowerCase() !== 'license') return;
             if (!asset.warrantyEndDate) return;
             const diff = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
@@ -1835,20 +2304,173 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             }
         });
         suggestedActions.push('Renew or reassign expiring licenses before service interruption.');
-    } else if (intent === 'duplicates') {
+    } else if (intent === 'duplicates' || intent === 'duplicate_serials' || intent === 'duplicate_asset_tags') {
+        scannedCount = snapshot.assets.length;
         const serialMap = new Map<string, Asset[]>();
+        const tagMap = new Map<string, Asset[]>();
         snapshot.assets.forEach((asset) => {
             const serial = normalizeSerialValue(asset.serialNumber);
-            if (!serial) return;
-            const key = serial.toLowerCase();
-            serialMap.set(key, [...(serialMap.get(key) || []), asset]);
+            const tag = normalizeSerialValue(asset.assetTag);
+            if (serial) {
+                const serialKey = serial.toLowerCase();
+                serialMap.set(serialKey, [...(serialMap.get(serialKey) || []), asset]);
+            }
+            if (tag) {
+                const tagKey = tag.toLowerCase();
+                tagMap.set(tagKey, [...(tagMap.get(tagKey) || []), asset]);
+            }
         });
         serialMap.forEach((rows) => {
             if (rows.length <= 1) return;
             rows.forEach((asset) => matchedItems.push(buildAiMatchedItem(asset, `Duplicate serial (${asset.serialNumber})`)));
         });
+        tagMap.forEach((rows) => {
+            if (rows.length <= 1) return;
+            rows.forEach((asset) => matchedItems.push(buildAiMatchedItem(asset, `Duplicate asset tag (${asset.assetTag})`)));
+        });
         suggestedActions.push('Merge or correct duplicate records after verification.');
+    } else if (intent === 'risk_score') {
+        const riskRows = buildAssetRiskScores(snapshot).rows;
+        scannedCount = riskRows.length;
+        riskRows
+            .filter((row) => ['critical', 'high', 'medium'].includes(String(row.riskLevel || '').toLowerCase()))
+            .slice(0, 120)
+            .forEach((row) => {
+                const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
+                if (!asset) return;
+                matchedItems.push(buildAiMatchedItem(asset, `Risk ${row.riskLevel} (${row.riskScore})`));
+            });
+        suggestedActions.push('Review critical/high risk assets first and draft maintenance or replacement actions.');
+    } else if (intent === 'replacement_priority') {
+        const ranking = buildReplacementPriorityRanking(snapshot).rankedItems.slice(0, 120);
+        scannedCount = snapshot.assets.length;
+        ranking.forEach((row) => {
+            const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
+            if (!asset) return;
+            matchedItems.push(buildAiMatchedItem(asset, `${row.priority} priority replacement (rank ${row.rank})`));
+        });
+        suggestedActions.push('Start with top-ranked replacement candidates and verify budget/stock impact.');
+    } else if (intent === 'reallocation') {
+        const reallocation = buildReallocationSuggestions(snapshot).suggestions.slice(0, 120);
+        scannedCount = snapshot.assets.length;
+        reallocation.forEach((row) => {
+            const asset = snapshot.assets.find((entry) => entry.customId === row.availableAssetId);
+            if (!asset) return;
+            matchedItems.push(buildAiMatchedItem(
+                asset,
+                `Can satisfy "${row.requestedNeed}" from ${row.sourceLocation} (internal reallocation)`,
+            ));
+        });
+        suggestedActions.push('Review reallocation opportunities before creating external procurement requests.');
+    } else if (intent === 'relationship_suggestions') {
+        const suggestions = buildRelationshipSuggestions(snapshot).suggestions.slice(0, 120);
+        scannedCount = snapshot.assets.length;
+        suggestions.forEach((row) => {
+            const source = snapshot.assets.find((entry) => entry.customId === row.sourceAssetId);
+            if (!source) return;
+            matchedItems.push(buildAiMatchedItem(source, `${row.relationshipType} -> ${row.targetAssetId}`));
+        });
+        suggestedActions.push('Review suggested links before applying relationships.');
+    } else if (intent === 'ticket_draft') {
+        scannedCount = snapshot.assets.length;
+        const riskRows = buildAssetRiskScores(snapshot).rows.filter((row) => ['critical', 'high'].includes(String(row.riskLevel || '').toLowerCase()));
+        riskRows.slice(0, 20).forEach((row) => {
+            const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
+            if (!asset) return;
+            matchedItems.push(buildAiMatchedItem(asset, `Candidate for ticket draft (${row.riskLevel})`));
+        });
+        suggestedActions.push('Use "Draft Ticket" to generate issue drafts for high-risk assets.');
+    } else if (intent === 'daily_brief') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Run the daily brief action to summarize key inventory changes for today or this week.');
+    } else if (intent === 'monthly_report') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Run the monthly report action to get an executive summary, metrics, and recommendations.');
+    } else if (intent === 'executive_dashboard') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Run the executive dashboard action to get leadership metrics and risk posture.');
+    } else if (intent === 'digital_twin') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Open/select an asset and run Digital Twin to view risk, kit health, telemetry, and lifecycle posture.');
+    } else if (intent === 'black_box_timeline') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Open/select an asset and run Black Box Timeline to inspect transfer, maintenance, audit, and related-item events.');
+    } else if (intent === 'natural_language_action') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Use natural-language action planning to preview changes before execution.');
+    } else if (intent === 'component_history') {
+        scannedCount = snapshot.assets.length;
+        const impacted = new Map<string, number>();
+        snapshot.lifecycleEvents.forEach((event) => {
+            if (!event.componentId) return;
+            impacted.set(event.assetId, (impacted.get(event.assetId) || 0) + 1);
+        });
+        snapshot.assets.forEach((asset) => {
+            const count = impacted.get(asset.customId) || 0;
+            if (count > 0) matchedItems.push(buildAiMatchedItem(asset, `${count} component history event(s)`));
+        });
+        suggestedActions.push('Open asset CMDB history with related events for component timelines.');
+    } else if (intent === 'asset_lookup') {
+        scannedCount = snapshot.assets.length;
+        const lookupTokens = String(query || '')
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length >= 2)
+            .filter((token) => !['show', 'find', 'list', 'asset', 'assets', 'named', 'search', 'for', 'in', 'the'].includes(token))
+            .slice(0, 8);
+        snapshot.assets.forEach((asset) => {
+            const haystack = [
+                asset.customId,
+                asset.name,
+                normalizeSerialValue(asset.assetTag) || '',
+                normalizeSerialValue(asset.serialNumber) || '',
+                canonicalAssetType(asset.type),
+            ].join(' ').toLowerCase();
+            if (!lookupTokens.length || lookupTokens.every((token) => haystack.includes(token))) {
+                matchedItems.push(buildAiMatchedItem(asset, 'Lookup match'));
+            }
+        });
+        suggestedActions.push('Open matched assets to inspect CMDB details and history.');
     } else {
+        const tokens = String(query || '')
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length >= 3)
+            .slice(0, 10);
+        if (tokens.length) {
+            const fuzzyMatches = snapshot.assets.filter((asset) => {
+                const haystack = [
+                    asset.customId,
+                    asset.name,
+                    canonicalAssetType(asset.type),
+                    String(asset.category || ''),
+                    mapLocationToFriendly(asset.location),
+                    mapDepartmentToFriendly(asset.department),
+                    normalizeSerialValue(asset.serialNumber) || '',
+                    normalizeSerialValue(asset.assetTag) || '',
+                    normalizeLifecycleKey(asset.lifecycleStatus),
+                ].join(' ').toLowerCase();
+                return tokens.every((token) => haystack.includes(token));
+            }).slice(0, 120);
+            if (fuzzyMatches.length) {
+                return {
+                    answer: `Found ${fuzzyMatches.length} item(s) from token search for "${query}".`,
+                    matchedItems: fuzzyMatches.map((asset) => buildAiMatchedItem(asset, 'Matched by query text')),
+                    filtersUsed: { intent: 'token_search', tokens },
+                    confidence: fuzzyMatches.length > 20 ? 'medium' : 'low',
+                    missingData: [],
+                    suggestedActions: ['Refine your query with location/type/status terms for more precise results.'],
+                    supported: true,
+                    intent: 'token_search',
+                    scannedCount: snapshot.assets.length,
+                    missingCount: null,
+                    excludedCategories: [],
+                    partialFailure: false,
+                };
+            }
+        }
         return {
             answer: INVENTORY_AI_SUPPORTED_HINT,
             matchedItems: [],
@@ -1857,6 +2479,11 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             missingData: [],
             suggestedActions: ['Ask about missing serials, warranty expiry, maintenance, stock, duplicates, EOL, or procurement.'],
             supported: false,
+            intent: 'unknown',
+            scannedCount: snapshot.assets.length,
+            missingCount: null,
+            excludedCategories: [],
+            partialFailure: false,
         };
     }
 
@@ -1866,14 +2493,61 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
     if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
     if (!snapshot.spareStock.length) missingData.push('spareStockItems');
 
+    const noMatchMessageByIntent: Record<string, string> = {
+        missing_serials: 'No missing serial numbers found in the scanned inventory categories.',
+        missing_serial: 'No missing serial numbers found in the scanned inventory categories.',
+        duplicates: 'No duplicate serial/asset-tag groups were found in the scanned inventory set.',
+        duplicate_serials: 'No duplicate serial numbers were found in the scanned inventory set.',
+        duplicate_asset_tags: 'No duplicate asset tags were found in the scanned inventory set.',
+        low_stock: 'No low-stock spare/consumable items were found in the scanned inventory set.',
+        procurement: 'No urgent procurement gaps were detected from current stock and usage signals.',
+        reallocation: 'No confident internal reallocation opportunities were detected from current stock and availability.',
+        maintenance: 'No assets were flagged as needing immediate maintenance in the scanned set.',
+        warranty_expiry: 'No soon-expiring warranty assets were found in the scanned set.',
+        license_expiry: 'No soon-expiring licenses were found in the scanned set.',
+        risk_score: 'No high/critical risk assets were detected in the scanned set.',
+        replacement_priority: 'No replacement-priority candidates were found in the scanned set.',
+        relationship_suggestions: 'No relationship suggestions were generated from current deterministic evidence.',
+        daily_brief: 'Daily brief request recognized. Running the daily brief action will summarize recent inventory changes.',
+        monthly_report: 'Monthly inventory report request recognized. Running the monthly report action will generate executive summary, metrics, and recommendations.',
+        executive_dashboard: 'Executive dashboard request recognized. Running the executive dashboard action will return management metrics.',
+        digital_twin: 'Digital Twin request recognized. Select an asset and run the Digital Twin action for a full asset scorecard.',
+        black_box_timeline: 'Black Box Timeline request recognized. Select an asset and run the timeline action to view chronological events.',
+        natural_language_action: 'Action request recognized. A review-first action plan can be generated before any execution.',
+        ticket_draft: 'Ticket draft request recognized. Provide issue details to generate a reviewable draft.',
+        eol: 'No explicit EOL-risk matches were found in the scanned set.',
+    };
     const answer = matchedItems.length
-        ? `Found ${matchedItems.length} matching item(s) for "${query}".`
-        : `No matching records were found for "${query}" in the current dataset.`;
+        ? (
+            intent === 'missing_serial' || intent === 'missing_serials'
+                ? `Found ${matchedItems.length} asset(s) missing serial numbers in the scanned inventory categories.`
+                : `Found ${matchedItems.length} matching item(s) for "${query}".`
+        )
+        : (noMatchMessageByIntent[intent] || `No matching records were found for "${query}" in the current dataset.`);
+    const highConfidenceZeroIntents = new Set([
+        'missing_serial',
+        'missing_serials',
+        'missing_data',
+        'duplicates',
+        'duplicate_serials',
+        'duplicate_asset_tags',
+        'low_stock',
+        'procurement',
+        'reallocation',
+        'license_expiry',
+        'warranty_expiry',
+        'daily_brief',
+        'monthly_report',
+        'executive_dashboard',
+        'digital_twin',
+        'black_box_timeline',
+        'natural_language_action',
+    ]);
     const confidence: 'low' | 'medium' | 'high' = matchedItems.length > 20
         ? 'high'
         : matchedItems.length > 0
             ? 'medium'
-            : 'low';
+            : (highConfidenceZeroIntents.has(String(intent || '').toLowerCase()) && scannedCount > 0 ? 'high' : 'low');
 
     return {
         answer,
@@ -1883,6 +2557,76 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         missingData,
         suggestedActions,
         supported: true,
+        intent,
+        scannedCount: scannedCount || snapshot.assets.length,
+        missingCount,
+        excludedCategories,
+        partialFailure,
+    };
+}
+
+function applyAssistantQueryFilters(
+    result: InventoryAssistantDeterministicResult,
+    snapshot: InventoryAiSnapshot,
+    query: string,
+    dataScope: InventoryInsightDataScope,
+): InventoryAssistantDeterministicResult {
+    const q = String(query || '').toLowerCase();
+    let filtered = [...result.matchedItems];
+    const filtersUsed: Record<string, any> = { ...(result.filtersUsed || {}) };
+
+    const categoryHints: Array<{ key: string; categories: string[] }> = [
+        { key: 'license', categories: ['license'] },
+        { key: 'component', categories: ['component'] },
+        { key: 'accessory', categories: ['accessory'] },
+        { key: 'consumable', categories: ['consumable'] },
+        { key: 'spare', categories: ['spare_part'] },
+        { key: 'stock', categories: ['spare_part', 'consumable'] },
+    ];
+    const categoryMatch = categoryHints.find((hint) => q.includes(hint.key));
+    if (categoryMatch) {
+        filtered = filtered.filter((item) => categoryMatch.categories.includes(String(item.category || '').toLowerCase()));
+        filtersUsed.categoryHint = categoryMatch.key;
+    }
+
+    const locationHints = Array.from(new Set(snapshot.assets.map((asset) => mapLocationToFriendly(asset.location).trim()).filter(Boolean)));
+    const matchedLocation = locationHints.find((location) => q.includes(location.toLowerCase()));
+    if (matchedLocation) {
+        filtered = filtered.filter((item) => String(item.location || '').toLowerCase() === matchedLocation.toLowerCase());
+        filtersUsed.location = matchedLocation;
+    }
+
+    const departmentHints = Array.from(new Set(snapshot.assets.map((asset) => mapDepartmentToFriendly(asset.department).trim()).filter(Boolean)));
+    const matchedDepartment = departmentHints.find((department) => q.includes(department.toLowerCase()));
+    if (matchedDepartment) {
+        filtered = filtered.filter((item) => String(item.department || '').toLowerCase() === matchedDepartment.toLowerCase());
+        filtersUsed.department = matchedDepartment;
+    }
+
+    const isMissingSerialIntent = String(result.intent || '').toLowerCase() === 'missing_serial'
+        || String(result.intent || '').toLowerCase() === 'missing_serials';
+    const isRoutedActionIntent = Boolean(ASSISTANT_ROUTED_ACTION_BY_INTENT[String(result.intent || '').toLowerCase()]);
+    const answer = filtered.length
+        ? `Found ${filtered.length} matching item(s) for "${query}".`
+        : (isMissingSerialIntent
+            ? 'No missing serial numbers found in the scanned inventory categories.'
+            : (isRoutedActionIntent
+                ? String(result.answer || `Request recognized for "${query}".`)
+                : `I did not find matching records for "${query}". Try broadening filters or switching to full inventory.`));
+
+    return {
+        ...result,
+        answer,
+        matchedItems: filtered.slice(0, 120),
+        filtersUsed,
+        confidence: deriveAssistantConfidence({
+            intent: result.intent,
+            dataScope,
+            scannedCount: result.scannedCount,
+            matchedCount: filtered.length,
+            supported: result.supported,
+            partialFailure: result.partialFailure,
+        }),
     };
 }
 
@@ -2263,6 +3007,1814 @@ function buildDuplicateDetectionReport(snapshot: InventoryAiSnapshot): {
     };
 }
 
+type DataCorrectionSuggestion = {
+    assetId: string;
+    assetName: string;
+    issueType: string;
+    currentValue: string;
+    suggestedValue: string;
+    reason: string;
+    severity: 'critical' | 'warning' | 'info';
+    confidence: number;
+    evidence: Record<string, any>;
+    canAutoApply: boolean;
+};
+
+const DATA_CORRECTION_TYPE_HINTS: Array<{
+    pattern: RegExp;
+    expectedTypeHints: string[];
+    expectedCategory?: string;
+    issueType: string;
+}> = [
+    {
+        pattern: /\bfire\s*extinguisher\b/i,
+        expectedTypeHints: ['fire_extinguisher'],
+        expectedCategory: 'asset',
+        issueType: 'name_type_mismatch_fire_extinguisher',
+    },
+    {
+        pattern: /\bwheelchair\b/i,
+        expectedTypeHints: ['wheelchair'],
+        expectedCategory: 'asset',
+        issueType: 'name_type_mismatch_wheelchair',
+    },
+    {
+        pattern: /\bpodium\b/i,
+        expectedTypeHints: ['podium'],
+        expectedCategory: 'asset',
+        issueType: 'name_type_mismatch_podium',
+    },
+    {
+        pattern: /\bups\b|\buninterruptible\b/i,
+        expectedTypeHints: ['ups'],
+        expectedCategory: 'asset',
+        issueType: 'name_type_mismatch_ups',
+    },
+];
+
+function buildDataCorrectionSuggestions(snapshot: InventoryAiSnapshot): {
+    summary: string;
+    suggestions: DataCorrectionSuggestion[];
+    countsBySeverity: Record<'critical' | 'warning' | 'info', number>;
+    scannedCount: number;
+    matchedCount: number;
+    excludedCategories: string[];
+    missingData: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const suggestions: DataCorrectionSuggestion[] = [];
+    const countsBySeverity: Record<'critical' | 'warning' | 'info', number> = { critical: 0, warning: 0, info: 0 };
+    const now = new Date();
+    const childLinkedIds = new Set(snapshot.components.map((row) => row.childAssetId).filter(Boolean) as string[]);
+    const serialMap = new Map<string, string[]>();
+    const tagMap = new Map<string, string[]>();
+    const excludedCategories = ['spare_part'];
+    const missingData: string[] = [];
+
+    snapshot.assets.forEach((asset) => {
+        const serial = normalizeSerialValue(asset.serialNumber);
+        const tag = normalizeSerialValue(asset.assetTag);
+        if (serial) {
+            const key = serial.toLowerCase();
+            serialMap.set(key, [...(serialMap.get(key) || []), asset.customId]);
+        }
+        if (tag) {
+            const key = tag.toLowerCase();
+            tagMap.set(key, [...(tagMap.get(key) || []), asset.customId]);
+        }
+    });
+
+    const pushSuggestion = (entry: DataCorrectionSuggestion) => {
+        suggestions.push(entry);
+        countsBySeverity[entry.severity] += 1;
+    };
+
+    snapshot.assets.forEach((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        const type = canonicalAssetType(asset.type);
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        const serial = normalizeSerialValue(asset.serialNumber);
+        const name = String(asset.name || '');
+
+        for (const hint of DATA_CORRECTION_TYPE_HINTS) {
+            if (!hint.pattern.test(name)) continue;
+            if (hint.expectedTypeHints.includes(type)) continue;
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: hint.issueType,
+                currentValue: `type=${type}`,
+                suggestedValue: hint.expectedTypeHints[0],
+                reason: `Asset name suggests type "${hint.expectedTypeHints[0]}" but current type is "${type}".`,
+                severity: 'critical',
+                confidence: 0.92,
+                evidence: { name: asset.name, currentType: type, expectedTypeHints: hint.expectedTypeHints },
+                canAutoApply: false,
+            });
+        }
+
+        if (!['consumable', 'spare_part', 'license'].includes(category) && !serial) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'missing_serial',
+                currentValue: '',
+                suggestedValue: 'Provide manufacturer serial number',
+                reason: 'Serialized asset category is missing serial number.',
+                severity: 'critical',
+                confidence: 0.98,
+                evidence: { category, type },
+                canAutoApply: false,
+            });
+        }
+
+        if (asset.purchaseDate && asset.warrantyEndDate && asset.warrantyEndDate.getTime() < asset.purchaseDate.getTime()) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'warranty_before_purchase',
+                currentValue: `${asset.purchaseDate.toISOString().slice(0, 10)} -> ${asset.warrantyEndDate.toISOString().slice(0, 10)}`,
+                suggestedValue: 'Set warranty end date after purchase date',
+                reason: 'Warranty end date is earlier than purchase date.',
+                severity: 'critical',
+                confidence: 0.97,
+                evidence: { purchaseDate: asset.purchaseDate, warrantyEndDate: asset.warrantyEndDate },
+                canAutoApply: false,
+            });
+        }
+
+        if (category === 'component' && !childLinkedIds.has(asset.customId)) {
+            const specs = ((asset.specifications as Record<string, any>) || {});
+            const hasParentMeta = Boolean(
+                normalizeSerialValue(specs.installedInAssetId)
+                || normalizeSerialValue(specs.parentAssetId)
+                || normalizeSerialValue(specs.installedInAssetTag)
+            );
+            if (!hasParentMeta) {
+                pushSuggestion({
+                    assetId: asset.customId,
+                    assetName: asset.name,
+                    issueType: 'component_without_parent',
+                    currentValue: 'No parent link',
+                    suggestedValue: 'Link to parent asset (installed_in/component_of)',
+                    reason: 'Component has no AssetComponent link and no parent metadata.',
+                    severity: 'critical',
+                    confidence: 0.95,
+                    evidence: { category, type },
+                    canAutoApply: false,
+                });
+            }
+        }
+
+        if (category === 'license' && !asset.warrantyEndDate) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'license_missing_expiry',
+                currentValue: '',
+                suggestedValue: 'Set warranty/expiry end date',
+                reason: 'License record has no expiry date.',
+                severity: 'warning',
+                confidence: 0.91,
+                evidence: { category },
+                canAutoApply: false,
+            });
+        }
+
+        if (category === 'consumable' && Number(asset.quantity || 0) <= 0) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'consumable_missing_quantity',
+                currentValue: String(asset.quantity || 0),
+                suggestedValue: 'Set quantity > 0',
+                reason: 'Consumable quantity is missing or zero.',
+                severity: 'warning',
+                confidence: 0.88,
+                evidence: { quantity: asset.quantity },
+                canAutoApply: false,
+            });
+        }
+
+        if (!String(asset.location || '').trim()) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'missing_location',
+                currentValue: '',
+                suggestedValue: 'Set valid location',
+                reason: 'Location is required for inventory traceability.',
+                severity: 'critical',
+                confidence: 0.94,
+                evidence: {},
+                canAutoApply: false,
+            });
+        }
+        if (!String(asset.department || '').trim()) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'missing_department',
+                currentValue: '',
+                suggestedValue: 'Set department',
+                reason: 'Department is missing.',
+                severity: 'warning',
+                confidence: 0.86,
+                evidence: {},
+                canAutoApply: false,
+            });
+        }
+
+        if (lifecycle === 'eol_expired' && !asset.warrantyEndDate) {
+            pushSuggestion({
+                assetId: asset.customId,
+                assetName: asset.name,
+                issueType: 'eol_without_warranty_context',
+                currentValue: lifecycle,
+                suggestedValue: 'Backfill warranty and purchase dates',
+                reason: 'EOL/expired lifecycle is set but no warranty end date exists.',
+                severity: 'info',
+                confidence: 0.78,
+                evidence: { lifecycleStatus: lifecycle },
+                canAutoApply: false,
+            });
+        }
+    });
+
+    serialMap.forEach((assetIds, key) => {
+        if (assetIds.length <= 1) return;
+        assetIds.forEach((assetId) => {
+            const asset = snapshot.assets.find((row) => row.customId === assetId);
+            if (!asset) return;
+            pushSuggestion({
+                assetId,
+                assetName: asset.name,
+                issueType: 'duplicate_serial',
+                currentValue: normalizeSerialValue(asset.serialNumber) || '',
+                suggestedValue: 'Verify physical identity and merge/correct duplicate',
+                reason: `Serial appears on multiple assets (${assetIds.length}).`,
+                severity: 'critical',
+                confidence: 0.99,
+                evidence: { serial: key, duplicateCount: assetIds.length, assetIds },
+                canAutoApply: false,
+            });
+        });
+    });
+    tagMap.forEach((assetIds, key) => {
+        if (assetIds.length <= 1) return;
+        assetIds.forEach((assetId) => {
+            const asset = snapshot.assets.find((row) => row.customId === assetId);
+            if (!asset) return;
+            pushSuggestion({
+                assetId,
+                assetName: asset.name,
+                issueType: 'duplicate_asset_tag',
+                currentValue: normalizeSerialValue(asset.assetTag) || '',
+                suggestedValue: 'Reassign unique asset tag',
+                reason: `Asset tag appears on multiple assets (${assetIds.length}).`,
+                severity: 'critical',
+                confidence: 0.99,
+                evidence: { assetTag: key, duplicateCount: assetIds.length, assetIds },
+                canAutoApply: false,
+            });
+        });
+    });
+
+    snapshot.spareStock.forEach((item) => {
+        const reorder = item.reorderPoint ?? item.minimumStockLevel;
+        if (item.quantityAvailable <= reorder) {
+            pushSuggestion({
+                assetId: item.id,
+                assetName: item.partName,
+                issueType: 'spare_stock_below_reorder',
+                currentValue: `${item.quantityAvailable}`,
+                suggestedValue: `Increase stock above ${reorder}`,
+                reason: 'Spare stock is below reorder/minimum threshold.',
+                severity: 'warning',
+                confidence: 0.9,
+                evidence: { quantityAvailable: item.quantityAvailable, reorderPoint: reorder },
+                canAutoApply: false,
+            });
+        }
+    });
+
+    if (!snapshot.maintenance.length) missingData.push('maintenanceRecords');
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    const scannedCount = snapshot.assets.length + snapshot.spareStock.length;
+    const confidence = buildInventoryInsightConfidence({
+        dataScope: 'full_inventory',
+        scannedCount,
+        matchedCount: suggestions.length,
+    });
+    const summary = suggestions.length
+        ? `Detected ${suggestions.length} data correction suggestion(s): ${countsBySeverity.critical} critical, ${countsBySeverity.warning} warning, ${countsBySeverity.info} info.`
+        : 'No major deterministic data-correction issues were detected.';
+    return {
+        summary,
+        suggestions: suggestions.slice(0, 500),
+        countsBySeverity,
+        scannedCount,
+        matchedCount: suggestions.length,
+        excludedCategories,
+        missingData,
+        confidence,
+    };
+}
+
+type AssetRiskScoreRow = {
+    assetId: string;
+    assetName: string;
+    customId: string;
+    riskLevel: 'low' | 'medium' | 'high' | 'critical';
+    riskScore: number;
+    reasons: string[];
+    evidence: Record<string, any>;
+    recommendedActions: string[];
+    confidence: InventoryAiConfidence;
+};
+
+function buildAssetRiskScores(snapshot: InventoryAiSnapshot, params: { assetIds?: string[] } = {}): {
+    summary: string;
+    rows: AssetRiskScoreRow[];
+    scannedCount: number;
+    matchedCount: number;
+    missingData: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const targetSet = params.assetIds?.length ? new Set(params.assetIds) : null;
+    const maintenanceCount = new Map<string, number>();
+    const failureCount = new Map<string, number>();
+    const replacementCount = new Map<string, number>();
+    const now = new Date();
+
+    snapshot.maintenance.forEach((row) => {
+        maintenanceCount.set(row.assetId, (maintenanceCount.get(row.assetId) || 0) + 1);
+    });
+    snapshot.lifecycleEvents.forEach((row) => {
+        const key = normalizeValue(row.eventType);
+        if (key.includes('fail') || key.includes('damag') || key.includes('repair')) {
+            failureCount.set(row.assetId, (failureCount.get(row.assetId) || 0) + 1);
+        }
+        if (key.includes('replace')) {
+            replacementCount.set(row.assetId, (replacementCount.get(row.assetId) || 0) + 1);
+        }
+    });
+
+    const rows: AssetRiskScoreRow[] = [];
+    snapshot.assets.forEach((asset) => {
+        if (targetSet && !targetSet.has(asset.customId)) return;
+        const category = String(asset.category || '').toLowerCase();
+        if (category === 'spare_part') return;
+        let score = 8;
+        const reasons: string[] = [];
+        const actions: string[] = [];
+        const evidence: Record<string, any> = {};
+
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        const maint = maintenanceCount.get(asset.customId) || 0;
+        const failures = failureCount.get(asset.customId) || 0;
+        const replacements = replacementCount.get(asset.customId) || 0;
+        const childComponents = snapshot.components.filter((row) => row.parentAssetId === asset.customId);
+        const activeComponents = childComponents.filter((row) => !row.removedAt);
+        const removedOrMissingChildren = childComponents.filter((row) => {
+            const statusKey = normalizeLifecycleKey(row.status);
+            return Boolean(row.removedAt)
+                || ['removed', 'retired', 'disposed'].includes(statusKey);
+        });
+        const repairChildren = activeComponents.filter((row) => normalizeLifecycleKey(row.status) === 'under_repair');
+        const failedChildren = activeComponents.filter((row) => normalizeLifecycleKey(row.status) === 'failed');
+        evidence.lifecycleStatus = lifecycle;
+        evidence.maintenanceCount = maint;
+        evidence.failureEvents = failures;
+        evidence.replacementEvents = replacements;
+        evidence.kitHealth = {
+            childComponents: childComponents.length,
+            activeComponents: activeComponents.length,
+            missingChildren: removedOrMissingChildren.length,
+            underRepairChildren: repairChildren.length,
+            failedChildren: failedChildren.length,
+        };
+
+        if (lifecycle === 'pending_repair') {
+            score += 28;
+            reasons.push('Asset is pending repair.');
+            actions.push('Prioritize diagnostics and repair ticket closure.');
+        } else if (lifecycle === 'under_maintenance') {
+            score += 18;
+            reasons.push('Asset is under maintenance.');
+        } else if (lifecycle === 'eol_expired') {
+            score += 26;
+            reasons.push('Asset lifecycle is marked EOL/expired.');
+            actions.push('Plan replacement or retirement.');
+        }
+
+        if (asset.warrantyEndDate) {
+            const days = Math.floor((asset.warrantyEndDate.getTime() - now.getTime()) / 86400000);
+            evidence.warrantyDaysRemaining = days;
+            if (days < 0) {
+                score += 22;
+                reasons.push('Warranty is expired.');
+                actions.push('Budget repair/replacement without warranty coverage.');
+            } else if (days <= 90) {
+                score += 12;
+                reasons.push('Warranty expires within 90 days.');
+                actions.push('Plan renewal or replacement decision.');
+            }
+        } else if (category !== 'consumable' && category !== 'license') {
+            score += 6;
+            reasons.push('Warranty end date missing.');
+            actions.push('Backfill warranty metadata for better lifecycle planning.');
+        }
+
+        if (asset.purchaseDate) {
+            const ageYears = (now.getTime() - asset.purchaseDate.getTime()) / (86400000 * 365.25);
+            evidence.ageYears = Number(ageYears.toFixed(2));
+            if (ageYears >= 7) {
+                score += 18;
+                reasons.push('Asset age exceeds 7 years.');
+            } else if (ageYears >= 5) {
+                score += 10;
+                reasons.push('Asset age exceeds 5 years.');
+            }
+        } else if (category !== 'consumable') {
+            score += 5;
+            reasons.push('Purchase date missing.');
+        }
+
+        if (failures >= 3) {
+            score += 22;
+            reasons.push(`Frequent failures detected (${failures}).`);
+            actions.push('Investigate recurring fault root causes.');
+        } else if (failures > 0) {
+            score += failures * 5;
+            reasons.push(`Failure events detected (${failures}).`);
+        }
+        if (replacements >= 2) {
+            score += 12;
+            reasons.push(`Frequent replacements detected (${replacements}).`);
+        }
+        if (maint >= 4) {
+            score += 8;
+            reasons.push(`High maintenance frequency (${maint} records).`);
+        }
+
+        if (removedOrMissingChildren.length > 0 && category === 'asset') {
+            score += 14;
+            reasons.push(`Kit has ${removedOrMissingChildren.length} missing/removed child item(s).`);
+            actions.push('Restore missing child components/accessories or mark kit degraded.');
+        }
+        if (repairChildren.length > 0 && category === 'asset') {
+            score += 10;
+            reasons.push(`Kit has ${repairChildren.length} child item(s) under repair.`);
+            actions.push('Resolve under-repair child items to recover full kit health.');
+        }
+        if (failedChildren.length > 0 && category === 'asset') {
+            score += 12;
+            reasons.push(`Kit has ${failedChildren.length} failed child item(s).`);
+            actions.push('Replace or repair failed child items.');
+        }
+
+        if (!normalizeSerialValue(asset.serialNumber) && !['consumable', 'spare_part', 'license'].includes(category)) {
+            score += 7;
+            reasons.push('Serial number missing.');
+            actions.push('Add serial number for traceability.');
+        }
+        if (!String(asset.location || '').trim()) {
+            score += 6;
+            reasons.push('Location missing.');
+        }
+
+        const specs = ((asset.specifications as Record<string, any>) || {});
+        const telemetryStatus = String(specs.telemetryStatus || '').toLowerCase();
+        evidence.telemetryStatus = telemetryStatus || 'unknown';
+        if (isTelemetryCapableAsset({ type: asset.type, category: asset.category }) && (telemetryStatus === 'offline' || telemetryStatus === 'not_monitored')) {
+            score += 8;
+            reasons.push(`Telemetry status is ${telemetryStatus || 'unknown'}.`);
+            actions.push('Verify telemetry configuration and connectivity.');
+        }
+
+        if (category === 'license') {
+            score = Math.max(score - 6, 4);
+            if (!asset.warrantyEndDate) {
+                score += 12;
+                reasons.push('License expiry date missing.');
+            }
+        }
+        if (category === 'consumable') {
+            score = Math.max(5, Math.min(score, 45));
+            const qty = Number(asset.quantity || 0);
+            if (qty <= 2) {
+                score += 10;
+                reasons.push('Consumable quantity is critically low.');
+            }
+        }
+
+        score = clampNumber(score, 0, 100);
+        const riskLevel: 'low' | 'medium' | 'high' | 'critical' = score >= 80
+            ? 'critical'
+            : score >= 60
+                ? 'high'
+                : score >= 35
+                    ? 'medium'
+                    : 'low';
+        const confidence = buildInventoryInsightConfidence({
+            dataScope: targetSet ? 'selected_asset' : 'full_inventory',
+            scannedCount: 1,
+            matchedCount: reasons.length,
+        });
+        rows.push({
+            assetId: asset.customId,
+            assetName: asset.name,
+            customId: asset.customId,
+            riskLevel,
+            riskScore: Number(score.toFixed(1)),
+            reasons: reasons.slice(0, 8),
+            evidence,
+            recommendedActions: Array.from(new Set(actions)).slice(0, 8),
+            confidence,
+        });
+    });
+
+    rows.sort((a, b) => b.riskScore - a.riskScore);
+    const missingData: string[] = [];
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    if (!snapshot.maintenance.length) missingData.push('maintenanceRecords');
+    const confidence = buildInventoryInsightConfidence({
+        dataScope: targetSet ? 'selected_asset' : 'full_inventory',
+        scannedCount: rows.length,
+        matchedCount: rows.filter((row) => row.riskScore >= 35).length,
+    });
+    const summary = rows.length
+        ? `Calculated risk scores for ${rows.length} asset(s). ${rows.filter((row) => row.riskLevel === 'critical').length} critical, ${rows.filter((row) => row.riskLevel === 'high').length} high risk.`
+        : 'No assets available for risk scoring.';
+    return {
+        summary,
+        rows: rows.slice(0, 600),
+        scannedCount: rows.length,
+        matchedCount: rows.length,
+        missingData,
+        confidence,
+    };
+}
+
+function buildReplacementPriorityRanking(snapshot: InventoryAiSnapshot): {
+    summary: string;
+    rankedItems: Array<Record<string, any>>;
+    scannedCount: number;
+    matchedCount: number;
+    missingData: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const riskRows = buildAssetRiskScores(snapshot).rows;
+    const ranked = riskRows
+        .filter((row) => row.riskScore >= 30)
+        .map((row, index) => ({
+            rank: index + 1,
+            assetId: row.assetId,
+            assetName: row.assetName,
+            itemType: String(snapshot.assets.find((asset) => asset.customId === row.assetId)?.category || 'asset').toLowerCase(),
+            priority: row.riskLevel === 'critical' ? 'critical' : (row.riskLevel === 'high' ? 'high' : 'medium'),
+            reason: row.reasons[0] || 'Elevated lifecycle risk.',
+            evidence: row.evidence,
+            suggestedReplacement: row.riskLevel === 'critical'
+                ? 'Replace immediately'
+                : (row.riskLevel === 'high' ? 'Plan replacement this quarter' : 'Monitor and schedule replacement'),
+            urgency: row.riskLevel === 'critical' ? 'immediate' : (row.riskLevel === 'high' ? 'soon' : 'planned'),
+            confidence: row.confidence,
+        }))
+        .slice(0, 250);
+    const missingData: string[] = [];
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    if (!snapshot.maintenance.length) missingData.push('maintenanceRecords');
+    const confidence = buildInventoryInsightConfidence({
+        dataScope: 'full_inventory',
+        scannedCount: riskRows.length,
+        matchedCount: ranked.length,
+    });
+    const summary = ranked.length
+        ? `Ranked ${ranked.length} replacement candidate(s) using deterministic risk + lifecycle evidence.`
+        : 'No replacement-priority candidates found from current deterministic inputs.';
+    return {
+        summary,
+        rankedItems: ranked,
+        scannedCount: riskRows.length,
+        matchedCount: ranked.length,
+        missingData,
+        confidence,
+    };
+}
+
+function buildSpareStockForecast(snapshot: InventoryAiSnapshot): {
+    summary: string;
+    forecasts: Array<Record<string, any>>;
+    scannedCount: number;
+    matchedCount: number;
+    missingData: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const failureByComponentType = new Map<string, number>();
+    snapshot.lifecycleEvents.forEach((event) => {
+        const key = normalizeValue(event.eventType);
+        if (!(key.includes('failed') || key.includes('replace') || key.includes('repair'))) return;
+        const component = snapshot.components.find((row) => row.id === event.componentId);
+        if (!component) return;
+        const typeKey = normalizeValue(component.componentType || component.componentName);
+        failureByComponentType.set(typeKey, (failureByComponentType.get(typeKey) || 0) + 1);
+    });
+
+    const forecasts = snapshot.spareStock.map((item) => {
+        const reorder = item.reorderPoint ?? item.minimumStockLevel;
+        const typeKey = normalizeValue(item.componentType || item.partName);
+        const failurePressure = failureByComponentType.get(typeKey) || 0;
+        const compatibleCount = parseJsonArrayInput(item.compatibleAssetTypes)
+            .map((entry) => normalizeValue(entry))
+            .filter(Boolean)
+            .reduce((count, entry) => (
+                count + snapshot.assets.filter((asset) => normalizeValue(canonicalAssetType(asset.type)) === entry).length
+            ), 0);
+        const gap = Math.max(0, (reorder + 1) - item.quantityAvailable);
+        const suggestedByFailures = Math.min(8, failurePressure);
+        const suggestedByCoverage = compatibleCount > 0 ? Math.min(5, Math.ceil(compatibleCount / 8)) : 0;
+        const recommendedQuantity = Math.max(0, gap + suggestedByFailures + suggestedByCoverage);
+        const reason = item.quantityAvailable <= reorder
+            ? 'Current quantity is at/below reorder threshold.'
+            : (failurePressure > 0
+                ? 'Recent component failures indicate possible near-term demand.'
+                : 'Maintaining preventive stock buffer.');
+        const evidence = {
+            quantityAvailable: item.quantityAvailable,
+            reorderPoint: reorder,
+            minimumStockLevel: item.minimumStockLevel,
+            failurePressure,
+            compatibleAssetCount: compatibleCount,
+            unitCost: item.unitCost ? Number(item.unitCost) : null,
+        };
+        return {
+            itemName: item.partName,
+            componentType: item.componentType,
+            currentQuantity: item.quantityAvailable,
+            reorderPoint: reorder,
+            recommendedQuantity,
+            reason,
+            relatedAssets: compatibleCount,
+            evidence,
+            confidence: (item.reorderPoint !== null || item.minimumStockLevel > 0)
+                ? (failurePressure > 0 ? 'high' : 'medium')
+                : 'low',
+        };
+    }).filter((row) => row.recommendedQuantity > 0 || row.currentQuantity <= row.reorderPoint);
+
+    const missingData: string[] = [];
+    if (!snapshot.spareStock.length) missingData.push('spareStockItems');
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    const confidence = buildInventoryInsightConfidence({
+        dataScope: 'full_inventory',
+        scannedCount: snapshot.spareStock.length,
+        matchedCount: forecasts.length,
+    });
+    const summary = forecasts.length
+        ? `Prepared ${forecasts.length} spare-stock forecast recommendation(s).`
+        : 'No immediate spare-stock forecast actions from current thresholds.';
+    return {
+        summary,
+        forecasts: forecasts.slice(0, 200),
+        scannedCount: snapshot.spareStock.length,
+        matchedCount: forecasts.length,
+        missingData,
+        confidence,
+    };
+}
+
+function tokenizeForSimilarity(value: unknown): string[] {
+    return String(value || '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2);
+}
+
+function scoreTokenOverlap(a: unknown, b: unknown): number {
+    const aTokens = new Set(tokenizeForSimilarity(a));
+    const bTokens = new Set(tokenizeForSimilarity(b));
+    if (!aTokens.size || !bTokens.size) return 0;
+    let overlap = 0;
+    aTokens.forEach((token) => {
+        if (bTokens.has(token)) overlap += 1;
+    });
+    return overlap / Math.max(aTokens.size, bTokens.size);
+}
+
+function buildImportErrorRepairs(params: {
+    rows: NormalizedImportRow[];
+    availableParentTags: string[];
+}): {
+    summary: string;
+    fixes: Array<Record<string, any>>;
+    correctedRowsPreview: NormalizedImportRow[];
+    warnings: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const fixes: Array<Record<string, any>> = [];
+    const correctedRows = params.rows.map((row) => ({ ...row }));
+    const parentCandidates = params.availableParentTags.map((tag) => String(tag || '').trim()).filter(Boolean);
+
+    const categoryByRecordType: Record<string, string> = {
+        parent_asset: 'asset',
+        embedded_component: 'component',
+        component_asset: 'component',
+        spare_stock: 'spare_stock',
+        accessory: 'accessory',
+        consumable: 'consumable',
+        license: 'license',
+    };
+
+    correctedRows.forEach((row) => {
+        const rowFixes: Array<{ field: keyof NormalizedImportRow | string; suggestedValue: any; reason: string; confidence: number; safeToApply: boolean }> = [];
+        const rowErrors = Array.isArray(row.errors) ? row.errors : [];
+        const rowWarnings = Array.isArray(row.warnings) ? row.warnings : [];
+        const messages = [...rowErrors, ...rowWarnings].map((entry) => String(entry || ''));
+
+        messages.forEach((message) => {
+            if (/unknown parent asset tag/i.test(message) && row.parentAssetTag) {
+                let best: { tag: string; score: number } | null = null;
+                for (const candidate of parentCandidates) {
+                    const score = scoreTokenOverlap(row.parentAssetTag, candidate);
+                    if (!best || score > best.score) best = { tag: candidate, score };
+                }
+                if (best && best.score >= 0.45) {
+                    rowFixes.push({
+                        field: 'parentAssetTag',
+                        suggestedValue: best.tag,
+                        reason: `Closest parent asset tag match found: ${best.tag}`,
+                        confidence: clampNumber(best.score, 0.45, 0.92),
+                        safeToApply: true,
+                    });
+                } else {
+                    rowFixes.push({
+                        field: 'parentAssetTag',
+                        suggestedValue: '',
+                        reason: 'No confident parent-asset tag match found. Manual review required.',
+                        confidence: 0.35,
+                        safeToApply: false,
+                    });
+                }
+            }
+
+            if (/invalid category/i.test(message)) {
+                const fallbackCategory = categoryByRecordType[row.recordType] || 'asset';
+                rowFixes.push({
+                    field: 'category',
+                    suggestedValue: fallbackCategory,
+                    reason: 'Mapped category from Record Type.',
+                    confidence: 0.9,
+                    safeToApply: true,
+                });
+            }
+
+            if (/invalid record type/i.test(message)) {
+                const inferred = normalizeImportRecordType(row.recordType || row.category || row.assetType || row.notes) || 'parent_asset';
+                rowFixes.push({
+                    field: 'recordType',
+                    suggestedValue: inferred,
+                    reason: 'Inferred closest supported record type from row context.',
+                    confidence: 0.72,
+                    safeToApply: true,
+                });
+            }
+
+            if (/invalid lifecycle status/i.test(message)) {
+                rowFixes.push({
+                    field: 'lifecycleStatus',
+                    suggestedValue: row.recordType === 'spare_stock' ? 'in_stock' : 'in_use',
+                    reason: 'Mapped to a supported lifecycle fallback value.',
+                    confidence: 0.86,
+                    safeToApply: true,
+                });
+            }
+
+            if (/quantity.*invalid|required.*quantity|quantity must be a positive integer/i.test(message)) {
+                rowFixes.push({
+                    field: 'quantity',
+                    suggestedValue: 1,
+                    reason: 'Set quantity to minimum valid value.',
+                    confidence: 0.84,
+                    safeToApply: true,
+                });
+            }
+
+            if (/duplicate serial/i.test(message)) {
+                rowFixes.push({
+                    field: 'serialNumber',
+                    suggestedValue: row.serialNumber,
+                    reason: 'Duplicate serial detected. Manual resolution required.',
+                    confidence: 0.98,
+                    safeToApply: false,
+                });
+            }
+
+            if (/duplicate asset tag/i.test(message)) {
+                rowFixes.push({
+                    field: 'assetTag',
+                    suggestedValue: row.assetTag,
+                    reason: 'Duplicate asset tag detected. Manual resolution required.',
+                    confidence: 0.98,
+                    safeToApply: false,
+                });
+            }
+        });
+
+        const dedupedFixes = rowFixes.filter((fix, idx) => (
+            rowFixes.findIndex((candidate) => candidate.field === fix.field) === idx
+        ));
+        dedupedFixes.forEach((fix) => {
+            fixes.push({
+                rowNumber: row.rowNumber,
+                field: fix.field,
+                originalValue: (row as any)[fix.field as string],
+                suggestedValue: fix.suggestedValue,
+                reason: fix.reason,
+                confidence: fix.confidence,
+                safeToApply: fix.safeToApply,
+            });
+            if (fix.safeToApply) {
+                (row as any)[fix.field as string] = fix.suggestedValue;
+            }
+        });
+    });
+
+    const warnings: string[] = [];
+    const safeFixCount = fixes.filter((fix) => fix.safeToApply).length;
+    const manualFixCount = fixes.length - safeFixCount;
+    if (manualFixCount > 0) warnings.push(`${manualFixCount} suggestion(s) require manual review.`);
+    const confidence = safeFixCount > 0
+        ? (manualFixCount === 0 ? 'high' : 'medium')
+        : (fixes.length ? 'medium' : 'low');
+    return {
+        summary: fixes.length
+            ? `Generated ${fixes.length} import-repair suggestion(s).`
+            : 'No deterministic import-repair suggestions were generated.',
+        fixes: fixes.slice(0, 500),
+        correctedRowsPreview: correctedRows.slice(0, 1000),
+        warnings,
+        confidence,
+    };
+}
+
+function buildRelationshipSuggestions(snapshot: InventoryAiSnapshot): {
+    summary: string;
+    suggestions: Array<Record<string, any>>;
+    scannedCount: number;
+    matchedCount: number;
+    confidence: InventoryAiConfidence;
+    missingData: string[];
+} {
+    const suggestions: Array<Record<string, any>> = [];
+    const assetByCustomId = new Map(snapshot.assets.map((asset) => [asset.customId, asset]));
+    const byTag = new Map<string, Asset>();
+    snapshot.assets.forEach((asset) => {
+        const tag = normalizeSerialValue(asset.assetTag);
+        if (tag) byTag.set(tag.toLowerCase(), asset);
+    });
+
+    const pushSuggestion = (entry: Record<string, any>) => {
+        const key = `${entry.sourceAssetId}|${entry.targetAssetId}|${entry.relationshipType}`;
+        if (suggestions.some((row) => `${row.sourceAssetId}|${row.targetAssetId}|${row.relationshipType}` === key)) return;
+        suggestions.push(entry);
+    };
+
+    snapshot.assets.forEach((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        const specs = ((asset.specifications as Record<string, any>) || {});
+        const installedParentId = normalizeSerialValue(specs.installedInAssetId || specs.parentAssetId);
+        const installedParentTag = normalizeSerialValue(specs.installedInAssetTag);
+
+        if (category === 'component' && installedParentId && assetByCustomId.has(installedParentId)) {
+            const target = assetByCustomId.get(installedParentId)!;
+            pushSuggestion({
+                sourceAssetId: asset.customId,
+                sourceAssetName: asset.name,
+                targetAssetId: target.customId,
+                targetAssetName: target.name,
+                relationshipType: 'installed_in',
+                reason: 'Component metadata includes installed parent asset ID.',
+                confidence: 0.98,
+                evidence: { installedParentId },
+                safeToApply: true,
+            });
+        } else if (category === 'component' && installedParentTag && byTag.has(installedParentTag.toLowerCase())) {
+            const target = byTag.get(installedParentTag.toLowerCase())!;
+            pushSuggestion({
+                sourceAssetId: asset.customId,
+                sourceAssetName: asset.name,
+                targetAssetId: target.customId,
+                targetAssetName: target.name,
+                relationshipType: 'component_of',
+                reason: 'Component metadata includes installed parent asset tag.',
+                confidence: 0.95,
+                evidence: { installedParentTag },
+                safeToApply: true,
+            });
+        }
+
+        const notesText = [
+            normalizeSerialValue((asset as any).assignedToName) || '',
+            normalizeSerialValue((asset as any).notes) || '',
+            normalizeSerialValue(specs.installedInAssetTag) || '',
+            normalizeSerialValue(specs.parentAssetTag) || '',
+        ].join(' ').toLowerCase();
+        if (!notesText.trim()) return;
+
+        byTag.forEach((target, tag) => {
+            if (target.customId === asset.customId) return;
+            if (!notesText.includes(tag)) return;
+            const relationshipType = category === 'license'
+                ? 'licensed_to'
+                : (category === 'accessory' ? 'used_with' : (category === 'component' ? 'component_of' : 'related_to'));
+            pushSuggestion({
+                sourceAssetId: asset.customId,
+                sourceAssetName: asset.name,
+                targetAssetId: target.customId,
+                targetAssetName: target.name,
+                relationshipType,
+                reason: `Detected parent asset tag reference (${tag}) in notes/assignment metadata.`,
+                confidence: 0.9,
+                evidence: { matchedTag: tag, category },
+                safeToApply: true,
+            });
+        });
+    });
+
+    const missingData: string[] = [];
+    if (!snapshot.assets.length) missingData.push('assets');
+    const confidence = buildInventoryInsightConfidence({
+        dataScope: 'full_inventory',
+        scannedCount: snapshot.assets.length,
+        matchedCount: suggestions.length,
+    });
+    const summary = suggestions.length
+        ? `Generated ${suggestions.length} relationship suggestion(s).`
+        : 'No deterministic relationship suggestions were found.';
+    return {
+        summary,
+        suggestions: suggestions.slice(0, 500),
+        scannedCount: snapshot.assets.length,
+        matchedCount: suggestions.length,
+        confidence,
+        missingData,
+    };
+}
+
+function parseDateRangeFromInput(payload: any): { start: Date; end: Date; label: string } {
+    const startRaw = parseOptionalDateInput(payload?.startDate || payload?.dateFrom || null);
+    const endRaw = parseOptionalDateInput(payload?.endDate || payload?.dateTo || null);
+    if (startRaw && endRaw) {
+        return {
+            start: startRaw,
+            end: new Date(endRaw.getTime() + 86400000 - 1),
+            label: `${startRaw.toISOString().slice(0, 10)} to ${endRaw.toISOString().slice(0, 10)}`,
+        };
+    }
+    const monthRaw = Number(payload?.month);
+    const yearRaw = Number(payload?.year);
+    const now = new Date();
+    const month = Number.isFinite(monthRaw) && monthRaw >= 1 && monthRaw <= 12 ? monthRaw - 1 : now.getMonth();
+    const year = Number.isFinite(yearRaw) && yearRaw >= 2000 ? yearRaw : now.getFullYear();
+    const start = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+    return {
+        start,
+        end,
+        label: `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`,
+    };
+}
+
+function parseDailyBriefRangeFromInput(payload: any): { start: Date; end: Date; label: string; mode: 'today' | 'last_7_days' | 'custom' } {
+    const normalizeDayStart = (date: Date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        return d;
+    };
+    const normalizeDayEnd = (date: Date) => {
+        const d = new Date(date);
+        d.setHours(23, 59, 59, 999);
+        return d;
+    };
+    const dateRangeModeRaw = normalizeValue(payload?.dateRange || payload?.range || '');
+    const explicitDate = parseOptionalDateInput(payload?.date);
+    const customStart = parseOptionalDateInput(payload?.startDate || payload?.dateFrom || null);
+    const customEnd = parseOptionalDateInput(payload?.endDate || payload?.dateTo || null);
+    const now = new Date();
+
+    const wantsCustomRange = dateRangeModeRaw === 'custom'
+        || dateRangeModeRaw === 'daterangecustom'
+        || dateRangeModeRaw === 'customrange';
+    if ((wantsCustomRange || (customStart && customEnd)) && customStart && customEnd) {
+        const start = normalizeDayStart(customStart);
+        const end = normalizeDayEnd(customEnd);
+        return {
+            start,
+            end,
+            label: `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`,
+            mode: 'custom',
+        };
+    }
+
+    const wantsLast7Days = dateRangeModeRaw === 'last7days'
+        || dateRangeModeRaw === 'last7day'
+        || dateRangeModeRaw === 'thisweek'
+        || dateRangeModeRaw === 'weekly'
+        || dateRangeModeRaw === 'week';
+    if (wantsLast7Days) {
+        const end = normalizeDayEnd(now);
+        const start = normalizeDayStart(new Date(now.getTime() - 6 * 86400000));
+        return {
+            start,
+            end,
+            label: `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`,
+            mode: 'last_7_days',
+        };
+    }
+
+    const targetDate = explicitDate || now;
+    const start = normalizeDayStart(targetDate);
+    const end = normalizeDayEnd(targetDate);
+    return {
+        start,
+        end,
+        label: `${start.toISOString().slice(0, 10)}`,
+        mode: 'today',
+    };
+}
+
+function parseDashboardTimeRangeDays(rawValue: unknown): number {
+    const raw = String(rawValue || '').trim().toLowerCase();
+    if (!raw) return 30;
+    if (raw.includes('7')) return 7;
+    if (raw.includes('6m') || raw.includes('180')) return 180;
+    if (raw.includes('12m') || raw.includes('365') || raw.includes('year')) return 365;
+    if (raw.includes('90') || raw.includes('3m') || raw.includes('quarter')) return 90;
+    if (raw.includes('30') || raw.includes('month')) return 30;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(365, Math.max(1, Math.trunc(parsed)));
+    return 30;
+}
+
+function inferBlackBoxEventGroup(eventTypeRaw: unknown): string {
+    const eventType = normalizeValue(eventTypeRaw || '');
+    if (!eventType) return 'all';
+    if (eventType.includes('transfer')) return 'transfer';
+    if (eventType.includes('maintenance') || eventType.includes('repair')) return 'maintenance';
+    if (eventType.includes('component') || eventType.includes('relationship')) return 'components';
+    if (eventType.includes('audit') || eventType.includes('verified') || eventType.includes('missing')) return 'audit';
+    if (eventType.includes('loaner')) return 'loaner';
+    if (eventType.includes('telemetry') || eventType.includes('wifi')) return 'telemetry';
+    if (eventType.includes('risk') || eventType.includes('eol') || eventType.includes('ticket') || eventType.includes('ai')) return 'ai_risk_eol';
+    return 'all';
+}
+
+function inferBlackBoxSeverity(entry: {
+    eventType?: string | null;
+    reason?: string | null;
+    notes?: string | null;
+    details?: string | null;
+}): 'info' | 'warning' | 'critical' {
+    const haystack = [
+        normalizeValue(entry.eventType || ''),
+        normalizeValue(entry.reason || ''),
+        normalizeValue(entry.notes || ''),
+        normalizeValue(entry.details || ''),
+    ].join(' ');
+    if (/failed|damaged|missing|lost|stolen|critical|expired/.test(haystack)) return 'critical';
+    if (/repair|maintenance|warning|degraded|underrepair|mismatch/.test(haystack)) return 'warning';
+    return 'info';
+}
+
+function buildInvoiceAssetMatching(params: {
+    rows: Array<Record<string, any>>;
+    assets: Asset[];
+}): {
+    summary: string;
+    matches: Array<Record<string, any>>;
+    unmatchedItems: Array<Record<string, any>>;
+    warnings: string[];
+    confidence: InventoryAiConfidence;
+} {
+    const matches: Array<Record<string, any>> = [];
+    const unmatchedItems: Array<Record<string, any>> = [];
+    const warnings: string[] = [];
+    const bySerial = new Map<string, Asset>();
+    const byTag = new Map<string, Asset>();
+    params.assets.forEach((asset) => {
+        const serial = normalizeSerialValue(asset.serialNumber);
+        const tag = normalizeSerialValue(asset.assetTag);
+        if (serial) bySerial.set(serial.toLowerCase(), asset);
+        if (tag) byTag.set(tag.toLowerCase(), asset);
+    });
+
+    (params.rows || []).slice(0, 500).forEach((row) => {
+        const serial = normalizeSerialValue(row.serialNumber || row['Serial Number']);
+        const tag = normalizeSerialValue(row.assetTag || row['Asset Tag']);
+        const itemName = String(row.assetName || row.name || row['Asset Name'] || row.model || '').trim();
+        const brand = String(row.brand || '').trim();
+        const model = String(row.model || '').trim();
+        const purchaseDate = String(row.purchaseDate || row['Purchase Date'] || '').trim();
+        const warrantyStartDate = String(row.warrantyStartDate || row['Warranty Start Date'] || '').trim();
+        const warrantyEndDate = String(row.warrantyEndDate || row['Warranty End Date'] || '').trim();
+        const vendor = String(row.vendor || '').trim();
+        const purchaseCost = parseOptionalNumberInput(row.purchaseCost || row['Purchase Cost']);
+        const invoiceNumber = normalizeSerialValue(row.invoiceNumber || row['Invoice Number']);
+
+        let matched: Asset | null = null;
+        let matchReason = '';
+        let confidence = 0;
+        if (serial && bySerial.has(serial.toLowerCase())) {
+            matched = bySerial.get(serial.toLowerCase()) || null;
+            matchReason = 'Exact serial number match.';
+            confidence = 0.99;
+        } else if (tag && byTag.has(tag.toLowerCase())) {
+            matched = byTag.get(tag.toLowerCase()) || null;
+            matchReason = 'Exact asset-tag match.';
+            confidence = 0.97;
+        } else {
+            let best: { asset: Asset; score: number } | null = null;
+            for (const asset of params.assets) {
+                const score = Math.max(
+                    scoreTokenOverlap(itemName, asset.name),
+                    scoreTokenOverlap(`${brand} ${model}`, `${(asset.specifications as any)?.brand || ''} ${(asset.specifications as any)?.version || ''} ${asset.name}`)
+                );
+                if (!best || score > best.score) best = { asset, score };
+            }
+            if (best && best.score >= 0.45) {
+                matched = best.asset;
+                matchReason = 'Best brand/model/name similarity match.';
+                confidence = clampNumber(best.score, 0.45, 0.9);
+            }
+        }
+
+        const documentItem = {
+            assetName: itemName,
+            serialNumber: serial,
+            assetTag: tag,
+            brand,
+            model,
+        };
+        if (!matched) {
+            unmatchedItems.push(documentItem);
+            return;
+        }
+
+        const suggestedUpdates: Record<string, any> = {};
+        if (purchaseDate) suggestedUpdates.purchaseDate = purchaseDate;
+        if (warrantyStartDate) suggestedUpdates.warrantyStartDate = warrantyStartDate;
+        if (warrantyEndDate) suggestedUpdates.warrantyEndDate = warrantyEndDate;
+        if (vendor) suggestedUpdates.vendor = vendor;
+        if (purchaseCost !== null) suggestedUpdates.purchaseCost = purchaseCost;
+        if (invoiceNumber) suggestedUpdates.invoiceNumber = invoiceNumber;
+
+        matches.push({
+            documentItem,
+            matchedAssetId: matched.customId,
+            matchedAssetName: matched.name,
+            suggestedUpdates,
+            confidence: Number(confidence.toFixed(3)),
+            reason: matchReason,
+            evidence: {
+                serialMatched: Boolean(serial && normalizeSerialValue(matched.serialNumber)?.toLowerCase() === serial.toLowerCase()),
+                tagMatched: Boolean(tag && normalizeSerialValue(matched.assetTag)?.toLowerCase() === tag.toLowerCase()),
+            },
+        });
+    });
+
+    if (!params.rows.length) warnings.push('No extracted rows were provided for matching.');
+    const confidence: InventoryAiConfidence = matches.length
+        ? 'high'
+        : (unmatchedItems.length ? 'medium' : 'low');
+    return {
+        summary: matches.length
+            ? `Matched ${matches.length} document item(s) to existing assets.`
+            : 'No confident invoice/document matches were found.',
+        matches: matches.slice(0, 500),
+        unmatchedItems: unmatchedItems.slice(0, 500),
+        warnings,
+        confidence,
+    };
+}
+
+function buildInventoryTicketDraft(params: {
+    asset: Asset | null;
+    issue: string;
+    riskRow: AssetRiskScoreRow | null;
+}): {
+    ticketDraft: Record<string, any>;
+    confidence: InventoryAiConfidence;
+    missingData: string[];
+} {
+    const missingData: string[] = [];
+    const issue = String(params.issue || '').trim() || 'Inventory issue requires maintenance follow-up.';
+    const risk = params.riskRow;
+    const asset = params.asset;
+    const priority = risk?.riskLevel === 'critical'
+        ? 'P1'
+        : risk?.riskLevel === 'high'
+            ? 'P2'
+            : (risk?.riskLevel === 'medium' ? 'P3' : 'P4');
+    const now = new Date();
+    const dueDate = new Date(now.getTime() + (priority === 'P1' ? 1 : priority === 'P2' ? 3 : 7) * 86400000)
+        .toISOString()
+        .slice(0, 10);
+    if (!asset) missingData.push('asset');
+    const ticketDraft = {
+        title: asset ? `Inventory issue: ${asset.name}` : 'Inventory issue follow-up',
+        priority,
+        category: 'inventory_maintenance',
+        assetId: asset?.customId || null,
+        assetName: asset?.name || null,
+        description: `${issue}${risk ? ` Risk score: ${risk.riskScore} (${risk.riskLevel}).` : ''}`,
+        evidence: risk?.reasons || [],
+        suggestedAssignee: 'Inventory Operations Team',
+        recommendedDueDate: dueDate,
+    };
+    return {
+        ticketDraft,
+        confidence: asset ? 'high' : 'medium',
+        missingData,
+    };
+}
+
+function buildMonthlyInventoryReportDeterministic(params: {
+    snapshot: InventoryAiSnapshot;
+    rangeLabel: string;
+    additions: number;
+    transfers: number;
+}): {
+    reportTitle: string;
+    dateRange: string;
+    executiveSummary: string;
+    sections: Array<Record<string, any>>;
+    metrics: Record<string, any>;
+    recommendations: string[];
+    confidence: InventoryAiConfidence;
+    missingData: string[];
+} {
+    const { snapshot } = params;
+    const byCategory = snapshot.assets.reduce<Record<string, number>>((acc, asset) => {
+        const key = String(asset.category || 'asset').toLowerCase();
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {});
+    const riskRows = buildAssetRiskScores(snapshot).rows;
+    const highRisk = riskRows.filter((row) => row.riskLevel === 'high' || row.riskLevel === 'critical');
+    const nearEol = snapshot.assets.filter((asset) => {
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        if (lifecycle === 'eol_expired') return true;
+        if (!asset.warrantyEndDate) return false;
+        const days = (asset.warrantyEndDate.getTime() - Date.now()) / 86400000;
+        return days <= 90;
+    }).length;
+    const licenseExpiring = snapshot.assets.filter((asset) => (
+        String(asset.category || '').toLowerCase() === 'license'
+        && asset.warrantyEndDate
+        && ((asset.warrantyEndDate.getTime() - Date.now()) / 86400000) <= 90
+    )).length;
+    const stockForecast = buildSpareStockForecast(snapshot);
+    const missingDataReport = computeMissingDataReport(snapshot);
+    const recommendations = [
+        highRisk.length ? `Prioritize ${highRisk.length} high-risk asset(s) for maintenance/replacement planning.` : '',
+        stockForecast.forecasts.length ? `Review ${stockForecast.forecasts.length} spare-stock forecast recommendation(s).` : '',
+        licenseExpiring ? `Renew/reassign ${licenseExpiring} expiring license(s).` : '',
+        nearEol ? `Plan lifecycle action for ${nearEol} near-EOL asset(s).` : '',
+        missingDataReport.totalIssues ? `Resolve ${missingDataReport.totalIssues} data-quality issue(s).` : '',
+    ].filter(Boolean);
+
+    const sections = [
+        { key: 'assets_by_category', title: 'Total Assets by Category', data: byCategory },
+        { key: 'activity', title: 'Monthly Activity', data: { additions: params.additions, transfers: params.transfers, maintenance: snapshot.maintenance.length } },
+        { key: 'risk', title: 'High-Risk Assets', data: highRisk.slice(0, 20) },
+        { key: 'eol', title: 'EOL and Expiry Watch', data: { nearEol, licenseExpiring } },
+        { key: 'stock', title: 'Low Stock / Forecast', data: stockForecast.forecasts.slice(0, 20) },
+        { key: 'data_quality', title: 'Data Quality', data: { totalIssues: missingDataReport.totalIssues, criticalIssues: missingDataReport.criticalIssues } },
+    ];
+    const missingData: string[] = [];
+    if (!snapshot.lifecycleEvents.length) missingData.push('lifecycleEvents');
+    if (!snapshot.maintenance.length) missingData.push('maintenanceRecords');
+    return {
+        reportTitle: `Inventory AI Monthly Report (${params.rangeLabel})`,
+        dateRange: params.rangeLabel,
+        executiveSummary: `Inventory currently tracks ${snapshot.assets.length} assets across ${Object.keys(byCategory).length} categories. ${highRisk.length} assets are high-risk/critical, ${nearEol} are near EOL, and ${stockForecast.forecasts.length} spare-stock forecast actions were identified.`,
+        sections,
+        metrics: {
+            totalAssets: snapshot.assets.length,
+            categoryBreakdown: byCategory,
+            additions: params.additions,
+            transfers: params.transfers,
+            maintenanceRecords: snapshot.maintenance.length,
+            highRiskAssets: highRisk.length,
+            nearEolAssets: nearEol,
+            expiringLicenses: licenseExpiring,
+            lowStockForecastItems: stockForecast.forecasts.length,
+            dataQualityIssues: missingDataReport.totalIssues,
+        },
+        recommendations,
+        confidence: buildInventoryInsightConfidence({
+            dataScope: 'full_inventory',
+            scannedCount: snapshot.assets.length,
+            matchedCount: highRisk.length + stockForecast.forecasts.length,
+        }),
+        missingData,
+    };
+}
+
+type KitHealthStatusKey =
+    | 'complete'
+    | 'missing_child_item'
+    | 'damaged_child_item'
+    | 'degraded'
+    | 'under_repair'
+    | 'unknown';
+
+type KitHealthEvidenceItem = {
+    sourceType: 'component' | 'accessory' | 'consumable' | 'license';
+    itemId: string | null;
+    itemName: string;
+    relationshipType: string;
+    status: string;
+    condition: string | null;
+    reason: string;
+};
+
+async function computeKitHealthForParent(parentAssetId: string): Promise<{
+    parentAssetId: string;
+    status: KitHealthStatusKey;
+    statusLabel: string;
+    summary: string;
+    counts: {
+        totalLinkedItems: number;
+        missing: number;
+        damaged: number;
+        underRepair: number;
+        degraded: number;
+    };
+    missingItems: KitHealthEvidenceItem[];
+    damagedItems: KitHealthEvidenceItem[];
+    underRepairItems: KitHealthEvidenceItem[];
+    degradedItems: KitHealthEvidenceItem[];
+    evidence: KitHealthEvidenceItem[];
+    confidence: InventoryAiConfidence;
+}> {
+    const [components, relationships] = await Promise.all([
+        prisma.assetComponent.findMany({
+            where: { parentAssetId },
+            include: {
+                childAsset: true,
+            },
+            orderBy: { updatedAt: 'desc' },
+        }),
+        prisma.assetRelationship.findMany({
+            where: {
+                assetId: parentAssetId,
+                relationshipType: {
+                    in: ['used_with', 'assigned_to', 'consumed_by', 'licensed_to'],
+                },
+            },
+            include: {
+                relatedAsset: true,
+            },
+            orderBy: { updatedAt: 'desc' },
+        }),
+    ]);
+
+    const missingItems: KitHealthEvidenceItem[] = [];
+    const damagedItems: KitHealthEvidenceItem[] = [];
+    const underRepairItems: KitHealthEvidenceItem[] = [];
+    const degradedItems: KitHealthEvidenceItem[] = [];
+    const evidence: KitHealthEvidenceItem[] = [];
+
+    const pushEvidence = (entry: KitHealthEvidenceItem) => {
+        evidence.push(entry);
+        if (entry.reason === 'missing_child_item') missingItems.push(entry);
+        if (entry.reason === 'damaged_child_item') damagedItems.push(entry);
+        if (entry.reason === 'under_repair') underRepairItems.push(entry);
+        if (entry.reason === 'degraded') degradedItems.push(entry);
+    };
+
+    components.forEach((component) => {
+        const normalizedStatus = String(component.status || '').trim().toLowerCase();
+        const normalizedCondition = String(component.condition || '').trim().toLowerCase() || null;
+        const child = component.childAsset;
+        const childLifecycle = normalizeLifecycleKey(child?.lifecycleStatus || '');
+        const childStatus = String(child?.status || '').toLowerCase();
+        const baseItem: Omit<KitHealthEvidenceItem, 'reason'> = {
+            sourceType: 'component',
+            itemId: component.childAssetId || component.id,
+            itemName: component.componentName || 'Component',
+            relationshipType: 'component_of',
+            status: normalizedStatus || childLifecycle || childStatus || 'unknown',
+            condition: normalizedCondition,
+        };
+
+        if (
+            ['removed', 'replaced', 'retired', 'disposed', 'missing'].includes(normalizedStatus)
+            || Boolean(component.removedAt)
+        ) {
+            pushEvidence({ ...baseItem, reason: 'missing_child_item' });
+            return;
+        }
+        if (
+            ['failed', 'damaged', 'broken'].includes(normalizedStatus)
+            || ['failed', 'damaged', 'broken'].includes(normalizedCondition || '')
+            || ['retired', 'disposed', 'lost_stolen'].includes(childLifecycle)
+        ) {
+            pushEvidence({ ...baseItem, reason: 'damaged_child_item' });
+            return;
+        }
+        if (
+            ['under_repair', 'repair', 'pending_repair'].includes(normalizedStatus)
+            || ['under_maintenance', 'pending_repair'].includes(childLifecycle)
+            || ['repair', 'maintenance'].includes(childStatus)
+        ) {
+            pushEvidence({ ...baseItem, reason: 'under_repair' });
+            return;
+        }
+        if (!child && !component.childAssetId && !component.serialNumber) {
+            pushEvidence({ ...baseItem, reason: 'degraded' });
+            return;
+        }
+    });
+
+    relationships.forEach((row) => {
+        const related = row.relatedAsset;
+        const relatedCategory = String(related?.category || '').toLowerCase();
+        const normalizedLifecycle = normalizeLifecycleKey(related?.lifecycleStatus || '');
+        const normalizedStatus = String(related?.status || '').trim().toLowerCase();
+        const specs = readAssetSpecifications(related || {});
+        const baseItem: Omit<KitHealthEvidenceItem, 'reason'> = {
+            sourceType: relatedCategory === 'license'
+                ? 'license'
+                : relatedCategory === 'consumable'
+                    ? 'consumable'
+                    : 'accessory',
+            itemId: related?.customId || row.id,
+            itemName: related?.name || row.relatedAssetId,
+            relationshipType: String(row.relationshipType || 'related_to'),
+            status: normalizedLifecycle || normalizedStatus || 'unknown',
+            condition: normalizeSerialValue((specs as any).condition),
+        };
+        if (related && ['retired', 'disposed', 'lost_stolen'].includes(normalizedLifecycle)) {
+            pushEvidence({ ...baseItem, reason: 'missing_child_item' });
+            return;
+        }
+        if (related && ['repair', 'maintenance'].includes(normalizedStatus)) {
+            pushEvidence({ ...baseItem, reason: 'under_repair' });
+            return;
+        }
+        if (relatedCategory === 'license') {
+            const expiryRaw = normalizeSerialValue((specs as any).licenseExpiry || related?.warrantyEndDate);
+            const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+            if (expiryDate && !Number.isNaN(expiryDate.getTime()) && expiryDate.getTime() < Date.now()) {
+                pushEvidence({ ...baseItem, reason: 'degraded' });
+            }
+        }
+    });
+
+    const totalLinkedItems = components.length + relationships.length;
+    let status: KitHealthStatusKey = 'unknown';
+    if (!totalLinkedItems) {
+        status = 'unknown';
+    } else if (missingItems.length) {
+        status = 'missing_child_item';
+    } else if (underRepairItems.length) {
+        status = 'under_repair';
+    } else if (damagedItems.length) {
+        status = 'damaged_child_item';
+    } else if (degradedItems.length) {
+        status = 'degraded';
+    } else {
+        status = 'complete';
+    }
+
+    const statusLabelMap: Record<KitHealthStatusKey, string> = {
+        complete: 'Complete',
+        missing_child_item: 'Missing Child Item',
+        damaged_child_item: 'Damaged Child Item',
+        degraded: 'Degraded',
+        under_repair: 'Under Repair',
+        unknown: 'Unknown',
+    };
+    return {
+        parentAssetId,
+        status,
+        statusLabel: statusLabelMap[status],
+        summary: totalLinkedItems
+            ? `Kit health: ${statusLabelMap[status]} (${totalLinkedItems} linked item(s) evaluated).`
+            : 'Kit health: Unknown (no linked child items found).',
+        counts: {
+            totalLinkedItems,
+            missing: missingItems.length,
+            damaged: damagedItems.length,
+            underRepair: underRepairItems.length,
+            degraded: degradedItems.length,
+        },
+        missingItems,
+        damagedItems,
+        underRepairItems,
+        degradedItems,
+        evidence: evidence.slice(0, 200),
+        confidence: totalLinkedItems ? 'high' : 'medium',
+    };
+}
+
+function buildEolBudgetReport(params: {
+    snapshot: InventoryAiSnapshot;
+    monthsAhead: number;
+    startDate: Date;
+    endDate: Date;
+    department?: string | null;
+    location?: string | null;
+    category?: string | null;
+    type?: string | null;
+}): {
+    summary: string;
+    totals: Record<string, any>;
+    breakdowns: {
+        byDepartment: Record<string, number>;
+        byLocation: Record<string, number>;
+        byCategory: Record<string, number>;
+    };
+    rows: Array<Record<string, any>>;
+    missingCostRows: Array<Record<string, any>>;
+    recommendations: string[];
+    confidence: InventoryAiConfidence;
+    missingData: string[];
+} {
+    const now = new Date();
+    const horizonEnd = new Date(now.getTime() + Math.max(1, params.monthsAhead) * 30.4375 * 86400000);
+    const rangeStart = params.startDate;
+    const rangeEnd = params.endDate;
+    const deptFilter = normalizeValue(params.department || '');
+    const locationFilter = normalizeValue(params.location || '');
+    const categoryFilter = normalizeValue(params.category || '');
+    const typeFilter = normalizeValue(params.type || '');
+    const riskRows = buildAssetRiskScores(params.snapshot).rows;
+    const riskById = new Map(riskRows.map((row) => [row.assetId, row]));
+    const replacementRows = buildReplacementPriorityRanking(params.snapshot).rankedItems;
+    const replacementById = new Map(replacementRows.map((row) => [row.assetId, row]));
+
+    const byDepartment: Record<string, number> = {};
+    const byLocation: Record<string, number> = {};
+    const byCategory: Record<string, number> = {};
+    const rows: Array<Record<string, any>> = [];
+    const missingCostRows: Array<Record<string, any>> = [];
+    let estimatedBudget = 0;
+
+    params.snapshot.assets.forEach((asset) => {
+        const categoryKey = String(asset.category || '').toLowerCase();
+        if (categoryKey === 'consumable' || categoryKey === 'spare_part') return;
+        if (deptFilter && normalizeValue(mapDepartmentToFriendly(asset.department)) !== deptFilter) return;
+        if (locationFilter && normalizeValue(mapLocationToFriendly(asset.location)) !== locationFilter) return;
+        if (categoryFilter && normalizeValue(categoryKey) !== categoryFilter) return;
+        if (typeFilter && !normalizeValue(canonicalAssetType(asset.type)).includes(typeFilter)) return;
+
+        const expiry = asset.warrantyEndDate || null;
+        let candidateDate: Date | null = expiry;
+        if (!candidateDate && asset.purchaseDate) {
+            const fallbackYears = determineFallbackLifespanYears(String(asset.type || ''));
+            candidateDate = computePredictedEolDate(asset.purchaseDate, fallbackYears);
+        }
+        if (!candidateDate || Number.isNaN(candidateDate.getTime())) return;
+        if (candidateDate < rangeStart || candidateDate > rangeEnd) return;
+        if (candidateDate > horizonEnd) return;
+
+        const risk = riskById.get(asset.customId);
+        const replacement = replacementById.get(asset.customId);
+        const costCandidate = Number(asset.replacementCost ?? asset.purchaseCost ?? 0);
+        const hasCost = Number.isFinite(costCandidate) && costCandidate > 0;
+        if (hasCost) estimatedBudget += costCandidate;
+        const departmentLabel = mapDepartmentToFriendly(asset.department);
+        const locationLabel = mapLocationToFriendly(asset.location);
+        const categoryLabel = String(asset.category || 'asset').toLowerCase();
+        byDepartment[departmentLabel] = (byDepartment[departmentLabel] || 0) + 1;
+        byLocation[locationLabel] = (byLocation[locationLabel] || 0) + 1;
+        byCategory[categoryLabel] = (byCategory[categoryLabel] || 0) + 1;
+
+        const row = {
+            assetId: asset.customId,
+            assetName: asset.name,
+            department: departmentLabel,
+            location: locationLabel,
+            category: categoryLabel,
+            type: canonicalAssetType(asset.type),
+            lifecycleStatus: normalizeLifecycleKey(asset.lifecycleStatus),
+            eolDate: candidateDate.toISOString(),
+            riskLevel: risk?.riskLevel || 'unknown',
+            riskScore: risk?.riskScore ?? null,
+            replacementPriority: replacement?.priority || null,
+            replacementReason: replacement?.reason || null,
+            estimatedReplacementCost: hasCost ? Number(costCandidate.toFixed(2)) : null,
+            costDataMissing: !hasCost,
+        };
+        rows.push(row);
+        if (!hasCost) missingCostRows.push(row);
+    });
+
+    rows.sort((a, b) => new Date(a.eolDate).getTime() - new Date(b.eolDate).getTime());
+    const recommendations = [
+        rows.length ? `Plan lifecycle action for ${rows.length} asset(s) in selected horizon.` : '',
+        missingCostRows.length ? `Backfill replacement/purchase cost for ${missingCostRows.length} asset(s).` : '',
+        rows.filter((row) => ['high', 'critical'].includes(String(row.riskLevel || '').toLowerCase())).length
+            ? 'Prioritize high-risk assets first for replacement planning.'
+            : '',
+    ].filter(Boolean);
+    const missingData: string[] = [];
+    if (!rows.length) missingData.push('no_assets_in_range');
+    if (missingCostRows.length) missingData.push('replacement_or_purchase_cost');
+    return {
+        summary: rows.length
+            ? `Prepared EOL budget report for ${rows.length} asset(s) in range with estimated budget ${estimatedBudget.toLocaleString()}.`
+            : 'No assets matched the selected EOL budget report filters/time range.',
+        totals: {
+            matchedAssets: rows.length,
+            estimatedBudget,
+            missingCostAssets: missingCostRows.length,
+            monthsAhead: params.monthsAhead,
+            range: `${rangeStart.toISOString().slice(0, 10)} to ${rangeEnd.toISOString().slice(0, 10)}`,
+        },
+        breakdowns: {
+            byDepartment,
+            byLocation,
+            byCategory,
+        },
+        rows: rows.slice(0, 1000),
+        missingCostRows: missingCostRows.slice(0, 500),
+        recommendations,
+        confidence: rows.length ? 'high' : 'medium',
+        missingData,
+    };
+}
+
+function buildReallocationSuggestions(snapshot: InventoryAiSnapshot): {
+    summary: string;
+    suggestions: Array<Record<string, any>>;
+    confidence: InventoryAiConfidence;
+    missingData: string[];
+} {
+    const procurementNeeds = buildProcurementRecommendations(snapshot);
+    const storageLocationHints = ['central warehouse', 'it store', 'admin store', 'network store', 'facilities store', 'store', 'storage'];
+    const availableAssets = snapshot.assets.filter((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        if (['consumable', 'spare_part', 'license'].includes(category)) return false;
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        const friendlyLocation = mapLocationToFriendly(asset.location).toLowerCase();
+        const inStorage = storageLocationHints.some((hint) => friendlyLocation.includes(hint));
+        const idleLifecycle = ['in_stock', 'reserved'].includes(lifecycle);
+        const unassigned = !normalizeSerialValue(asset.assignedToName) && !normalizeSerialValue(asset.assignedToUserId) && !normalizeSerialValue(asset.assignedUser);
+        return inStorage && idleLifecycle && unassigned;
+    });
+
+    const usedAssetIds = new Set<string>();
+    const suggestions: Array<Record<string, any>> = [];
+    for (const need of procurementNeeds.slice(0, 120)) {
+        const targetTypeToken = normalizeValue(need.type || need.itemName || '');
+        if (!targetTypeToken) continue;
+        const candidate = availableAssets.find((asset) => {
+            if (usedAssetIds.has(asset.customId)) return false;
+            const assetTypeToken = normalizeValue(canonicalAssetType(asset.type));
+            const assetNameToken = normalizeValue(asset.name);
+            return (
+                assetTypeToken.includes(targetTypeToken)
+                || targetTypeToken.includes(assetTypeToken)
+                || assetNameToken.includes(targetTypeToken)
+            );
+        });
+        if (!candidate) continue;
+        usedAssetIds.add(candidate.customId);
+        const savingsBase = Number(candidate.replacementCost ?? candidate.purchaseCost ?? candidate.value ?? 0);
+        suggestions.push({
+            requestedNeed: need.itemName,
+            availableAssetId: candidate.customId,
+            availableAssetName: candidate.name,
+            sourceLocation: mapLocationToFriendly(candidate.location),
+            suggestedDestination: 'Requesting department/location',
+            reason: `Available idle asset in storage can satisfy need for ${need.itemName}.`,
+            estimatedSavings: Number.isFinite(savingsBase) && savingsBase > 0 ? Number(savingsBase.toFixed(2)) : null,
+            confidence: 0.78,
+            evidence: {
+                candidateType: canonicalAssetType(candidate.type),
+                candidateLifecycle: normalizeLifecycleKey(candidate.lifecycleStatus),
+                candidateLocation: mapLocationToFriendly(candidate.location),
+                procurementPriority: need.priority,
+                procurementReason: need.reason,
+            },
+        });
+    }
+    const missingData: string[] = [];
+    if (!procurementNeeds.length) missingData.push('procurementNeeds');
+    if (!availableAssets.length) missingData.push('availableStorageAssets');
+    return {
+        summary: suggestions.length
+            ? `Generated ${suggestions.length} internal reallocation suggestion(s) to reduce new purchases.`
+            : 'No confident reallocation opportunities were detected from current stock and availability.',
+        suggestions: suggestions.slice(0, 200),
+        confidence: suggestions.length ? 'medium' : 'low',
+        missingData,
+    };
+}
+
+function buildInventoryActionPlan(params: {
+    query: string;
+    snapshot: InventoryAiSnapshot;
+}): {
+    actionType: string;
+    summary: string;
+    affectedItems: Array<Record<string, any>>;
+    proposedChanges: Array<Record<string, any>>;
+    risks: string[];
+    requiresConfirmation: boolean;
+    executable: boolean;
+    confirmationInstructions: string;
+} {
+    const query = String(params.query || '').trim();
+    const q = query.toLowerCase();
+    const affectedItems: Array<Record<string, any>> = [];
+    const proposedChanges: Array<Record<string, any>> = [];
+    const risks: string[] = [];
+
+    if (q.includes('transfer')) {
+        const destination = /to\s+([a-z0-9 _-]+)/i.exec(query)?.[1]?.trim() || 'target location';
+        const typeHint = /\b(pc|desktop|laptop|server|projector|printer)\b/i.exec(q)?.[1]?.toLowerCase() || '';
+        const sourceLocation = /from\s+([a-z0-9 _-]+)/i.exec(query)?.[1]?.trim().toLowerCase() || '';
+        let candidates = params.snapshot.assets.filter((asset) => !['license', 'consumable', 'spare_part'].includes(String(asset.category || '').toLowerCase()));
+        if (typeHint) {
+            candidates = candidates.filter((asset) => canonicalAssetType(asset.type).includes(typeHint));
+        }
+        if (sourceLocation) {
+            candidates = candidates.filter((asset) => mapLocationToFriendly(asset.location).toLowerCase().includes(sourceLocation));
+        }
+        candidates.slice(0, 200).forEach((asset) => {
+            affectedItems.push({
+                assetId: asset.customId,
+                name: asset.name,
+                category: String(asset.category || '').toLowerCase(),
+                location: mapLocationToFriendly(asset.location),
+            });
+        });
+        proposedChanges.push({
+            field: 'location',
+            newValue: destination,
+            reason: 'Natural-language transfer intent detected.',
+        });
+        risks.push('Bulk transfer should verify destination inventory ownership and related item transfer options.');
+        return {
+            actionType: 'transfer_assets',
+            summary: affectedItems.length
+                ? `Planned transfer of ${affectedItems.length} asset(s) to ${destination}.`
+                : `No assets matched transfer intent for destination ${destination}.`,
+            affectedItems,
+            proposedChanges,
+            risks,
+            requiresConfirmation: true,
+            executable: false,
+            confirmationInstructions: 'Review affected assets and execute transfer manually or through a dedicated reviewed bulk-transfer flow.',
+        };
+    }
+
+    if (q.includes('ticket')) {
+        const riskRows = buildAssetRiskScores(params.snapshot).rows.filter((row) => row.riskLevel === 'critical' || row.riskLevel === 'high');
+        riskRows.slice(0, 50).forEach((row) => {
+            affectedItems.push({
+                assetId: row.assetId,
+                name: row.assetName,
+                riskLevel: row.riskLevel,
+                riskScore: row.riskScore,
+            });
+        });
+        proposedChanges.push({ field: 'tickets', newValue: 'draft_only', reason: 'Generate draft maintenance tickets for high-risk assets.' });
+        risks.push('Ticket creation remains draft-only in this action planner.');
+        return {
+            actionType: 'draft_tickets',
+            summary: affectedItems.length
+                ? `Planned draft ticket generation for ${affectedItems.length} high-risk asset(s).`
+                : 'No high-risk assets found for draft ticket planning.',
+            affectedItems,
+            proposedChanges,
+            risks,
+            requiresConfirmation: true,
+            executable: false,
+            confirmationInstructions: 'Review proposed ticket drafts before creating them in the ticketing system.',
+        };
+    }
+
+    return {
+        actionType: 'planning_only',
+        summary: 'This action is currently planning-only. Supported intents include transfer planning and ticket drafting.',
+        affectedItems: [],
+        proposedChanges: [],
+        risks: ['Unsupported action execution in this pass to ensure safe review-before-execute behavior.'],
+        requiresConfirmation: true,
+        executable: false,
+        confirmationInstructions: 'Use a supported phrase like "Transfer all Lab A PCs to Computer Lab B" or "Create tickets for high-risk assets".',
+    };
+}
+
 function deterministicNaturalLanguageSearch(snapshot: InventoryAiSnapshot, query: string): {
     interpretedFilters: Record<string, any>;
     results: InventoryAiMatchedItem[];
@@ -2309,43 +4861,57 @@ function deterministicNaturalLanguageSearch(snapshot: InventoryAiSnapshot, query
 }
 
 function canonicalAssetType(type: unknown): string {
+    const raw = String(type || '').trim();
+    if (!raw) return '';
+    const normalized = raw.toLowerCase().replace(/[\s-]+/g, '_');
     const aliases: Record<string, string> = {
-        LAPTOP: 'laptop',
-        DESKTOP: 'desktop',
-        TABLET: 'tablet',
-        SERVER: 'server',
-        MONITOR: 'monitor',
-        PERIPHERAL: 'peripheral',
-        KEYBOARD: 'keyboard',
-        ELECTRONICS: 'electronics',
-        PROJECTOR: 'projector',
-        SMARTBOARD: 'smartboard',
-        CAMERA: 'camera',
-        SPEAKER: 'speaker',
-        MICROPHONE: 'microphone',
-        ROUTER: 'router',
-        SWITCH: 'switch',
-        ACCESS_POINT: 'access_point',
-        FIREWALL: 'firewall',
-        PRINTER: 'printer',
-        SCANNER: 'scanner',
-        DESK: 'desk',
-        CHAIR: 'chair',
-        WHITEBOARD: 'whiteboard',
-        FILING_CABINET: 'filing_cabinet',
-        FURNITURE: 'furniture',
-        MICROSCOPE: 'microscope',
-        CENTRIFUGE: 'centrifuge',
-        OSCILLOSCOPE: 'oscilloscope',
-        THREE_D_PRINTER: '3d_printer',
-        LAB_BENCH: 'lab_bench',
-        VEHICLE: 'vehicle',
-        GENERATOR: 'generator',
-        HVAC: 'hvac',
-        MAINTENANCE_TOOL: 'maintenance_tool'
+        laptop: 'laptop',
+        desktop: 'desktop',
+        desktop_pc: 'desktop',
+        pc: 'desktop',
+        workstation: 'desktop',
+        thin_client: 'desktop',
+        lab_computer: 'desktop',
+        library_pc: 'desktop',
+        tablet: 'tablet',
+        ipad: 'tablet',
+        server: 'server',
+        nas_storage: 'server',
+        nvr_dvr: 'server',
+        monitor: 'monitor',
+        peripheral: 'peripheral',
+        external_storage_device: 'peripheral',
+        keyboard: 'keyboard',
+        electronics: 'electronics',
+        ups: 'electronics',
+        network_rack: 'electronics',
+        biometric_attendance_device: 'electronics',
+        ip_phone: 'electronics',
+        projector: 'projector',
+        smartboard: 'smartboard',
+        interactive_display: 'smartboard',
+        camera: 'camera',
+        cctv_camera: 'camera',
+        lecture_capture_device: 'camera',
+        document_camera: 'camera',
+        router: 'router',
+        switch: 'switch',
+        network_switch: 'switch',
+        access_point: 'access_point',
+        firewall: 'firewall',
+        firewall_appliance: 'firewall',
+        printer: 'printer',
+        photocopier: 'printer',
+        scanner: 'scanner',
+        barcode_scanner: 'scanner',
+        rfid_reader: 'scanner',
+        book_scanner: 'scanner',
     };
-    const raw = String(type || '');
-    return aliases[raw.toUpperCase()] || raw.toLowerCase();
+    const byNormalized = aliases[normalized];
+    if (byNormalized) return byNormalized;
+    const byUpper = aliases[raw.toUpperCase().toLowerCase()];
+    if (byUpper) return byUpper;
+    return normalized;
 }
 
 const TELEMETRY_CAPABLE_ASSET_TYPES = new Set<string>([
@@ -2362,8 +4928,10 @@ const TELEMETRY_CAPABLE_ASSET_TYPES = new Set<string>([
     'smartboard',
     'interactive_display',
     'router',
+    'switch',
     'network_switch',
     'access_point',
+    'firewall',
     'firewall_appliance',
     'ip_phone',
     'cctv_camera',
@@ -2371,35 +4939,63 @@ const TELEMETRY_CAPABLE_ASSET_TYPES = new Set<string>([
     'ups',
     'nas_storage',
     'external_storage_device',
+    'peripheral',
     'lab_computer',
     'biometric_attendance_device',
     'monitor',
     'scanner',
 ]);
 
-function isTelemetryCapableAsset(params: { type?: unknown; category?: unknown }): boolean {
+function isTelemetryCapableAsset(params: { type?: unknown; category?: unknown; name?: unknown }): boolean {
     const category = String(params.category || '').trim().toLowerCase();
     if (['license', 'consumable', 'spare_part', 'component'].includes(category)) return false;
-    return TELEMETRY_CAPABLE_ASSET_TYPES.has(canonicalAssetType(params.type));
+    const canonicalTypeValue = canonicalAssetType(params.type);
+    if (TELEMETRY_CAPABLE_ASSET_TYPES.has(canonicalTypeValue)) return true;
+    const nameToken = normalizeValue(String(params.name || ''));
+    if (!nameToken) return false;
+    return (
+        nameToken.includes('desktop')
+        || nameToken.includes('laptop')
+        || nameToken.includes('pc')
+        || nameToken.includes('server')
+        || nameToken.includes('projector')
+        || nameToken.includes('printer')
+        || nameToken.includes('switch')
+        || nameToken.includes('router')
+        || nameToken.includes('accesspoint')
+        || nameToken.includes('smartboard')
+        || nameToken.includes('interactive')
+        || nameToken.includes('cctv')
+        || nameToken.includes('ups')
+        || nameToken.includes('biometric')
+    );
 }
 
 function buildTelemetryDefaultsForAsset(params: {
     type?: unknown;
     category?: unknown;
+    name?: unknown;
     existingSpecs?: Record<string, any>;
     location?: unknown;
 }): Record<string, any> {
     const specs = params.existingSpecs || {};
+    const telemetryDisabledExplicit = (
+        specs.telemetryDisabled === true
+        || String(specs.telemetryDisabled || '').toLowerCase() === 'true'
+    );
     const telemetryExplicit = (
         specs.trackWorkingHours === true
         || String(specs.trackWorkingHours || '').toLowerCase() === 'true'
         || specs.telemetryEnabled === true
         || String(specs.telemetryEnabled || '').toLowerCase() === 'true'
     );
-    const telemetryCapable = isTelemetryCapableAsset({ type: params.type, category: params.category });
-    const telemetryEnabled = telemetryExplicit || telemetryCapable;
-    const locationLabel = String(params.location || '').trim().toLowerCase();
-    const inWarehouse = !locationLabel || locationLabel === 'central warehouse';
+    const telemetryCapable = isTelemetryCapableAsset({
+        type: params.type,
+        category: params.category,
+        name: params.name,
+    });
+    const telemetryEnabled = telemetryDisabledExplicit ? false : (telemetryExplicit || telemetryCapable);
+    const inWarehouse = isCentralWarehouseLocationValue(params.location) || !String(params.location || '').trim();
     const baseStatus = telemetryEnabled
         ? (inWarehouse ? 'offline' : 'insufficient_data')
         : 'not_monitored';
@@ -2412,6 +5008,7 @@ function buildTelemetryDefaultsForAsset(params: {
         ...specs,
         trackWorkingHours: telemetryEnabled,
         telemetryEnabled,
+        telemetryApplicable: telemetryEnabled,
         telemetryStatus: String(specs.telemetryStatus || baseStatus),
         telemetryConfidence: String(specs.telemetryConfidence || 'low'),
         telemetryReason: String(specs.telemetryReason || baseReason),
@@ -2843,7 +5440,14 @@ function buildSpecEvidenceAssessment(params: {
 }
 
 function annotateAssetWithTruthfulSignals(asset: Asset): Asset {
-    const specs = ((asset.specifications as Record<string, any>) || {});
+    const rawSpecs = ((asset.specifications as Record<string, any>) || {});
+    const specs = buildTelemetryDefaultsForAsset({
+        type: asset.type,
+        category: asset.category,
+        name: asset.name,
+        location: asset.location,
+        existingSpecs: rawSpecs,
+    });
     const telemetryTruth = getTelemetryTruth(specs);
     const evidence = buildSpecEvidenceAssessment({
         confidence: Number(specs.aiSpecConfidence || 0),
@@ -4024,6 +6628,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 const baseId = normalizeSerialValue(row.assetTag) || `IMPORTED-${Date.now()}-${row.rowNumber}`;
                 const unitIds = buildUnitAssetIds(baseId, qty);
                 const firstUnit = unitIds[0];
+                const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
                 for (let unitIdx = 0; unitIdx < unitIds.length; unitIdx += 1) {
                     const unitId = unitIds[unitIdx];
                     const created = await tx.asset.create({
@@ -4040,7 +6645,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             serialNumber: unitIdx === 0 ? normalizeSerialValue(row.serialNumber) : null,
                             assetTag: unitIdx === 0 ? normalizeSerialValue(row.assetTag) : null,
                             manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
-                            location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                            location: locationResolution.location,
                             department: mapToAssetDepartment(row.department || 'Unassigned'),
                             assignedToName: normalizeSerialValue(row.assignedTo),
                             custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
@@ -4052,10 +6657,12 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             specifications: buildTelemetryDefaultsForAsset({
                                 type: row.assetType || row.componentType || 'electronics',
                                 category: mapToAssetCategory(row.category || 'asset'),
+                                name: row.assetName,
                                 location: row.location || 'Central Warehouse',
                                 existingSpecs: buildImportSpecifications({
                                     brand: row.brand || undefined,
                                     version: row.model || undefined,
+                                    mapLocationHint: locationResolution.mapLocationHint || undefined,
                                     autoComponentsFromSpecs: false,
                                 }),
                             }),
@@ -4100,7 +6707,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                         }
                         const parentAssetRef = await tx.asset.findUnique({
                             where: { customId: parentId },
-                            select: { customId: true, name: true, assetTag: true, location: true, department: true },
+                            select: { customId: true, name: true, assetTag: true, location: true, department: true, specifications: true },
                         });
                         if (!parentAssetRef) {
                             skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent asset ${parentId} was not found.` });
@@ -4149,6 +6756,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetId: parentAssetRef.customId,
                                         installedInAssetName: parentAssetRef.name,
                                         installedInAssetTag: parentAssetRef.assetTag || null,
+                                        mapLocationHint: normalizeSerialValue((parentAssetRef.specifications as Record<string, any>)?.mapLocationHint) || undefined,
                                         componentType: row.componentType || 'component',
                                     }),
                                 }
@@ -4172,6 +6780,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetId: parentAssetRef.customId,
                                         installedInAssetName: parentAssetRef.name,
                                         installedInAssetTag: parentAssetRef.assetTag || null,
+                                        mapLocationHint: normalizeSerialValue((parentAssetRef.specifications as Record<string, any>)?.mapLocationHint) || undefined,
                                         componentType: row.componentType || 'component',
                                     }),
                                 }
@@ -4233,6 +6842,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             })
                             : null;
                         const customId = normalizeSerialValue(row.assetTag) || `IMPORTED-COMP-${Date.now()}-${row.rowNumber}`;
+                        const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
                         const child = await tx.asset.create({
                             data: {
                                 customId,
@@ -4246,7 +6856,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 serialNumber: normalizeSerialValue(row.serialNumber),
                                 assetTag: normalizeSerialValue(row.assetTag),
                                 manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
-                                location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                                location: locationResolution.location,
                                 department: mapToAssetDepartment(row.department || 'Unassigned'),
                                 assignedToName: normalizeSerialValue(row.assignedTo),
                                 custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
@@ -4263,6 +6873,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetTag: normalizeSerialValue(row.parentAssetTag),
                                         installedInAssetName: parentAssetRef?.name || undefined,
                                     } : {}),
+                                    mapLocationHint: locationResolution.mapLocationHint || undefined,
                                 }),
                             }
                         });
@@ -4381,6 +6992,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             : 1;
                         const baseId = normalizeSerialValue(row.assetTag) || `IMPORTED-${Date.now()}-${row.rowNumber}`;
                         const unitIds = buildUnitAssetIds(baseId, qty);
+                        const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
                         for (let unitIdx = 0; unitIdx < unitIds.length; unitIdx += 1) {
                             const unitId = unitIds[unitIdx];
                             const created = await tx.asset.create({
@@ -4396,7 +7008,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     serialNumber: unitIdx === 0 ? normalizeSerialValue(row.serialNumber) : null,
                                     assetTag: unitIdx === 0 ? normalizeSerialValue(row.assetTag) : null,
                                     manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
-                                    location: mapToAssetLocation(row.location || 'Central Warehouse'),
+                                    location: locationResolution.location,
                                     department: mapToAssetDepartment(row.department || 'Unassigned'),
                                     assignedToName: normalizeSerialValue(row.assignedTo),
                                     custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
@@ -4408,10 +7020,12 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     specifications: buildTelemetryDefaultsForAsset({
                                         type: row.assetType || 'electronics',
                                         category: mapToAssetCategory(row.recordType),
+                                        name: row.assetName,
                                         location: row.location || 'Central Warehouse',
                                         existingSpecs: buildImportSpecifications({
                                             brand: row.brand || undefined,
                                             version: row.model || undefined,
+                                            mapLocationHint: locationResolution.mapLocationHint || undefined,
                                         }),
                                     }),
                                 }
@@ -4624,33 +7238,80 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
     try {
         const query = String(req.body?.query || '').trim();
         if (!query) return res.status(400).json({ message: 'query is required' });
-        const snapshot = await buildInventoryAiSnapshot();
-        const deterministic = deterministicAssistantAnswer(snapshot, query);
+        const context = (req.body?.context && typeof req.body.context === 'object') ? req.body.context : {};
+        const fullSnapshot = await buildInventoryAiSnapshot();
+        const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, context as Record<string, any>, query);
+        const scopedSnapshot = scoped.snapshot;
+        const dataScope = scoped.dataScope;
+        const deterministicRaw = deterministicAssistantAnswer(scopedSnapshot, query);
+        const deterministic = applyAssistantQueryFilters(deterministicRaw, scopedSnapshot, query, dataScope);
+        const deterministicConfidence = deriveAssistantConfidence({
+            intent: deterministic.intent,
+            dataScope,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedItems.length,
+            supported: deterministic.supported,
+            partialFailure: deterministic.partialFailure,
+        });
+        const llmPayload = buildAssistantLlmInput(deterministic, query);
+        const routedMeta = ASSISTANT_ROUTED_ACTION_BY_INTENT[String(deterministic.intent || '').toLowerCase()] || null;
+
+        console.info(`[InventoryAI][assistant] query="${query.slice(0, 100)}" scope=${dataScope} llmAttempt=true`);
         const ai = await callInventoryAiHelper('/inventory-assistant', {
             query,
-            deterministicResult: deterministic,
+            deterministicResult: llmPayload,
             contextSummary: {
-                assets: snapshot.assets.length,
-                components: snapshot.components.length,
-                maintenance: snapshot.maintenance.length,
-                lifecycleEvents: snapshot.lifecycleEvents.length,
-                spareStock: snapshot.spareStock.length,
+                assets: scopedSnapshot.assets.length,
+                components: scopedSnapshot.components.length,
+                maintenance: scopedSnapshot.maintenance.length,
+                lifecycleEvents: scopedSnapshot.lifecycleEvents.length,
+                spareStock: scopedSnapshot.spareStock.length,
+                scope: dataScope,
             },
-        }, 11_000);
+            recentMessages: Array.isArray(req.body?.recentMessages) ? req.body.recentMessages.slice(-8) : [],
+        }, 20_000);
+        const llmUsed = Boolean(ai?.llm_used);
+        const fallbackUsed = !ai || !llmUsed;
+        const llmStatus = ai
+            ? String(ai?.llm_status || (llmUsed ? 'ready' : 'fallback'))
+            : 'offline';
+        const fallbackReason = String(ai?.fallback_reason || (fallbackUsed ? 'llm_unavailable_or_timeout' : '')).trim();
         const answer = String(ai?.answer || deterministic.answer || INVENTORY_AI_SUPPORTED_HINT);
         const suggestedActions = Array.isArray(ai?.suggested_actions)
             ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 12)
             : deterministic.suggestedActions;
+        const llmConfidence = String(ai?.confidence || '').trim().toLowerCase();
+        const llmConfidenceLabel: 'low' | 'medium' | 'high' = llmConfidence === 'high'
+            ? 'high'
+            : llmConfidence === 'medium'
+                ? 'medium'
+                : 'low';
+        const confidence: 'low' | 'medium' | 'high' = FACTUAL_ASSISTANT_INTENTS.has(String(deterministic.intent || '').toLowerCase())
+            ? deterministicConfidence
+            : (ai ? llmConfidenceLabel : deterministicConfidence);
+        console.info(`[InventoryAI][assistant] llmUsed=${llmUsed} fallbackUsed=${fallbackUsed} llmStatus=${llmStatus}${fallbackReason ? ` reason=${fallbackReason}` : ''}`);
         return res.json({
             answer,
             matchedItems: deterministic.matchedItems,
             filtersUsed: deterministic.filtersUsed,
-            confidence: String(ai?.confidence || deterministic.confidence || 'low'),
+            confidence,
             missingData: Array.isArray(ai?.missing_data)
                 ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
                 : deterministic.missingData,
             suggestedActions,
-            fallbackUsed: !ai,
+            dataScope,
+            intent: deterministic.intent,
+            scannedCount: Number(deterministic.scannedCount || 0),
+            matchedCount: deterministic.matchedItems.length,
+            missingCount: typeof deterministic.missingCount === 'number' ? deterministic.missingCount : null,
+            excludedCategories: Array.isArray(deterministic.excludedCategories) ? deterministic.excludedCategories : [],
+            llmUsed,
+            llmStatus,
+            fallbackReason: fallbackReason || null,
+            fallbackUsed,
+            supported: deterministic.supported,
+            routedAction: routedMeta?.action || null,
+            routedEndpoint: routedMeta?.endpoint || null,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run inventory AI assistant', error: error.message });
@@ -4776,6 +7437,1083 @@ app.post('/api/inventory/ai/search', inventoryReadGuard, async (req: Request, re
     }
 });
 
+app.post('/api/inventory/ai/data-corrections', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const context = (req.body?.context && typeof req.body.context === 'object') ? req.body.context : {};
+        const fullSnapshot = await buildInventoryAiSnapshot();
+        const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, context, 'data corrections');
+        const deterministic = buildDataCorrectionSuggestions(scoped.snapshot);
+        const llmSuggestionContext = deterministic.suggestions.slice(0, 40).map((item) => ({
+            assetId: item.assetId,
+            assetName: item.assetName,
+            issueType: item.issueType,
+            severity: item.severity,
+            suggestedValue: item.suggestedValue,
+            reason: item.reason,
+        }));
+        const ai = await callInventoryAiHelper('/data-correction-suggestions', {
+            summary: deterministic.summary,
+            suggestions: llmSuggestionContext,
+            countsBySeverity: deterministic.countsBySeverity,
+            dataScope: scoped.dataScope,
+        }, 22_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            suggestions: deterministic.suggestions,
+            countsBySeverity: deterministic.countsBySeverity,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            excludedCategories: deterministic.excludedCategories,
+            dataScope: scoped.dataScope,
+            evidence: {
+                duplicateChecks: true,
+                categoryTypeChecks: true,
+                lifecycleChecks: true,
+            },
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
+                : deterministic.missingData,
+            suggestedActions: Array.isArray(ai?.suggested_actions)
+                ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : ['Review critical suggestions first, then apply safe corrections with confirmation.'],
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate AI data correction suggestions', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/risk-score', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const context = (req.body?.context && typeof req.body.context === 'object') ? req.body.context : {};
+        const fullSnapshot = await buildInventoryAiSnapshot();
+        const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, context, String(req.body?.query || 'risk score'));
+        const deterministic = buildAssetRiskScores(scoped.snapshot);
+        const llmRiskContext = deterministic.rows.slice(0, 40).map((row) => ({
+            assetId: row.assetId,
+            assetName: row.assetName,
+            riskLevel: row.riskLevel,
+            riskScore: row.riskScore,
+            reasons: row.reasons.slice(0, 4),
+        }));
+        const ai = await callInventoryAiHelper('/risk-score-explanation', {
+            summary: deterministic.summary,
+            riskScores: llmRiskContext,
+            dataScope: scoped.dataScope,
+            missingData: deterministic.missingData,
+        }, 22_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            riskScores: deterministic.rows,
+            dataScope: scoped.dataScope,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
+                : deterministic.missingData,
+            suggestedActions: Array.isArray(ai?.suggested_actions)
+                ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : ['Prioritize critical/high-risk assets for maintenance or replacement planning.'],
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate AI risk scores', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/ai-risk-score', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = String(req.params.id || '').trim();
+        if (!assetId) return res.status(400).json({ message: 'asset id is required' });
+        const fullSnapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildAssetRiskScores(fullSnapshot, { assetIds: [assetId] });
+        if (!deterministic.rows.length) return res.status(404).json({ message: 'Asset not found for risk scoring' });
+        const ai = await callInventoryAiHelper('/risk-score-explanation', {
+            summary: deterministic.summary,
+            riskScores: deterministic.rows.slice(0, 1),
+            dataScope: 'selected_asset',
+            missingData: deterministic.missingData,
+        }, 20_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            riskScores: deterministic.rows,
+            dataScope: 'selected_asset',
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: deterministic.missingData,
+            suggestedActions: Array.isArray(ai?.suggested_actions)
+                ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : deterministic.rows[0].recommendedActions,
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate asset AI risk score', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/replacement-priority', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildReplacementPriorityRanking(snapshot);
+        const llmRankedContext = deterministic.rankedItems.slice(0, 40).map((item) => ({
+            rank: item.rank,
+            assetName: item.assetName,
+            itemType: item.itemType,
+            priority: item.priority,
+            reason: item.reason,
+        }));
+        const ai = await callInventoryAiHelper('/replacement-priority', {
+            summary: deterministic.summary,
+            rankedItems: llmRankedContext,
+            missingData: deterministic.missingData,
+        }, 22_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            rankedItems: deterministic.rankedItems,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: deterministic.missingData,
+            suggestedActions: Array.isArray(ai?.suggested_actions)
+                ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : ['Review top-ranked assets for replacement planning and budgeting.'],
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate replacement priority ranking', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/spare-stock-forecast', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildSpareStockForecast(snapshot);
+        const ai = await callInventoryAiHelper('/spare-stock-forecast', {
+            summary: deterministic.summary,
+            forecasts: deterministic.forecasts.slice(0, 40).map((item) => ({
+                itemName: item.itemName,
+                componentType: item.componentType,
+                currentQuantity: item.currentQuantity,
+                reorderPoint: item.reorderPoint,
+                recommendedQuantity: item.recommendedQuantity,
+                reason: item.reason,
+            })),
+            missingData: deterministic.missingData,
+        }, 20_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            forecasts: deterministic.forecasts,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: deterministic.missingData,
+            suggestedActions: Array.isArray(ai?.suggested_actions)
+                ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
+                : ['Review forecasted stock gaps and raise procurement requests for critical items.'],
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate spare stock forecast', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/reallocation-suggestions', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildReallocationSuggestions(snapshot);
+        const ai = await callInventoryAiHelper('/reallocation-suggestions', {
+            summary: deterministic.summary,
+            suggestions: deterministic.suggestions.slice(0, 60),
+            missingData: deterministic.missingData,
+        }, 24_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            suggestions: deterministic.suggestions,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
+                : deterministic.missingData,
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            suggestedActions: [
+                'Validate suggested destination/ownership, then run transfer with explicit confirmation.',
+                'Prioritize internal reallocation before creating new purchase requests.',
+            ],
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate AI reallocation suggestions', error: error.message });
+    }
+});
+
+app.post('/api/assets/import/ai-repair-errors', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const normalizedRowsInput = Array.isArray(req.body?.normalizedRows)
+            ? req.body.normalizedRows as Array<Record<string, any>>
+            : (Array.isArray(req.body?.preview?.normalizedRows) ? req.body.preview.normalizedRows as Array<Record<string, any>> : []);
+        if (!normalizedRowsInput.length) {
+            return res.status(400).json({ message: 'Provide normalizedRows from import preview first.' });
+        }
+        const normalizedRows = normalizeImportRows(normalizedRowsInput);
+        const revalidated = await validateImportRows(normalizedRows);
+        const parentAssets = await prisma.asset.findMany({
+            where: { assetTag: { not: null } },
+            select: { assetTag: true },
+            take: 2000,
+        });
+        const parentTags = parentAssets.map((row) => String(row.assetTag || '').trim()).filter(Boolean);
+        const deterministic = buildImportErrorRepairs({
+            rows: revalidated.normalizedRows,
+            availableParentTags: parentTags,
+        });
+        const correctedValidation = await validateImportRows(deterministic.correctedRowsPreview);
+        const ai = await callInventoryAiHelper('/repair-import-errors', {
+            summary: deterministic.summary,
+            fixes: deterministic.fixes.slice(0, 60).map((fix) => ({
+                rowNumber: fix.rowNumber,
+                field: fix.field,
+                originalValue: fix.originalValue,
+                suggestedValue: fix.suggestedValue,
+                reason: fix.reason,
+                confidence: fix.confidence,
+                safeToApply: fix.safeToApply,
+            })),
+            warnings: deterministic.warnings,
+        }, 20_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            fixes: deterministic.fixes,
+            correctedRowsPreview: correctedValidation.normalizedRows,
+            correctedValidation: {
+                totalRows: correctedValidation.totalRows,
+                validRows: correctedValidation.validRows,
+                invalidRows: correctedValidation.invalidRows,
+                warnings: correctedValidation.warnings,
+                errors: correctedValidation.errors,
+                canImport: correctedValidation.canImport,
+            },
+            warnings: deterministic.warnings,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        return res.status(500).json({ message: 'Failed to generate AI import repair suggestions', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/relationship-suggestions', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const deterministic = buildRelationshipSuggestions(snapshot);
+        const llmRelationshipContext = deterministic.suggestions.slice(0, 20).map((item) => ({
+            sourceAssetId: item.sourceAssetId,
+            sourceAssetName: item.sourceAssetName,
+            targetAssetId: item.targetAssetId,
+            targetAssetName: item.targetAssetName,
+            relationshipType: item.relationshipType,
+            reason: item.reason,
+            confidence: item.confidence,
+            safeToApply: item.safeToApply,
+        }));
+        const ai = await callInventoryAiHelper('/relationship-suggestions', {
+            summary: deterministic.summary,
+            suggestions: llmRelationshipContext,
+            missingData: deterministic.missingData,
+        }, 30_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            suggestions: deterministic.suggestions,
+            scannedCount: deterministic.scannedCount,
+            matchedCount: deterministic.matchedCount,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: deterministic.missingData,
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate relationship suggestions', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/relationship-suggestions/apply', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const suggestions = Array.isArray(req.body?.suggestions) ? req.body.suggestions as Array<Record<string, any>> : [];
+        if (!suggestions.length) return res.status(400).json({ message: 'No suggestions provided for apply.' });
+        const created: Array<Record<string, any>> = [];
+        const skipped: Array<Record<string, any>> = [];
+
+        for (const suggestion of suggestions.slice(0, 300)) {
+            const sourceAssetId = normalizeSerialValue(suggestion.sourceAssetId);
+            const targetAssetId = normalizeSerialValue(suggestion.targetAssetId);
+            const relationshipType = String(suggestion.relationshipType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const safeToApply = parseBooleanFlag(suggestion.safeToApply);
+            if (!sourceAssetId || !targetAssetId || !relationshipType) {
+                skipped.push({ sourceAssetId, targetAssetId, reason: 'missing_required_fields' });
+                continue;
+            }
+            if (!safeToApply) {
+                skipped.push({ sourceAssetId, targetAssetId, reason: 'manual_review_required' });
+                continue;
+            }
+            const [source, target] = await Promise.all([
+                AssetService.getAssetByCustomId(sourceAssetId),
+                AssetService.getAssetByCustomId(targetAssetId),
+            ]);
+            if (!source || !target) {
+                skipped.push({ sourceAssetId, targetAssetId, reason: 'asset_not_found' });
+                continue;
+            }
+            const exists = await prisma.assetRelationship.findFirst({
+                where: {
+                    assetId: sourceAssetId,
+                    relatedAssetId: targetAssetId,
+                    relationshipType,
+                },
+            });
+            if (exists) {
+                skipped.push({ sourceAssetId, targetAssetId, reason: 'already_exists' });
+                continue;
+            }
+            const row = await prisma.assetRelationship.create({
+                data: {
+                    assetId: sourceAssetId,
+                    relatedAssetId: targetAssetId,
+                    relationshipType,
+                    notes: normalizeSerialValue(suggestion.reason) || 'Applied from AI relationship suggestion',
+                },
+            });
+            await recordLifecycleEvent({
+                assetId: sourceAssetId,
+                eventType: 'relationship_added',
+                newValue: row as unknown as Record<string, any>,
+                notes: row.notes || undefined,
+                actor: 'inventory-ai-relationship-apply',
+            });
+            await recordHistoryEvent({
+                assetId: sourceAssetId,
+                action: 'Relationship Added',
+                details: `${sourceAssetId} ${relationshipType} ${targetAssetId} (AI suggested)`,
+            });
+            created.push(row as unknown as Record<string, any>);
+        }
+
+        return res.json({
+            success: true,
+            createdCount: created.length,
+            skippedCount: skipped.length,
+            created,
+            skipped,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to apply relationship suggestions', error: error.message });
+    }
+});
+
+app.post('/api/assets/import/ai-match-invoice', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const extractedRows = Array.isArray(req.body?.extractedRows)
+            ? req.body.extractedRows as Array<Record<string, any>>
+            : (Array.isArray(req.body?.rows) ? req.body.rows as Array<Record<string, any>> : []);
+        if (!extractedRows.length) {
+            return res.status(400).json({ message: 'Provide extractedRows from document/preview first.' });
+        }
+        const candidates = (await prisma.asset.findMany({
+            orderBy: { updatedAt: 'desc' },
+            take: 2000,
+        })).filter((asset) => String(asset.category || '').toLowerCase() !== 'spare_part');
+        const deterministic = buildInvoiceAssetMatching({
+            rows: extractedRows,
+            assets: candidates,
+        });
+        const ai = await callInventoryAiHelper('/match-invoice-assets', {
+            summary: deterministic.summary,
+            matches: deterministic.matches.slice(0, 60),
+            unmatchedItems: deterministic.unmatchedItems.slice(0, 60),
+        }, 20_000);
+        return res.json({
+            summary: String(ai?.summary || deterministic.summary),
+            matches: deterministic.matches,
+            unmatchedItems: deterministic.unmatchedItems,
+            warnings: deterministic.warnings,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to match invoice/document rows to assets', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/ticket-draft', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = normalizeSerialValue(req.body?.assetId || req.body?.customId);
+        const issue = String(req.body?.issue || req.body?.query || 'Inventory issue requires follow-up').trim();
+        const snapshot = await buildInventoryAiSnapshot();
+        const asset = assetId ? (snapshot.assets.find((row) => row.customId === assetId) || null) : null;
+        const riskRows = buildAssetRiskScores(snapshot, assetId ? { assetIds: [assetId] } : {}).rows;
+        const draft = buildInventoryTicketDraft({
+            asset,
+            issue,
+            riskRow: riskRows[0] || null,
+        });
+        const ai = await callInventoryAiHelper('/draft-inventory-ticket', {
+            ticketDraft: draft.ticketDraft,
+            confidence: draft.confidence,
+            missingData: draft.missingData,
+        }, 20_000);
+        return res.json({
+            ticketDraft: ai?.ticket_draft || draft.ticketDraft,
+            confidence: String(ai?.confidence || draft.confidence),
+            missingData: draft.missingData,
+            dataScope: assetId ? 'selected_asset' : 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            suggestedActions: ['Review draft details, then create a ticket in draft mode only.'],
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate inventory ticket draft', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/daily-brief', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const range = parseDailyBriefRangeFromInput(req.body || {});
+        const departmentFilterRaw = normalizeSerialValue(req.body?.department);
+        const locationFilterRaw = normalizeSerialValue(req.body?.location);
+        const requestedScope: InventoryInsightDataScope = (departmentFilterRaw || locationFilterRaw) ? 'filtered_view' : 'full_inventory';
+        const snapshot = await buildInventoryAiSnapshot();
+
+        let scopedAssets = [...snapshot.assets];
+        if (departmentFilterRaw) {
+            const departmentFilter = mapToAssetDepartment(departmentFilterRaw);
+            scopedAssets = scopedAssets.filter((asset) => asset.department === departmentFilter);
+        }
+        if (locationFilterRaw) {
+            const locationFilter = mapToAssetLocation(locationFilterRaw);
+            const normalizedHint = normalizeValue(locationFilterRaw);
+            scopedAssets = scopedAssets.filter((asset) => {
+                if (asset.location === locationFilter) return true;
+                const hint = normalizeValue(((asset.specifications as Record<string, any>)?.mapLocationHint) || '');
+                return hint && hint === normalizedHint;
+            });
+        }
+
+        const scopedAssetIds = new Set(scopedAssets.map((asset) => asset.customId));
+        const scopedSnapshot: InventoryAiSnapshot = {
+            assets: scopedAssets,
+            components: snapshot.components.filter((row) => (
+                scopedAssetIds.has(row.parentAssetId) || (row.childAssetId ? scopedAssetIds.has(row.childAssetId) : false)
+            )),
+            maintenance: snapshot.maintenance.filter((row) => scopedAssetIds.has(row.assetId)),
+            lifecycleEvents: snapshot.lifecycleEvents.filter((row) => scopedAssetIds.has(row.assetId)),
+            spareStock: snapshot.spareStock,
+        };
+        const scopedAssetIdList = Array.from(scopedAssetIds);
+
+        const [
+            additions,
+            transfers,
+            custodyChanges,
+            maintenanceEvents,
+            componentLifecycleEvents,
+            lifecycleEventsCount,
+            auditEvents,
+            loanerEvents,
+            wifiUpdates,
+            recentHistoryRows,
+        ] = scopedAssetIdList.length
+            ? await Promise.all([
+                prisma.assetHistory.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        date: { gte: range.start, lte: range.end },
+                        OR: [
+                            { event: { contains: 'Import', mode: 'insensitive' } },
+                            { event: { contains: 'Create', mode: 'insensitive' } },
+                        ],
+                    },
+                }),
+                prisma.assetHistory.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        date: { gte: range.start, lte: range.end },
+                        event: { contains: 'Transfer', mode: 'insensitive' },
+                    },
+                }),
+                prisma.assetCustodyEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                    },
+                }),
+                prisma.assetMaintenanceRecord.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                    },
+                }),
+                prisma.assetLifecycleEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                        OR: [
+                            { componentId: { not: null } },
+                            { eventType: { contains: 'component', mode: 'insensitive' } },
+                        ],
+                    },
+                }),
+                prisma.assetLifecycleEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                    },
+                }),
+                prisma.assetLifecycleEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                        eventType: { in: ['asset_location_verified', 'asset_marked_missing'] },
+                    },
+                }),
+                prisma.assetLifecycleEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                        eventType: { in: ['loaner_checked_out', 'loaner_returned'] },
+                    },
+                }),
+                prisma.assetLifecycleEvent.count({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        createdAt: { gte: range.start, lte: range.end },
+                        eventType: 'mock_wifi_location_updated',
+                    },
+                }),
+                prisma.assetHistory.findMany({
+                    where: {
+                        assetId: { in: scopedAssetIdList },
+                        date: { gte: range.start, lte: range.end },
+                    },
+                    orderBy: { date: 'desc' },
+                    take: 60,
+                    select: {
+                        assetId: true,
+                        event: true,
+                        details: true,
+                        date: true,
+                    },
+                }),
+            ])
+            : [0, 0, 0, 0, 0, 0, 0, 0, 0, []];
+
+        const riskRows = buildAssetRiskScores(scopedSnapshot).rows;
+        const highRiskCount = riskRows.filter((row) => ['high', 'critical'].includes(String(row.riskLevel || '').toLowerCase())).length;
+        const nearEolCount = scopedAssets.filter((asset) => {
+            const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+            if (lifecycle === 'eol_expired') return true;
+            if (!asset.warrantyEndDate) return false;
+            const days = (asset.warrantyEndDate.getTime() - Date.now()) / 86400000;
+            return days <= 90;
+        }).length;
+        const lowStockWarnings = scopedSnapshot.spareStock.filter((item) => item.quantityAvailable <= (item.reorderPoint ?? item.minimumStockLevel)).length
+            + scopedAssets.filter((asset) => String(asset.category || '').toLowerCase() === 'consumable' && Number(asset.quantity || 0) <= 5).length;
+
+        const totalActivityEvents = additions
+            + transfers
+            + custodyChanges
+            + maintenanceEvents
+            + componentLifecycleEvents
+            + auditEvents
+            + loanerEvents
+            + wifiUpdates;
+
+        const highlights = [
+            additions ? `${additions} assets were created/imported.` : '',
+            transfers ? `${transfers} transfer events were recorded.` : '',
+            maintenanceEvents ? `${maintenanceEvents} maintenance events were logged.` : '',
+            componentLifecycleEvents ? `${componentLifecycleEvents} component lifecycle changes were detected.` : '',
+            auditEvents ? `${auditEvents} audit verification/missing events were recorded.` : '',
+            loanerEvents ? `${loanerEvents} loaner checkout/return events were recorded.` : '',
+        ].filter(Boolean);
+
+        const risks = [
+            highRiskCount ? `${highRiskCount} assets are currently high/critical risk.` : '',
+            nearEolCount ? `${nearEolCount} assets are near EOL or warranty expiry.` : '',
+            lowStockWarnings ? `${lowStockWarnings} stock items are at/under threshold.` : '',
+        ].filter(Boolean);
+
+        const recommendedActions = [
+            highRiskCount ? 'Prioritize high-risk assets for maintenance or replacement review.' : '',
+            lowStockWarnings ? 'Review low-stock forecast and create procurement/reallocation plans.' : '',
+            nearEolCount ? 'Run replacement-priority and EOL budget reports for near-EOL assets.' : '',
+            !totalActivityEvents ? 'No significant changes detected. Consider widening the date range to last 7 days.' : '',
+        ].filter(Boolean);
+
+        const sections = [
+            {
+                key: 'activity',
+                title: 'Activity Overview',
+                data: {
+                    additions,
+                    transfers,
+                    custodyChanges,
+                    maintenanceEvents,
+                    componentLifecycleEvents,
+                    lifecycleEvents: lifecycleEventsCount,
+                    auditEvents,
+                    loanerEvents,
+                    wifiUpdates,
+                },
+            },
+            {
+                key: 'risk_watch',
+                title: 'Risk / EOL / Stock Watch',
+                data: {
+                    highRiskAssets: highRiskCount,
+                    nearEolAssets: nearEolCount,
+                    lowStockWarnings,
+                },
+            },
+            {
+                key: 'recent_events',
+                title: 'Recent Inventory Events',
+                data: recentHistoryRows.map((row) => ({
+                    assetId: row.assetId,
+                    event: row.event,
+                    details: row.details,
+                    timestamp: row.date ? row.date.toISOString() : null,
+                })),
+            },
+        ];
+
+        const confidence = buildInventoryInsightConfidence({
+            dataScope: requestedScope,
+            scannedCount: scopedAssets.length,
+            matchedCount: totalActivityEvents,
+        });
+
+        const summary = totalActivityEvents
+            ? `Detected ${totalActivityEvents} significant inventory event(s) for ${range.label}.`
+            : `No significant inventory changes were found for ${range.label}.`;
+
+        return res.json({
+            title: `Inventory Daily Brief (${range.label})`,
+            dateRange: range.label,
+            summary,
+            metrics: {
+                scannedAssets: scopedAssets.length,
+                additions,
+                transfers,
+                custodyChanges,
+                maintenanceEvents,
+                componentLifecycleEvents,
+                lifecycleEvents: lifecycleEventsCount,
+                auditEvents,
+                loanerEvents,
+                wifiUpdates,
+                highRiskAssets: highRiskCount,
+                nearEolAssets: nearEolCount,
+                lowStockWarnings,
+            },
+            sections,
+            highlights: highlights.length ? highlights : ['No major changes detected in the selected range.'],
+            risks,
+            recommendedActions,
+            confidence,
+            dataScope: requestedScope,
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate inventory daily brief', error: error.message });
+    }
+});
+
+const inventoryExecutiveDashboardHandler = async (req: Request, res: Response) => {
+    try {
+        const source = req.method === 'GET' ? req.query : req.body;
+        const categoryRaw = normalizeSerialValue(source?.category);
+        const departmentRaw = normalizeSerialValue(source?.department);
+        const locationRaw = normalizeSerialValue(source?.location);
+        const typeRaw = normalizeSerialValue(source?.type);
+        const timeRangeDays = parseDashboardTimeRangeDays(source?.timeRange);
+
+        const snapshot = await buildInventoryAiSnapshot();
+        let scopedAssets = [...snapshot.assets];
+
+        if (categoryRaw && normalizeValue(categoryRaw) !== 'all') {
+            const categoryFilter = mapToAssetCategory(categoryRaw);
+            scopedAssets = scopedAssets.filter((asset) => asset.category === categoryFilter);
+        }
+        if (departmentRaw && normalizeValue(departmentRaw) !== 'all') {
+            const departmentFilter = mapToAssetDepartment(departmentRaw);
+            scopedAssets = scopedAssets.filter((asset) => asset.department === departmentFilter);
+        }
+        if (locationRaw && normalizeValue(locationRaw) !== 'all') {
+            const locationFilter = mapToAssetLocation(locationRaw);
+            const normalizedHint = normalizeValue(locationRaw);
+            scopedAssets = scopedAssets.filter((asset) => (
+                asset.location === locationFilter
+                || normalizeValue(((asset.specifications as Record<string, any>)?.mapLocationHint) || '') === normalizedHint
+            ));
+        }
+        if (typeRaw && normalizeValue(typeRaw) !== 'all') {
+            const token = normalizeValue(typeRaw);
+            scopedAssets = scopedAssets.filter((asset) => normalizeValue(canonicalAssetType(asset.type)).includes(token));
+        }
+
+        const scopedAssetIds = new Set(scopedAssets.map((asset) => asset.customId));
+        const scopedAssetIdList = Array.from(scopedAssetIds);
+        const scopedSnapshot: InventoryAiSnapshot = {
+            assets: scopedAssets,
+            components: snapshot.components.filter((row) => (
+                scopedAssetIds.has(row.parentAssetId) || (row.childAssetId ? scopedAssetIds.has(row.childAssetId) : false)
+            )),
+            maintenance: snapshot.maintenance.filter((row) => scopedAssetIds.has(row.assetId)),
+            lifecycleEvents: snapshot.lifecycleEvents.filter((row) => scopedAssetIds.has(row.assetId)),
+            spareStock: snapshot.spareStock,
+        };
+
+        const byCategory: Record<string, number> = {};
+        const byLocation: Record<string, number> = {};
+        const byDepartment: Record<string, number> = {};
+        let telemetryEnabled = 0;
+        let warrantyExpiringSoon = 0;
+        let licensesExpiringSoon = 0;
+        let nearEol = 0;
+        let missingCostDataCount = 0;
+        let estimatedAssetValue = 0;
+        let hasCostValues = false;
+        let unverifiedAssets = 0;
+        let missingAssets = 0;
+        let loanersCheckedOut = 0;
+
+        scopedAssets.forEach((asset) => {
+            const categoryKey = String(asset.category || 'asset').toLowerCase();
+            const locationLabel = mapLocationToFriendly(asset.location);
+            const departmentLabel = mapDepartmentToFriendly(asset.department);
+            byCategory[categoryKey] = (byCategory[categoryKey] || 0) + 1;
+            byLocation[locationLabel] = (byLocation[locationLabel] || 0) + 1;
+            byDepartment[departmentLabel] = (byDepartment[departmentLabel] || 0) + 1;
+
+            const annotated = annotateAssetWithTruthfulSignals(asset);
+            const specs = readAssetSpecifications(annotated);
+            const telemetryApplicable = parseBooleanFlag(specs.telemetryApplicable) || parseBooleanFlag(specs.telemetryEnabled);
+            if (telemetryApplicable) telemetryEnabled += 1;
+
+            const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+            const warrantyDays = asset.warrantyEndDate
+                ? (asset.warrantyEndDate.getTime() - Date.now()) / 86400000
+                : null;
+            if (lifecycle === 'eol_expired' || (warrantyDays !== null && warrantyDays <= 90)) nearEol += 1;
+            if (warrantyDays !== null && warrantyDays <= 90 && categoryKey !== 'license') warrantyExpiringSoon += 1;
+            if (categoryKey === 'license' && warrantyDays !== null && warrantyDays <= 90) licensesExpiringSoon += 1;
+
+            const cost = Number(asset.purchaseCost ?? asset.replacementCost ?? 0);
+            const requiresCost = !['consumable', 'license', 'spare_part'].includes(categoryKey);
+            if (Number.isFinite(cost) && cost > 0) {
+                estimatedAssetValue += cost;
+                hasCostValues = true;
+            } else if (requiresCost) {
+                missingCostDataCount += 1;
+            }
+
+            const verificationStatus = normalizeValue(specs.verificationStatus || '');
+            if (!verificationStatus || verificationStatus !== 'verified') unverifiedAssets += 1;
+            if (parseBooleanFlag(specs.missingFlag) || verificationStatus === 'missing' || lifecycle === 'lost_stolen') {
+                missingAssets += 1;
+            }
+
+            const loanerStatus = normalizeValue(specs.loanerStatus || '');
+            if (loanerStatus === 'checked_out' || loanerStatus === 'overdue') loanersCheckedOut += 1;
+        });
+
+        const riskRows = buildAssetRiskScores(scopedSnapshot).rows;
+        const highRisk = riskRows.filter((row) => ['high', 'critical'].includes(String(row.riskLevel || '').toLowerCase())).length;
+        const lowStock = scopedSnapshot.spareStock.filter((item) => item.quantityAvailable <= (item.reorderPoint ?? item.minimumStockLevel)).length
+            + scopedAssets.filter((asset) => String(asset.category || '').toLowerCase() === 'consumable' && Number(asset.quantity || 0) <= 5).length;
+        const openMaintenanceIssues = scopedSnapshot.maintenance.filter((row) => {
+            const status = normalizeValue(row.status || '');
+            return status && !['completed', 'closed', 'resolved', 'done'].includes(status);
+        }).length;
+
+        const now = new Date();
+        const recentWindowStart = new Date(now.getTime() - timeRangeDays * 86400000);
+        const recentTransfers = scopedAssetIdList.length
+            ? await prisma.assetHistory.count({
+                where: {
+                    assetId: { in: scopedAssetIdList },
+                    date: { gte: recentWindowStart, lte: now },
+                    event: { contains: 'Transfer', mode: 'insensitive' },
+                },
+            })
+            : 0;
+
+        const monthsAhead = timeRangeDays >= 300 ? 12 : (timeRangeDays >= 180 ? 6 : 3);
+        const budgetForecast = buildEolBudgetReport({
+            snapshot: scopedSnapshot,
+            monthsAhead,
+            startDate: now,
+            endDate: new Date(now.getTime() + timeRangeDays * 86400000),
+            department: departmentRaw || undefined,
+            location: locationRaw || undefined,
+            category: categoryRaw || undefined,
+            type: typeRaw || undefined,
+        });
+
+        const recommendations = Array.from(new Set([
+            highRisk ? `Prioritize ${highRisk} high-risk asset(s) for maintenance/replacement planning.` : '',
+            lowStock ? `Address ${lowStock} low-stock warning(s) using procurement or reallocation.` : '',
+            nearEol ? `Review ${nearEol} near-EOL asset(s) for replacement timing.` : '',
+            missingCostDataCount ? `Backfill cost data for ${missingCostDataCount} asset(s).` : '',
+            ...budgetForecast.recommendations.slice(0, 4),
+        ].filter(Boolean)));
+
+        return res.json({
+            totalAssets: scopedAssets.length,
+            assetsByCategory: byCategory,
+            assetsByLocation: byLocation,
+            assetsByDepartment: byDepartment,
+            parentAssets: byCategory.asset || 0,
+            components: byCategory.component || 0,
+            accessories: byCategory.accessory || 0,
+            consumables: byCategory.consumable || 0,
+            spareStock: byCategory.spare_part || 0,
+            licenses: byCategory.license || 0,
+            telemetryEnabled,
+            nearEol,
+            highRisk,
+            lowStock,
+            warrantyExpiringSoon,
+            licensesExpiringSoon,
+            openMaintenanceIssues,
+            unverifiedAssets,
+            missingAssets,
+            loanersCheckedOut,
+            recentTransfers,
+            estimatedAssetValue: hasCostValues ? Number(estimatedAssetValue.toFixed(2)) : null,
+            missingCostDataCount,
+            budgetForecastSummary: {
+                monthsAhead,
+                matchedAssets: budgetForecast.totals.matchedAssets,
+                estimatedBudget: budgetForecast.totals.estimatedBudget,
+                missingCostAssets: budgetForecast.totals.missingCostAssets,
+                summary: budgetForecast.summary,
+            },
+            recommendations,
+            dataScope: (departmentRaw || locationRaw || categoryRaw || typeRaw) ? 'filtered_view' : 'full_inventory',
+            confidence: buildInventoryInsightConfidence({
+                dataScope: (departmentRaw || locationRaw || categoryRaw || typeRaw) ? 'filtered_view' : 'full_inventory',
+                scannedCount: scopedAssets.length,
+                matchedCount: highRisk + lowStock + recentTransfers,
+            }),
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+            estimatedAssetValueIsPartial: Boolean(hasCostValues && missingCostDataCount > 0),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load inventory executive dashboard', error: error.message });
+    }
+};
+
+app.get('/api/inventory/executive-dashboard', inventoryReadGuard, inventoryExecutiveDashboardHandler);
+app.post('/api/inventory/executive-dashboard', inventoryReadGuard, inventoryExecutiveDashboardHandler);
+
+app.post('/api/inventory/ai/monthly-report', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const range = parseDateRangeFromInput(req.body || {});
+        const snapshot = await buildInventoryAiSnapshot();
+        const [additionCount, transferCount] = await Promise.all([
+            prisma.assetHistory.count({
+                where: {
+                    event: { in: ['Imported', 'Created'] as any[] },
+                    date: { gte: range.start, lte: range.end },
+                },
+            }),
+            prisma.assetHistory.count({
+                where: {
+                    event: { contains: 'Transfer', mode: 'insensitive' },
+                    date: { gte: range.start, lte: range.end },
+                },
+            }),
+        ]);
+        const deterministic = buildMonthlyInventoryReportDeterministic({
+            snapshot,
+            rangeLabel: range.label,
+            additions: additionCount,
+            transfers: transferCount,
+        });
+        const llmMetricsContext = {
+            totalAssets: Number(deterministic.metrics.totalAssets || 0),
+            categoryCount: Object.keys((deterministic.metrics.categoryBreakdown || {}) as Record<string, any>).length,
+            additions: Number(deterministic.metrics.additions || 0),
+            transfers: Number(deterministic.metrics.transfers || 0),
+            maintenanceRecords: Number(deterministic.metrics.maintenanceRecords || 0),
+            highRiskAssets: Number(deterministic.metrics.highRiskAssets || 0),
+            nearEolAssets: Number(deterministic.metrics.nearEolAssets || 0),
+            expiringLicenses: Number(deterministic.metrics.expiringLicenses || 0),
+            lowStockForecastItems: Number(deterministic.metrics.lowStockForecastItems || 0),
+            dataQualityIssues: Number(deterministic.metrics.dataQualityIssues || 0),
+        };
+        const ai = await callInventoryAiHelper('/monthly-inventory-report', {
+            reportTitle: deterministic.reportTitle,
+            dateRange: deterministic.dateRange,
+            executiveSummary: deterministic.executiveSummary,
+            sections: deterministic.sections.slice(0, 8).map((section) => ({
+                key: section.key,
+                title: section.title,
+            })),
+            metrics: llmMetricsContext,
+            recommendations: deterministic.recommendations.slice(0, 12),
+            confidence: deterministic.confidence,
+            missingData: deterministic.missingData,
+        }, 60_000);
+        return res.json({
+            reportTitle: String(ai?.report_title || deterministic.reportTitle),
+            dateRange: deterministic.dateRange,
+            executiveSummary: String(ai?.executive_summary || deterministic.executiveSummary),
+            sections: Array.isArray(ai?.sections) && ai.sections.length ? ai.sections : deterministic.sections,
+            metrics: deterministic.metrics,
+            recommendations: Array.isArray(ai?.recommendations) && ai.recommendations.length
+                ? ai.recommendations.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 30)
+                : deterministic.recommendations,
+            confidence: String(ai?.confidence || deterministic.confidence),
+            missingData: Array.isArray(ai?.missing_data)
+                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
+                : deterministic.missingData,
+            dataScope: 'full_inventory',
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            suggestedActions: deterministic.recommendations,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to generate monthly inventory report', error: error.message });
+    }
+});
+
+app.post('/api/inventory/eol-budget-report', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const range = parseDateRangeFromInput(req.body || {});
+        const monthsRaw = parseOptionalIntegerInput(req.body?.monthsAhead || req.body?.horizonMonths || req.body?.windowMonths);
+        const monthsAhead = monthsRaw && monthsRaw > 0 ? Math.min(36, monthsRaw) : 12;
+        const report = buildEolBudgetReport({
+            snapshot,
+            monthsAhead,
+            startDate: range.start,
+            endDate: range.end,
+            department: normalizeSerialValue(req.body?.department),
+            location: normalizeSerialValue(req.body?.location),
+            category: normalizeSerialValue(req.body?.category),
+            type: normalizeSerialValue(req.body?.type),
+        });
+
+        return res.json({
+            summary: report.summary,
+            totals: report.totals,
+            breakdowns: report.breakdowns,
+            rows: report.rows,
+            missingCostRows: report.missingCostRows,
+            recommendations: report.recommendations,
+            confidence: report.confidence,
+            missingData: report.missingData,
+            dataScope: 'full_inventory',
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to build EOL budget report', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/plan-action', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const query = String(req.body?.query || '').trim();
+        if (!query) return res.status(400).json({ message: 'query is required' });
+        const snapshot = await buildInventoryAiSnapshot();
+        const plan = buildInventoryActionPlan({ query, snapshot });
+        const compactPlan = {
+            ...plan,
+            affectedItems: Array.isArray(plan.affectedItems) ? plan.affectedItems.slice(0, 10) : [],
+            proposedChanges: Array.isArray(plan.proposedChanges) ? plan.proposedChanges.slice(0, 20) : [],
+            risks: Array.isArray(plan.risks) ? plan.risks.slice(0, 12) : [],
+        };
+        const ai = await callInventoryAiHelper('/plan-inventory-action', {
+            query,
+            actionPlan: compactPlan,
+        }, 30_000);
+        return res.json({
+            actionType: String(ai?.action_type || plan.actionType),
+            summary: String(ai?.summary || plan.summary),
+            affectedItems: plan.affectedItems,
+            proposedChanges: plan.proposedChanges,
+            risks: Array.isArray(ai?.risks) ? ai.risks : plan.risks,
+            requiresConfirmation: true,
+            executable: false,
+            confirmationInstructions: String(ai?.confirmation_instructions || plan.confirmationInstructions),
+            confidence: String(ai?.confidence || buildInventoryInsightConfidence({
+                dataScope: 'full_inventory',
+                scannedCount: snapshot.assets.length,
+                matchedCount: plan.affectedItems.length,
+            })),
+            dataScope: 'full_inventory',
+            missingData: [],
+            fallbackUsed: !ai || !Boolean(ai?.llm_used),
+            llmUsed: Boolean(ai?.llm_used),
+            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
+            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            suggestedActions: ['Review action plan and run approved operations manually or through dedicated safe workflows.'],
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to build natural-language inventory action plan', error: error.message });
+    }
+});
+
 // --- ASSET ROUTES ---
 
 app.get('/api/assets', async (req: Request, res: Response) => {
@@ -4894,6 +8632,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
                             assetTag: true,
                             location: true,
                             department: true,
+                            specifications: true,
                         }
                     }
                 },
@@ -4932,6 +8671,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
                             location: true,
                             department: true,
                             category: true,
+                            specifications: true,
                         }
                     },
                     relatedAsset: {
@@ -4942,6 +8682,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
                             location: true,
                             department: true,
                             category: true,
+                            specifications: true,
                         }
                     }
                 },
@@ -4952,7 +8693,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             customId: string;
             name: string;
             assetTag: string | null;
-            location: AssetLocation;
+            location: string;
             department: AssetDepartment;
         }>();
         componentRelationships.forEach((row) => {
@@ -4974,7 +8715,8 @@ app.get('/api/assets', async (req: Request, res: Response) => {
                     customId: parentAsset.customId,
                     name: parentAsset.name,
                     assetTag: parentAsset.assetTag,
-                    location: parentAsset.location,
+                    location: normalizeSerialValue((parentAsset.specifications as Record<string, any>)?.mapLocationHint)
+                        || String(parentAsset.location),
                     department: parentAsset.department,
                 });
             }
@@ -4991,7 +8733,9 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             const installedParentCustomId = linkedComponent?.parentAsset?.customId || relationshipParent?.customId || metadataParentId || null;
             const installedParentAssetTag = linkedComponent?.parentAsset?.assetTag || relationshipParent?.assetTag || metadataParentTag || null;
             const installedParentName = linkedComponent?.parentAsset?.name || relationshipParent?.name || metadataParentName || null;
-            const installedParentLocation = linkedComponent?.parentAsset?.location || relationshipParent?.location || null;
+            const linkedParentMapLocationHint = normalizeSerialValue((linkedComponent?.parentAsset?.specifications as Record<string, any>)?.mapLocationHint);
+            const relationshipParentMapLocationHint = relationshipParent?.location || null;
+            const installedParentLocation = linkedParentMapLocationHint || relationshipParentMapLocationHint || linkedComponent?.parentAsset?.location || null;
             const installedParentDepartment = linkedComponent?.parentAsset?.department || relationshipParent?.department || null;
             const componentType = linkedComponent?.componentType || normalizeSerialValue(specs.componentType) || null;
             const componentStatus = linkedComponent?.status || null;
@@ -5012,6 +8756,17 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             const minimumStockLevel = Number.isFinite(Number((specs as any).minimumStockLevel)) ? Number((specs as any).minimumStockLevel) : null;
             const reorderPoint = Number.isFinite(Number((specs as any).reorderPoint)) ? Number((specs as any).reorderPoint) : null;
             const licenseExpiry = normalizeSerialValue(specs.licenseExpiry || specs.expiryDate || specs.warrantyEndDate) || (asset.warrantyEndDate ? asset.warrantyEndDate.toISOString() : null);
+            const telemetryCapableDerived = isTelemetryCapableAsset({
+                type: asset.type,
+                category: asset.category,
+                name: asset.name,
+            });
+            const telemetryEnabledDerived = (
+                parseBooleanFlag(specs.trackWorkingHours)
+                || parseBooleanFlag(specs.telemetryEnabled)
+                || parseBooleanFlag(specs.telemetryApplicable)
+                || telemetryCapableDerived
+            ) && !parseBooleanFlag(specs.telemetryDisabled);
             const inventoryViewType = isSparePart
                 ? 'spare_stock'
                 : isLicense
@@ -5051,6 +8806,8 @@ app.get('/api/assets', async (req: Request, res: Response) => {
                 minimumStockLevel,
                 reorderPoint,
                 licenseExpiry,
+                telemetryCapableDerived,
+                telemetryEnabledDerived,
             };
         });
 
@@ -6251,6 +10008,62 @@ app.get('/api/assets/:id/history', async (req: Request, res: Response) => {
     }
 });
 
+app.get('/api/assets/:id/black-box-timeline', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const includeRelated = typeof req.query.includeRelated === 'undefined'
+            ? true
+            : parseBooleanFlag(req.query.includeRelated);
+        const filter = normalizeValue(req.query.filter || req.query.group || 'all');
+        const asset = await AssetService.getAssetByCustomId(assetId);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+
+        const timeline = await buildCombinedHistoryTimeline(assetId, includeRelated);
+        const transformed = timeline.map((entry) => {
+            const group = inferBlackBoxEventGroup(entry.eventType || entry.event);
+            return {
+                eventId: String(entry.id || ''),
+                timestamp: entry.date ? new Date(entry.date).toISOString() : null,
+                eventType: String(entry.eventType || '').trim().toLowerCase() || 'event',
+                label: String(entry.event || 'Asset event'),
+                source: String(entry.actor || entry.sourceItemType || 'system'),
+                sourceItemType: String(entry.sourceItemType || 'parent'),
+                sourceItemName: entry.sourceItemName || null,
+                sourceItemCustomId: entry.sourceItemCustomId || null,
+                oldValue: (entry as any).oldValue || null,
+                newValue: (entry as any).newValue || null,
+                reason: entry.reason || null,
+                notes: entry.notes || null,
+                relatedAssetId: entry.linkedParentAssetId || null,
+                severity: inferBlackBoxSeverity({
+                    eventType: entry.eventType,
+                    reason: entry.reason,
+                    notes: entry.notes,
+                    details: entry.details,
+                }),
+                eventGroup: group,
+            };
+        });
+        const deduped = Array.from(new Map(transformed.map((row) => [row.eventId, row])).values())
+            .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+        const events = filter && filter !== 'all'
+            ? deduped.filter((row) => row.eventGroup === filter)
+            : deduped;
+
+        return res.json({
+            assetId,
+            includeRelated,
+            filter: filter || 'all',
+            totalEvents: deduped.length,
+            returnedEvents: events.length,
+            filtersAvailable: ['all', 'transfer', 'maintenance', 'components', 'audit', 'ai_risk_eol', 'loaner', 'telemetry'],
+            events,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load black-box timeline', error: error.message });
+    }
+});
+
 app.get('/api/assets/:id/lifecycle-events', async (req: Request, res: Response) => {
     try {
         const rows = await prisma.assetLifecycleEvent.findMany({
@@ -6261,6 +10074,244 @@ app.get('/api/assets/:id/lifecycle-events', async (req: Request, res: Response) 
         res.json(rows);
     } catch (error: any) {
         res.status(500).json({ message: 'Failed to fetch lifecycle events', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/kit-health', async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const category = String(asset.category || '').toLowerCase();
+        if (category === 'component' || category === 'accessory' || category === 'consumable' || category === 'license' || category === 'spare_part') {
+            return res.json({
+                parentAssetId: asset.customId,
+                kitHealth: {
+                    status: 'unknown',
+                    label: 'Unknown',
+                    summary: 'Kit health is only computed for parent assets.',
+                    evidence: {
+                        missingChildren: [],
+                        damagedChildren: [],
+                        underRepairChildren: [],
+                        presentChildren: [],
+                        componentCount: 0,
+                        relationshipCount: 0,
+                    },
+                },
+            });
+        }
+        const health = await computeKitHealthForParent(asset.customId);
+        return res.json({
+            parentAssetId: asset.customId,
+            parentAssetName: asset.name,
+            parentAssetTag: asset.assetTag || null,
+            kitHealth: {
+                status: health.status,
+                label: health.statusLabel,
+                summary: health.summary,
+                evidence: {
+                    missingChildren: health.missingItems,
+                    damagedChildren: health.damagedItems,
+                    underRepairChildren: health.underRepairItems,
+                    degradedChildren: health.degradedItems,
+                    all: health.evidence,
+                    componentCount: health.counts.totalLinkedItems,
+                },
+                confidence: health.confidence,
+                computedAt: new Date().toISOString(),
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to compute kit health', error: error.message });
+    }
+});
+
+app.get('/api/assets/:id/digital-twin', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const assetId = req.params.id;
+        const asset = await AssetService.getAssetByCustomId(assetId);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+
+        const annotated = annotateAssetWithTruthfulSignals(asset);
+        const specs = readAssetSpecifications(annotated);
+        const categoryKey = String(asset.category || '').toLowerCase();
+        const isParentAsset = !['component', 'accessory', 'consumable', 'license', 'spare_part'].includes(categoryKey);
+
+        const snapshot = await buildInventoryAiSnapshot();
+        const riskRow = buildAssetRiskScores(snapshot, { assetIds: [assetId] }).rows[0] || null;
+
+        const [timeline, maintenanceLast, maintenanceCount, componentRows, relationshipRows, eolAssessment, kitHealth] = await Promise.all([
+            buildCombinedHistoryTimeline(assetId, true),
+            prisma.assetMaintenanceRecord.findFirst({
+                where: { assetId },
+                orderBy: { createdAt: 'desc' },
+            }),
+            prisma.assetMaintenanceRecord.count({ where: { assetId } }),
+            prisma.assetComponent.findMany({
+                where: { parentAssetId: assetId },
+                include: {
+                    childAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            category: true,
+                            lifecycleStatus: true,
+                            status: true,
+                        },
+                    },
+                },
+            }),
+            prisma.assetRelationship.findMany({
+                where: { assetId },
+                include: {
+                    relatedAsset: {
+                        select: {
+                            customId: true,
+                            name: true,
+                            category: true,
+                            lifecycleStatus: true,
+                            status: true,
+                        },
+                    },
+                },
+            }),
+            buildAssetEolAssessment(annotated),
+            isParentAsset ? computeKitHealthForParent(assetId) : null,
+        ]);
+
+        const telemetryEnabled = parseBooleanFlag(specs.telemetryEnabled) || parseBooleanFlag(specs.telemetryApplicable);
+        const telemetryStatus = String(specs.telemetryStatus || specs.operationalState || (telemetryEnabled ? 'enabled' : 'not_applicable')).trim().toLowerCase() || 'unknown';
+        const warrantyDays = annotated.warrantyEndDate
+            ? Math.floor((annotated.warrantyEndDate.getTime() - Date.now()) / 86400000)
+            : null;
+        const warrantyStatus = warrantyDays === null
+            ? 'missing'
+            : (warrantyDays < 0 ? 'expired' : (warrantyDays <= 90 ? 'expiring_soon' : 'active'));
+
+        const componentCount = componentRows.filter((row) => !row.removedAt).length;
+        const relatedCounts = {
+            components: componentCount,
+            accessories: relationshipRows.filter((row) => String(row.relatedAsset?.category || '').toLowerCase() === 'accessory').length,
+            licenses: relationshipRows.filter((row) => String(row.relatedAsset?.category || '').toLowerCase() === 'license').length,
+            consumables: relationshipRows.filter((row) => String(row.relatedAsset?.category || '').toLowerCase() === 'consumable').length,
+        };
+
+        const lastTransfer = timeline.find((entry) => normalizeValue(entry.eventType || entry.event).includes('transfer')) || null;
+        const lastMaintenance = maintenanceLast
+            ? {
+                maintenanceType: maintenanceLast.maintenanceType,
+                status: maintenanceLast.status,
+                performedAt: maintenanceLast.performedAt ? maintenanceLast.performedAt.toISOString() : null,
+                createdAt: maintenanceLast.createdAt ? maintenanceLast.createdAt.toISOString() : null,
+                reason: maintenanceLast.reason || null,
+            }
+            : null;
+
+        const openIssues: string[] = [];
+        if (kitHealth) {
+            if (kitHealth.missingItems.length) openIssues.push(`${kitHealth.missingItems.length} missing child item(s).`);
+            if (kitHealth.damagedItems.length) openIssues.push(`${kitHealth.damagedItems.length} damaged child item(s).`);
+            if (kitHealth.underRepairItems.length) openIssues.push(`${kitHealth.underRepairItems.length} child item(s) under repair.`);
+        }
+        if (riskRow?.riskLevel && ['high', 'critical'].includes(String(riskRow.riskLevel).toLowerCase())) {
+            openIssues.push(`Risk is ${riskRow.riskLevel} (${riskRow.riskScore}).`);
+        }
+        if (warrantyStatus === 'expired') openIssues.push('Warranty is expired.');
+        if (warrantyStatus === 'missing') openIssues.push('Warranty end date is missing.');
+        if (normalizeLifecycleKey(annotated.lifecycleStatus) === 'eol_expired') openIssues.push('Lifecycle status is EOL expired.');
+
+        const recommendedAction = openIssues.length
+            ? (openIssues[0].toLowerCase().includes('risk')
+                ? 'Review AI risk score and open a maintenance/replacement ticket.'
+                : (openIssues[0].toLowerCase().includes('missing child')
+                    ? 'Restore missing child items and verify kit completeness.'
+                    : 'Review CMDB history and perform corrective maintenance action.'))
+            : 'No urgent action required. Continue standard monitoring and audits.';
+
+        const riskScore = riskRow ? Number(riskRow.riskScore || 0) : 0;
+        const healthScore = Number(clampNumber(100 - riskScore, 0, 100).toFixed(1));
+        const normalizedMapLocation = normalizeSerialValue(specs.mapLocationHint) || mapLocationToFriendly(annotated.location);
+        const confidence = buildInventoryInsightConfidence({
+            dataScope: 'selected_asset',
+            scannedCount: 1,
+            matchedCount: openIssues.length || 1,
+        });
+
+        return res.json({
+            asset: {
+                customId: annotated.customId,
+                name: annotated.name,
+                type: canonicalAssetType(annotated.type),
+                category: String(annotated.category || '').toLowerCase(),
+                status: normalizeLifecycleKey(annotated.status),
+                lifecycleStatus: normalizeLifecycleKey(annotated.lifecycleStatus),
+            },
+            healthScore,
+            riskScore: riskRow
+                ? {
+                    riskLevel: riskRow.riskLevel,
+                    riskScore: riskRow.riskScore,
+                    reasons: riskRow.reasons,
+                }
+                : null,
+            kitHealth: kitHealth
+                ? {
+                    status: kitHealth.status,
+                    label: kitHealth.statusLabel,
+                    summary: kitHealth.summary,
+                    counts: kitHealth.counts,
+                }
+                : {
+                    status: 'unknown',
+                    label: 'Unknown',
+                    summary: 'Kit health is available for parent assets.',
+                    counts: { totalLinkedItems: 0, missing: 0, damaged: 0, underRepair: 0, degraded: 0 },
+                },
+            eolStatus: {
+                status: eolAssessment.status,
+                reason: eolAssessment.reason,
+                confidence: eolAssessment.confidence,
+                predictedEolDate: eolAssessment.predictedEolDate,
+                monthsRemaining: eolAssessment.monthsRemaining,
+            },
+            warrantyStatus: {
+                status: warrantyStatus,
+                daysRemaining: warrantyDays,
+            },
+            telemetryStatus: {
+                enabled: telemetryEnabled,
+                status: telemetryStatus,
+                confidence: Number(specs.telemetryConfidence || 0) || null,
+            },
+            currentLocation: mapLocationToFriendly(annotated.location),
+            normalizedMapLocation,
+            lastTransfer: lastTransfer
+                ? {
+                    timestamp: lastTransfer.date ? new Date(lastTransfer.date).toISOString() : null,
+                    label: lastTransfer.event,
+                    details: lastTransfer.details,
+                    reason: lastTransfer.reason || null,
+                }
+                : null,
+            lastMaintenance,
+            maintenanceCount,
+            relatedCounts,
+            openIssues,
+            recommendedAction,
+            evidence: {
+                componentCount,
+                relationshipCount: relationshipRows.length,
+                timelineEvents: timeline.length,
+                telemetryCapable: isTelemetryCapableAsset({
+                    type: annotated.type,
+                    category: annotated.category,
+                    name: annotated.name,
+                }),
+            },
+            confidence,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load asset digital twin', error: error.message });
     }
 });
 
@@ -7336,6 +11387,429 @@ app.post('/api/assets/:id/check-in', async (req: Request, res: Response) => {
     }
 });
 
+app.post('/api/assets/:id/loaner-checkout', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const category = String(asset.category || '').toLowerCase();
+        if (['consumable', 'spare_part', 'license'].includes(category)) {
+            return res.status(400).json({ message: 'This category is not supported for loaner checkout.' });
+        }
+
+        const loanedTo = normalizeSerialValue(req.body?.loanedTo || req.body?.assignedToName || req.body?.assignedToUserId);
+        if (!loanedTo) return res.status(400).json({ message: 'loanedTo is required' });
+        const expectedReturnDate = parseOptionalDateInput(req.body?.expectedReturnDate);
+        const checkoutAt = parseOptionalDateInput(req.body?.loanedAt || req.body?.checkoutDate) || new Date();
+        const reviewer = normalizeSerialValue(req.body?.actor) || 'inventory-loaner';
+        const assignedDepartment = normalizeSerialValue(req.body?.assignedDepartment);
+
+        const currentSpecs = readAssetSpecifications(asset);
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            loanerEligible: true,
+            loanerStatus: 'checked_out',
+            loanedTo,
+            loanedAt: checkoutAt.toISOString(),
+            expectedReturnDate: expectedReturnDate?.toISOString() || null,
+            returnedAt: null,
+        });
+
+        const updated = await AssetService.updateAsset(req.params.id, {
+            specifications: nextSpecs,
+            assignedToName: loanedTo,
+            assignedToUserId: normalizeSerialValue(req.body?.assignedToUserId) || asset.assignedToUserId,
+            assignedDepartment: assignedDepartment || asset.assignedDepartment,
+            assignedUser: loanedTo,
+            checkoutDate: checkoutAt,
+            expectedReturnDate,
+            returnedDate: null,
+            custodyStatus: 'CHECKED_OUT',
+            status: 'ASSIGNED',
+            lifecycleStatus: 'ASSIGNED',
+        });
+
+        const custodyEvent = await prisma.assetCustodyEvent.create({
+            data: {
+                assetId: req.params.id,
+                action: 'loaner_checkout',
+                assignedToName: loanedTo,
+                assignedToUserId: normalizeSerialValue(req.body?.assignedToUserId),
+                assignedDepartment: assignedDepartment || null,
+                checkoutDate: checkoutAt,
+                expectedReturnDate: expectedReturnDate || null,
+                conditionOut: normalizeSerialValue(req.body?.conditionOut),
+                reason: normalizeSerialValue(req.body?.reason) || 'loaner_checkout',
+                notes: normalizeSerialValue(req.body?.notes),
+                actor: reviewer,
+            },
+        });
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'loaner_checked_out',
+            oldValue: {
+                assignedToName: asset.assignedToName || null,
+                checkoutDate: asset.checkoutDate?.toISOString() || null,
+                expectedReturnDate: asset.expectedReturnDate?.toISOString() || null,
+            },
+            newValue: {
+                assignedToName: updated.assignedToName || loanedTo,
+                checkoutDate: checkoutAt.toISOString(),
+                expectedReturnDate: expectedReturnDate?.toISOString() || null,
+                loanerStatus: 'checked_out',
+            },
+            reason: normalizeSerialValue(req.body?.reason) || 'loaner_checkout',
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: reviewer,
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Loaner Checked Out',
+            details: `Loaned to ${loanedTo}${expectedReturnDate ? ` until ${expectedReturnDate.toISOString().slice(0, 10)}` : ''}`,
+        });
+
+        return res.json({
+            success: true,
+            asset: updated,
+            custodyEvent,
+            loaner: {
+                loanerEligible: true,
+                loanerStatus: 'checked_out',
+                loanedTo,
+                loanedAt: checkoutAt.toISOString(),
+                expectedReturnDate: expectedReturnDate?.toISOString() || null,
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run loaner checkout', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/loaner-return', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const returnedAt = parseOptionalDateInput(req.body?.returnedAt || req.body?.returnedDate) || new Date();
+        const reviewer = normalizeSerialValue(req.body?.actor) || 'inventory-loaner';
+        const returnLocationRaw = normalizeSerialValue(req.body?.location);
+        const returnLocation = returnLocationRaw ? mapToAssetLocation(returnLocationRaw) : asset.location;
+
+        const currentSpecs = readAssetSpecifications(asset);
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            loanerEligible: parseBooleanFlag(currentSpecs.loanerEligible) || true,
+            loanerStatus: 'returned',
+            returnedAt: returnedAt.toISOString(),
+        });
+
+        const updated = await AssetService.updateAsset(req.params.id, {
+            specifications: nextSpecs,
+            location: returnLocation,
+            returnedDate: returnedAt,
+            custodyStatus: 'RETURNED',
+            assignedUser: null,
+            assignedToName: null,
+            assignedToUserId: null,
+            status: 'ACTIVE',
+            lifecycleStatus: 'IN_STOCK',
+        });
+
+        const custodyEvent = await prisma.assetCustodyEvent.create({
+            data: {
+                assetId: req.params.id,
+                action: 'loaner_return',
+                returnedDate: returnedAt,
+                conditionIn: normalizeSerialValue(req.body?.conditionIn),
+                reason: normalizeSerialValue(req.body?.reason) || 'loaner_return',
+                notes: normalizeSerialValue(req.body?.notes),
+                actor: reviewer,
+            },
+        });
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'loaner_returned',
+            oldValue: {
+                assignedToName: asset.assignedToName || null,
+                location: String(asset.location),
+            },
+            newValue: {
+                location: String(updated.location),
+                returnedDate: returnedAt.toISOString(),
+                loanerStatus: 'returned',
+            },
+            reason: normalizeSerialValue(req.body?.reason) || 'loaner_return',
+            notes: normalizeSerialValue(req.body?.notes),
+            actor: reviewer,
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Loaner Returned',
+            details: `Loaner returned${returnLocationRaw ? ` to ${mapLocationToFriendly(returnLocation)}` : ''}`,
+        });
+
+        return res.json({
+            success: true,
+            asset: updated,
+            custodyEvent,
+            loaner: {
+                loanerEligible: parseBooleanFlag(nextSpecs.loanerEligible),
+                loanerStatus: 'returned',
+                returnedAt: returnedAt.toISOString(),
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to return loaner asset', error: error.message });
+    }
+});
+
+app.get('/api/inventory/loaners', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const assets = await prisma.asset.findMany({
+            orderBy: { updatedAt: 'desc' },
+            take: 5000,
+        });
+        const now = new Date();
+        const rows = assets
+            .map((asset) => {
+                const specs = readAssetSpecifications(asset);
+                const eligible = parseBooleanFlag(specs.loanerEligible);
+                const status = String(specs.loanerStatus || '').trim().toLowerCase();
+                const expected = parseOptionalDateInput(specs.expectedReturnDate || asset.expectedReturnDate);
+                const overdue = Boolean(status === 'checked_out' && expected && expected.getTime() < now.getTime());
+                if (!eligible && !status) return null;
+                return {
+                    assetId: asset.customId,
+                    name: asset.name,
+                    category: String(asset.category || '').toLowerCase(),
+                    type: canonicalAssetType(asset.type),
+                    location: mapLocationToFriendly(asset.location),
+                    department: mapDepartmentToFriendly(asset.department),
+                    loanerEligible: eligible,
+                    loanerStatus: overdue ? 'overdue' : (status || 'available'),
+                    loanedTo: normalizeSerialValue(specs.loanedTo || asset.assignedToName || asset.assignedToUserId),
+                    loanedAt: specs.loanedAt || asset.checkoutDate?.toISOString() || null,
+                    expectedReturnDate: expected?.toISOString() || null,
+                    returnedAt: specs.returnedAt || asset.returnedDate?.toISOString() || null,
+                };
+            })
+            .filter(Boolean);
+        return res.json(rows);
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to fetch loaner inventory', error: error.message });
+    }
+});
+
+app.get('/api/inventory/audit-board', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const staleAfterDays = Math.max(1, Math.min(3650, parseOptionalIntegerInput(req.query.staleAfterDays) || 90));
+        const assets = await prisma.asset.findMany({
+            orderBy: { updatedAt: 'desc' },
+            take: 7000,
+        });
+        const now = new Date();
+        const rows: Array<Record<string, any>> = [];
+        const verifierPoints: Record<string, number> = {};
+        const byLocation: Record<string, number> = {};
+
+        assets.forEach((asset) => {
+            const specs = readAssetSpecifications(asset);
+            const verificationStatusRaw = String(specs.verificationStatus || 'pending').trim().toLowerCase();
+            const lastVerifiedAt = parseOptionalDateInput(specs.lastVerifiedAt);
+            const verificationLocation = normalizeSerialValue(specs.verificationLocation);
+            const lastVerifiedBy = normalizeSerialValue(specs.lastVerifiedBy);
+            const daysSinceVerification = lastVerifiedAt
+                ? Math.floor((now.getTime() - lastVerifiedAt.getTime()) / 86400000)
+                : null;
+            const mismatch = verificationLocation
+                ? computeWifiLocationMismatch(asset.location, verificationLocation)
+                : false;
+
+            let boardStatus = 'verified';
+            if (verificationStatusRaw === 'missing') boardStatus = 'missing';
+            else if (!lastVerifiedAt) boardStatus = 'needs_verification';
+            else if (daysSinceVerification !== null && daysSinceVerification > staleAfterDays) boardStatus = 'stale_verification';
+            else if (mismatch) boardStatus = 'location_mismatch';
+
+            if (boardStatus !== 'verified') {
+                rows.push({
+                    assetId: asset.customId,
+                    name: asset.name,
+                    category: String(asset.category || '').toLowerCase(),
+                    type: canonicalAssetType(asset.type),
+                    status: boardStatus,
+                    location: mapLocationToFriendly(asset.location),
+                    department: mapDepartmentToFriendly(asset.department),
+                    verificationLocation: verificationLocation || null,
+                    lastVerifiedAt: lastVerifiedAt?.toISOString() || null,
+                    lastVerifiedBy: lastVerifiedBy || null,
+                    daysSinceVerification,
+                });
+            }
+
+            const locationKey = mapLocationToFriendly(asset.location);
+            byLocation[locationKey] = (byLocation[locationKey] || 0) + 1;
+            if (lastVerifiedBy) verifierPoints[lastVerifiedBy] = (verifierPoints[lastVerifiedBy] || 0) + 1;
+        });
+
+        const counts = {
+            totalAssets: assets.length,
+            needsVerification: rows.filter((row) => row.status === 'needs_verification').length,
+            missing: rows.filter((row) => row.status === 'missing').length,
+            staleVerification: rows.filter((row) => row.status === 'stale_verification').length,
+            locationMismatch: rows.filter((row) => row.status === 'location_mismatch').length,
+        };
+
+        return res.json({
+            staleAfterDays,
+            counts,
+            assetsNeedingAttention: rows.slice(0, 1200),
+            topLocations: Object.entries(byLocation)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 12)
+                .map(([location, count]) => ({ location, count })),
+            verifierPoints: Object.entries(verifierPoints)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 15)
+                .map(([name, points]) => ({ name, points })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to fetch audit board', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/verify-location', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const verifier = normalizeSerialValue(req.body?.verifier || req.body?.actor) || 'inventory-audit';
+        const markMissing = parseBooleanFlag(req.body?.markMissing);
+        const reportedLocationRaw = normalizeSerialValue(req.body?.location);
+        const reportedLocation = reportedLocationRaw ? mapToAssetLocation(reportedLocationRaw) : asset.location;
+        const now = new Date();
+
+        const currentSpecs = readAssetSpecifications(asset);
+        const verificationStatus = markMissing ? 'missing' : 'verified';
+        const verificationLocation = mapLocationToFriendly(reportedLocation);
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            verificationStatus,
+            verificationLocation,
+            lastVerifiedAt: now.toISOString(),
+            lastVerifiedBy: verifier,
+            missingFlag: markMissing,
+        });
+
+        const updatePayload: Record<string, any> = { specifications: nextSpecs };
+        if (!markMissing && reportedLocationRaw) {
+            updatePayload.location = reportedLocation;
+        }
+        const updated = await AssetService.updateAsset(req.params.id, updatePayload);
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: markMissing ? 'asset_marked_missing' : 'asset_location_verified',
+            oldValue: {
+                location: String(asset.location),
+                verificationStatus: String(currentSpecs.verificationStatus || 'pending'),
+            },
+            newValue: {
+                location: String(updated.location),
+                verificationStatus,
+                verificationLocation,
+                lastVerifiedAt: now.toISOString(),
+                lastVerifiedBy: verifier,
+            },
+            reason: markMissing ? 'audit_mark_missing' : 'audit_verify_location',
+            actor: verifier,
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: markMissing ? 'Marked Missing (Audit)' : 'Location Verified (Audit)',
+            details: markMissing
+                ? `Marked missing by ${verifier}`
+                : `Verified at ${verificationLocation} by ${verifier}`,
+        });
+
+        return res.json({
+            success: true,
+            asset: updated,
+            verification: {
+                status: verificationStatus,
+                location: verificationLocation,
+                verifiedAt: now.toISOString(),
+                verifiedBy: verifier,
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to verify asset location', error: error.message });
+    }
+});
+
+app.post('/api/assets/:id/mock-wifi-location', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const currentSpecs = readAssetSpecifications(asset);
+        const macAddress = normalizeSerialValue(req.body?.macAddress || currentSpecs.macAddress);
+        const lastSeenNetwork = normalizeSerialValue(req.body?.lastSeenNetwork || currentSpecs.lastSeenNetwork);
+        const lastSeenAccessPoint = normalizeSerialValue(req.body?.lastSeenAccessPoint || currentSpecs.lastSeenAccessPoint);
+        const seenLocationRaw = normalizeSerialValue(req.body?.lastSeenLocation || req.body?.location || currentSpecs.lastSeenLocation);
+        const seenLocation = seenLocationRaw ? mapLocationToFriendly(seenLocationRaw) : null;
+        const seenAt = parseOptionalDateInput(req.body?.lastSeenAt || req.body?.seenAt) || new Date();
+        const mismatch = computeWifiLocationMismatch(asset.location, seenLocation || '');
+        const reviewer = normalizeSerialValue(req.body?.actor) || 'inventory-wifi-mock';
+
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            macAddress: macAddress || null,
+            lastSeenNetwork: lastSeenNetwork || null,
+            lastSeenAccessPoint: lastSeenAccessPoint || null,
+            lastSeenLocation: seenLocation || null,
+            lastSeenTimestamp: seenAt.toISOString(),
+            networkLocationMismatch: mismatch,
+        });
+
+        const updated = await AssetService.updateAsset(req.params.id, { specifications: nextSpecs });
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'mock_wifi_location_updated',
+            newValue: {
+                macAddress: macAddress || null,
+                lastSeenNetwork: lastSeenNetwork || null,
+                lastSeenAccessPoint: lastSeenAccessPoint || null,
+                lastSeenLocation: seenLocation || null,
+                lastSeenTimestamp: seenAt.toISOString(),
+                networkLocationMismatch: mismatch,
+            },
+            reason: 'mock_wifi_update',
+            actor: reviewer,
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Mock Wi-Fi Location Updated',
+            details: seenLocation
+                ? `Last seen at ${seenLocation}${mismatch ? ' (location mismatch)' : ''}`
+                : 'Wi-Fi signal metadata updated',
+        });
+
+        return res.json({
+            success: true,
+            asset: updated,
+            wifiTracking: {
+                macAddress: macAddress || null,
+                lastSeenNetwork: lastSeenNetwork || null,
+                lastSeenAccessPoint: lastSeenAccessPoint || null,
+                lastSeenLocation: seenLocation || null,
+                lastSeenTimestamp: seenAt.toISOString(),
+                networkLocationMismatch: mismatch,
+                warning: mismatch
+                    ? `Network location mismatch: assigned location is ${mapLocationToFriendly(asset.location)} but last seen at ${seenLocation}.`
+                    : null,
+            },
+            note: 'Mock/manual Wi-Fi tracking only in this pass. Real controller/AP integration is future work.',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update mock Wi-Fi location', error: error.message });
+    }
+});
+
 app.get('/api/assets/:id/relationships', async (req: Request, res: Response) => {
     try {
         const outgoing = await prisma.assetRelationship.findMany({
@@ -7698,8 +12172,12 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
         ).trim();
         const normalizedCategory = mapToAssetCategory(category);
 
+        const locationResolution = resolveAssetLocationForStorage(location || 'Central Warehouse');
         const enrichedSpecificationsBase: Record<string, any> = {
             ...inputSpecifications,
+            mapLocationHint: normalizeSerialValue(inputSpecifications.mapLocationHint)
+                || locationResolution.mapLocationHint
+                || undefined,
             specVerificationConfirmedOnCreate: reviewedOnCreate,
             specVerificationReviewedBy: reviewedOnCreate ? reviewedBy : undefined,
             specVerificationReviewedAt: reviewedOnCreate ? new Date().toISOString() : undefined,
@@ -7720,10 +12198,11 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
             || String(enrichedSpecificationsBase.trackWorkingHours || '').toLowerCase() === 'true'
             || enrichedSpecificationsBase.telemetryEnabled === true
             || String(enrichedSpecificationsBase.telemetryEnabled || '').toLowerCase() === 'true'
-        ) || isTelemetryCapableAsset({ type, category: normalizedCategory });
+        ) || isTelemetryCapableAsset({ type, category: normalizedCategory, name });
         const enrichedSpecifications = buildTelemetryDefaultsForAsset({
             type,
             category: normalizedCategory,
+            name,
             existingSpecs: {
                 ...enrichedSpecificationsBase,
                 trackWorkingHours: trackTelemetry,
@@ -7790,7 +12269,7 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
                 serialNumber: parsedSerials[index] || null,
                 assetTag: parsedAssetTags[index] || (qty === 1 ? normalizeSerialValue(assetTag) : null),
                 manufacturerPartNumber: normalizeSerialValue(manufacturerPartNumber),
-                location: mapToAssetLocation(location || 'Central Warehouse'),
+                location: locationResolution.location,
                 department: mapToAssetDepartment(department || 'Unassigned'),
                 assignedToName: normalizeSerialValue(assignedToName),
                 assignedToUserId: normalizeSerialValue(assignedToUserId),
@@ -8091,6 +12570,11 @@ async function transferRelatedAssetsWithParent(params: {
         if (shouldMovePhysically) {
             if (typeof params.updateData.location !== 'undefined') updatePayload.location = params.updateData.location;
             if (typeof params.updateData.department !== 'undefined') updatePayload.department = params.updateData.department;
+            const nextMapLocationHint = normalizeSerialValue((params.updateData.specifications as Record<string, any> | undefined)?.mapLocationHint)
+                || mapLocationToFriendly(params.updateData.location || params.parentAsset.location);
+            updatePayload.specifications = mergeAssetSpecifications(relatedAsset.specifications, {
+                mapLocationHint: nextMapLocationHint || undefined,
+            });
         }
 
         let updatedAsset = relatedAsset;
@@ -8155,6 +12639,186 @@ app.get('/api/assets/:id/transfer-related-summary', async (req: Request, res: Re
     }
 });
 
+app.post('/api/inventory/bulk-checkout', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const destinationType = String(req.body?.destinationType || req.body?.destType || 'building').trim().toLowerCase();
+        const destination = String(req.body?.destination || req.body?.location || '').trim();
+        if (!destination) return res.status(400).json({ message: 'destination is required' });
+
+        const assetIds = Array.from(new Set([
+            ...((Array.isArray(req.body?.assetIds) ? req.body.assetIds : []).map((entry: unknown) => String(entry || '').trim())),
+            ...parseSerialValues(req.body?.assetCodes || req.body?.assetCodesText || req.body?.assetTagsText),
+        ].filter(Boolean)));
+        if (!assetIds.length) return res.status(400).json({ message: 'Provide at least one asset id/customId/tag for bulk checkout.' });
+
+        const options = parseRelatedTransferOptions({
+            ...req.body,
+            includeRelated: typeof req.body?.includeRelated === 'undefined' ? true : req.body?.includeRelated,
+            includeComponents: typeof req.body?.includeComponents === 'undefined' ? true : req.body?.includeComponents,
+            includeAccessories: typeof req.body?.includeAccessories === 'undefined' ? true : req.body?.includeAccessories,
+            includeLicenses: typeof req.body?.includeLicenses === 'undefined' ? true : req.body?.includeLicenses,
+            includeConsumables: typeof req.body?.includeConsumables === 'undefined' ? false : req.body?.includeConsumables,
+        });
+        const assignedToName = normalizeSerialValue(req.body?.assignedToName || req.body?.assignedTo || req.body?.assignee);
+        const assignedToUserId = normalizeSerialValue(req.body?.assignedToUserId);
+        const assignedDepartmentRaw = normalizeSerialValue(req.body?.assignedDepartment || req.body?.department);
+        const assignedDepartment = assignedDepartmentRaw ? mapToAssetDepartment(assignedDepartmentRaw) : null;
+        const expectedReturnDate = parseOptionalDateInput(req.body?.expectedReturnDate);
+        const actor = normalizeSerialValue(req.body?.actor || req.body?.admin) || 'inventory-kiosk';
+        const note = normalizeSerialValue(req.body?.notes || req.body?.reason) || 'bulk_checkout';
+
+        const successful: Array<Record<string, any>> = [];
+        const failed: Array<Record<string, any>> = [];
+        const relatedAggregate = {
+            components: 0,
+            accessories: 0,
+            licenses: 0,
+            consumables: 0,
+            total: 0,
+        };
+
+        for (const requestedId of assetIds.slice(0, 500)) {
+            const asset = await AssetService.getAssetByCustomId(requestedId);
+            if (!asset) {
+                failed.push({ requestedId, reason: 'asset_not_found' });
+                continue;
+            }
+            const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+            if (['retired', 'disposed', 'lost_stolen'].includes(lifecycle)) {
+                failed.push({ requestedId: asset.customId, reason: `asset_unavailable_${lifecycle}` });
+                continue;
+            }
+
+            const updateData: Record<string, any> = {
+                checkoutDate: new Date(),
+                expectedReturnDate,
+                returnedDate: null,
+                custodyStatus: 'CHECKED_OUT',
+                assignedToName: assignedToName || asset.assignedToName || null,
+                assignedToUserId: assignedToUserId || asset.assignedToUserId || null,
+                assignedDepartment: assignedDepartment || asset.assignedDepartment || null,
+            };
+            if (destinationType === 'building' || destinationType === 'location') {
+                const locationResolution = resolveAssetLocationForStorage(destination);
+                updateData.location = locationResolution.location;
+                updateData.status = 'ACTIVE';
+                updateData.lifecycleStatus = 'IN_TRANSIT';
+                updateData.specifications = mergeAssetSpecifications(asset.specifications, {
+                    mapLocationHint: locationResolution.mapLocationHint || destination,
+                });
+            } else if (destinationType === 'department') {
+                updateData.department = mapToAssetDepartment(destination);
+                updateData.lifecycleStatus = 'IN_USE';
+            } else {
+                updateData.assignedUser = assignedToName || destination;
+                updateData.status = 'ASSIGNED';
+                updateData.lifecycleStatus = 'ASSIGNED';
+            }
+            if (assignedDepartment) updateData.department = assignedDepartment;
+            if (assignedToName) updateData.assignedUser = assignedToName;
+
+            const updated = await AssetService.updateAsset(asset.customId, updateData);
+            await prisma.assetCustodyEvent.create({
+                data: {
+                    assetId: updated.customId,
+                    action: 'bulk_checkout',
+                    assignedToName: assignedToName || null,
+                    assignedToUserId: assignedToUserId || null,
+                    assignedDepartment: assignedDepartment || null,
+                    checkoutDate: updateData.checkoutDate,
+                    expectedReturnDate: expectedReturnDate || null,
+                    reason: note,
+                    notes: normalizeSerialValue(req.body?.notes),
+                    actor,
+                },
+            });
+            await recordLifecycleEvent({
+                assetId: updated.customId,
+                eventType: 'asset_bulk_checked_out',
+                oldValue: {
+                    location: String(asset.location),
+                    department: String(asset.department),
+                    assignedToName: asset.assignedToName || null,
+                },
+                newValue: {
+                    location: String(updated.location),
+                    department: String(updated.department),
+                    assignedToName: updated.assignedToName || null,
+                    destinationType,
+                    destination,
+                },
+                reason: 'bulk_checkout',
+                notes: note,
+                actor,
+            });
+            await recordHistoryEvent({
+                assetId: updated.customId,
+                action: 'Bulk Checkout',
+                details: `Bulk checkout to ${destinationType}: ${destination}`,
+            });
+
+            let relatedTransferSummary = 'Related transfer disabled.';
+            let relatedCounts = {
+                components: 0,
+                accessories: 0,
+                licenses: 0,
+                consumables: 0,
+                total: 0,
+            };
+            if (options.includeRelated && (destinationType === 'building' || destinationType === 'location' || destinationType === 'department')) {
+                const relatedResult = await transferRelatedAssetsWithParent({
+                    parentAsset: updated,
+                    updateData,
+                    destinationType,
+                    destination,
+                    options,
+                });
+                relatedTransferSummary = relatedResult.summary;
+                relatedCounts = relatedResult.affectedRelatedCounts;
+                relatedAggregate.components += relatedCounts.components;
+                relatedAggregate.accessories += relatedCounts.accessories;
+                relatedAggregate.licenses += relatedCounts.licenses;
+                relatedAggregate.consumables += relatedCounts.consumables;
+                relatedAggregate.total += relatedCounts.total;
+            }
+
+            successful.push({
+                assetId: updated.customId,
+                name: updated.name,
+                destinationType,
+                destination,
+                location: mapLocationToFriendly(updated.location),
+                department: mapDepartmentToFriendly(updated.department),
+                assignedTo: updated.assignedToName || updated.assignedToUserId || null,
+                expectedReturnDate: expectedReturnDate?.toISOString() || null,
+                relatedCounts,
+                relatedTransferSummary,
+            });
+        }
+
+        const receiptSummary = {
+            destinationType,
+            destination,
+            totalRequested: assetIds.length,
+            successfulCount: successful.length,
+            failedCount: failed.length,
+            relatedMoved: relatedAggregate,
+            expectedReturnDate: expectedReturnDate?.toISOString() || null,
+            generatedAt: new Date().toISOString(),
+        };
+
+        return res.json({
+            success: true,
+            receiptSummary,
+            successfulTransfers: successful,
+            failedTransfers: failed,
+            affectedAssets: successful.map((row) => row.assetId),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run bulk checkout', error: error.message });
+    }
+});
+
 // --- TRANSFER & SPLIT LOGIC ---
 app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
     const { destType, destination, quantityToMove, admin } = req.body;
@@ -8170,11 +12834,15 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
 
         let updateData: any = {};
         if (destType === 'building') {
-            updateData.location = mapToAssetLocation(destination);
+            const locationResolution = resolveAssetLocationForStorage(destination);
+            updateData.location = locationResolution.location;
             updateData.status = 'ACTIVE';
             updateData.assignedUser = null;
             updateData.lifecycleStatus = 'IN_TRANSIT';
             updateData.custodyStatus = 'UNASSIGNED';
+            updateData.specifications = mergeAssetSpecifications(asset.specifications, {
+                mapLocationHint: locationResolution.mapLocationHint || destination,
+            });
         } else if (destType === 'department') {
             updateData.department = mapToAssetDepartment(destination);
             updateData.lifecycleStatus = 'IN_USE';
@@ -8284,7 +12952,13 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
                 location: updateData.location || asset.location,
                 department: updateData.department || asset.department,
                 assignedUser: updateData.assignedUser,
-                specifications: (asset.specifications as Record<string, any>) || {}
+                specifications: mergeAssetSpecifications(
+                    (asset.specifications as Record<string, any>) || {},
+                    {
+                        mapLocationHint: normalizeSerialValue((updateData.specifications as Record<string, any> | undefined)?.mapLocationHint)
+                            || mapLocationToFriendly(updateData.location || asset.location),
+                    }
+                )
             }))
         );
 

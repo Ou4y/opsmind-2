@@ -326,6 +326,214 @@ Input:
 """
 
 
+DATA_CORRECTION_SUGGESTIONS_PROMPT = """You summarize deterministic inventory data-correction suggestions.
+Use only provided suggestions and counts. Do not invent assets or values.
+
+Rules:
+- Return ONLY JSON.
+- Prioritize critical issues first.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+RISK_SCORE_EXPLANATION_PROMPT = """You explain deterministic inventory risk scores.
+Use only provided risk rows and evidence.
+
+Rules:
+- Return ONLY JSON.
+- Do not alter numeric risk scores.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+REPLACEMENT_PRIORITY_PROMPT = """You summarize deterministic replacement-priority rankings.
+Use only provided ranked items and reasons.
+
+Rules:
+- Return ONLY JSON.
+- Keep recommendations practical and review-first.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+SPARE_STOCK_FORECAST_PROMPT = """You summarize deterministic spare-stock forecast outputs.
+Use only provided forecast rows and stock evidence.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent costs or quantities.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+IMPORT_ERROR_REPAIR_PROMPT = """You explain deterministic import-error repair suggestions.
+Use only provided rows and fixes.
+
+Rules:
+- Return ONLY JSON.
+- Never claim a fix is safe if confidence is weak.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "warnings": [],
+  "fixes": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+RELATIONSHIP_SUGGESTION_PROMPT = """You summarize deterministic asset relationship suggestions.
+Use only provided suggestion rows.
+
+Rules:
+- Return ONLY JSON.
+- Keep language cautious where confidence is low.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVOICE_MATCHING_PROMPT = """You summarize deterministic invoice/document asset matches.
+Use only provided matches and unmatched items.
+
+Rules:
+- Return ONLY JSON.
+- Do not claim exact matches when confidence is low.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "warnings": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_TICKET_DRAFT_PROMPT = """You polish an inventory ticket draft from deterministic evidence.
+Use only provided ticket draft details.
+
+Rules:
+- Return ONLY JSON.
+- Keep title/description concise and actionable.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "ticket_draft": {{}},
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MONTHLY_INVENTORY_REPORT_PROMPT = """You polish a monthly inventory report from deterministic metrics.
+Use only provided section keys, metrics, and deterministic recommendations.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent metrics.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "executive_summary": "",
+  "recommendations": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_ACTION_PLAN_PROMPT = """You polish an inventory action plan preview from deterministic planning data.
+No action should be executed automatically.
+
+Rules:
+- Return ONLY JSON.
+- Emphasize review-before-execute.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "action_type": "",
+  "summary": "",
+  "risks": [],
+  "confirmation_instructions": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
 SPEC_SOURCE_EXTRACTION_PROMPT = """You extract asset specs from provided source text only.
 Do not invent facts that are missing from the text.
 

@@ -13,6 +13,8 @@ from src.schemas import (
     AssetHealthSummaryResponse,
     AssetLifespanRequest,
     AssetLifespanResponse,
+    DataCorrectionSuggestionsRequest,
+    DataCorrectionSuggestionsResponse,
     DocumentExtractionRequest,
     DocumentExtractionResponse,
     DuplicateExplanationRequest,
@@ -21,18 +23,36 @@ from src.schemas import (
     EolExplanationResponse,
     ImportColumnMappingRequest,
     ImportColumnMappingResponse,
+    ImportErrorRepairRequest,
+    ImportErrorRepairResponse,
+    InvoiceAssetMatchingRequest,
+    InvoiceAssetMatchingResponse,
+    InventoryActionPlanRequest,
+    InventoryActionPlanResponse,
     InventoryAssistantRequest,
     InventoryAssistantResponse,
+    InventoryTicketDraftRequest,
+    InventoryTicketDraftResponse,
     MaintenanceRecommendationRequest,
     MaintenanceRecommendationResponse,
     MissingDataDetectorRequest,
     MissingDataDetectorResponse,
+    MonthlyInventoryReportRequest,
+    MonthlyInventoryReportResponse,
     NaturalLanguageInventorySearchRequest,
     NaturalLanguageInventorySearchResponse,
     ProcurementRecommendationRequest,
     ProcurementRecommendationResponse,
+    RelationshipSuggestionRequest,
+    RelationshipSuggestionResponse,
+    ReplacementPriorityRequest,
+    ReplacementPriorityResponse,
+    RiskScoreExplanationRequest,
+    RiskScoreExplanationResponse,
     SourceSpecExtractionRequest,
     SourceSpecExtractionResponse,
+    SpareStockForecastRequest,
+    SpareStockForecastResponse,
     AssetSpecFeedbackRequest,
     AssetSpecFeedbackResponse,
     AssetSpecInferenceRequest,
@@ -405,6 +425,256 @@ async def natural_language_inventory_search(
             "inventory_ai_endpoint_seconds",
             time.perf_counter() - started,
             labels={"endpoint": "natural_language_inventory_search"},
+        )
+
+
+@router.post(
+    "/data-correction-suggestions",
+    response_model=DataCorrectionSuggestionsResponse,
+    summary="Summarize deterministic inventory data correction suggestions",
+)
+async def data_correction_suggestions(
+    payload: DataCorrectionSuggestionsRequest,
+    request: Request,
+) -> DataCorrectionSuggestionsResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.data_correction_suggestions(payload)
+    except Exception as exc:
+        logger.exception("Data correction suggestions helper failed")
+        raise HTTPException(status_code=500, detail=f"Data correction suggestions error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "data_correction_suggestions"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "data_correction_suggestions"},
+        )
+
+
+@router.post(
+    "/risk-score-explanation",
+    response_model=RiskScoreExplanationResponse,
+    summary="Explain deterministic inventory risk scores",
+)
+async def risk_score_explanation(
+    payload: RiskScoreExplanationRequest,
+    request: Request,
+) -> RiskScoreExplanationResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.risk_score_explanation(payload)
+    except Exception as exc:
+        logger.exception("Risk score explanation helper failed")
+        raise HTTPException(status_code=500, detail=f"Risk score explanation error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "risk_score_explanation"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "risk_score_explanation"},
+        )
+
+
+@router.post(
+    "/replacement-priority",
+    response_model=ReplacementPriorityResponse,
+    summary="Summarize replacement-priority candidates",
+)
+async def replacement_priority(
+    payload: ReplacementPriorityRequest,
+    request: Request,
+) -> ReplacementPriorityResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.replacement_priority(payload)
+    except Exception as exc:
+        logger.exception("Replacement priority helper failed")
+        raise HTTPException(status_code=500, detail=f"Replacement priority error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "replacement_priority"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "replacement_priority"},
+        )
+
+
+@router.post(
+    "/spare-stock-forecast",
+    response_model=SpareStockForecastResponse,
+    summary="Summarize spare-stock forecast recommendations",
+)
+async def spare_stock_forecast(
+    payload: SpareStockForecastRequest,
+    request: Request,
+) -> SpareStockForecastResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.spare_stock_forecast(payload)
+    except Exception as exc:
+        logger.exception("Spare stock forecast helper failed")
+        raise HTTPException(status_code=500, detail=f"Spare stock forecast error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "spare_stock_forecast"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "spare_stock_forecast"},
+        )
+
+
+@router.post(
+    "/repair-import-errors",
+    response_model=ImportErrorRepairResponse,
+    summary="Explain deterministic import-error repair suggestions",
+)
+async def repair_import_errors(
+    payload: ImportErrorRepairRequest,
+    request: Request,
+) -> ImportErrorRepairResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.repair_import_errors(payload)
+    except Exception as exc:
+        logger.exception("Import error repair helper failed")
+        raise HTTPException(status_code=500, detail=f"Import error repair error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "repair_import_errors"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "repair_import_errors"},
+        )
+
+
+@router.post(
+    "/relationship-suggestions",
+    response_model=RelationshipSuggestionResponse,
+    summary="Summarize deterministic relationship suggestions",
+)
+async def relationship_suggestions(
+    payload: RelationshipSuggestionRequest,
+    request: Request,
+) -> RelationshipSuggestionResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.relationship_suggestions(payload)
+    except Exception as exc:
+        logger.exception("Relationship suggestions helper failed")
+        raise HTTPException(status_code=500, detail=f"Relationship suggestions error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "relationship_suggestions"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "relationship_suggestions"},
+        )
+
+
+@router.post(
+    "/match-invoice-assets",
+    response_model=InvoiceAssetMatchingResponse,
+    summary="Summarize invoice/document to asset matching suggestions",
+)
+async def match_invoice_assets(
+    payload: InvoiceAssetMatchingRequest,
+    request: Request,
+) -> InvoiceAssetMatchingResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.match_invoice_assets(payload)
+    except Exception as exc:
+        logger.exception("Invoice asset matching helper failed")
+        raise HTTPException(status_code=500, detail=f"Invoice asset matching error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "match_invoice_assets"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "match_invoice_assets"},
+        )
+
+
+@router.post(
+    "/draft-inventory-ticket",
+    response_model=InventoryTicketDraftResponse,
+    summary="Polish inventory ticket drafts from deterministic issue data",
+)
+async def draft_inventory_ticket(
+    payload: InventoryTicketDraftRequest,
+    request: Request,
+) -> InventoryTicketDraftResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.draft_inventory_ticket(payload)
+    except Exception as exc:
+        logger.exception("Inventory ticket draft helper failed")
+        raise HTTPException(status_code=500, detail=f"Inventory ticket draft error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "draft_inventory_ticket"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "draft_inventory_ticket"},
+        )
+
+
+@router.post(
+    "/monthly-inventory-report",
+    response_model=MonthlyInventoryReportResponse,
+    summary="Polish monthly inventory report output from deterministic metrics",
+)
+async def monthly_inventory_report(
+    payload: MonthlyInventoryReportRequest,
+    request: Request,
+) -> MonthlyInventoryReportResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.monthly_inventory_report(payload)
+    except Exception as exc:
+        logger.exception("Monthly inventory report helper failed")
+        raise HTTPException(status_code=500, detail=f"Monthly inventory report error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "monthly_inventory_report"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "monthly_inventory_report"},
+        )
+
+
+@router.post(
+    "/plan-inventory-action",
+    response_model=InventoryActionPlanResponse,
+    summary="Polish natural-language inventory action plans (review-first)",
+)
+async def plan_inventory_action(
+    payload: InventoryActionPlanRequest,
+    request: Request,
+) -> InventoryActionPlanResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+    try:
+        return await service.plan_inventory_action(payload)
+    except Exception as exc:
+        logger.exception("Inventory action planning helper failed")
+        raise HTTPException(status_code=500, detail=f"Inventory action planning error: {exc}") from exc
+    finally:
+        request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "plan_inventory_action"})
+        request.app.state.metrics.observe(
+            "inventory_ai_endpoint_seconds",
+            time.perf_counter() - started,
+            labels={"endpoint": "plan_inventory_action"},
         )
 
 

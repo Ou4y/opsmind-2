@@ -15,23 +15,35 @@ from src.config import AppSettings
 from src.llm.client_protocol import LLMClientProtocol
 from src.llm.prompts import (
     ASSET_HEALTH_SUMMARY_PROMPT,
+    DATA_CORRECTION_SUGGESTIONS_PROMPT,
     DOCUMENT_EXTRACTION_PROMPT,
     DUPLICATE_EXPLANATION_PROMPT,
     EOL_EXPLANATION_PROMPT,
     IMPORT_COLUMN_MAPPING_PROMPT,
+    IMPORT_ERROR_REPAIR_PROMPT,
     INVENTORY_ASSISTANT_PROMPT,
+    INVENTORY_ACTION_PLAN_PROMPT,
+    INVENTORY_TICKET_DRAFT_PROMPT,
     MAINTENANCE_RECOMMENDATION_PROMPT,
     MISSING_DATA_DETECTOR_PROMPT,
+    MONTHLY_INVENTORY_REPORT_PROMPT,
     NATURAL_LANGUAGE_SEARCH_PROMPT,
     PROCUREMENT_RECOMMENDATION_PROMPT,
+    RELATIONSHIP_SUGGESTION_PROMPT,
+    REPLACEMENT_PRIORITY_PROMPT,
+    RISK_SCORE_EXPLANATION_PROMPT,
+    SPARE_STOCK_FORECAST_PROMPT,
     SPEC_SOURCE_EXTRACTION_PROMPT,
     SPEC_NORMALIZATION_PROMPT,
     SPEC_SANITY_PROMPT,
+    INVOICE_MATCHING_PROMPT,
 )
 from src.llm.validators import clamp_confidence
 from src.schemas import (
     AssetHealthSummaryRequest,
     AssetHealthSummaryResponse,
+    DataCorrectionSuggestionsRequest,
+    DataCorrectionSuggestionsResponse,
     DocumentExtractionRequest,
     DocumentExtractionResponse,
     DuplicateExplanationRequest,
@@ -40,16 +52,34 @@ from src.schemas import (
     EolExplanationResponse,
     ImportColumnMappingRequest,
     ImportColumnMappingResponse,
+    ImportErrorRepairRequest,
+    ImportErrorRepairResponse,
+    InvoiceAssetMatchingRequest,
+    InvoiceAssetMatchingResponse,
+    InventoryActionPlanRequest,
+    InventoryActionPlanResponse,
     InventoryAssistantRequest,
     InventoryAssistantResponse,
+    InventoryTicketDraftRequest,
+    InventoryTicketDraftResponse,
     MaintenanceRecommendationRequest,
     MaintenanceRecommendationResponse,
     MissingDataDetectorRequest,
     MissingDataDetectorResponse,
+    MonthlyInventoryReportRequest,
+    MonthlyInventoryReportResponse,
     NaturalLanguageInventorySearchRequest,
     NaturalLanguageInventorySearchResponse,
     ProcurementRecommendationRequest,
     ProcurementRecommendationResponse,
+    RelationshipSuggestionRequest,
+    RelationshipSuggestionResponse,
+    ReplacementPriorityRequest,
+    ReplacementPriorityResponse,
+    RiskScoreExplanationRequest,
+    RiskScoreExplanationResponse,
+    SpareStockForecastRequest,
+    SpareStockForecastResponse,
     SourceSpecExtractionRequest,
     SourceSpecExtractionResponse,
     SpecNormalizationRequest,
@@ -753,6 +783,11 @@ class InventoryReasoningService:
         candidate = str(value or fallback).strip().lower()
         return candidate if candidate in {"low", "medium", "high"} else fallback
 
+    def _llm_status(self, llm_used: bool) -> str:
+        if llm_used:
+            return "ready"
+        return "fallback" if self.llm.enabled else "disabled"
+
     async def inventory_assistant(self, payload: InventoryAssistantRequest) -> InventoryAssistantResponse:
         deterministic = payload.deterministic_result or {}
         answer = str(deterministic.get("answer") or "No deterministic answer was provided.").strip()
@@ -769,6 +804,7 @@ class InventoryReasoningService:
         ]
 
         llm_used = False
+        fallback_reason: str | None = None
         schema = {
             "type": "object",
             "properties": {
@@ -792,6 +828,8 @@ class InventoryReasoningService:
                 schema,
                 0.1,
             )
+        else:
+            fallback_reason = "llm_disabled"
         if isinstance(parsed, dict):
             llm_used = True
             answer = str(parsed.get("answer") or answer).strip() or answer
@@ -800,6 +838,8 @@ class InventoryReasoningService:
             ] or suggested_actions
             confidence = self._confidence_label(parsed.get("confidence"), confidence)
             missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
 
         return InventoryAssistantResponse(
             answer=answer,
@@ -807,6 +847,586 @@ class InventoryReasoningService:
             confidence=confidence,
             missing_data=missing_data[:24],
             llm_used=llm_used,
+            llm_status="ready" if llm_used else ("fallback" if self.llm.enabled else "disabled"),
+            fallback_reason=fallback_reason,
+        )
+
+    async def data_correction_suggestions(self, payload: DataCorrectionSuggestionsRequest) -> DataCorrectionSuggestionsResponse:
+        suggestions = payload.suggestions or []
+        summary = str(payload.summary or "").strip() or (
+            f"Identified {len(suggestions)} data-correction suggestion(s)."
+            if suggestions
+            else "No deterministic data-correction suggestions were generated."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if suggestions else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        suggested_actions = [
+            str(item).strip()
+            for item in (payload.suggested_actions or [])
+            if str(item).strip()
+        ] or [
+            "Review critical findings first and apply only safe corrections after confirmation.",
+        ]
+        llm_used = False
+        fallback_reason: str | None = None
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+                "suggested_actions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "missing_data", "suggested_actions"],
+        }
+        prompt_payload = {
+            "summary": summary,
+            "counts_by_severity": payload.counts_by_severity,
+            "suggestions": suggestions[:120],
+            "data_scope": payload.data_scope,
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                DATA_CORRECTION_SUGGESTIONS_PROMPT.format(payload_json=json.dumps(prompt_payload, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+            suggested_actions = [
+                str(item).strip() for item in (parsed.get("suggested_actions") or []) if str(item).strip()
+            ] or suggested_actions
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return DataCorrectionSuggestionsResponse(
+            summary=summary,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            suggested_actions=suggested_actions[:20],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def risk_score_explanation(self, payload: RiskScoreExplanationRequest) -> RiskScoreExplanationResponse:
+        rows = payload.risk_scores or []
+        summary = str(payload.summary or "").strip() or (
+            f"Computed risk scores for {len(rows)} asset(s)." if rows else "No risk rows were provided."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if rows else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        suggested_actions = [
+            str(item).strip()
+            for item in (payload.suggested_actions or [])
+            if str(item).strip()
+        ] or [
+            "Prioritize critical/high risk assets for maintenance or replacement planning.",
+        ]
+        llm_used = False
+        fallback_reason: str | None = None
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+                "suggested_actions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "missing_data", "suggested_actions"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                RISK_SCORE_EXPLANATION_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "risk_scores": rows[:120],
+                    "data_scope": payload.data_scope,
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+            suggested_actions = [str(item).strip() for item in (parsed.get("suggested_actions") or []) if str(item).strip()] or suggested_actions
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return RiskScoreExplanationResponse(
+            summary=summary,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            suggested_actions=suggested_actions[:20],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def replacement_priority(self, payload: ReplacementPriorityRequest) -> ReplacementPriorityResponse:
+        rows = payload.ranked_items or []
+        summary = str(payload.summary or "").strip() or (
+            f"Ranked {len(rows)} replacement candidate(s)." if rows else "No replacement-priority candidates were provided."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if rows else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        suggested_actions = [
+            str(item).strip()
+            for item in (payload.suggested_actions or [])
+            if str(item).strip()
+        ] or [
+            "Start with top-ranked items and validate budget/stock constraints.",
+        ]
+        llm_used = False
+        fallback_reason: str | None = None
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+                "suggested_actions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "missing_data", "suggested_actions"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                REPLACEMENT_PRIORITY_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "ranked_items": rows[:120],
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+            suggested_actions = [str(item).strip() for item in (parsed.get("suggested_actions") or []) if str(item).strip()] or suggested_actions
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return ReplacementPriorityResponse(
+            summary=summary,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            suggested_actions=suggested_actions[:20],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def spare_stock_forecast(self, payload: SpareStockForecastRequest) -> SpareStockForecastResponse:
+        forecasts = payload.forecasts or []
+        summary = str(payload.summary or "").strip() or (
+            f"Prepared stock forecast for {len(forecasts)} item(s)." if forecasts else "No stock forecast rows were provided."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if forecasts else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        suggested_actions = [
+            str(item).strip()
+            for item in (payload.suggested_actions or [])
+            if str(item).strip()
+        ] or [
+            "Raise procurement requests for items below reorder thresholds first.",
+        ]
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+                "suggested_actions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "missing_data", "suggested_actions"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                SPARE_STOCK_FORECAST_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "forecasts": forecasts[:120],
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+            suggested_actions = [str(item).strip() for item in (parsed.get("suggested_actions") or []) if str(item).strip()] or suggested_actions
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return SpareStockForecastResponse(
+            summary=summary,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            suggested_actions=suggested_actions[:20],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def repair_import_errors(self, payload: ImportErrorRepairRequest) -> ImportErrorRepairResponse:
+        fixes = [dict(row) for row in (payload.fixes or [])]
+        warnings = [str(item).strip() for item in (payload.warnings or []) if str(item).strip()]
+        summary = str(payload.summary or "").strip() or (
+            f"Prepared {len(fixes)} import repair suggestion(s)." if fixes else "No deterministic import repair suggestions were generated."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if fixes else "low")
+        llm_used = False
+        fallback_reason: str | None = None
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "fixes": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["summary", "confidence", "warnings", "fixes"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                IMPORT_ERROR_REPAIR_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "fixes": fixes[:120],
+                    "warnings": warnings[:40],
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            warnings = [str(item).strip() for item in (parsed.get("warnings") or []) if str(item).strip()] or warnings
+            parsed_fixes = parsed.get("fixes") or []
+            if isinstance(parsed_fixes, list) and parsed_fixes:
+                fixes = [dict(row) for row in parsed_fixes if isinstance(row, dict)] or fixes
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return ImportErrorRepairResponse(
+            summary=summary,
+            fixes=fixes[:200],
+            corrected_rows_preview=[],
+            warnings=warnings[:40],
+            confidence=confidence,
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def relationship_suggestions(self, payload: RelationshipSuggestionRequest) -> RelationshipSuggestionResponse:
+        suggestions = payload.suggestions or []
+        summary = str(payload.summary or "").strip() or (
+            f"Prepared {len(suggestions)} relationship suggestion(s)." if suggestions else "No deterministic relationship suggestions were generated."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if suggestions else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "missing_data"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                RELATIONSHIP_SUGGESTION_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "suggestions": suggestions[:120],
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return RelationshipSuggestionResponse(
+            summary=summary,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def match_invoice_assets(self, payload: InvoiceAssetMatchingRequest) -> InvoiceAssetMatchingResponse:
+        matches = payload.matches or []
+        unmatched = payload.unmatched_items or []
+        warnings = [str(item).strip() for item in (payload.warnings or []) if str(item).strip()]
+        summary = str(payload.summary or "").strip() or (
+            f"Prepared {len(matches)} invoice/document match suggestion(s)." if matches else "No deterministic invoice matches were generated."
+        )
+        confidence = self._confidence_label(payload.confidence, "medium" if matches else "low")
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "confidence": {"type": "string"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "confidence", "warnings"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                INVOICE_MATCHING_PROMPT.format(payload_json=json.dumps({
+                    "summary": summary,
+                    "matches": matches[:120],
+                    "unmatched_items": unmatched[:120],
+                    "warnings": warnings[:40],
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            warnings = [str(item).strip() for item in (parsed.get("warnings") or []) if str(item).strip()] or warnings
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return InvoiceAssetMatchingResponse(
+            summary=summary,
+            confidence=confidence,
+            warnings=warnings[:40],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def draft_inventory_ticket(self, payload: InventoryTicketDraftRequest) -> InventoryTicketDraftResponse:
+        ticket_draft = dict(payload.ticket_draft or {})
+        summary_title = str(ticket_draft.get("title") or "").strip()
+        confidence = self._confidence_label(payload.confidence, "medium" if ticket_draft else "low")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "ticket_draft": {"type": "object"},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["ticket_draft", "confidence", "missing_data"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                INVENTORY_TICKET_DRAFT_PROMPT.format(payload_json=json.dumps({
+                    "ticket_draft": ticket_draft,
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            parsed_draft = parsed.get("ticket_draft") or {}
+            if isinstance(parsed_draft, dict) and parsed_draft:
+                ticket_draft = parsed_draft
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        if not ticket_draft:
+            ticket_draft = {
+                "title": summary_title or "Inventory issue follow-up",
+                "description": "Review related inventory evidence and create a maintenance action plan.",
+            }
+
+        return InventoryTicketDraftResponse(
+            ticket_draft=ticket_draft,
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def monthly_inventory_report(self, payload: MonthlyInventoryReportRequest) -> MonthlyInventoryReportResponse:
+        report_title = str(payload.report_title or "Monthly Inventory Report").strip() or "Monthly Inventory Report"
+        executive_summary = str(payload.executive_summary or "").strip() or "Monthly inventory report generated from deterministic metrics."
+        sections = [dict(row) for row in (payload.sections or []) if isinstance(row, dict)]
+        section_keys = [
+            str((row.get("title") or row.get("key") or "")).strip()
+            for row in sections[:16]
+            if isinstance(row, dict)
+        ]
+        section_keys = [entry for entry in section_keys if entry]
+        recommendations = [str(item).strip() for item in (payload.recommendations or []) if str(item).strip()]
+        confidence = self._confidence_label(payload.confidence, "medium")
+        missing_data = [str(item).strip() for item in (payload.missing_data or []) if str(item).strip()]
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "executive_summary": {"type": "string"},
+                "recommendations": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string"},
+                "missing_data": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["executive_summary", "recommendations", "confidence", "missing_data"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                MONTHLY_INVENTORY_REPORT_PROMPT.format(payload_json=json.dumps({
+                    "report_title": report_title,
+                    "date_range": payload.date_range,
+                    "executive_summary": executive_summary,
+                    "section_keys": section_keys,
+                    "metrics": payload.metrics,
+                    "recommendations": recommendations[:30],
+                    "missing_data": missing_data,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            executive_summary = str(parsed.get("executive_summary") or executive_summary).strip() or executive_summary
+            recommendations = [str(item).strip() for item in (parsed.get("recommendations") or []) if str(item).strip()] or recommendations
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+            missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return MonthlyInventoryReportResponse(
+            report_title=report_title,
+            executive_summary=executive_summary,
+            sections=sections[:24],
+            recommendations=recommendations[:30],
+            confidence=confidence,
+            missing_data=missing_data[:24],
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
+        )
+
+    async def plan_inventory_action(self, payload: InventoryActionPlanRequest) -> InventoryActionPlanResponse:
+        action_plan = dict(payload.action_plan or {})
+        action_type = str(action_plan.get("actionType") or action_plan.get("action_type") or "review_only").strip() or "review_only"
+        summary = str(action_plan.get("summary") or f"Prepared review plan for: {payload.query}").strip()
+        risks = [str(item).strip() for item in (action_plan.get("risks") or []) if str(item).strip()]
+        confirmation_instructions = str(
+            action_plan.get("confirmationInstructions")
+            or action_plan.get("confirmation_instructions")
+            or "Review affected items and confirm through dedicated safe workflows."
+        ).strip()
+        confidence = self._confidence_label(payload.confidence, "medium")
+        llm_used = False
+        fallback_reason: str | None = None
+        schema = {
+            "type": "object",
+            "properties": {
+                "action_type": {"type": "string"},
+                "summary": {"type": "string"},
+                "risks": {"type": "array", "items": {"type": "string"}},
+                "confirmation_instructions": {"type": "string"},
+                "confidence": {"type": "string"},
+            },
+            "required": ["action_type", "summary", "risks", "confirmation_instructions", "confidence"],
+        }
+        parsed = None
+        if self.llm.enabled:
+            parsed = await anyio.to_thread.run_sync(
+                self._llm_json,
+                INVENTORY_ACTION_PLAN_PROMPT.format(payload_json=json.dumps({
+                    "query": payload.query,
+                    "action_plan": action_plan,
+                }, ensure_ascii=False)),
+                schema,
+                0.1,
+            )
+        else:
+            fallback_reason = "llm_disabled"
+        if isinstance(parsed, dict):
+            llm_used = True
+            action_type = str(parsed.get("action_type") or action_type).strip() or action_type
+            summary = str(parsed.get("summary") or summary).strip() or summary
+            risks = [str(item).strip() for item in (parsed.get("risks") or []) if str(item).strip()] or risks
+            confirmation_instructions = str(parsed.get("confirmation_instructions") or confirmation_instructions).strip() or confirmation_instructions
+            confidence = self._confidence_label(parsed.get("confidence"), confidence)
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
+
+        return InventoryActionPlanResponse(
+            action_type=action_type,
+            summary=summary,
+            risks=risks[:16],
+            confirmation_instructions=confirmation_instructions,
+            confidence=confidence,
+            llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
         )
 
     async def map_import_columns(self, payload: ImportColumnMappingRequest) -> ImportColumnMappingResponse:

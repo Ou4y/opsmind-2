@@ -168,25 +168,25 @@
 
         .inventory-ai-chat-launcher {
             position: fixed;
-            right: 28px;
-            bottom: 88px;
-            width: 62px;
-            height: 62px;
+            right: 22px;
+            bottom: var(--inventory-ai-launcher-bottom, 22px);
+            width: 58px;
+            height: 58px;
             border-radius: 999px;
             border: 0;
-            background: linear-gradient(145deg, #3b82f6, #1d4ed8 52%, #1e40af);
+            background: linear-gradient(145deg, #4f46e5 0%, #2563eb 48%, #1d4ed8 100%);
             color: #fff;
-            box-shadow: 0 12px 30px rgba(37, 99, 235, 0.38);
+            box-shadow: 0 18px 40px rgba(37, 99, 235, 0.38);
             display: inline-flex;
             align-items: center;
             justify-content: center;
             z-index: 1030;
-            transition: transform 0.18s ease, box-shadow 0.18s ease;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
 
         .inventory-ai-chat-launcher:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 16px 32px rgba(37, 99, 235, 0.46);
+            transform: translateY(-3px) scale(1.01);
+            box-shadow: 0 22px 46px rgba(37, 99, 235, 0.5);
         }
 
         .inventory-ai-chat-launcher::before {
@@ -201,12 +201,12 @@
 
         .inventory-ai-chat-launcher-label {
             position: absolute;
-            right: 74px;
+            right: 70px;
             background: rgba(15, 23, 42, 0.92);
             color: #f8fafc;
             padding: 0.28rem 0.55rem;
             border-radius: 0.45rem;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             white-space: nowrap;
             opacity: 0;
             transform: translateX(6px);
@@ -226,27 +226,38 @@
 
         .inventory-ai-chat-panel {
             position: fixed;
-            right: 28px;
-            bottom: 152px;
-            width: min(430px, calc(100vw - 1.6rem));
-            max-height: min(76vh, 740px);
+            right: 22px;
+            bottom: calc(var(--inventory-ai-launcher-bottom, 22px) + 68px);
+            width: min(420px, calc(100vw - 1.3rem));
+            max-height: min(72vh, 720px);
             display: flex;
             flex-direction: column;
-            background: #fff;
-            border: 1px solid rgba(15, 23, 42, 0.1);
-            border-radius: 1rem;
-            box-shadow: 0 24px 48px rgba(15, 23, 42, 0.24);
+            background: rgba(255, 255, 255, 0.93);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            border-radius: 1.45rem;
+            box-shadow: 0 28px 56px rgba(15, 23, 42, 0.22);
             overflow: hidden;
             z-index: 1030;
+            opacity: 0;
+            transform: translateY(16px) scale(0.98);
+            pointer-events: none;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        .inventory-ai-chat-panel.is-open {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            pointer-events: auto;
         }
 
         .inventory-ai-chat-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0.76rem 0.9rem;
+            padding: 0.84rem 0.95rem;
             border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-            background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+            background: linear-gradient(130deg, rgba(239, 246, 255, 0.98) 0%, rgba(238, 242, 255, 0.98) 100%);
         }
 
         .inventory-ai-chat-status {
@@ -259,6 +270,18 @@
             border-radius: 999px;
             padding: 0.1rem 0.45rem;
             background: #fff;
+        }
+
+        .inventory-ai-chat-status[data-mode="fallback"] {
+            border-color: rgba(245, 158, 11, 0.35);
+            background: #fffbeb;
+            color: #92400e;
+        }
+
+        .inventory-ai-chat-status[data-mode="offline"] {
+            border-color: rgba(239, 68, 68, 0.3);
+            background: #fef2f2;
+            color: #7f1d1d;
         }
 
         .inventory-ai-status-dot {
@@ -278,46 +301,57 @@
         }
 
         .inventory-ai-chat-body {
-            padding: 0.8rem 0.85rem;
+            padding: 0.85rem 0.9rem;
             overflow-y: auto;
             display: flex;
             flex-direction: column;
-            gap: 0.58rem;
-            background: #fbfdff;
+            gap: 0.64rem;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.66) 0%, rgba(241, 245, 249, 0.74) 100%);
         }
 
         .inventory-ai-chat-msg {
-            max-width: 94%;
-            border-radius: 0.8rem;
-            padding: 0.58rem 0.7rem;
-            line-height: 1.35;
+            max-width: 93%;
+            border-radius: 1.05rem;
+            padding: 0.62rem 0.76rem;
+            line-height: 1.36;
             font-size: 0.88rem;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
+            border: 1px solid rgba(148, 163, 184, 0.2);
         }
 
         .inventory-ai-chat-msg.user {
             align-self: flex-end;
-            background: #dbeafe;
+            background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
             color: #1e3a8a;
+            border-color: rgba(59, 130, 246, 0.18);
         }
 
         .inventory-ai-chat-msg.assistant {
             align-self: flex-start;
-            background: #f1f5f9;
-            color: #111827;
+            background: rgba(255, 255, 255, 0.95);
+            color: #0f172a;
+        }
+
+        .inventory-ai-msg-head {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            font-size: 0.72rem;
+            color: #64748b;
+            margin-bottom: 0.24rem;
         }
 
         .inventory-ai-chat-pill {
             display: inline-flex;
             align-items: center;
-            border: 1px solid rgba(15, 23, 42, 0.12);
+            border: 1px solid rgba(59, 130, 246, 0.2);
             border-radius: 999px;
-            background: #fff;
+            background: #eff6ff;
             font-size: 0.7rem;
             line-height: 1.2;
-            color: #334155;
-            padding: 0.12rem 0.42rem;
+            color: #1e40af;
+            padding: 0.16rem 0.48rem;
             margin-right: 0.2rem;
             margin-top: 0.2rem;
         }
@@ -335,9 +369,50 @@
         }
 
         .inventory-ai-quick-prompts {
-            padding: 0.6rem 0.85rem 0.48rem;
+            padding: 0.7rem 0.9rem 0.56rem;
             border-bottom: 1px solid rgba(15, 23, 42, 0.07);
-            background: #ffffff;
+            background: rgba(255, 255, 255, 0.95);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.44rem;
+        }
+
+        .inventory-ai-prompt-cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.4rem;
+        }
+
+        .inventory-ai-prompt-card {
+            text-align: left;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%);
+            color: #1e40af;
+            border-radius: 0.95rem;
+            padding: 0.54rem 0.62rem;
+            font-size: 0.78rem;
+            line-height: 1.25;
+        }
+
+        .inventory-ai-prompt-card:hover {
+            border-color: rgba(37, 99, 235, 0.36);
+            transform: translateY(-1px);
+        }
+
+        .inventory-ai-prompt-more summary {
+            list-style: none;
+            cursor: pointer;
+            color: #334155;
+            font-size: 0.75rem;
+            user-select: none;
+        }
+
+        .inventory-ai-prompt-more summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .inventory-ai-prompt-more-body {
+            margin-top: 0.35rem;
             display: flex;
             flex-wrap: wrap;
             gap: 0.35rem;
@@ -346,30 +421,64 @@
         .inventory-ai-quick-btn {
             font-size: 0.73rem;
             border-radius: 999px;
-            padding: 0.2rem 0.56rem;
+            padding: 0.24rem 0.62rem;
         }
 
         .inventory-ai-chat-input {
             border-top: 1px solid rgba(15, 23, 42, 0.08);
-            padding: 0.65rem 0.85rem;
-            background: #fff;
+            padding: 0.72rem 0.92rem;
+            background: rgba(255, 255, 255, 0.97);
+        }
+
+        #inventoryAiChatInput {
+            border-radius: 1rem;
+            border: 1px solid rgba(148, 163, 184, 0.32);
+            padding: 0.52rem 0.66rem;
+            resize: none;
+            min-height: 44px;
+            max-height: 132px;
+        }
+
+        #inventoryAiChatSendBtn {
+            border-radius: 999px;
+            width: 38px;
+            height: 38px;
+            margin-left: 0.42rem;
+            align-self: flex-end;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            background: linear-gradient(145deg, #2563eb, #1d4ed8);
+            border-color: #1d4ed8;
         }
 
         .inventory-ai-chat-match {
             margin-top: 0.45rem;
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 0.6rem;
+            border: 1px solid rgba(148, 163, 184, 0.26);
+            border-radius: 0.9rem;
             background: #fff;
-            padding: 0.45rem 0.5rem;
+            padding: 0.5rem 0.58rem;
         }
 
         .inventory-ai-chat-empty {
             border: 1px dashed rgba(30, 64, 175, 0.26);
-            border-radius: 0.8rem;
-            background: #eff6ff;
-            padding: 0.62rem 0.68rem;
+            border-radius: 1rem;
+            background: linear-gradient(140deg, #eff6ff 0%, #eef2ff 100%);
+            padding: 0.72rem 0.76rem;
             color: #1e3a8a;
             font-size: 0.82rem;
+        }
+
+        .inventory-ai-chat-empty-title {
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+            color: #1e3a8a;
+        }
+
+        .inventory-ai-chat-empty-sub {
+            font-size: 0.78rem;
+            color: #334155;
         }
 
         .inventory-ai-chat-match + .inventory-ai-chat-match {
@@ -381,15 +490,18 @@
                 right: 12px;
                 left: 12px;
                 width: auto;
-                bottom: 128px;
+                bottom: calc(var(--inventory-ai-launcher-bottom-mobile, 16px) + 66px);
                 max-height: 70vh;
             }
             .inventory-ai-chat-launcher {
-                right: 14px;
-                bottom: 74px;
+                right: 16px;
+                bottom: var(--inventory-ai-launcher-bottom-mobile, 16px);
             }
             .inventory-ai-chat-launcher-label {
                 display: none;
+            }
+            .inventory-ai-prompt-cards {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -397,6 +509,289 @@
         .inventory-page #aiFloatingAssistant,
         .inventory-page .ai-floating-assistant {
             display: none !important;
+        }
+
+        .inventory-map-modal .modal-dialog {
+            max-width: min(99vw, 1780px);
+        }
+
+        .inventory-map-modal .modal-content {
+            height: min(96vh, 1280px);
+            border: 0;
+            border-radius: 1rem;
+            overflow: hidden;
+        }
+
+        .inventory-map-modal .modal-body {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: auto;
+        }
+
+        .inventory-map-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 360px;
+            gap: 0.8rem;
+            height: 100%;
+            min-height: 0;
+        }
+
+        .inventory-map-main {
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+
+        .inventory-map-controls {
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 0.8rem;
+            padding: 0.55rem 0.6rem;
+            background: #f8fafc;
+        }
+
+        .inventory-map-controls .form-label {
+            font-size: 0.73rem;
+            margin-bottom: 0.16rem !important;
+        }
+
+        .inventory-map-controls .form-check-label {
+            font-size: 0.76rem;
+        }
+
+        .inventory-map-canvas-wrap {
+            position: relative;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            border-radius: 0.8rem;
+            background: #f1f5f9;
+            overflow: hidden;
+            min-height: 0;
+            flex: 1 1 auto;
+            height: min(100%, clamp(440px, calc(100vh - 320px), 860px));
+            min-height: 360px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .inventory-map-canvas {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: block;
+            overflow: hidden;
+        }
+
+        .inventory-map-canvas img {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            transform: translate(-50%, -50%) rotate(var(--inventory-map-image-rotation, 0deg));
+            transform-origin: center center;
+            display: block;
+            border-radius: 0.55rem;
+            user-select: none;
+        }
+
+        .inventory-map-marker-layer {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 4;
+        }
+
+        .inventory-map-calibration-layer {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .inventory-map-marker {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            min-width: 30px;
+            height: 30px;
+            border-radius: 999px;
+            border: 2px solid #fff;
+            box-shadow: 0 5px 16px rgba(15, 23, 42, 0.28);
+            color: #fff;
+            font-size: 0.74rem;
+            font-weight: 700;
+            padding: 0 0.45rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            cursor: pointer;
+            transition: transform 0.14s ease;
+        }
+
+        .inventory-map-marker:hover {
+            transform: translate(-50%, -50%) scale(1.06);
+        }
+
+        .inventory-map-marker.active {
+            outline: 3px solid rgba(15, 23, 42, 0.42);
+            outline-offset: 1px;
+            transform: translate(-50%, -50%) scale(1.08);
+        }
+
+        .inventory-map-marker.parents { background: #2563eb; }
+        .inventory-map-marker.components { background: #7c3aed; }
+        .inventory-map-marker.accessories { background: #0891b2; }
+        .inventory-map-marker.consumables { background: #f97316; }
+        .inventory-map-marker.spare_stock { background: #f59e0b; }
+        .inventory-map-marker.licenses { background: #6b7280; }
+        .inventory-map-marker.status-alert { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.35), 0 5px 16px rgba(15, 23, 42, 0.28); }
+        .inventory-map-marker.risk-alert { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.45), 0 5px 16px rgba(15, 23, 42, 0.28); }
+
+        .inventory-map-calibration-marker {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            border: 2px dashed #0f172a;
+            background: rgba(250, 204, 21, 0.95);
+            color: #111827;
+            font-size: 0.68rem;
+            font-weight: 700;
+            line-height: 1;
+            border-radius: 999px;
+            padding: 0.18rem 0.5rem;
+            cursor: grab;
+            pointer-events: auto;
+            user-select: none;
+            box-shadow: 0 5px 14px rgba(15, 23, 42, 0.22);
+            white-space: nowrap;
+        }
+
+        .inventory-map-calibration-marker.dragging {
+            cursor: grabbing;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
+        }
+
+        .inventory-map-calibration-marker.active {
+            outline: 3px solid rgba(14, 116, 144, 0.35);
+            outline-offset: 2px;
+        }
+
+        .inventory-map-calibration-panel {
+            border: 1px dashed rgba(15, 23, 42, 0.28);
+            border-radius: 0.65rem;
+            padding: 0.35rem 0.45rem;
+            background: rgba(254, 252, 232, 0.96);
+            margin-top: 0.45rem;
+            font-size: 0.72rem;
+            color: #713f12;
+            max-height: 90px;
+            overflow: auto;
+        }
+
+        .inventory-map-side {
+            min-height: 0;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 0.8rem;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .inventory-map-side-header {
+            border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+            padding: 0.65rem 0.75rem;
+            background: #f8fafc;
+        }
+
+        .inventory-map-side-body {
+            min-height: 0;
+            overflow-y: auto;
+            padding: 0.65rem 0.75rem;
+        }
+
+        .inventory-map-asset-card {
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 0.75rem;
+            padding: 0.52rem 0.62rem;
+            margin-bottom: 0.5rem;
+            background: #fff;
+        }
+
+        .inventory-map-unmapped {
+            border-top: 1px dashed rgba(148, 163, 184, 0.35);
+            margin-top: 0.65rem;
+            padding-top: 0.55rem;
+        }
+
+        .inventory-map-summary-card {
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 0.7rem;
+            padding: 0.5rem 0.6rem;
+            background: #f8fafc;
+            margin-bottom: 0.5rem;
+        }
+
+        .inventory-action-modal .modal-dialog {
+            max-width: min(96vw, 1080px);
+        }
+
+        .inventory-action-modal .modal-body {
+            max-height: min(72vh, 760px);
+            overflow-y: auto;
+        }
+
+        .inventory-map-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+
+        .inventory-map-legend-item {
+            border-radius: 999px;
+            padding: 0.12rem 0.5rem;
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.28rem;
+        }
+
+        .inventory-map-legend-dot {
+            width: 0.55rem;
+            height: 0.55rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.88);
+            display: inline-block;
+        }
+
+        .inventory-map-legend-item.parents { background: #2563eb; }
+        .inventory-map-legend-item.components { background: #7c3aed; }
+        .inventory-map-legend-item.accessories { background: #0891b2; }
+        .inventory-map-legend-item.stock { background: #f59e0b; color: #111827; }
+        .inventory-map-legend-item.licenses { background: #6b7280; }
+        .inventory-map-legend-item.maintenance { background: #ef4444; }
+        .inventory-map-legend-item.risk { background: #f97316; }
+        .inventory-map-legend-item.telemetry { background: #16a34a; }
+
+        @media (max-width: 1199.98px) {
+            .inventory-map-layout {
+                grid-template-columns: 1fr;
+            }
+            .inventory-map-canvas-wrap {
+                height: min(100%, clamp(400px, calc(100vh - 360px), 740px));
+                min-height: 320px;
+            }
+        }
+
+        @media (max-width: 767.98px) {
+            .inventory-map-canvas-wrap {
+                height: min(100%, clamp(340px, calc(100vh - 390px), 620px));
+                min-height: 280px;
+            }
         }
     </style>
     
@@ -442,6 +837,22 @@
 
                     <button class="btn btn-outline-secondary mb-3" id="openImportAssetsBtn">
                         <i class="bi bi-upload"></i> Import Assets
+                    </button>
+
+                    <button class="btn btn-outline-primary mb-3" id="openAssetMapBtn">
+                        <i class="bi bi-geo-alt-fill"></i> Asset Map
+                    </button>
+
+                    <button class="btn btn-outline-primary mb-3" id="openBulkCheckoutBtn">
+                        <i class="bi bi-upc-scan"></i> Bulk Checkout
+                    </button>
+
+                    <button class="btn btn-outline-secondary mb-3" id="openLoanerBoardBtn">
+                        <i class="bi bi-laptop"></i> Loaners
+                    </button>
+
+                    <button class="btn btn-outline-warning mb-3" id="openAuditBoardBtn">
+                        <i class="bi bi-clipboard-check"></i> Audit Board
                     </button>
 
                     <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
@@ -583,6 +994,48 @@
                         </div>
                     </div>
                     <div id="importAiMappingSummary" class="small text-muted mb-2">No AI mapping yet.</div>
+                    <div class="d-flex flex-wrap gap-2 mb-2">
+                        <button type="button" class="btn btn-outline-warning btn-sm" id="aiRepairImportBtn">
+                            <i class="bi bi-magic me-1"></i>AI Fix Import Errors
+                        </button>
+                        <button type="button" class="btn btn-outline-info btn-sm" id="aiMatchInvoiceBtn">
+                            <i class="bi bi-link-45deg me-1"></i>Match to Existing Assets
+                        </button>
+                    </div>
+                    <div id="importAiRepairSummary" class="small text-muted mb-2">No AI repair run yet.</div>
+                    <div id="importAiRepairPanel" class="border rounded-3 p-2 mb-3 d-none bg-light-subtle">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <div class="fw-semibold">AI Repair Suggestions</div>
+                            <div id="importAiRepairMeta" class="small text-muted">No suggestions loaded.</div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button type="button" class="btn btn-outline-success btn-sm" id="importAiRepairApplySafeBtn">Apply All Safe Fixes</button>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="importAiRepairApplySelectedBtn">Apply Selected Fixes</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="importAiRepairIgnoreAllBtn">Ignore All</button>
+                            <button type="button" class="btn btn-outline-dark btn-sm" id="importAiRepairRerunPreviewBtn">Re-run Preview</button>
+                        </div>
+                        <div id="importAiRepairApplySummary" class="small text-muted mb-2">No fixes applied yet.</div>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-1">
+                                <thead>
+                                    <tr>
+                                        <th style="width:42px;">Sel</th>
+                                        <th style="width:64px;">Row</th>
+                                        <th style="width:120px;">Field</th>
+                                        <th>Old Value</th>
+                                        <th>Suggested Value</th>
+                                        <th>Reason</th>
+                                        <th style="width:90px;">Confidence</th>
+                                        <th style="width:98px;">Status</th>
+                                        <th style="width:130px;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="importAiRepairTableBody">
+                                    <tr><td colspan="9" class="text-muted text-center py-3">Run AI Fix Import Errors to generate suggestions.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                     <hr>
                     <div class="mb-2">
                         <div class="fw-semibold">PDF / Invoice Assisted Import</div>
@@ -624,6 +1077,315 @@
         </div>
     </div>
 
+    <div class="modal fade inventory-map-modal" id="inventoryAssetMapModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-geo-alt-fill me-2"></i>MIU Inventory Asset Map</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body pt-2 pb-2">
+                    <div class="inventory-map-layout">
+                        <div class="inventory-map-main">
+                            <div class="inventory-map-controls">
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-2">
+                                        <label for="assetMapSearchInput" class="form-label form-label-sm mb-1">Search</label>
+                                        <input type="text" id="assetMapSearchInput" class="form-control form-control-sm" placeholder="Name / ID / Serial / Tag" />
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapViewFilter" class="form-label form-label-sm mb-1">Category</label>
+                                        <select id="assetMapViewFilter" class="form-select form-select-sm">
+                                            <option value="all">All</option>
+                                            <option value="parents">Parent Assets</option>
+                                            <option value="components">Components</option>
+                                            <option value="accessories">Accessories</option>
+                                            <option value="consumables">Consumables</option>
+                                            <option value="spare_stock">Spare Stock</option>
+                                            <option value="licenses">Licenses</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapTypeFilter" class="form-label form-label-sm mb-1">Type</label>
+                                        <input type="text" id="assetMapTypeFilter" class="form-control form-control-sm" placeholder="Type" />
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapLocationFilter" class="form-label form-label-sm mb-1">Location</label>
+                                        <input type="text" id="assetMapLocationFilter" class="form-control form-control-sm" placeholder="Building / Lab" />
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapDepartmentFilter" class="form-label form-label-sm mb-1">Department</label>
+                                        <input type="text" id="assetMapDepartmentFilter" class="form-control form-control-sm" placeholder="Department" />
+                                    </div>
+                                    <div class="col-md-2 d-flex gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary w-100" id="assetMapResetFiltersBtn">Reset</button>
+                                        <button type="button" class="btn btn-sm btn-outline-dark w-100" data-bs-toggle="collapse" data-bs-target="#assetMapAdvancedFilters" aria-expanded="false">
+                                            More
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="assetMapRefreshBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-warning" id="assetMapCalibrateToggleBtn">
+                                        <i class="bi bi-crosshair2"></i> Calibrate
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-dark" id="assetMapCopyCoordsBtn" disabled>
+                                        <i class="bi bi-clipboard"></i> Copy Coords
+                                    </button>
+                                    <span class="small text-muted">Calibration uses final horizontal display coordinates.</span>
+                                </div>
+                                <div class="collapse mt-1" id="assetMapAdvancedFilters">
+                                <div class="row g-2 align-items-center">
+                                    <div class="col-md-3">
+                                        <label for="assetMapLifecycleFilter" class="form-label form-label-sm mb-1">Lifecycle</label>
+                                        <select id="assetMapLifecycleFilter" class="form-select form-select-sm">
+                                            <option value="all">All</option>
+                                            <option value="in_use">In Use</option>
+                                            <option value="assigned">Assigned</option>
+                                            <option value="under_maintenance">Under Maintenance</option>
+                                            <option value="pending_repair">Pending Repair</option>
+                                            <option value="in_transit">In Transit</option>
+                                            <option value="reserved">Reserved</option>
+                                            <option value="retired">Retired</option>
+                                            <option value="disposed">Disposed</option>
+                                            <option value="eol_expired">EOL / Expired</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-7 d-flex flex-wrap gap-2 pt-4 pt-md-0">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapTelemetryOnly" />
+                                            <label class="form-check-label small" for="assetMapTelemetryOnly">Telemetry enabled</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapNearEolOnly" />
+                                            <label class="form-check-label small" for="assetMapNearEolOnly">Near EOL</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapHighRiskOnly" />
+                                            <label class="form-check-label small" for="assetMapHighRiskOnly">High risk</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapMaintenanceOnly" />
+                                            <label class="form-check-label small" for="assetMapMaintenanceOnly">Needs maintenance</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-2"></div>
+                                </div>
+                                </div>
+                                <div class="small text-muted mt-2" id="assetMapCountsSummary">Ready.</div>
+                                <div id="assetMapCalibrationPanel" class="inventory-map-calibration-panel d-none">
+                                    Calibration mode is ON. Drag yellow markers to align with buildings, then copy JSON.
+                                </div>
+                            </div>
+                            <div class="inventory-map-canvas-wrap">
+                                <div class="inventory-map-canvas" id="inventoryAssetMapCanvas">
+                                    <img id="inventoryAssetMapImage" src="/assets/images/miu-campus-map.png" alt="MIU Campus Map">
+                                    <div class="inventory-map-marker-layer" id="inventoryAssetMapMarkers"></div>
+                                    <div class="inventory-map-calibration-layer" id="inventoryAssetMapCalibrationMarkers"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <aside class="inventory-map-side">
+                            <div class="inventory-map-side-header">
+                                <div class="fw-semibold small mb-1">Location Assets</div>
+                                <div class="small text-muted" id="assetMapLocationTitle">Select a marker to view assets</div>
+                            </div>
+                            <div class="inventory-map-side-body">
+                                <div id="assetMapLocationAssets" class="small text-muted">No location selected.</div>
+                                <div class="inventory-map-unmapped">
+                                    <div class="fw-semibold small mb-1">Unmapped Locations</div>
+                                    <div id="assetMapUnmappedList" class="small text-muted">No unmapped assets.</div>
+                                </div>
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <div class="inventory-map-legend me-auto">
+                        <span class="inventory-map-legend-item parents"><span class="inventory-map-legend-dot"></span>Parent</span>
+                        <span class="inventory-map-legend-item components"><span class="inventory-map-legend-dot"></span>Component</span>
+                        <span class="inventory-map-legend-item accessories"><span class="inventory-map-legend-dot"></span>Accessory</span>
+                        <span class="inventory-map-legend-item stock"><span class="inventory-map-legend-dot"></span>Consumable/Stock</span>
+                        <span class="inventory-map-legend-item licenses"><span class="inventory-map-legend-dot"></span>License</span>
+                        <span class="inventory-map-legend-item maintenance"><span class="inventory-map-legend-dot"></span>Maintenance</span>
+                        <span class="inventory-map-legend-item risk"><span class="inventory-map-legend-dot"></span>High Risk / Near EOL</span>
+                        <span class="inventory-map-legend-item telemetry"><span class="inventory-map-legend-dot"></span>Telemetry Enabled</span>
+                    </div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="bulkCheckoutModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-upc-scan me-2"></i>Bulk Checkout / Kiosk Mode</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">Scan or paste one asset customId/tag per line. Nothing is transferred until you click Confirm Checkout.</div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-5">
+                            <label for="bulkCheckoutAssetCodes" class="form-label form-label-sm">Asset IDs / Tags</label>
+                            <textarea id="bulkCheckoutAssetCodes" class="form-control form-control-sm" rows="8" placeholder="UNI-PC-LAB-A-001&#10;UNI-PC-LAB-A-002"></textarea>
+                        </div>
+                        <div class="col-md-7">
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutDestinationType" class="form-label form-label-sm">Destination Type</label>
+                                    <select id="bulkCheckoutDestinationType" class="form-select form-select-sm">
+                                        <option value="building">Location/Building</option>
+                                        <option value="department">Department</option>
+                                        <option value="user">User/Professor</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutDestination" class="form-label form-label-sm">Destination</label>
+                                    <input id="bulkCheckoutDestination" class="form-control form-control-sm" placeholder="Computer Lab A">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutAssignedTo" class="form-label form-label-sm">Assigned To</label>
+                                    <input id="bulkCheckoutAssignedTo" class="form-control form-control-sm" placeholder="Lab Supervisor">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutDepartment" class="form-label form-label-sm">Department</label>
+                                    <input id="bulkCheckoutDepartment" class="form-control form-control-sm" placeholder="IT Department">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutExpectedReturnDate" class="form-label form-label-sm">Expected Return (Optional)</label>
+                                    <input id="bulkCheckoutExpectedReturnDate" type="date" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-6 d-flex flex-column justify-content-end">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="bulkCheckoutIncludeRelated" checked>
+                                        <label class="form-check-label small" for="bulkCheckoutIncludeRelated">Transfer related items with parent</label>
+                                    </div>
+                                    <div class="d-flex gap-2 mt-1">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="bulkCheckoutValidateBtn">Validate</button>
+                                        <button type="button" class="btn btn-sm btn-outline-success" id="bulkCheckoutConfirmBtn">Confirm Checkout</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="bulkCheckoutValidationSummary" class="small text-muted mt-2">Ready.</div>
+                            <div class="table-responsive mt-2">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Asset</th>
+                                            <th>Status</th>
+                                            <th>Message</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bulkCheckoutValidationTableBody">
+                                        <tr><td colspan="3" class="text-muted">No validation yet.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="bulkCheckoutReceipt" class="small"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="loanerBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-laptop me-2"></i>Loaner Checkout Board</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">Smart locker integrations are future work. This MVP tracks loaner checkout/return in software.</div>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="input-group input-group-sm" style="max-width: 360px;">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input id="loanerSearchInput" class="form-control" placeholder="Search by name/id/user">
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="loanerRefreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th>Loaner Status</th>
+                                    <th>Loaned To</th>
+                                    <th>Expected Return</th>
+                                    <th>Location</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="loanerTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="loanerSummaryText" class="small text-muted"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="auditBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-clipboard-check me-2"></i>Audit / Bounty Board</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">This MVP tracks verification, stale checks, missing assets, and location mismatches. Full gamification leaderboard is future work.</div>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="input-group input-group-sm" style="max-width: 220px;">
+                            <span class="input-group-text">Stale After</span>
+                            <input id="auditStaleDaysInput" type="number" min="1" max="3650" class="form-control" value="90">
+                            <span class="input-group-text">days</span>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="auditBoardRefreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                    </div>
+                    <div id="auditBoardSummary" class="small text-muted mb-2">Loading...</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th>Status</th>
+                                    <th>Location</th>
+                                    <th>Verified</th>
+                                    <th>Verifier</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="auditBoardTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="auditBoardVerifierPoints" class="small text-muted mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="inventoryAiModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
@@ -652,17 +1414,17 @@
         </div>
     </div>
 
-    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher" title="Inventory AI Assistant">
-        <i class="bi bi-robot fs-4"></i>
-        <span class="inventory-ai-chat-launcher-label">Inventory AI Assistant</span>
+    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher" title="Inventory AI">
+        <i class="bi bi-stars fs-4"></i>
+        <span class="inventory-ai-chat-launcher-label">Inventory AI</span>
     </button>
 
-    <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel d-none" aria-label="Inventory AI Assistant Chat">
+    <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel" aria-label="Inventory AI Chat">
         <div class="inventory-ai-chat-header">
             <div>
-                <div class="fw-bold small mb-0">Inventory AI Assistant</div>
-                <div class="inventory-ai-chat-subtitle">Ask about assets, stock, maintenance, EOL, duplicates.</div>
-                <div class="inventory-ai-chat-status">
+                <div class="fw-bold small mb-0"><i class="bi bi-stars me-1"></i>Inventory AI</div>
+                <div class="inventory-ai-chat-subtitle">Ask about assets, stock, EOL, and maintenance.</div>
+                <div class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
                     <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
                     <span id="inventoryAiChatStatusText">Gemma ready</span>
                 </div>
@@ -677,19 +1439,39 @@
             </div>
         </div>
         <div class="inventory-ai-quick-prompts" id="inventoryAiQuickPrompts">
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are missing serial numbers?">Missing Serials</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show low stock items">Low Stock</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets need maintenance?">Needs Maintenance</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Find duplicate assets">Duplicates</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which licenses expire soon?">License Expiry</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should we procure next?">Procurement</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are near EOL?">Near EOL</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which components were recently replaced?">Replaced Components</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="missing_data">Data Quality Check</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="search">AI Inventory Search</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="maintenance">Maintenance AI</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="procurement">Procurement AI</button>
-            <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="duplicates">Duplicate Check</button>
+            <div class="inventory-ai-prompt-cards w-100">
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="missing_data">Find missing data</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="risk_scores">Risk scores</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="replacement_priority">Replacement priorities</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="monthly_report">Monthly report</button>
+            </div>
+            <details class="inventory-ai-prompt-more w-100">
+                <summary><i class="bi bi-chevron-down me-1"></i>More prompts</summary>
+                <div class="inventory-ai-prompt-more-body">
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are missing serial numbers?">Missing serial numbers</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show low stock spare items.">Low stock items</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets need maintenance?">Assets needing maintenance</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Find possible duplicate assets.">Possible duplicates</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which licenses expire soon?">Licenses expiring soon</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should we procure next?">Procurement suggestions</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What changed today?">What changed today?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate executive inventory dashboard summary.">Executive dashboard summary</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are near EOL?">Assets near EOL</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which components were recently replaced?">Recently replaced components</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show digital twin for this asset.">Digital Twin (selected asset)</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show black box timeline for this asset.">Black Box Timeline (selected asset)</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="search">AI inventory search</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="procurement">Procurement AI</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="maintenance">Maintenance AI</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="duplicates">Duplicate check</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="data_corrections">Data corrections</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="spare_stock_forecast">Spare stock forecast</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="reallocation">Tech Exchange</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="relationship_suggestions">Suggest relationships</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="ticket_draft">Draft inventory ticket</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="plan_action">Plan inventory action</button>
+                </div>
+            </details>
         </div>
         <div class="inventory-ai-chat-body" id="inventoryAiChatMessages"></div>
         <div class="inventory-ai-chat-input">
@@ -699,7 +1481,7 @@
                     <i class="bi bi-send"></i>
                 </button>
             </div>
-            <div class="small text-muted mt-1">Press Enter to send, Shift+Enter for new line.</div>
+            <div class="small text-muted mt-1">Try: “Which PCs in Lab A need maintenance?” Press Enter to send.</div>
         </div>
     </section>
 
