@@ -704,6 +704,28 @@ const IMPORT_RECORD_TYPES: ImportRecordType[] = [
     'license',
 ];
 
+const IMPORT_RECORD_TYPE_ALIAS_MAP: Record<string, ImportRecordType> = {
+    parent_asset: 'parent_asset',
+    parent: 'parent_asset',
+    asset_parent: 'parent_asset',
+    component_asset: 'component_asset',
+    asset_component: 'component_asset',
+    embedded_component: 'embedded_component',
+    component: 'embedded_component',
+    child_component: 'embedded_component',
+    installed_component: 'embedded_component',
+    accessory: 'accessory',
+    asset_accessory: 'accessory',
+    linked_accessory: 'accessory',
+    assigned_accessory: 'accessory',
+    consumable: 'consumable',
+    spare_stock: 'spare_stock',
+    spare_part: 'spare_stock',
+    license: 'license',
+    software_license: 'license',
+    assigned_license: 'license',
+};
+
 const IMPORT_LIFECYCLE_ALLOWED = new Set([
     'in_stock',
     'assigned',
@@ -743,9 +765,37 @@ const IMPORT_COMPONENT_TYPE_ALLOWED = new Set(
         .map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
 );
 
+const IMPORT_COMPONENT_TYPE_ALIAS_MAP: Record<string, string> = {
+    ram: 'ram',
+    memory: 'ram',
+    ssd: 'ssd',
+    storage: 'ssd',
+    hdd: 'hdd',
+    battery: 'battery',
+    gpu: 'gpu',
+    cpu: 'cpu',
+    motherboard: 'motherboard',
+    power_supply: 'psu',
+    powersupply: 'psu',
+    network_card: 'network_card',
+};
+
 const IMPORT_ACCESSORY_TYPE_ALLOWED = new Set(
     ACCESSORY_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
 );
+
+const IMPORT_ACCESSORY_TYPE_ALIAS_MAP: Record<string, string> = {
+    keyboard: 'keyboard',
+    mouse: 'mouse',
+    hdmi_cable: 'hdmi_cable',
+    vga_cable: 'vga_cable',
+    charger: 'charger',
+    laptop_charger: 'charger',
+    bag: 'laptop_bag',
+    docking_station: 'docking_station',
+    webcam: 'webcam',
+    headset: 'headset',
+};
 
 const IMPORT_CONSUMABLE_TYPE_ALLOWED = new Set(
     CONSUMABLE_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
@@ -755,9 +805,29 @@ const IMPORT_SPARE_STOCK_TYPE_ALLOWED = new Set(
     SPARE_STOCK_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
 );
 
+const IMPORT_SPARE_STOCK_TYPE_ALIAS_MAP: Record<string, string> = {
+    storage: 'spare_ssd',
+    charger: 'spare_charger',
+    battery: 'spare_laptop_battery',
+    cable: 'spare_power_adapter',
+    adapter: 'spare_power_adapter',
+    toner: 'spare_printer_toner',
+    lamp: 'spare_projector_lamp',
+};
+
 const IMPORT_LICENSE_TYPE_ALLOWED = new Set(
     LICENSE_TYPES.map((entry: string) => String(entry || '').trim().toLowerCase().replace(/[\s-]+/g, '_'))
 );
+
+const IMPORT_LICENSE_TYPE_ALIAS_MAP: Record<string, string> = {
+    software: 'software_license',
+    software_license: 'software_license',
+    windows_license: 'windows_license',
+    microsoft_office_license: 'microsoft_office_license',
+    adobe_license: 'adobe_license',
+    antivirus_license: 'antivirus_license',
+    os_license: 'server_os_license',
+};
 
 const IMPORT_HEADER_MAP: Record<string, keyof Omit<NormalizedImportRow, 'rowNumber' | 'proposedAction' | 'errors' | 'warnings' | 'statusLabel' | 'canImport'>> = {
     recordtype: 'recordType',
@@ -837,9 +907,28 @@ function parseCsvContent(content: string): string[][] {
 
 function normalizeImportRecordType(value: unknown): ImportRecordType | '' {
     const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-    return IMPORT_RECORD_TYPES.includes(normalized as ImportRecordType)
-        ? (normalized as ImportRecordType)
+    const canonical = IMPORT_RECORD_TYPE_ALIAS_MAP[normalized] || normalized;
+    return IMPORT_RECORD_TYPES.includes(canonical as ImportRecordType)
+        ? (canonical as ImportRecordType)
         : '';
+}
+
+function normalizeImportLifecycleValue(value: unknown): string {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (!normalized) return '';
+    if (normalized === 'installed') return 'in_use';
+    if (normalized === 'checked_out') return 'assigned';
+    return normalized;
+}
+
+function normalizeImportRegistryToken(value: unknown): string {
+    return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function resolveImportAliasToken(value: unknown, aliasMap: Record<string, string>): string {
+    const normalized = normalizeImportRegistryToken(value);
+    if (!normalized) return '';
+    return aliasMap[normalized] || normalized;
 }
 
 function normalizeImportRows(rawRows: Array<Record<string, any>>): NormalizedImportRow[] {
@@ -863,7 +952,7 @@ function normalizeImportRows(rawRows: Array<Record<string, any>>): NormalizedImp
             location: String(raw.location || '').trim(),
             department: String(raw.department || '').trim(),
             status: String(raw.status || '').trim(),
-            lifecycleStatus: String(raw.lifecycleStatus || '').trim(),
+            lifecycleStatus: normalizeImportLifecycleValue(raw.lifecycleStatus),
             parentAssetTag: String(raw.parentAssetTag || '').trim(),
             componentType: String(raw.componentType || '').trim(),
             condition: String(raw.condition || '').trim(),
@@ -988,49 +1077,57 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
             row.errors.push(`Asset tag already exists in DB (${row.assetTag})`);
         }
         if (row.lifecycleStatus) {
-            const lifecycle = String(row.lifecycleStatus).trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const lifecycle = normalizeImportLifecycleValue(row.lifecycleStatus);
+            row.lifecycleStatus = lifecycle;
             if (!IMPORT_LIFECYCLE_ALLOWED.has(lifecycle)) {
                 row.errors.push(`Invalid lifecycle status (${row.lifecycleStatus})`);
             }
         }
         if (row.category) {
-            const category = String(row.category).trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const category = normalizeImportRegistryToken(row.category);
             if (!IMPORT_CATEGORY_ALLOWED.has(category)) {
                 row.errors.push(`Invalid category (${row.category})`);
             }
         }
-        if (row.assetType) {
-            const normalizedAssetType = String(row.assetType).trim().toLowerCase().replace(/[\s-]+/g, '_');
+        if (row.assetType && row.recordType === 'parent_asset') {
+            const normalizedAssetType = normalizeImportRegistryToken(row.assetType);
             if (!IMPORT_PARENT_ASSET_TYPE_ALLOWED.has(normalizedAssetType)) {
                 row.warnings.push(`Unrecognized asset type in registry (${row.assetType}). It will map to nearest supported backend type.`);
             }
         }
         if (row.recordType === 'component_asset' || row.recordType === 'embedded_component') {
-            const normalizedComponentType = String(row.componentType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            if (!row.componentType && row.assetType) {
+                row.componentType = String(row.assetType || '').trim();
+            }
+            const normalizedComponentType = resolveImportAliasToken(row.componentType, IMPORT_COMPONENT_TYPE_ALIAS_MAP);
+            if (normalizedComponentType) {
+                row.componentType = normalizedComponentType;
+            }
             if (normalizedComponentType && !IMPORT_COMPONENT_TYPE_ALLOWED.has(normalizedComponentType)) {
                 row.warnings.push(`Component type (${row.componentType}) is not in current registry; keeping as custom component type.`);
             }
         }
         if (row.recordType === 'accessory') {
-            const normalizedAccessoryType = String(row.assetType || row.category || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const normalizedAccessoryType = resolveImportAliasToken(row.assetType || row.category || row.assetName, IMPORT_ACCESSORY_TYPE_ALIAS_MAP);
             if (normalizedAccessoryType && !IMPORT_ACCESSORY_TYPE_ALLOWED.has(normalizedAccessoryType)) {
                 row.warnings.push(`Accessory type (${row.assetType || row.category}) is outside the standard accessory registry.`);
             }
         }
         if (row.recordType === 'consumable') {
-            const normalizedConsumableType = String(row.assetType || row.category || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const normalizedConsumableType = normalizeImportRegistryToken(row.assetType || row.category || '');
             if (normalizedConsumableType && !IMPORT_CONSUMABLE_TYPE_ALLOWED.has(normalizedConsumableType)) {
                 row.warnings.push(`Consumable type (${row.assetType || row.category}) is outside the standard consumable registry.`);
             }
         }
         if (row.recordType === 'spare_stock') {
-            const normalizedSpareType = String(row.componentType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const normalizedSpareType = resolveImportAliasToken(row.componentType || row.assetType || row.assetName, IMPORT_SPARE_STOCK_TYPE_ALIAS_MAP);
+            if (normalizedSpareType) row.componentType = normalizedSpareType;
             if (normalizedSpareType && !IMPORT_SPARE_STOCK_TYPE_ALLOWED.has(normalizedSpareType)) {
                 row.warnings.push(`Spare stock type (${row.componentType}) is outside the standard spare-stock registry.`);
             }
         }
         if (row.recordType === 'license') {
-            const normalizedLicenseType = String(row.assetType || row.assetName || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+            const normalizedLicenseType = resolveImportAliasToken(row.assetType || row.assetName || '', IMPORT_LICENSE_TYPE_ALIAS_MAP);
             if (normalizedLicenseType && !IMPORT_LICENSE_TYPE_ALLOWED.has(normalizedLicenseType)) {
                 row.warnings.push(`License type (${row.assetType || row.assetName}) is outside the standard license registry.`);
             }
@@ -1040,7 +1137,7 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
             row.errors.push('Asset Name is required');
         }
         if (row.recordType === 'embedded_component' && !row.assetName) row.errors.push('Asset Name is required for embedded component');
-        if (row.recordType === 'embedded_component' && !row.parentAssetTag) row.errors.push('Parent Asset Tag is required for embedded component');
+        if (row.recordType === 'embedded_component' && !row.parentAssetTag) row.errors.push('Parent Asset Tag is required for component rows');
         if (row.recordType === 'embedded_component' && !row.componentType) row.errors.push('Component Type is required for embedded component');
         if (row.recordType === 'component_asset' && !row.componentType) row.warnings.push('Component Type is empty; defaulting to component');
 
@@ -1056,10 +1153,21 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
             row.errors.push('Quantity must be a positive integer');
         }
 
-        if ((row.recordType === 'embedded_component' || (row.recordType === 'component_asset' && row.parentAssetTag)) && row.parentAssetTag) {
-            const key = row.parentAssetTag.toLowerCase();
-            if (!existingParentTags.has(key) && !parentTagsDefinedInFile.has(key)) {
-                row.errors.push(`Unknown Parent Asset Tag (${row.parentAssetTag})`);
+        const parentTagKey = String(row.parentAssetTag || '').trim().toLowerCase();
+        const requiresParentResolution = (
+            row.recordType === 'embedded_component'
+            || (row.recordType === 'component_asset' && Boolean(row.parentAssetTag))
+            || ((row.recordType === 'accessory' || row.recordType === 'license') && Boolean(row.parentAssetTag))
+        );
+        if (requiresParentResolution) {
+            if (!parentTagKey) {
+                row.errors.push('Parent Asset Tag is required for related item rows.');
+            } else if (!existingParentTags.has(parentTagKey) && !parentTagsDefinedInFile.has(parentTagKey)) {
+                if (row.recordType === 'accessory' || row.recordType === 'license') {
+                    row.errors.push('Parent asset not found for related item row.');
+                } else {
+                    row.errors.push(`Unknown Parent Asset Tag (${row.parentAssetTag})`);
+                }
             }
         }
 
@@ -1068,18 +1176,22 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
                 row.proposedAction = 'create_parent_asset';
                 break;
             case 'embedded_component':
-                row.proposedAction = 'create_embedded_component';
+                row.proposedAction = 'install_component_to_parent';
                 break;
             case 'component_asset':
-                row.proposedAction = row.parentAssetTag ? 'create_component_asset_and_link' : 'create_component_asset';
+                row.proposedAction = row.parentAssetTag ? 'create_and_link_component' : 'create_component';
                 break;
             case 'spare_stock':
                 row.proposedAction = 'create_or_update_spare_stock';
                 break;
             case 'accessory':
-            case 'consumable':
+                row.proposedAction = row.parentAssetTag ? 'create_and_link_accessory' : 'create_accessory';
+                break;
             case 'license':
-                row.proposedAction = 'create_asset';
+                row.proposedAction = row.parentAssetTag ? 'create_and_link_license' : 'create_license';
+                break;
+            case 'consumable':
+                row.proposedAction = 'create_consumable';
                 break;
             default:
                 row.proposedAction = 'skip';
@@ -3735,7 +3847,7 @@ function buildImportErrorRepairs(params: {
         const messages = [...rowErrors, ...rowWarnings].map((entry) => String(entry || ''));
 
         messages.forEach((message) => {
-            if (/unknown parent asset tag/i.test(message) && row.parentAssetTag) {
+            if ((/unknown parent asset tag/i.test(message) || /parent asset not found for related item row/i.test(message)) && row.parentAssetTag) {
                 let best: { tag: string; score: number } | null = null;
                 for (const candidate of parentCandidates) {
                     const score = scoreTokenOverlap(row.parentAssetTag, candidate);
@@ -6597,6 +6709,11 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             const createdAssets: string[] = [];
             const createdComponents: string[] = [];
             const createdSpareStockItems: string[] = [];
+            const createdAccessoryLinks: string[] = [];
+            const createdLicenseLinks: string[] = [];
+            let createdParentAssets = 0;
+            let createdAccessoryAssets = 0;
+            let createdLicenseAssets = 0;
             const parentTagToCustomId = new Map<string, string>();
             const parentRows = revalidated.normalizedRows.filter((row) => row.recordType === 'parent_asset');
 
@@ -6669,6 +6786,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                         }
                     });
                     createdAssets.push(created.customId);
+                    createdParentAssets += 1;
                     await tx.assetHistory.create({
                         data: {
                             assetId: created.customId,
@@ -6696,10 +6814,29 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 }
             }
 
-            for (const row of revalidated.normalizedRows) {
-                if (row.recordType === 'parent_asset') continue;
+            const importOrderWeight: Record<ImportRecordType, number> = {
+                parent_asset: 0,
+                embedded_component: 1,
+                component_asset: 1,
+                accessory: 2,
+                license: 3,
+                consumable: 4,
+                spare_stock: 5,
+            };
+
+            const nonParentRows = revalidated.normalizedRows
+                .filter((row) => row.recordType && row.recordType !== 'parent_asset')
+                .sort((a, b) => {
+                    const aWeight = importOrderWeight[(a.recordType as ImportRecordType)] ?? 99;
+                    const bWeight = importOrderWeight[(b.recordType as ImportRecordType)] ?? 99;
+                    if (aWeight !== bWeight) return aWeight - bWeight;
+                    return a.rowNumber - b.rowNumber;
+                });
+
+            for (const row of nonParentRows) {
                 try {
                     if (row.recordType === 'embedded_component') {
+                        const componentTypeValue = row.componentType || resolveImportAliasToken(row.assetType, IMPORT_COMPONENT_TYPE_ALIAS_MAP) || 'component';
                         const parentId = parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase());
                         if (!parentId) {
                             skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
@@ -6728,12 +6865,12 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             });
                         }
                         if (!childAsset) {
-                            const generatedCustomId = componentTag || await generateComponentAssetCustomId(parentId, row.componentType || 'component');
+                            const generatedCustomId = componentTag || await generateComponentAssetCustomId(parentId, componentTypeValue);
                             childAsset = await tx.asset.create({
                                 data: {
                                     customId: generatedCustomId,
                                     name: row.assetName,
-                                    type: mapToAssetType(row.assetType || row.componentType || 'electronics'),
+                                    type: mapToAssetType(row.assetType || componentTypeValue || 'electronics'),
                                     status: 'ACTIVE',
                                     lifecycleStatus: 'IN_USE',
                                     category: 'COMPONENT',
@@ -6757,7 +6894,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetName: parentAssetRef.name,
                                         installedInAssetTag: parentAssetRef.assetTag || null,
                                         mapLocationHint: normalizeSerialValue((parentAssetRef.specifications as Record<string, any>)?.mapLocationHint) || undefined,
-                                        componentType: row.componentType || 'component',
+                                        componentType: componentTypeValue,
                                     }),
                                 }
                             });
@@ -6781,7 +6918,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetName: parentAssetRef.name,
                                         installedInAssetTag: parentAssetRef.assetTag || null,
                                         mapLocationHint: normalizeSerialValue((parentAssetRef.specifications as Record<string, any>)?.mapLocationHint) || undefined,
-                                        componentType: row.componentType || 'component',
+                                        componentType: componentTypeValue,
                                     }),
                                 }
                             });
@@ -6792,7 +6929,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 parentAssetId: parentId,
                                 childAssetId: childAsset.customId,
                                 componentName: row.assetName,
-                                componentType: row.componentType || 'component',
+                                componentType: componentTypeValue,
                                 brand: normalizeSerialValue(row.brand),
                                 model: normalizeSerialValue(row.model),
                                 serialNumber: componentSerial,
@@ -6832,22 +6969,32 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                     }
 
                     if (row.recordType === 'component_asset') {
+                        const componentTypeValue = row.componentType || resolveImportAliasToken(row.assetType, IMPORT_COMPONENT_TYPE_ALIAS_MAP) || 'component';
                         const parentId = row.parentAssetTag
                             ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
                             : null;
+                        if (row.parentAssetTag && !parentId) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
+                            continue;
+                        }
                         const parentAssetRef = parentId
                             ? await tx.asset.findUnique({
                                 where: { customId: parentId },
-                                select: { customId: true, name: true, assetTag: true },
+                                select: { customId: true, name: true, assetTag: true, location: true, department: true, specifications: true },
                             })
                             : null;
+                        if (row.parentAssetTag && !parentAssetRef) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent asset ${row.parentAssetTag} was not found.` });
+                            continue;
+                        }
+                        const fallbackLocation = parentAssetRef?.location || 'Central Warehouse';
+                        const locationResolution = resolveAssetLocationForStorage(row.location || fallbackLocation);
                         const customId = normalizeSerialValue(row.assetTag) || `IMPORTED-COMP-${Date.now()}-${row.rowNumber}`;
-                        const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
                         const child = await tx.asset.create({
                             data: {
                                 customId,
                                 name: row.assetName,
-                                type: mapToAssetType(row.assetType || row.componentType || 'electronics'),
+                                type: mapToAssetType(row.assetType || componentTypeValue || 'electronics'),
                                 status: mapToAssetStatus(row.status || 'active'),
                                 lifecycleStatus: parentId ? 'IN_USE' : mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
                                 category: 'COMPONENT',
@@ -6857,7 +7004,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 assetTag: normalizeSerialValue(row.assetTag),
                                 manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
                                 location: locationResolution.location,
-                                department: mapToAssetDepartment(row.department || 'Unassigned'),
+                                department: parentAssetRef?.department || mapToAssetDepartment(row.department || 'Unassigned'),
                                 assignedToName: normalizeSerialValue(row.assignedTo),
                                 custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
                                 purchaseDate: parseOptionalDateInput(row.purchaseDate),
@@ -6872,8 +7019,10 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         installedInAssetId: parentId,
                                         installedInAssetTag: normalizeSerialValue(row.parentAssetTag),
                                         installedInAssetName: parentAssetRef?.name || undefined,
+                                        mapLocationHint: normalizeSerialValue((parentAssetRef?.specifications as Record<string, any>)?.mapLocationHint) || locationResolution.mapLocationHint || undefined,
                                     } : {}),
-                                    mapLocationHint: locationResolution.mapLocationHint || undefined,
+                                    ...(parentId ? {} : { mapLocationHint: locationResolution.mapLocationHint || undefined }),
+                                    componentType: componentTypeValue,
                                 }),
                             }
                         });
@@ -6905,7 +7054,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     parentAssetId: parentId,
                                     childAssetId: child.customId,
                                     componentName: row.assetName,
-                                    componentType: row.componentType || 'component',
+                                    componentType: componentTypeValue,
                                     brand: normalizeSerialValue(row.brand),
                                     model: normalizeSerialValue(row.model),
                                     serialNumber: normalizeSerialValue(row.serialNumber),
@@ -6987,21 +7136,70 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                     }
 
                     if (row.recordType === 'accessory' || row.recordType === 'consumable' || row.recordType === 'license') {
+                        const shouldLinkToParent = Boolean(row.parentAssetTag) && (row.recordType === 'accessory' || row.recordType === 'license');
+                        const parentId = shouldLinkToParent
+                            ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
+                            : null;
+                        if (shouldLinkToParent && !parentId) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: 'Parent asset not found for related item row.' });
+                            continue;
+                        }
+                        const parentAssetRef = parentId
+                            ? await tx.asset.findUnique({
+                                where: { customId: parentId },
+                                select: {
+                                    customId: true,
+                                    name: true,
+                                    assetTag: true,
+                                    location: true,
+                                    department: true,
+                                    specifications: true,
+                                },
+                            })
+                            : null;
+                        if (shouldLinkToParent && !parentAssetRef) {
+                            skippedRows.push({ rowNumber: row.rowNumber, reason: 'Parent asset not found for related item row.' });
+                            continue;
+                        }
                         const qty = Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
                             ? Math.trunc(Number(row.quantity))
                             : 1;
                         const baseId = normalizeSerialValue(row.assetTag) || `IMPORTED-${Date.now()}-${row.rowNumber}`;
                         const unitIds = buildUnitAssetIds(baseId, qty);
-                        const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
+                        const fallbackLocation = parentAssetRef?.location || 'Central Warehouse';
+                        const locationResolution = resolveAssetLocationForStorage(row.location || fallbackLocation);
                         for (let unitIdx = 0; unitIdx < unitIds.length; unitIdx += 1) {
                             const unitId = unitIds[unitIdx];
+                            const parentMapLocationHint = normalizeSerialValue((parentAssetRef?.specifications as Record<string, any>)?.mapLocationHint);
+                            const relationshipSpecs = shouldLinkToParent
+                                ? (row.recordType === 'license'
+                                    ? {
+                                        assignedToAssetId: parentAssetRef?.customId || null,
+                                        assignedToAssetTag: parentAssetRef?.assetTag || null,
+                                        assignedToAssetName: parentAssetRef?.name || null,
+                                        licensedToAssetId: parentAssetRef?.customId || null,
+                                        licensedToAssetTag: parentAssetRef?.assetTag || null,
+                                        licensedToAssetName: parentAssetRef?.name || null,
+                                    }
+                                    : {
+                                        assignedToAssetId: parentAssetRef?.customId || null,
+                                        assignedToAssetTag: parentAssetRef?.assetTag || null,
+                                        assignedToAssetName: parentAssetRef?.name || null,
+                                        usedWithAssetId: parentAssetRef?.customId || null,
+                                        usedWithAssetTag: parentAssetRef?.assetTag || null,
+                                        usedWithAssetName: parentAssetRef?.name || null,
+                                    })
+                                : {};
                             const created = await tx.asset.create({
                                 data: {
                                     customId: unitId,
                                     name: row.assetName,
                                     type: mapToAssetType(row.assetType || 'electronics'),
                                     status: mapToAssetStatus(row.status || 'active'),
-                                    lifecycleStatus: mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
+                                    lifecycleStatus: mapToLifecycleStatus(
+                                        row.lifecycleStatus
+                                        || (shouldLinkToParent ? 'assigned' : 'in_stock')
+                                    ),
                                     category: mapToAssetCategory(row.recordType),
                                     value: row.purchaseCost || 0,
                                     quantity: 1,
@@ -7009,7 +7207,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     assetTag: unitIdx === 0 ? normalizeSerialValue(row.assetTag) : null,
                                     manufacturerPartNumber: normalizeSerialValue(row.manufacturerPartNumber),
                                     location: locationResolution.location,
-                                    department: mapToAssetDepartment(row.department || 'Unassigned'),
+                                    department: parentAssetRef?.department || mapToAssetDepartment(row.department || 'Unassigned'),
                                     assignedToName: normalizeSerialValue(row.assignedTo),
                                     custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' : 'UNASSIGNED',
                                     purchaseDate: parseOptionalDateInput(row.purchaseDate),
@@ -7021,16 +7219,19 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                         type: row.assetType || 'electronics',
                                         category: mapToAssetCategory(row.recordType),
                                         name: row.assetName,
-                                        location: row.location || 'Central Warehouse',
+                                        location: row.location || fallbackLocation,
                                         existingSpecs: buildImportSpecifications({
                                             brand: row.brand || undefined,
                                             version: row.model || undefined,
-                                            mapLocationHint: locationResolution.mapLocationHint || undefined,
+                                            mapLocationHint: parentMapLocationHint || locationResolution.mapLocationHint || undefined,
+                                            ...relationshipSpecs,
                                         }),
                                     }),
                                 }
                             });
                             createdAssets.push(created.customId);
+                            if (row.recordType === 'accessory') createdAccessoryAssets += 1;
+                            if (row.recordType === 'license') createdLicenseAssets += 1;
                             await tx.assetHistory.create({
                                 data: {
                                     assetId: created.customId,
@@ -7051,6 +7252,53 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                     actor: 'inventory-import',
                                 }
                             });
+
+                            if (shouldLinkToParent && parentAssetRef) {
+                                const relationshipType = row.recordType === 'license' ? 'licensed_to' : 'assigned_to';
+                                const relationship = await tx.assetRelationship.create({
+                                    data: {
+                                        assetId: parentAssetRef.customId,
+                                        relatedAssetId: created.customId,
+                                        relationshipType,
+                                        notes: `Imported from file: ${sourceName}`,
+                                    }
+                                });
+                                if (row.recordType === 'license') {
+                                    createdLicenseLinks.push(relationship.id);
+                                } else {
+                                    createdAccessoryLinks.push(relationship.id);
+                                }
+
+                                const parentEventType = row.recordType === 'license'
+                                    ? 'license_imported_assigned'
+                                    : 'accessory_imported_assigned';
+                                const parentEventLabel = row.recordType === 'license'
+                                    ? 'License Imported'
+                                    : 'Accessory Imported';
+                                await tx.assetHistory.create({
+                                    data: {
+                                        assetId: parentAssetRef.customId,
+                                        event: parentEventLabel,
+                                        details: `${parentEventLabel} and linked: ${created.name} (${created.customId}) from file: ${sourceName}`,
+                                    }
+                                });
+                                await tx.assetLifecycleEvent.create({
+                                    data: {
+                                        assetId: parentAssetRef.customId,
+                                        eventType: parentEventType,
+                                        newValue: {
+                                            importBatchId,
+                                            filename: sourceName,
+                                            rowNumber: row.rowNumber,
+                                            relationshipType,
+                                            childAssetId: created.customId,
+                                            childAssetName: created.name,
+                                        },
+                                        reason: 'bulk_import',
+                                        actor: 'inventory-import',
+                                    }
+                                });
+                            }
                         }
                         continue;
                     }
@@ -7065,6 +7313,11 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 createdAssets,
                 createdComponents,
                 createdSpareStockItems,
+                createdAccessoryLinks,
+                createdLicenseLinks,
+                createdParentAssets,
+                createdAccessoryAssets,
+                createdLicenseAssets,
             };
         });
 
@@ -7075,6 +7328,11 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             createdAssets: result.createdAssets.length,
             createdComponents: result.createdComponents.length,
             createdSpareStockItems: result.createdSpareStockItems.length,
+            createdAccessoryLinks: result.createdAccessoryLinks.length,
+            createdLicenseLinks: result.createdLicenseLinks.length,
+            createdParentAssets: result.createdParentAssets,
+            createdAccessoryAssets: result.createdAccessoryAssets,
+            createdLicenseAssets: result.createdLicenseAssets,
             skippedRows,
             errors,
             warnings,

@@ -7933,13 +7933,14 @@ function renderImportPreviewRows(rows = []) {
   tableBody.innerHTML = rows.map((row) => {
     const message = [...(row.errors || []), ...(row.warnings || [])].join(' | ') || 'OK';
     const status = row.statusLabel || 'valid';
+    const displayRecordType = row.recordType === 'embedded_component' ? 'component' : (row.recordType || '-');
     const statusBadge = status === 'error'
       ? '<span class="badge bg-danger">Error</span>'
       : (status === 'warning' ? '<span class="badge bg-warning text-dark">Warning</span>' : '<span class="badge bg-success">Valid</span>');
     return `
       <tr>
         <td>${UI.escapeHTML(String(row.rowNumber || '-'))}</td>
-        <td>${UI.escapeHTML(row.recordType || '-')}</td>
+        <td>${UI.escapeHTML(displayRecordType)}</td>
         <td>${UI.escapeHTML(row.assetName || '-')}</td>
         <td>${UI.escapeHTML(row.serialNumber || '-')}</td>
         <td>${UI.escapeHTML(row.assetTag || '-')}</td>
@@ -8642,11 +8643,16 @@ window.commitImportAssets = async () => {
       filename,
       normalizedRows: importPreviewCache.normalizedRows,
     });
+    const parentAssets = Number(result.createdParentAssets || 0);
+    const accessoryAssets = Number(result.createdAccessoryAssets || 0);
+    const licenseAssets = Number(result.createdLicenseAssets || 0);
+    const accessoryLinks = Number(result.createdAccessoryLinks || 0);
+    const licenseLinks = Number(result.createdLicenseLinks || 0);
     if (summary) {
-      summary.textContent = `Import complete. Assets: ${result.createdAssets || 0}, Components: ${result.createdComponents || 0}, Spare Stock: ${result.createdSpareStockItems || 0}, Skipped: ${(result.skippedRows || []).length}.`;
+      summary.textContent = `Import complete. Parent assets: ${parentAssets}, Components linked: ${result.createdComponents || 0}, Accessories: ${accessoryAssets} (links: ${accessoryLinks}), Licenses: ${licenseAssets} (links: ${licenseLinks}), Spare Stock: ${result.createdSpareStockItems || 0}, Skipped: ${(result.skippedRows || []).length}.`;
       summary.className = `small mt-2 ${result.success ? 'text-success' : 'text-danger'}`;
     }
-    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Parent/Assets: ${result.createdAssets || 0}, Components: ${result.createdComponents || 0}, Spare Stock: ${result.createdSpareStockItems || 0}.`;
+    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Parent assets: ${parentAssets}, Components linked: ${result.createdComponents || 0}, Accessories: ${accessoryAssets} (links: ${accessoryLinks}), Licenses: ${licenseAssets} (links: ${licenseLinks}), Spare Stock: ${result.createdSpareStockItems || 0}.`;
     showMessage(summaryMessage, result.success ? 'success' : 'warning');
     if (result.success) {
       const modalEl = document.getElementById('importAssetsModal');
