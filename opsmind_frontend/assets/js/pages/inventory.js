@@ -14,6 +14,23 @@ let ACCESSORY_TYPES = [];
 let CONSUMABLE_TYPES = [];
 let SPARE_STOCK_TYPES = [];
 let LICENSE_TYPES = [];
+const STANDARD_MIU_DEPARTMENTS = [
+  'Computer Science',
+  'Business',
+  'Mass Communication',
+  'Pharmacy',
+  'Dentistry',
+  'Engineering',
+  'Architecture',
+  'ALSUN',
+  'Unassigned',
+];
+const DEPARTMENT_BACKEND_LABEL_OVERRIDES = {
+  'Mass Communication': 'Mass Comm',
+  ALSUN: 'Alsun',
+};
+const INVENTORY_FILTER_SNAPSHOT_TTL_MS = 45 * 1000;
+const INVENTORY_AI_LONG_WAIT_MS = 5000;
 
 let selectedAssetCustomId = null;
 let currentAssets = [];
@@ -53,6 +70,17 @@ const INVENTORY_VIEW_BUTTON_IDS = {
   spare_stock: 'inventorySpareStockViewBtn',
   licenses: 'inventoryLicensesViewBtn',
 };
+const INVENTORY_SAVED_VIEWS = [
+  { value: 'all', label: 'All Assets', description: 'No saved-view filter.' },
+  { value: 'low_stock', label: 'Low Stock', description: 'Spare stock or consumables at/below reorder level.' },
+  { value: 'needs_review', label: 'Needs Review', description: 'Missing data, lifecycle, risk, or relationship issues.' },
+  { value: 'high_risk', label: 'High Risk', description: 'EOL, maintenance, retired, lost, or failed signals.' },
+  { value: 'missing_data', label: 'Missing Data', description: 'Missing serial, location, department, purchase, or warranty evidence.' },
+  { value: 'recently_imported', label: 'Recently Imported', description: 'Created or updated in the last 14 days.' },
+  { value: 'eol_soon', label: 'EOL Soon', description: 'Lifecycle or warranty evidence suggests replacement planning.' },
+  { value: 'unassigned', label: 'Unassigned', description: 'Department, owner, or assignment is missing/unassigned.' },
+  { value: 'linked_component_issues', label: 'Linked Components Issues', description: 'Components/accessories/licenses without a clear parent relationship.' },
+];
 const CMDB_MODAL_ID = 'inventoryCmdbModal';
 const GROUP_CMDB_MODAL_ID = 'inventoryGroupCmdbModal';
 let cmdbState = {
@@ -84,6 +112,7 @@ let transferSelectionState = {
   isBulk: false,
 };
 let searchDebounceTimer = null;
+let inventorySavedView = localStorage.getItem('opsmind_inventory_saved_view') || 'all';
 let historyViewState = {
   assetId: null,
   includeRelated: true,
@@ -95,12 +124,33 @@ let inventoryAiChatState = {
   open: false,
   messages: [],
   loading: false,
+  loadingSince: null,
   status: 'gemma',
+  promptsCollapsed: null,
 };
+const cmdbAiInFlightActions = new Set();
 let importAiHeaderMappings = null;
+let lastImportCommitMeta = null;
 let loanerBoardRows = [];
 let auditBoardRows = [];
+let procurementBoardState = {
+  board: null,
+  loading: false,
+};
+let inventory360AnalyticsState = {
+  board: null,
+  loading: false,
+  inFlightPromise: null,
+  loadedAt: 0,
+};
 let bulkCheckoutValidationRows = [];
+let inventoryFilterSnapshotState = {
+  loading: false,
+  inFlightPromise: null,
+  allAssets: [],
+  spareStockRows: [],
+  loadedAt: 0,
+};
 const INVENTORY_MAP_IMAGE_PATH = '/assets/images/miu-campus-map.png';
 const INVENTORY_MAP_DEFAULT_PAGE_SIZE = 500;
 const INVENTORY_MAP_LANDSCAPE_MODE = 'clockwise';
@@ -377,8 +427,8 @@ const DEPARTMENT_ALIASES = {
   ENGINEERING: 'Engineering',
   ARCHITECTURE: 'Architecture',
   BUSINESS: 'Business',
-  MASS_COMM: 'Mass Comm',
-  ALSUN: 'Alsun',
+  MASS_COMM: 'Mass Communication',
+  ALSUN: 'ALSUN',
   PHARMACY: 'Pharmacy',
   DENTISTRY: 'Dentistry',
   UNASSIGNED: 'Unassigned',
@@ -399,6 +449,36 @@ function canonicalType(type) {
 function displayLocation(location) {
   const raw = String(location || '');
   return LOCATION_ALIASES[raw.toUpperCase()] || raw || 'Unknown';
+}
+
+function getAssetDisplayLocation(asset, options = {}) {
+  const source = asset && typeof asset === 'object' ? asset : {};
+  const specs = getAssetSpecs(source);
+  const preferInstalledParent = options.preferInstalledParent === true;
+  const candidates = [];
+  if (preferInstalledParent && source?.installedParentLocation) candidates.push(source.installedParentLocation);
+  candidates.push(
+    specs?.mapLocationHint,
+    specs?.mapLocation,
+    specs?.importedLocation,
+    source?.location
+  );
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim();
+    if (!raw) continue;
+    const label = displayLocation(raw);
+    if (label && normalizeValue(label) !== 'unknown') return label;
+  }
+  return 'Unknown';
+}
+
+function getAssetDisplayDepartment(asset, options = {}) {
+  const source = asset && typeof asset === 'object' ? asset : {};
+  const preferInstalledParent = options.preferInstalledParent === true;
+  const candidate = preferInstalledParent && source?.installedParentDepartment
+    ? source.installedParentDepartment
+    : source?.department;
+  return displayDepartment(candidate);
 }
 
 function normalizeInventoryMapToken(value) {
@@ -591,8 +671,41 @@ function shouldTreatMapItemAsNearEol(asset) {
 }
 
 function displayDepartment(department) {
-  const raw = String(department || '');
-  return DEPARTMENT_ALIASES[raw.toUpperCase()] || raw || 'Unassigned';
+  return normalizeDepartmentLabel(department);
+}
+
+function normalizeDepartmentLabel(value, options = {}) {
+  const fallbackUnassigned = options.fallbackUnassigned !== false;
+  const raw = String(value || '').trim();
+  if (!raw) return fallbackUnassigned ? 'Unassigned' : '';
+
+  const exactAlias = DEPARTMENT_ALIASES[raw.toUpperCase()];
+  if (exactAlias) return exactAlias;
+
+  const normalized = normalizeValue(raw);
+  if (!normalized || normalized === 'unknown' || normalized === 'null' || normalized === 'none' || normalized === 'na' || normalized === 'n/a') {
+    return fallbackUnassigned ? 'Unassigned' : '';
+  }
+  if (normalized === 'cs' || normalized === 'computerscience' || normalized === 'computersciences') return 'Computer Science';
+  if (normalized === 'business' || normalized === 'businessadmin' || normalized === 'businessadministration') return 'Business';
+  if (normalized === 'masscommunication' || normalized === 'masscomm' || normalized === 'masscommunications') return 'Mass Communication';
+  if (normalized === 'pharmacy') return 'Pharmacy';
+  if (normalized === 'dentistry') return 'Dentistry';
+  if (normalized === 'engineering') return 'Engineering';
+  if (normalized === 'architecture') return 'Architecture';
+  if (normalized === 'alsun' || normalized === 'alalsun' || normalized === 'languages') return 'ALSUN';
+  if (normalized === 'unassigned' || normalized === 'unallocate' || normalized === 'unallocated') return 'Unassigned';
+
+  return raw;
+}
+
+function toBackendDepartmentFilterValue(value) {
+  const canonical = normalizeDepartmentLabel(value);
+  return DEPARTMENT_BACKEND_LABEL_OVERRIDES[canonical] || canonical;
+}
+
+function normalizeDepartmentForFilter(value) {
+  return normalizeValue(normalizeDepartmentLabel(value));
 }
 
 function displayStatus(status) {
@@ -734,7 +847,7 @@ const OPERATIONAL_STATE_LABELS = {
   online_idle: 'Online but idle',
   offline: 'Offline',
   not_monitored: 'Not monitored',
-  insufficient_data: 'Monitoring enabled · Waiting for signal',
+  insufficient_data: 'Monitoring enabled Â· Waiting for signal',
   unknown: 'Unknown'
 };
 
@@ -1296,6 +1409,316 @@ function showMessage(message, type = 'info') {
   }
 }
 
+function sanitizeInventoryFieldId(raw) {
+  return String(raw || 'field')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'field';
+}
+
+function formatInventoryFieldOptions(options = []) {
+  return (Array.isArray(options) ? options : [])
+    .map((option) => {
+      if (option && typeof option === 'object') {
+        const value = String(option.value ?? '').trim();
+        const label = String((option.label ?? value) || 'Option').trim() || 'Option';
+        return `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(label)}</option>`;
+      }
+      const value = String(option ?? '').trim();
+      return `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value || 'Option')}</option>`;
+    })
+    .join('');
+}
+
+function normalizeInventoryModalFieldValue(field, rawValue) {
+  const type = String(field?.type || 'text').toLowerCase();
+  if (type === 'checkbox') return Boolean(rawValue);
+  if (type === 'number') {
+    const value = Number(rawValue);
+    return Number.isFinite(value) ? value : null;
+  }
+  const value = String(rawValue ?? '');
+  return field?.trim === false ? value : value.trim();
+}
+
+function showInventoryFormModal(options = {}) {
+  return new Promise((resolve) => {
+    const fields = Array.isArray(options.fields) ? options.fields : [];
+    const modalId = `inventoryFormModal-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const title = String(options.title || 'Inventory Action');
+    const message = String(options.message || '').trim();
+    const messageHtml = String(options.messageHtml || '').trim();
+    const confirmText = String(options.confirmText || 'Save');
+    const cancelText = String(options.cancelText || 'Cancel');
+    const confirmClass = String(options.confirmClass || 'btn-primary');
+    const dialogClass = String(options.dialogClass || 'modal-lg');
+
+    const fieldsHtml = fields.map((field, index) => {
+      const name = String(field?.name || `field_${index}`).trim();
+      const type = String(field?.type || 'text').toLowerCase();
+      const colClass = String(field?.colClass || 'col-12');
+      const id = `${modalId}-${sanitizeInventoryFieldId(name || `field-${index}`)}-${index}`;
+      const label = String(field?.label || name || `Field ${index + 1}`);
+      const placeholder = String(field?.placeholder || '');
+      const helpText = String(field?.helpText || '');
+      const required = Boolean(field?.required);
+      const readonly = Boolean(field?.readonly);
+      const min = field?.min ?? '';
+      const max = field?.max ?? '';
+      const step = field?.step ?? '';
+      const rows = Number(field?.rows || 3);
+      const defaultValue = field?.value;
+      const safeValue = defaultValue === null || typeof defaultValue === 'undefined'
+        ? ''
+        : String(defaultValue);
+      const requiredFlag = required ? 'required' : '';
+      const readonlyFlag = readonly ? 'readonly' : '';
+      const disabledFlag = field?.disabled ? 'disabled' : '';
+      const hiddenClass = type === 'hidden' ? 'd-none' : '';
+
+      let inputHtml = '';
+      if (type === 'textarea') {
+        inputHtml = `
+          <textarea
+            class="form-control form-control-sm"
+            id="${id}"
+            name="${UI.escapeHTML(name)}"
+            data-field-index="${index}"
+            placeholder="${UI.escapeHTML(placeholder)}"
+            rows="${Number.isFinite(rows) && rows > 0 ? rows : 3}"
+            ${requiredFlag}
+            ${readonlyFlag}
+            ${disabledFlag}
+          >${UI.escapeHTML(safeValue)}</textarea>
+        `;
+      } else if (type === 'select') {
+        const selectOptions = formatInventoryFieldOptions(field?.options || []);
+        const includeBlank = !required || placeholder;
+        inputHtml = `
+          <select
+            class="form-select form-select-sm"
+            id="${id}"
+            name="${UI.escapeHTML(name)}"
+            data-field-index="${index}"
+            ${requiredFlag}
+            ${disabledFlag}
+          >
+            ${includeBlank ? `<option value="">${UI.escapeHTML(placeholder || 'Select...')}</option>` : ''}
+            ${selectOptions}
+          </select>
+        `;
+      } else if (type === 'checkbox') {
+        const checked = Boolean(defaultValue) ? 'checked' : '';
+        inputHtml = `
+          <div class="form-check mt-1">
+            <input
+              class="form-check-input"
+              type="checkbox"
+              id="${id}"
+              name="${UI.escapeHTML(name)}"
+              data-field-index="${index}"
+              ${checked}
+              ${disabledFlag}
+            >
+            <label class="form-check-label small" for="${id}">
+              ${UI.escapeHTML(label)}
+            </label>
+          </div>
+        `;
+      } else {
+        inputHtml = `
+          <input
+            type="${UI.escapeHTML(type || 'text')}"
+            class="form-control form-control-sm"
+            id="${id}"
+            name="${UI.escapeHTML(name)}"
+            data-field-index="${index}"
+            value="${UI.escapeHTML(safeValue)}"
+            placeholder="${UI.escapeHTML(placeholder)}"
+            ${min !== '' ? `min="${UI.escapeHTML(String(min))}"` : ''}
+            ${max !== '' ? `max="${UI.escapeHTML(String(max))}"` : ''}
+            ${step !== '' ? `step="${UI.escapeHTML(String(step))}"` : ''}
+            ${requiredFlag}
+            ${readonlyFlag}
+            ${disabledFlag}
+          >
+        `;
+      }
+
+      return `
+        <div class="${UI.escapeHTML(colClass)} ${hiddenClass}" data-field-wrapper="${index}">
+          ${type === 'checkbox' ? '' : `<label class="form-label form-label-sm mb-1 fw-semibold" for="${id}">${UI.escapeHTML(label)}${required ? ' *' : ''}</label>`}
+          ${inputHtml}
+          ${helpText ? `<div class="form-text small">${UI.escapeHTML(helpText)}</div>` : ''}
+          <div class="invalid-feedback" id="${id}-feedback"></div>
+        </div>
+      `;
+    }).join('');
+
+    const modalHtml = `
+      <div class="modal fade inventory-modal-stack-high" id="${modalId}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered ${UI.escapeHTML(dialogClass)}">
+          <div class="modal-content border-0 shadow">
+            <div class="modal-header">
+              <h5 class="modal-title fw-bold">${UI.escapeHTML(title)}</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              ${messageHtml ? `<div class="small text-muted mb-2">${messageHtml}</div>` : (message ? `<div class="small text-muted mb-2">${UI.escapeHTML(message)}</div>` : '')}
+              <form id="${modalId}-form" novalidate>
+                <div class="row g-2">${fieldsHtml}</div>
+              </form>
+            </div>
+            <div class="modal-footer">
+              ${cancelText ? `<button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">${UI.escapeHTML(cancelText)}</button>` : ''}
+              <button type="button" class="btn ${UI.escapeHTML(confirmClass)}" id="${modalId}-confirm">${UI.escapeHTML(confirmText)}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalElement = document.getElementById(modalId);
+    const formElement = document.getElementById(`${modalId}-form`);
+    const confirmBtn = document.getElementById(`${modalId}-confirm`);
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    let settled = false;
+
+    const clearError = (fieldIndex) => {
+      const input = formElement?.querySelector(`[data-field-index="${fieldIndex}"]`);
+      if (input) input.classList.remove('is-invalid');
+      const feedback = modalElement?.querySelector(`#${input?.id}-feedback`);
+      if (feedback) feedback.textContent = '';
+    };
+
+    const setError = (fieldIndex, messageText) => {
+      const input = formElement?.querySelector(`[data-field-index="${fieldIndex}"]`);
+      if (!input) return;
+      input.classList.add('is-invalid');
+      const feedback = modalElement?.querySelector(`#${input.id}-feedback`);
+      if (feedback) feedback.textContent = String(messageText || 'Required field.');
+    };
+
+    confirmBtn?.addEventListener('click', async () => {
+      const values = {};
+      let hasError = false;
+      fields.forEach((field, index) => clearError(index));
+
+      for (let index = 0; index < fields.length; index += 1) {
+        const field = fields[index];
+        const name = String(field?.name || `field_${index}`).trim();
+        const type = String(field?.type || 'text').toLowerCase();
+        const input = formElement?.querySelector(`[data-field-index="${index}"]`);
+        if (!input) continue;
+
+        const rawValue = type === 'checkbox'
+          ? Boolean(input.checked)
+          : input.value;
+        const normalizedValue = normalizeInventoryModalFieldValue(field, rawValue);
+        values[name] = normalizedValue;
+
+        if (field?.required) {
+          const missing = type === 'checkbox'
+            ? !Boolean(normalizedValue)
+            : !String(normalizedValue ?? '').trim();
+          if (missing) {
+            setError(index, `${field?.label || name} is required.`);
+            if (!hasError) input.focus();
+            hasError = true;
+            continue;
+          }
+        }
+
+        if (typeof field?.validate === 'function') {
+          const errorText = field.validate(normalizedValue, values);
+          if (errorText) {
+            setError(index, errorText);
+            if (!hasError) input.focus();
+            hasError = true;
+          }
+        }
+      }
+
+      if (hasError) return;
+      settled = true;
+      modal.hide();
+      resolve({ confirmed: true, values });
+    });
+
+    modalElement?.addEventListener('hidden.bs.modal', () => {
+      modalElement.remove();
+      if (!settled) resolve({ confirmed: false, values: {} });
+    }, { once: true });
+
+    modal.show();
+    setTimeout(() => {
+      const firstInput = modalElement?.querySelector('input,textarea,select');
+      if (firstInput && typeof firstInput.focus === 'function') firstInput.focus();
+      fields.forEach((field, index) => {
+        if (String(field?.type || '').toLowerCase() !== 'select') return;
+        const name = String(field?.name || `field_${index}`).trim();
+        const input = formElement?.querySelector(`[data-field-index="${index}"]`);
+        if (!input) return;
+        const raw = field?.value;
+        if (raw === null || typeof raw === 'undefined') return;
+        const safeValue = String(raw);
+        if (Array.from(input.options || []).some((opt) => opt.value === safeValue)) {
+          input.value = safeValue;
+        } else if (!field?.required) {
+          input.value = '';
+        }
+      });
+    }, 20);
+  });
+}
+
+async function promptInventoryValue(options = {}) {
+  const result = await showInventoryFormModal({
+    title: options.title || 'Input Required',
+    message: options.message || '',
+    confirmText: options.confirmText || 'Continue',
+    cancelText: options.cancelText || 'Cancel',
+    dialogClass: options.dialogClass || 'modal-md',
+    fields: [{
+      name: 'value',
+      label: options.label || 'Value',
+      type: options.type || 'text',
+      value: options.value ?? '',
+      placeholder: options.placeholder || '',
+      required: options.required !== false,
+      options: options.options || [],
+      validate: options.validate,
+      rows: options.rows || 3,
+      trim: options.trim !== false,
+    }],
+  });
+  if (!result?.confirmed) return null;
+  return result.values.value;
+}
+
+async function showInventoryTextPreviewModal(options = {}) {
+  const result = await showInventoryFormModal({
+    title: options.title || 'Details',
+    message: options.message || '',
+    confirmText: options.confirmText || 'Close',
+    cancelText: options.cancelText || '',
+    confirmClass: options.confirmClass || 'btn-outline-primary',
+    dialogClass: options.dialogClass || 'modal-lg',
+    fields: [{
+      name: 'preview',
+      label: options.label || 'Preview',
+      type: 'textarea',
+      value: String(options.text || ''),
+      rows: Number(options.rows || 10),
+      readonly: true,
+      required: false,
+    }],
+  });
+  return Boolean(result?.confirmed);
+}
+
 function toValidDate(value) {
   if (!value) return null;
   const parsed = new Date(value);
@@ -1412,11 +1835,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const deptFilter = document.getElementById('filterDept');
   const typeFilter = document.getElementById('filterType');
   const lifecycleFilter = document.getElementById('filterLifecycle');
+  const savedViewSelect = document.getElementById('inventorySavedViewSelect');
+  const activeFilterChips = document.getElementById('inventoryActiveFilterChips');
+  const inventory360Grid = document.getElementById('inventory360Grid');
 
   if (buildingFilter) buildingFilter.addEventListener('change', syncFilters);
   if (deptFilter) deptFilter.addEventListener('change', syncFilters);
   if (typeFilter) typeFilter.addEventListener('change', syncFilters);
   if (lifecycleFilter) lifecycleFilter.addEventListener('change', syncFilters);
+  if (savedViewSelect) {
+    syncInventorySavedViewControl();
+    savedViewSelect.addEventListener('change', () => setInventorySavedView(savedViewSelect.value));
+  }
+  if (activeFilterChips) {
+    activeFilterChips.addEventListener('click', (event) => {
+      const chip = event.target?.closest('[data-inventory-clear-filter]');
+      if (chip) clearInventoryFilterChip(chip.getAttribute('data-inventory-clear-filter'));
+    });
+  }
+  document.addEventListener('click', (event) => {
+    const actionBtn = event.target?.closest('[data-inventory-360-action]');
+    if (actionBtn) handleInventory360Action(actionBtn.getAttribute('data-inventory-360-action'));
+  });
+  if (inventory360Grid) renderInventory360Analytics();
   Object.entries(INVENTORY_VIEW_BUTTON_IDS).forEach(([view, buttonId]) => {
     const button = document.getElementById(buttonId);
     if (!button) return;
@@ -1443,6 +1884,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const aiRepairImportBtn = document.getElementById('aiRepairImportBtn');
   const aiMatchInvoiceBtn = document.getElementById('aiMatchInvoiceBtn');
   const previewDocumentImportBtn = document.getElementById('previewDocumentImportBtn');
+  const importViewAssetsBtn = document.getElementById('importViewAssetsBtn');
+  const importAnotherFileBtn = document.getElementById('importAnotherFileBtn');
   const importAiRepairApplySafeBtn = document.getElementById('importAiRepairApplySafeBtn');
   const importAiRepairApplySelectedBtn = document.getElementById('importAiRepairApplySelectedBtn');
   const importAiRepairIgnoreAllBtn = document.getElementById('importAiRepairIgnoreAllBtn');
@@ -1456,6 +1899,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (aiRepairImportBtn) aiRepairImportBtn.addEventListener('click', () => window.runImportAiRepairErrors());
   if (aiMatchInvoiceBtn) aiMatchInvoiceBtn.addEventListener('click', () => window.runImportAiInvoiceMatch());
   if (previewDocumentImportBtn) previewDocumentImportBtn.addEventListener('click', () => window.previewDocumentImportRows());
+  if (importViewAssetsBtn) importViewAssetsBtn.addEventListener('click', () => window.viewImportedAssetsAfterCommit());
+  if (importAnotherFileBtn) importAnotherFileBtn.addEventListener('click', () => window.importAnotherFileAfterCommit());
   if (importAiRepairApplySafeBtn) importAiRepairApplySafeBtn.addEventListener('click', () => window.applyAllSafeImportRepairs());
   if (importAiRepairApplySelectedBtn) importAiRepairApplySelectedBtn.addEventListener('click', () => window.applySelectedImportRepairs());
   if (importAiRepairIgnoreAllBtn) importAiRepairIgnoreAllBtn.addEventListener('click', () => window.ignoreAllImportRepairs());
@@ -1491,8 +1936,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const openBulkCheckoutBtn = document.getElementById('openBulkCheckoutBtn');
   const openLoanerBoardBtn = document.getElementById('openLoanerBoardBtn');
   const openAuditBoardBtn = document.getElementById('openAuditBoardBtn');
+  const openProcurementBoardBtn = document.getElementById('openProcurementBoardBtn');
+  const procurementBoardRefreshBtn = document.getElementById('procurementBoardRefreshBtn');
+  const procurementCreateRequestBtn = document.getElementById('procurementCreateRequestBtn');
+  const procurementStatusFilter = document.getElementById('procurementStatusFilter');
+  const procurementRecommendationsTableBody = document.getElementById('procurementRecommendationsTableBody');
+  const procurementRequestsTableBody = document.getElementById('procurementRequestsTableBody');
   const bulkCheckoutValidateBtn = document.getElementById('bulkCheckoutValidateBtn');
   const bulkCheckoutConfirmBtn = document.getElementById('bulkCheckoutConfirmBtn');
+  const bulkCheckoutBuilding = document.getElementById('bulkCheckoutBuilding');
+  const bulkCheckoutDepartment = document.getElementById('bulkCheckoutDepartment');
+  const bulkCheckoutRoom = document.getElementById('bulkCheckoutRoom');
+  const bulkCheckoutAssigneeRole = document.getElementById('bulkCheckoutAssigneeRole');
+  const bulkCheckoutAssignedTo = document.getElementById('bulkCheckoutAssignedTo');
+  const bulkCheckoutReason = document.getElementById('bulkCheckoutReason');
   const loanerRefreshBtn = document.getElementById('loanerRefreshBtn');
   const loanerSearchInput = document.getElementById('loanerSearchInput');
   const auditBoardRefreshBtn = document.getElementById('auditBoardRefreshBtn');
@@ -1515,8 +1972,53 @@ document.addEventListener('DOMContentLoaded', () => {
   if (openBulkCheckoutBtn) openBulkCheckoutBtn.addEventListener('click', () => window.openBulkCheckoutModal());
   if (openLoanerBoardBtn) openLoanerBoardBtn.addEventListener('click', () => window.openLoanerBoardModal());
   if (openAuditBoardBtn) openAuditBoardBtn.addEventListener('click', () => window.openAuditBoardModal());
+  if (openProcurementBoardBtn) openProcurementBoardBtn.addEventListener('click', () => window.openProcurementWorkspace());
+  if (procurementBoardRefreshBtn) procurementBoardRefreshBtn.addEventListener('click', () => window.loadProcurementBoard());
+  if (procurementCreateRequestBtn) procurementCreateRequestBtn.addEventListener('click', () => window.createProcurementRequestManual());
+  if (procurementStatusFilter) procurementStatusFilter.addEventListener('change', () => window.loadProcurementBoard());
+  if (procurementRecommendationsTableBody) {
+    procurementRecommendationsTableBody.addEventListener('click', (event) => {
+      const button = event.target?.closest('[data-procurement-create-ai]');
+      if (!button) return;
+      const index = Number(button.getAttribute('data-procurement-create-ai'));
+      if (!Number.isFinite(index)) return;
+      window.createProcurementRequestFromAi(index);
+    });
+  }
+  if (procurementRequestsTableBody) {
+    procurementRequestsTableBody.addEventListener('click', (event) => {
+      const statusBtn = event.target?.closest('[data-procurement-update-status]');
+      if (statusBtn) {
+        const requestId = String(statusBtn.getAttribute('data-procurement-update-status') || '').trim();
+        if (requestId) window.updateProcurementRequestStatus(requestId);
+        return;
+      }
+      const quoteBtn = event.target?.closest('[data-procurement-add-quote]');
+      if (quoteBtn) {
+        const requestId = String(quoteBtn.getAttribute('data-procurement-add-quote') || '').trim();
+        if (requestId) window.addProcurementVendorQuote(requestId);
+        return;
+      }
+      const orderBtn = event.target?.closest('[data-procurement-create-po]');
+      if (orderBtn) {
+        const requestId = String(orderBtn.getAttribute('data-procurement-create-po') || '').trim();
+        if (requestId) window.createProcurementPurchaseOrder(requestId);
+        return;
+      }
+      const receiveBtn = event.target?.closest('[data-procurement-receive]');
+      if (receiveBtn) {
+        const requestId = String(receiveBtn.getAttribute('data-procurement-receive') || '').trim();
+        if (requestId) window.receiveProcurementRequest(requestId);
+      }
+    });
+  }
   if (bulkCheckoutValidateBtn) bulkCheckoutValidateBtn.addEventListener('click', () => window.validateBulkCheckoutAssets());
   if (bulkCheckoutConfirmBtn) bulkCheckoutConfirmBtn.addEventListener('click', () => window.confirmBulkCheckout());
+  [bulkCheckoutBuilding, bulkCheckoutDepartment, bulkCheckoutRoom, bulkCheckoutAssigneeRole, bulkCheckoutAssignedTo, bulkCheckoutReason].forEach((el) => {
+    if (!el) return;
+    const eventName = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(eventName, () => updateBulkCheckoutDestinationSummary());
+  });
   if (loanerRefreshBtn) loanerRefreshBtn.addEventListener('click', () => window.loadLoanerBoard());
   if (loanerSearchInput) loanerSearchInput.addEventListener('input', () => window.renderLoanerBoard());
   if (auditBoardRefreshBtn) auditBoardRefreshBtn.addEventListener('click', () => window.loadAuditBoard());
@@ -1544,7 +2046,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ];
       ids.forEach((id) => {
         const el = document.getElementById(id);
-        if (el) el.value = '';
+        if (el) el.value = id === 'assetMapSearchInput' ? '' : 'all';
       });
       const viewFilter = document.getElementById('assetMapViewFilter');
       const lifecycleFilter = document.getElementById('assetMapLifecycleFilter');
@@ -1600,8 +2102,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const file = dt?.files?.[0];
       if (!file) return;
       const lower = String(file.name || '').toLowerCase();
-      if (!(lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls'))) {
-        showMessage('Invalid file type. Please use CSV or XLSX.', 'warning');
+      if (!lower.endsWith('.csv')) {
+        showMessage('CSV is supported now. Please use a CSV file.', 'warning');
         return;
       }
       const transfer = new DataTransfer();
@@ -1625,6 +2127,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const inventoryAiChatSendBtn = document.getElementById('inventoryAiChatSendBtn');
   const inventoryAiChatInput = document.getElementById('inventoryAiChatInput');
   const inventoryAiQuickPrompts = document.getElementById('inventoryAiQuickPrompts');
+  const inventoryAiPromptToggleBtn = document.getElementById('inventoryAiPromptToggleBtn');
   const inventoryAiChatMessages = document.getElementById('inventoryAiChatMessages');
   if (inventoryAiAssistantBtn) inventoryAiAssistantBtn.addEventListener('click', () => window.toggleInventoryAiChat(true));
   if (inventoryAiSearchBtn) inventoryAiSearchBtn.addEventListener('click', () => window.openInventoryAiModal('search'));
@@ -1659,8 +2162,22 @@ document.addEventListener('DOMContentLoaded', () => {
       if (mode) window.runInventoryAiQuickAction(mode);
     });
   }
+  if (inventoryAiPromptToggleBtn) {
+    inventoryAiPromptToggleBtn.addEventListener('click', () => {
+      const promptsEl = document.getElementById('inventoryAiQuickPrompts');
+      const currentlyCollapsed = String(promptsEl?.dataset?.collapsed || '') === 'true';
+      inventoryAiChatState.promptsCollapsed = !currentlyCollapsed;
+      updateInventoryAiPromptLayout((inventoryAiChatState.messages || []).length > 0);
+    });
+  }
   if (inventoryAiChatMessages) {
     inventoryAiChatMessages.addEventListener('click', (event) => {
+      const promptBtn = event.target?.closest('[data-ai-prompt]');
+      if (promptBtn) {
+        const prompt = String(promptBtn.getAttribute('data-ai-prompt') || '').trim();
+        if (prompt) window.openInventoryAiChatWithPrompt(prompt);
+        return;
+      }
       const copyBtn = event.target?.closest('.inventory-ai-copy-report-btn');
       if (copyBtn) {
         const encoded = String(copyBtn.getAttribute('data-report-encoded') || '').trim();
@@ -1671,6 +2188,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch(() => {
           showMessage('Could not copy report summary.', 'warning');
         });
+        return;
+      }
+      const openPageBtn = event.target?.closest('.inventory-ai-open-page-btn');
+      if (openPageBtn) {
+        const targetPage = String(openPageBtn.getAttribute('data-ai-open-page') || '').trim();
+        if (targetPage) window.location.href = targetPage;
+        return;
+      }
+      const healthBtn = event.target?.closest('.inventory-ai-health-asset-btn');
+      if (healthBtn) {
+        const assetId = String(healthBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        window.runInventoryAiMatchedAssetHealth(assetId);
+        return;
+      }
+      const componentsBtn = event.target?.closest('.inventory-ai-view-components-btn');
+      if (componentsBtn) {
+        const assetId = String(componentsBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        window.openInventoryAiMatchedAssetTab(assetId, 'components');
+        return;
+      }
+      const lifecycleBtn = event.target?.closest('.inventory-ai-view-lifecycle-btn');
+      if (lifecycleBtn) {
+        const assetId = String(lifecycleBtn.getAttribute('data-asset-id') || '').trim();
+        if (!assetId) return;
+        window.openInventoryAiMatchedAssetTab(assetId, 'lifecycle');
         return;
       }
       const button = event.target?.closest('.inventory-ai-view-asset-btn');
@@ -1809,16 +2353,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const auditTableBody = document.getElementById('auditBoardTableBody');
   if (auditTableBody) {
     auditTableBody.addEventListener('click', (event) => {
-      const verifyBtn = event.target?.closest('[data-audit-verify-id]');
-      if (verifyBtn) {
-        const assetId = String(verifyBtn.getAttribute('data-audit-verify-id') || '').trim();
-        if (assetId) window.auditVerifyAssetLocation(assetId);
-        return;
-      }
-      const missingBtn = event.target?.closest('[data-audit-missing-id]');
-      if (missingBtn) {
-        const assetId = String(missingBtn.getAttribute('data-audit-missing-id') || '').trim();
-        if (assetId) window.auditMarkAssetMissing(assetId);
+      const actionBtn = event.target?.closest('[data-audit-action-id]');
+      if (actionBtn) {
+        const assetId = String(actionBtn.getAttribute('data-audit-action-id') || '').trim();
+        const action = String(actionBtn.getAttribute('data-audit-action') || '').trim();
+        if (!assetId) return;
+        if (action === 'verify') window.auditVerifyAssetLocation(assetId);
+        if (action === 'missing') window.auditMarkAssetMissing(assetId);
+        if (action === 'damaged') window.auditMarkAssetDamaged(assetId);
+        if (action === 'wrong_location') window.auditMarkWrongLocation(assetId);
+        if (action === 'needs_review') window.auditMarkNeedsReview(assetId);
       }
     });
   }
@@ -1829,6 +2373,52 @@ document.addEventListener('DOMContentLoaded', () => {
         window.runInventoryAiAction();
       }
     });
+  }
+
+  const copilotPrefillFromSession = String(sessionStorage.getItem('inventory_copilot_prefill') || '').trim();
+  const inventoryUrlParams = new URLSearchParams(window.location.search);
+  const shouldOpenCopilotFromUrl = String(inventoryUrlParams.get('ai') || '').trim().toLowerCase() === 'copilot';
+  const focusTopic = String(inventoryUrlParams.get('focus') || '').trim().toLowerCase();
+  const copilotPrefill = copilotPrefillFromSession
+    || (shouldOpenCopilotFromUrl
+      ? (focusTopic === 'procurement'
+        ? 'Show urgent procurement priorities.'
+        : 'Summarize key inventory risks and next actions.')
+      : '');
+  if (copilotPrefillFromSession) {
+    sessionStorage.removeItem('inventory_copilot_prefill');
+  }
+  if (copilotPrefill) {
+    setTimeout(() => {
+      window.openInventoryAiChatWithPrompt(copilotPrefill);
+    }, 250);
+  }
+
+  const commandCenterAction = String(sessionStorage.getItem('inventory_command_action') || '').trim().toLowerCase();
+  if (commandCenterAction) {
+    sessionStorage.removeItem('inventory_command_action');
+    setTimeout(() => {
+      if (commandCenterAction === 'import') {
+        window.openImportAssetsModal?.();
+        return;
+      }
+      if (commandCenterAction === 'create') {
+        const modalEl = document.getElementById('receiveOrderModal');
+        if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        return;
+      }
+      if (commandCenterAction === 'audit') {
+        window.openAuditBoardModal?.();
+        return;
+      }
+      if (commandCenterAction === 'asset-map') {
+        window.openInventoryAssetMap?.();
+        return;
+      }
+      if (commandCenterAction === 'ai' && !copilotPrefill) {
+        window.toggleInventoryAiChat?.(true);
+      }
+    }, 350);
   }
 
   updateWorkingHoursAvailability();
@@ -1887,7 +2477,7 @@ async function initializePage() {
   await loadAssets(); // 2. Then load assets and render
 }
 
-// ðŸš€ Fetches the single source of truth from your new backend route
+// Ã°Å¸Å¡â‚¬ Fetches the single source of truth from your new backend route
 async function loadConfig() {
   try {
     const response = await inventoryRequest('/config');
@@ -1913,11 +2503,34 @@ async function loadConfig() {
   }
 }
 
+function showInventoryTableLoadingState() {
+  const tableBody = document.getElementById('inventoryTableBody');
+  if (!tableBody) return;
+  const headerColumns = document.querySelectorAll('#groupTable thead tr th').length;
+  const colspan = Math.max(1, headerColumns || 5);
+  tableBody.innerHTML = `
+    <tr class="ops-loading-row">
+      <td colspan="${colspan}">
+        <div class="inventory-loading-wrap">
+          <span class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></span>
+          <span>Loading inventory data...</span>
+        </div>
+        <div class="ops-skeleton-table-stack mt-2">
+          <span class="ops-skeleton-line lg"></span>
+          <span class="ops-skeleton-line md"></span>
+          <span class="ops-skeleton-line sm"></span>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
 async function loadAssets() {
   if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
 
   loadAssetsInFlightPromise = (async () => {
     try {
+      showInventoryTableLoadingState();
       const searchTerm = String(document.getElementById('searchInput')?.value || '').trim();
       const buildingFilter = String(document.getElementById('filterBuilding')?.value || 'all');
       const deptFilter = String(document.getElementById('filterDept')?.value || 'all');
@@ -1933,7 +2546,7 @@ async function loadAssets() {
       });
       if (searchTerm) params.set('q', searchTerm);
       if (buildingFilter && buildingFilter !== 'all') params.set('location', buildingFilter);
-      if (deptFilter && deptFilter !== 'all') params.set('department', deptFilter);
+      if (deptFilter && deptFilter !== 'all') params.set('department', toBackendDepartmentFilterValue(deptFilter));
       if (lifecycleFilter && lifecycleFilter !== 'all') params.set('lifecycleStatus', lifecycleFilter);
       if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
 
@@ -1954,8 +2567,11 @@ async function loadAssets() {
       await loadAssetLifespanPredictions();
       await loadAssetEolAssessments();
 
+      await refreshInventoryFilterSnapshot();
       populateFilters();
       renderTable();
+      renderInventory360Analytics();
+      refreshInventory360ProcurementBoard().catch(() => {});
       updateDeleteAllAssetsButton();
       checkGlobalEOLAlerts();
       await refreshSpecVerificationSnapshot();
@@ -1975,7 +2591,7 @@ async function loadAssets() {
   }
 }
 
-// ðŸ¤– AI Prediction Math Helper
+// Ã°Å¸Â¤â€“ AI Prediction Math Helper
 function getEOLDetails(asset) {
   const now = new Date();
   const lifecycle = getLifecycleSnapshot(asset);
@@ -2033,7 +2649,7 @@ function getEOLDetails(asset) {
       statusClass = 'bg-danger';
     } else if (eolStatus === 'due_soon') {
       const soonMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
-      remainingText = `⚠️ ${soonMonths} month(s) left`;
+      remainingText = `Warning: ${soonMonths} month(s) left`;
       statusClass = 'bg-warning text-dark';
     } else if (eolStatus === 'watch') {
       const watchMonths = Number.isFinite(monthsRemaining) ? monthsRemaining.toFixed(1) : '?';
@@ -2058,7 +2674,7 @@ function getEOLDetails(asset) {
       remainingText = `Expired ${Math.abs(daysRemaining)} days ago`;
       statusClass = 'bg-danger';
     } else if (daysRemaining <= 180) {
-      remainingText = `⚠️ ${daysRemaining} days left`;
+      remainingText = `Warning: ${daysRemaining} days left`;
       statusClass = 'bg-warning text-dark';
     } else if (daysRemaining < 365) {
       const months = Math.floor(daysRemaining / 30);
@@ -2157,8 +2773,14 @@ window.showEolWhy = async function showEolWhy(assetId) {
       const explanation = await response.json();
       const shortUser = String(explanation.shortUserExplanation || '').trim();
       const technical = String(explanation.technicalExplanation || '').trim();
+      const sourceNote = aiSourceMetaText({
+        llmUsed: Boolean(explanation?.llmUsed),
+        llmStatus: String(explanation?.llmStatus || ''),
+        fallbackUsed: Boolean(explanation?.fallbackUsed),
+        fallbackReason: String(explanation?.fallbackReason || ''),
+      });
       if (shortUser || technical) {
-        message = [shortUser, technical].filter(Boolean).join(' | ');
+        message = [sourceNote, shortUser, technical].filter(Boolean).join(' | ');
       }
     }
   } catch (_error) {
@@ -2567,7 +3189,8 @@ async function refreshSpecVerificationSnapshot() {
     if (summaryEl) {
       const evaluated = Number(metricsPayload?.evaluated_records || 0);
       const ramPrecision = Number(metricsPayload?.precision_by_field?.RAM || 0);
-      summaryEl.textContent = `Reviewed records: ${evaluated}. RAM precision: ${(ramPrecision * 100).toFixed(0)}%.`;
+      summaryEl.textContent = `Reviewed ${evaluated} records. RAM detection confidence: ${(ramPrecision * 100).toFixed(0)}%.`;
+      summaryEl.setAttribute('title', 'This checks imported and created assets against known specifications and flags records needing review.');
     }
   } catch (error) {
     console.error('Failed to refresh spec verification snapshot', error);
@@ -2875,6 +3498,27 @@ function getAssetViewTypeLabel(asset, view = currentInventoryView) {
   return formatType(asset?.type);
 }
 
+function getAssetsForInventoryViewFromList(assets, view = currentInventoryView) {
+  const source = Array.isArray(assets) ? assets : [];
+  const normalizedView = normalizeInventoryView(view);
+  if (normalizedView === 'components') {
+    return source.filter((asset) => isInstalledComponentAsset(asset));
+  }
+  if (normalizedView === 'accessories') {
+    return source.filter((asset) => isAccessoryViewAsset(asset));
+  }
+  if (normalizedView === 'consumables') {
+    return source.filter((asset) => isConsumableViewAsset(asset));
+  }
+  if (normalizedView === 'licenses') {
+    return source.filter((asset) => isLicenseViewAsset(asset));
+  }
+  if (normalizedView === 'spare_stock') {
+    return source.filter((asset) => isSparePartAsset(asset));
+  }
+  return source.filter((asset) => isParentViewAsset(asset));
+}
+
 function populateFilters() {
   const buildingSelect = document.getElementById('filterBuilding');
   const deptSelect = document.getElementById('filterDept');
@@ -2888,40 +3532,36 @@ function populateFilters() {
   const currentDept = deptSelect.value;
   const currentType = typeSelect.value;
   const currentLifecycle = lifecycleSelect?.value || 'all';
+  const currentBuildingDisplay = currentBuilding === 'all' ? 'all' : displayLocation(currentBuilding);
+  const currentDeptDisplay = currentDept === 'all' ? 'all' : normalizeDepartmentLabel(currentDept);
 
-  let visibleBuildings = [];
-  let visibleDepartments = [];
+  const fullAssetSource = Array.isArray(inventoryFilterSnapshotState.allAssets) && inventoryFilterSnapshotState.allAssets.length
+    ? inventoryFilterSnapshotState.allAssets
+    : currentAssets;
+  const viewAssets = getAssetsForInventoryViewFromList(fullAssetSource, currentInventoryView);
+  const allBuildings = getKnownBuildingOptions();
+  const allDepartments = getKnownDepartmentOptions();
   let typeValues = [];
 
   if (currentInventoryView === 'spare_stock') {
-    const stockRows = Array.isArray(spareStockItemsCache) ? spareStockItemsCache : [];
-    visibleBuildings = Array.from(new Set(stockRows.map((item) => String(item.location || '').trim()).filter(Boolean)));
-    visibleDepartments = ['Unassigned'];
-    typeValues = Array.from(new Set(stockRows.map((item) => normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock')).filter(Boolean)));
+    const stockRows = Array.isArray(inventoryFilterSnapshotState.spareStockRows) && inventoryFilterSnapshotState.spareStockRows.length
+      ? inventoryFilterSnapshotState.spareStockRows
+      : (Array.isArray(spareStockItemsCache) ? spareStockItemsCache : []);
+    typeValues = Array.from(new Set(stockRows
+      .map((item) => normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock'))
+      .filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b));
   } else {
-    const visibleAssets = getAssetsForCurrentInventoryView();
-    visibleBuildings = Array.from(new Set(visibleAssets.map((asset) => {
-      if (currentInventoryView === 'components' && asset?.installedParentLocation) {
-        return displayLocation(String(asset.installedParentLocation));
-      }
-      return displayLocation(asset.location);
-    }).filter(Boolean)));
-    visibleDepartments = Array.from(new Set(visibleAssets.map((asset) => {
-      if (currentInventoryView === 'components' && asset?.installedParentDepartment) {
-        return displayDepartment(String(asset.installedParentDepartment));
-      }
-      return displayDepartment(asset.department);
-    }).filter(Boolean)));
-
     if (currentInventoryView === 'parents') {
       typeValues = Array.from(new Set(ASSET_TYPES.map((at) => at.value).filter(Boolean)));
     } else {
-      typeValues = Array.from(new Set(visibleAssets.map((asset) => getAssetViewTypeLabel(asset, currentInventoryView)).filter(Boolean)));
+      typeValues = Array.from(new Set(viewAssets.map((asset) => getAssetViewTypeLabel(asset, currentInventoryView)).filter(Boolean)))
+        .sort((a, b) => String(a).localeCompare(String(b)));
     }
   }
 
-  buildingSelect.innerHTML = '<option value="all">All Buildings</option>' + visibleBuildings.map((b) => `<option value="${b}">${b}</option>`).join('');
-  deptSelect.innerHTML = '<option value="all">All Departments</option>' + visibleDepartments.map((d) => `<option value="${d}">${d}</option>`).join('');
+  buildingSelect.innerHTML = '<option value="all">All Buildings</option>' + allBuildings.map((b) => `<option value="${b}">${b}</option>`).join('');
+  deptSelect.innerHTML = '<option value="all">All Departments</option>' + allDepartments.map((d) => `<option value="${d}">${d}</option>`).join('');
   typeSelect.innerHTML = `<option value="all">${viewMeta.typeFilterLabel}</option>` + typeValues.map((value) => {
     const label = currentInventoryView === 'parents'
       ? (ASSET_TYPES.find((at) => normalizeValue(at.value) === normalizeValue(value))?.label || formatType(value))
@@ -2929,10 +3569,25 @@ function populateFilters() {
     return `<option value="${value}">${label}</option>`;
   }).join('');
 
-  if (visibleBuildings.includes(currentBuilding) || currentBuilding === 'all') buildingSelect.value = currentBuilding;
-  if (visibleDepartments.includes(currentDept) || currentDept === 'all') deptSelect.value = currentDept;
+  if (allBuildings.includes(currentBuildingDisplay) || currentBuildingDisplay === 'all') buildingSelect.value = currentBuildingDisplay;
+  if (allDepartments.includes(currentDeptDisplay) || currentDeptDisplay === 'all') deptSelect.value = currentDeptDisplay;
   if (Array.from(typeSelect.options).some((option) => option.value === currentType) || currentType === 'all') typeSelect.value = currentType;
-  if (lifecycleSelect) lifecycleSelect.value = currentLifecycle || 'all';
+  if (lifecycleSelect) {
+    const lifecycleOptionMap = new Map();
+    Array.from(lifecycleSelect.options).forEach((option) => {
+      lifecycleOptionMap.set(String(option.value || '').trim(), String(option.textContent || '').trim() || displayLifecycleStatus(option.value));
+    });
+    getKnownLifecycleOptions().forEach((value) => {
+      if (!lifecycleOptionMap.has(value)) lifecycleOptionMap.set(value, displayLifecycleStatus(value));
+    });
+    const orderedKnown = Array.from(lifecycleOptionMap.keys());
+    lifecycleSelect.innerHTML = orderedKnown.map((value, index) => (
+      `<option value="${value}">${index === 0 && value === 'all' ? 'All Lifecycle' : lifecycleOptionMap.get(value)}</option>`
+    )).join('');
+    lifecycleSelect.value = Array.from(lifecycleSelect.options).some((option) => option.value === currentLifecycle)
+      ? currentLifecycle
+      : 'all';
+  }
 }
 
 function syncFilters() {
@@ -2946,6 +3601,9 @@ function syncFilters() {
   });
 }
 function resetFilters() {
+  inventorySavedView = 'all';
+  localStorage.setItem('opsmind_inventory_saved_view', inventorySavedView);
+  syncInventorySavedViewControl();
   document.getElementById('filterBuilding').value = 'all';
   document.getElementById('filterDept').value = 'all';
   document.getElementById('filterType').value = 'all';
@@ -2989,6 +3647,539 @@ function handleSearchKeyPress(event) {
   }
 }
 
+function shouldRefreshInventoryFilterSnapshot(force = false) {
+  if (force) return true;
+  if (!Array.isArray(inventoryFilterSnapshotState.allAssets) || !inventoryFilterSnapshotState.allAssets.length) return true;
+  if (!Number(inventoryFilterSnapshotState.loadedAt)) return true;
+  return (Date.now() - Number(inventoryFilterSnapshotState.loadedAt)) > INVENTORY_FILTER_SNAPSHOT_TTL_MS;
+}
+
+async function refreshInventoryFilterSnapshot(force = false) {
+  if (!shouldRefreshInventoryFilterSnapshot(force)) return;
+  if (inventoryFilterSnapshotState.inFlightPromise) {
+    await inventoryFilterSnapshotState.inFlightPromise;
+    return;
+  }
+  inventoryFilterSnapshotState.loading = true;
+  inventoryFilterSnapshotState.inFlightPromise = (async () => {
+    let fullAssets = [];
+    let page = 1;
+    let totalPages = 1;
+    do {
+      const response = await inventoryRequest(`/assets?paginate=true&page=${page}&pageSize=500`);
+      if (!response.ok) throw new Error('Failed to load filter snapshot assets');
+      const payload = await response.json();
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      fullAssets = fullAssets.concat(items);
+      totalPages = Math.max(1, Number(payload?.totalPages || 1));
+      page += 1;
+    } while (page <= totalPages);
+
+    let spareRows = [];
+    try {
+      const spareResponse = await inventoryRequest('/inventory/spare-stock');
+      if (spareResponse.ok) {
+        const sparePayload = await spareResponse.json();
+        spareRows = Array.isArray(sparePayload?.items) ? sparePayload.items : [];
+      }
+    } catch (_spareError) {
+      spareRows = [];
+    }
+
+    inventoryFilterSnapshotState.allAssets = fullAssets;
+    inventoryFilterSnapshotState.spareStockRows = spareRows;
+    inventoryFilterSnapshotState.loadedAt = Date.now();
+  })()
+    .catch((error) => {
+      console.warn('[InventoryFilters] Failed to refresh full snapshot:', error?.message || error);
+    })
+    .finally(() => {
+      inventoryFilterSnapshotState.loading = false;
+      inventoryFilterSnapshotState.inFlightPromise = null;
+    });
+  await inventoryFilterSnapshotState.inFlightPromise;
+}
+
+function getKnownBuildingOptions() {
+  const values = new Set();
+  const pushLocation = (value) => {
+    const label = displayLocation(value);
+    if (label && normalizeValue(label) !== 'unknown') values.add(label);
+  };
+
+  INVENTORY_MAP_LOCATION_DEFINITIONS.forEach((entry) => {
+    if (entry?.name) values.add(entry.name);
+  });
+  (Array.isArray(BUILDINGS) ? BUILDINGS : []).forEach((value) => pushLocation(value));
+  (Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : []).forEach((asset) => {
+    const specs = getAssetSpecs(asset);
+    pushLocation(specs?.mapLocationHint);
+    pushLocation(specs?.mapLocation);
+    pushLocation(specs?.importedLocation);
+    pushLocation(asset?.location);
+    pushLocation(asset?.installedParentLocation);
+  });
+  (Array.isArray(inventoryFilterSnapshotState.spareStockRows) ? inventoryFilterSnapshotState.spareStockRows : []).forEach((row) => {
+    pushLocation(row?.location);
+  });
+
+  return Array.from(values).sort((a, b) => a.localeCompare(b));
+}
+
+function getKnownDepartmentOptions() {
+  const standard = STANDARD_MIU_DEPARTMENTS.slice();
+  const standardTokenSet = new Set(standard.map((label) => normalizeDepartmentForFilter(label)));
+  const extras = new Set();
+
+  (Array.isArray(DEPARTMENTS) ? DEPARTMENTS : []).forEach((value) => {
+    const label = normalizeDepartmentLabel(value);
+    if (!label) return;
+    if (!standardTokenSet.has(normalizeDepartmentForFilter(label))) extras.add(label);
+  });
+  (Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : []).forEach((asset) => {
+    const label = normalizeDepartmentLabel(asset?.department);
+    if (!label) return;
+    if (!standardTokenSet.has(normalizeDepartmentForFilter(label))) extras.add(label);
+  });
+
+  const sortedExtras = Array.from(extras).sort((a, b) => a.localeCompare(b));
+  return [...standard, ...sortedExtras];
+}
+
+function getKnownLifecycleOptions() {
+  const known = new Set([
+    'in_stock',
+    'assigned',
+    'in_use',
+    'under_maintenance',
+    'pending_repair',
+    'in_transit',
+    'reserved',
+    'retired',
+    'disposed',
+    'lost_stolen',
+    'eol_expired',
+  ]);
+  (Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : []).forEach((asset) => {
+    const value = normalizeLifecycleStatus(asset?.lifecycleStatus || asset?.lifecycle_status || '');
+    if (value) known.add(value);
+  });
+  return Array.from(known);
+}
+
+function inventory360Number(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function inventory360Cost(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function inventory360Currency(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'Missing';
+  return parsed.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function getInventory360AssetCost(asset = {}) {
+  const specs = getAssetSpecs(asset);
+  const purchaseCost = inventory360Cost(asset.purchaseCost ?? specs.purchaseCost ?? specs.purchase_cost);
+  const replacementCost = inventory360Cost(asset.replacementCost ?? specs.replacementCost ?? specs.replacement_cost);
+  const currentValue = inventory360Cost(asset.currentValue ?? asset.estimatedValue ?? specs.currentValue ?? specs.estimatedValue);
+  const maintenanceCost = inventory360Cost(asset.maintenanceCost ?? asset.repairCost ?? specs.maintenanceCost ?? specs.repairCost);
+  return {
+    purchaseCost,
+    replacementCost,
+    currentValue,
+    maintenanceCost,
+    hasAny: [purchaseCost, replacementCost, currentValue, maintenanceCost].some((value) => value !== null),
+  };
+}
+
+function getInventory360StockCost(row = {}) {
+  const qty = inventory360Number(row.quantityAvailable ?? row.quantity ?? row.availableQuantity, 0);
+  const unitCost = inventory360Cost(row.unitCost ?? row.averageUnitCost ?? row.cost);
+  return unitCost === null ? null : qty * unitCost;
+}
+
+function getInventory360AllAssets() {
+  return Array.isArray(inventoryFilterSnapshotState.allAssets) && inventoryFilterSnapshotState.allAssets.length
+    ? inventoryFilterSnapshotState.allAssets
+    : currentAssets;
+}
+
+function getInventory360SpareRows() {
+  return Array.isArray(inventoryFilterSnapshotState.spareStockRows) && inventoryFilterSnapshotState.spareStockRows.length
+    ? inventoryFilterSnapshotState.spareStockRows
+    : (Array.isArray(spareStockItemsCache) ? spareStockItemsCache : []);
+}
+
+function countInventory360Duplicates(assets = []) {
+  const counts = new Map();
+  assets.forEach((asset) => {
+    const key = normalizeValue(getDisplayAssetTag(asset) || asset.customId || '');
+    if (!key) return;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return Array.from(counts.values()).filter((count) => count > 1).length;
+}
+
+function getInventory360ProcurementBoard() {
+  return inventory360AnalyticsState.board || procurementBoardState.board || null;
+}
+
+function buildInventory360Summary() {
+  const assets = getInventory360AllAssets();
+  const stockRows = getInventory360SpareRows();
+  const board = getInventory360ProcurementBoard() || {};
+  const requests = Array.isArray(board.requests) ? board.requests : [];
+  const recommendations = Array.isArray(board.aiRecommendations) ? board.aiRecommendations : [];
+  const analytics = board.analytics || {};
+  const priorities = board.priorities || {};
+  const statusCounts = board.statusCounts || {};
+  const activeAssets = assets.filter((asset) => !['retired', 'disposed', 'lost_stolen'].includes(normalizeLifecycleStatus(asset.lifecycleStatus || asset.status || ''))).length;
+  const inactiveAssets = Math.max(0, assets.length - activeAssets);
+  const maintenanceAssets = assets.filter((asset) => ['under_maintenance', 'pending_repair'].includes(normalizeLifecycleStatus(asset.lifecycleStatus || asset.status || ''))).length;
+  const inTransitAssets = assets.filter((asset) => normalizeLifecycleStatus(asset.lifecycleStatus || asset.status || '') === 'in_transit').length;
+  const unassignedAssets = assets.filter((asset) => normalizeDepartmentForFilter(getAssetDisplayDepartment(asset)) === normalizeDepartmentForFilter('Unassigned')).length;
+  const typeMix = assets.reduce((acc, asset) => {
+    const label = getAssetCategoryKey(asset) || canonicalType(asset.type) || 'asset';
+    acc[label] = (acc[label] || 0) + 1;
+    return acc;
+  }, {});
+  const highRiskAssets = assets.filter((asset) => isAssetHighRisk(asset)).length;
+  const eolSoonAssets = assets.filter((asset) => isAssetEolSoon(asset)).length;
+  const staleTelemetryAssets = assets.filter((asset) => {
+    const specs = getAssetSpecs(asset);
+    const lastSeen = specs.lastSeenAt || specs.wifiLastSeenAt || specs.mockWifiLastSeenAt || specs.lastNetworkSeenAt;
+    if (!lastSeen && !(asset.telemetryEnabledDerived || specs.telemetryEnabled || specs.telemetryApplicable)) return false;
+    const parsed = lastSeen ? new Date(lastSeen) : null;
+    return !parsed || Number.isNaN(parsed.getTime()) || (Date.now() - parsed.getTime()) > 24 * 3600000;
+  }).length;
+  const warrantyExpiring = assets.filter((asset) => {
+    const end = asset.warrantyEndDate || getAssetSpecs(asset).warrantyEndDate || getAssetSpecs(asset).warrantyEnd;
+    if (!end) return false;
+    const parsed = new Date(end);
+    if (Number.isNaN(parsed.getTime())) return false;
+    const days = (parsed.getTime() - Date.now()) / 86400000;
+    return days >= 0 && days <= 90;
+  }).length;
+  const missingSerials = assets.filter((asset) => !getDisplaySerial(asset)).length;
+  const missingDepartments = assets.filter((asset) => normalizeDepartmentForFilter(getAssetDisplayDepartment(asset)) === normalizeDepartmentForFilter('Unassigned')).length;
+  const missingLocations = assets.filter((asset) => {
+    const loc = getAssetDisplayLocation(asset);
+    return !loc || normalizeValue(loc) === 'unknown' || normalizeValue(loc) === 'unassigned';
+  }).length;
+  const missingPurchaseDates = assets.filter((asset) => {
+    const specs = getAssetSpecs(asset);
+    return !(asset.purchaseDate || asset.acquiredAt || specs.purchaseDate || specs.acquiredAt);
+  }).length;
+  const missingWarranty = assets.filter((asset) => {
+    const specs = getAssetSpecs(asset);
+    return !(asset.warrantyEndDate || specs.warrantyEndDate || specs.warrantyEnd);
+  }).length;
+  const orphanRelatedItems = assets.filter((asset) => hasLinkedComponentIssue(asset)).length;
+  const duplicateTags = countInventory360Duplicates(assets);
+  const lowStockRows = stockRows.filter((row) => stockItemMatchesSavedView(row, 'low_stock'));
+  const fifoWarnings = inventory360Number(analytics?.fifo?.staleBatchCount, 0);
+  const eoqMissing = inventory360Number(analytics?.eoqMoq?.missingDataItems, 0);
+  const eoqConflicts = inventory360Number(analytics?.eoqMoq?.moqConflictItems, 0);
+  const deadStock = inventory360Number(analytics?.fifo?.deadStockCount ?? analytics?.deadStockCount, 0);
+  const costRows = assets.map(getInventory360AssetCost);
+  const totalAssetValue = costRows.reduce((sum, row) => sum + inventory360Number(row.currentValue ?? row.purchaseCost, 0), 0);
+  const replacementForecast = costRows.reduce((sum, row) => sum + inventory360Number(row.replacementCost, 0), 0);
+  const maintenanceCost = costRows.reduce((sum, row) => sum + inventory360Number(row.maintenanceCost, 0), 0);
+  const stockValue = stockRows.reduce((sum, row) => sum + inventory360Number(getInventory360StockCost(row), 0), 0);
+  const missingCostData = costRows.filter((row) => !row.hasAny).length;
+  const openRequests = requests.filter((row) => !['received', 'closed', 'cancelled', 'rejected'].includes(normalizeValue(row.status))).length;
+  const pendingApprovals = inventory360Number(statusCounts.Submitted) + inventory360Number(statusCounts['Under Review']);
+  const orderedTransit = requests.filter((row) => ['ordered', 'partiallyreceived'].includes(normalizeValue(row.status))).length;
+  const receivingPending = inventory360Number(analytics.receivedVsPending?.pending, 0);
+  const monthlySpend = inventory360Cost(analytics.monthlySpendingEstimate);
+
+  return {
+    assets,
+    stockRows,
+    board,
+    totalAssets: assets.length,
+    activeAssets,
+    inactiveAssets,
+    maintenanceAssets,
+    inTransitAssets,
+    unassignedAssets,
+    typeMix,
+    highRiskAssets,
+    eolSoonAssets,
+    staleTelemetryAssets,
+    warrantyExpiring,
+    missingSerials,
+    missingDepartments,
+    missingLocations,
+    missingPurchaseDates,
+    missingWarranty,
+    orphanRelatedItems,
+    duplicateTags,
+    lowStockCount: lowStockRows.length || inventory360Number(priorities.lowStockItems?.length, 0),
+    fifoWarnings,
+    eoqMissing,
+    eoqConflicts,
+    deadStock,
+    totalAssetValue,
+    replacementForecast,
+    maintenanceCost,
+    stockValue,
+    missingCostData,
+    monthlySpend,
+    openRequests,
+    pendingApprovals,
+    orderedTransit,
+    receivingPending,
+    recommendationCount: recommendations.length,
+  };
+}
+
+function inventory360Evidence(title, evidence = [], missingData = []) {
+  const evidenceRows = (Array.isArray(evidence) ? evidence : []).filter(Boolean);
+  const missingRows = (Array.isArray(missingData) ? missingData : []).filter(Boolean);
+  return `
+    <details class="ops-360-evidence">
+      <summary>View Evidence</summary>
+      <div class="ops-360-evidence-body">
+        <strong>${UI.escapeHTML(title || 'Evidence')}</strong>
+        ${evidenceRows.length ? `<ul>${evidenceRows.map((row) => `<li>${UI.escapeHTML(row)}</li>`).join('')}</ul>` : '<p>No additional evidence rows.</p>'}
+        ${missingRows.length ? `<p><strong>Missing data:</strong> ${UI.escapeHTML(missingRows.join(', '))}</p>` : ''}
+      </div>
+    </details>
+  `;
+}
+
+function inventory360Card({ title, value, subtitle, severity = 'info', source = 'Deterministic', evidence = [], missingData = [], actions = [] } = {}) {
+  return `
+    <article class="ops-360-card ${severityClass(severity)}">
+      <div class="ops-360-card-head">
+        <div>
+          <div class="ops-360-card-kicker">${UI.escapeHTML(source)}</div>
+          <h3>${UI.escapeHTML(title || 'Inventory insight')}</h3>
+        </div>
+        <span class="ops-attention-pill ${severityClass(severity)}">${UI.escapeHTML(String(severity || 'Info'))}</span>
+      </div>
+      <div class="ops-360-card-value">${UI.escapeHTML(String(value ?? '-'))}</div>
+      <p>${UI.escapeHTML(subtitle || '')}</p>
+      ${inventory360Evidence(title, evidence, missingData)}
+      ${actions.length ? `<div class="ops-360-actions">${actions.map((action, index) => `
+        <button type="button" class="btn btn-sm ${index === 0 ? 'btn-primary' : 'btn-outline-primary'}" data-inventory-360-action="${UI.escapeHTML(action.action || '')}">
+          ${UI.escapeHTML(action.label || 'Open')}
+        </button>
+      `).join('')}</div>` : ''}
+    </article>
+  `;
+}
+
+function buildInventory360NextActions(summary) {
+  const actions = [
+    {
+      title: 'Create procurement request',
+      severity: summary.lowStockCount ? 'High' : 'Info',
+      reason: `${summary.lowStockCount} low-stock item(s) or stock signal(s) need review.`,
+      evidence: [`Low stock: ${summary.lowStockCount}`, `AI recommendations: ${summary.recommendationCount}`],
+      action: 'procurement',
+      label: 'Open Procurement',
+      active: summary.lowStockCount > 0 || summary.recommendationCount > 0,
+    },
+    {
+      title: 'Fix missing CMDB data',
+      severity: summary.missingSerials + summary.missingDepartments + summary.missingLocations ? 'Medium' : 'Healthy',
+      reason: 'Missing serial, location, department, purchase, or warranty data weakens AI confidence and audits.',
+      evidence: [`Missing serials: ${summary.missingSerials}`, `Missing departments: ${summary.missingDepartments}`, `Missing locations: ${summary.missingLocations}`],
+      action: 'missing-data',
+      label: 'View Missing Data',
+      active: summary.missingSerials + summary.missingDepartments + summary.missingLocations + summary.missingPurchaseDates + summary.missingWarranty > 0,
+    },
+    {
+      title: 'Review high-risk / EOL assets',
+      severity: summary.highRiskAssets + summary.eolSoonAssets ? 'High' : 'Healthy',
+      reason: 'Lifecycle and risk signals suggest replacement, warranty, or maintenance planning.',
+      evidence: [`High risk: ${summary.highRiskAssets}`, `EOL soon: ${summary.eolSoonAssets}`, `Warranty expiring: ${summary.warrantyExpiring}`],
+      action: 'high-risk',
+      label: 'Open High Risk',
+      active: summary.highRiskAssets + summary.eolSoonAssets > 0,
+    },
+    {
+      title: 'Receive stock / close procurement loop',
+      severity: summary.receivingPending + summary.orderedTransit ? 'Medium' : 'Info',
+      reason: 'Ordered or partially received procurement items may be waiting for receiving confirmation.',
+      evidence: [`Ordered/in transit: ${summary.orderedTransit}`, `Receiving pending: ${summary.receivingPending}`],
+      action: 'procurement',
+      label: 'Open Procurement',
+      active: summary.receivingPending + summary.orderedTransit > 0,
+    },
+  ].filter((row) => row.active);
+  return actions.slice(0, 3);
+}
+
+function renderInventory360Analytics() {
+  const grid = document.getElementById('inventory360Grid');
+  if (!grid) return;
+  const summary = buildInventory360Summary();
+  const typeMixText = Object.entries(summary.typeMix)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([type, count]) => `${type}: ${count}`)
+    .join(' | ') || 'No asset type mix yet';
+  const dataQualityIssues = summary.missingSerials + summary.missingDepartments + summary.missingLocations + summary.missingPurchaseDates + summary.missingWarranty + summary.duplicateTags + summary.orphanRelatedItems;
+  const stockIssues = summary.lowStockCount + summary.fifoWarnings + summary.eoqMissing + summary.eoqConflicts + summary.deadStock;
+  const knownCostTotal = summary.totalAssetValue + summary.replacementForecast + summary.maintenanceCost + summary.stockValue;
+  const nextActions = buildInventory360NextActions(summary);
+
+  grid.innerHTML = [
+    inventory360Card({
+      title: 'Inventory Health',
+      value: summary.totalAssets,
+      subtitle: `${summary.activeAssets} active | ${summary.inactiveAssets} inactive | ${summary.unassignedAssets} unassigned`,
+      severity: summary.unassignedAssets || summary.maintenanceAssets ? 'Medium' : 'Healthy',
+      evidence: [`Active assets: ${summary.activeAssets}`, `In transit: ${summary.inTransitAssets}`, `Maintenance/pending repair: ${summary.maintenanceAssets}`, `Type mix: ${typeMixText}`],
+      actions: [{ label: 'Open Assets', action: 'assets' }],
+    }),
+    inventory360Card({
+      title: 'Risk & EOL',
+      value: summary.highRiskAssets + summary.eolSoonAssets,
+      subtitle: `${summary.highRiskAssets} high-risk | ${summary.eolSoonAssets} EOL soon | ${summary.staleTelemetryAssets} stale telemetry`,
+      severity: summary.highRiskAssets + summary.eolSoonAssets ? 'High' : 'Healthy',
+      evidence: [`High risk assets: ${summary.highRiskAssets}`, `EOL soon: ${summary.eolSoonAssets}`, `Warranty expiring: ${summary.warrantyExpiring}`, `Stale/offline telemetry: ${summary.staleTelemetryAssets}`],
+      missingData: summary.staleTelemetryAssets ? ['fresh telemetry readings'] : [],
+      actions: [{ label: 'Open High Risk', action: 'high-risk' }, { label: 'Ask AI', action: 'ask-risk' }],
+    }),
+    inventory360Card({
+      title: 'Data Quality',
+      value: `${Math.max(0, summary.totalAssets - dataQualityIssues)}/${summary.totalAssets || 0}`,
+      subtitle: `${dataQualityIssues} issue signal(s) across identity, location, cost, warranty, and relationships`,
+      severity: dataQualityIssues ? 'Medium' : 'Healthy',
+      evidence: [`Missing serials: ${summary.missingSerials}`, `Missing departments: ${summary.missingDepartments}`, `Missing locations: ${summary.missingLocations}`, `Duplicate tags: ${summary.duplicateTags}`, `Orphan related items: ${summary.orphanRelatedItems}`],
+      missingData: ['purchase/warranty/cost fields improve 360 confidence'],
+      actions: [{ label: 'View Missing Data', action: 'missing-data' }, { label: 'Open Import Tools', action: 'import' }, { label: 'Ask AI', action: 'ask-missing-data' }],
+    }),
+    inventory360Card({
+      title: 'Stock & Reorder',
+      value: stockIssues,
+      subtitle: `${summary.lowStockCount} low-stock | ${summary.fifoWarnings} FIFO warning(s) | ${summary.eoqConflicts} EOQ/MOQ conflict(s)`,
+      severity: stockIssues ? 'High' : 'Healthy',
+      evidence: [`Low stock: ${summary.lowStockCount}`, `FIFO warnings: ${summary.fifoWarnings}`, `EOQ missing inputs: ${summary.eoqMissing}`, `Dead/obsolete stock signals: ${summary.deadStock}`],
+      missingData: summary.eoqMissing ? ['annual demand', 'ordering cost', 'holding cost'] : [],
+      actions: [{ label: 'Open Procurement', action: 'procurement' }, { label: 'Open Spare Stock', action: 'spare-stock' }],
+    }),
+    inventory360Card({
+      title: 'Cost Overview',
+      value: knownCostTotal > 0 ? inventory360Currency(knownCostTotal) : 'Cost data missing',
+      subtitle: knownCostTotal > 0
+        ? `${inventory360Currency(summary.totalAssetValue)} asset value | ${inventory360Currency(summary.stockValue)} stock value`
+        : 'Add purchase cost / quote / invoice to improve analytics.',
+      severity: summary.missingCostData ? 'Medium' : 'Healthy',
+      evidence: [`Asset value from explicit fields: ${inventory360Currency(summary.totalAssetValue)}`, `Replacement forecast from explicit fields: ${inventory360Currency(summary.replacementForecast)}`, `Maintenance/repair cost fields: ${inventory360Currency(summary.maintenanceCost)}`, `Stock value on hand: ${inventory360Currency(summary.stockValue)}`, `Procurement spend pressure: ${inventory360Currency(summary.monthlySpend)}`],
+      missingData: summary.missingCostData ? [`${summary.missingCostData} asset(s) missing cost evidence`] : [],
+      actions: [{ label: 'View Cost Gaps', action: 'cost-gaps' }, { label: 'Open Finance', action: 'finance' }, { label: 'Ask AI', action: 'ask-cost' }],
+    }),
+    inventory360Card({
+      title: 'Procurement Impact',
+      value: summary.openRequests,
+      subtitle: `${summary.pendingApprovals} pending approval | ${summary.orderedTransit} ordered/in transit | ${summary.recommendationCount} AI recommendation(s)`,
+      severity: summary.pendingApprovals + summary.orderedTransit + summary.recommendationCount ? 'Medium' : 'Healthy',
+      evidence: [`Open requests: ${summary.openRequests}`, `Pending approvals: ${summary.pendingApprovals}`, `Receiving pending: ${summary.receivingPending}`, `AI recommendations: ${summary.recommendationCount}`],
+      actions: [{ label: 'Open Procurement', action: 'procurement' }],
+    }),
+    inventory360Card({
+      title: 'Next Best Actions',
+      value: nextActions.length || 'Clear',
+      subtitle: nextActions.length ? 'Top actions from real evidence. Other options stay in More/Advanced flows.' : 'No critical next action detected from loaded evidence.',
+      severity: nextActions.some((row) => normalizeValue(row.severity) === 'high') ? 'High' : (nextActions.length ? 'Medium' : 'Healthy'),
+      evidence: nextActions.map((row) => `${row.title}: ${row.reason}`),
+      actions: nextActions.map((row) => ({ label: row.label, action: row.action })),
+    }),
+  ].join('');
+}
+
+async function refreshInventory360ProcurementBoard(force = false) {
+  const fresh = inventory360AnalyticsState.loadedAt && (Date.now() - inventory360AnalyticsState.loadedAt) < 45000;
+  if (!force && fresh && inventory360AnalyticsState.board) return inventory360AnalyticsState.board;
+  if (inventory360AnalyticsState.inFlightPromise) return inventory360AnalyticsState.inFlightPromise;
+  inventory360AnalyticsState.loading = true;
+  inventory360AnalyticsState.inFlightPromise = readInventoryJson('/inventory/procurement/board?status=all')
+    .then((board) => {
+      inventory360AnalyticsState.board = board;
+      inventory360AnalyticsState.loadedAt = Date.now();
+      renderInventory360Analytics();
+      return board;
+    })
+    .catch((error) => {
+      console.warn('[Inventory360] Procurement board unavailable:', error?.message || error);
+      renderInventory360Analytics();
+      return null;
+    })
+    .finally(() => {
+      inventory360AnalyticsState.loading = false;
+      inventory360AnalyticsState.inFlightPromise = null;
+    });
+  return inventory360AnalyticsState.inFlightPromise;
+}
+
+function openInventoryCopilotWithPrompt(prompt = '') {
+  const value = String(prompt || '').trim();
+  if (value) sessionStorage.setItem('inventory_copilot_prefill', value);
+  if (value && typeof window.openInventoryAiChatWithPrompt === 'function') {
+    window.openInventoryAiChatWithPrompt(value);
+    return;
+  }
+  if (typeof window.toggleInventoryAiChat === 'function') {
+    window.toggleInventoryAiChat(true);
+  } else {
+    sessionStorage.setItem('inventory_command_action', 'ai');
+  }
+}
+
+function handleInventory360Action(action = '') {
+  const value = String(action || '').trim();
+  if (value === 'assets') {
+    setInventorySavedView('all');
+    return;
+  }
+  if (value === 'high-risk') {
+    setInventorySavedView('high_risk');
+    return;
+  }
+  if (value === 'missing-data' || value === 'cost-gaps') {
+    setInventorySavedView('missing_data');
+    return;
+  }
+  if (value === 'spare-stock') {
+    setInventorySavedView('low_stock');
+    return;
+  }
+  if (value === 'import') {
+    if (typeof window.openImportAssetsModal === 'function') window.openImportAssetsModal();
+    return;
+  }
+  if (value === 'procurement' || value === 'finance') {
+    window.location.href = value === 'finance' ? '/pages/procurement.html#finance' : '/pages/procurement.html';
+    return;
+  }
+  if (value === 'next-best') {
+    const actions = buildInventory360NextActions(buildInventory360Summary());
+    const prompt = actions.length
+      ? `Explain the Inventory 360 next best actions and why they matter: ${actions.map((row) => `${row.title} - ${row.reason}`).join('; ')}`
+      : 'Explain Inventory 360 and confirm there are no critical next actions from the loaded evidence.';
+    openInventoryCopilotWithPrompt(prompt);
+    return;
+  }
+  if (value === 'explain') {
+    openInventoryCopilotWithPrompt('Explain Inventory 360. Use real loaded inventory evidence only: health, risk, data quality, stock, cost, procurement impact, and next best actions.');
+    return;
+  }
+  if (value === 'ask-risk') openInventoryCopilotWithPrompt('Explain the high-risk and EOL assets from Inventory 360 evidence. Do not invent asset facts.');
+  else if (value === 'ask-missing-data') openInventoryCopilotWithPrompt('What inventory data is missing and what should I fix first? Use Inventory 360 evidence only.');
+  else if (value === 'ask-cost') openInventoryCopilotWithPrompt('Explain the inventory cost impact and list missing cost data. Do not invent costs.');
+}
+
 function renderInventoryGroupPager() {
   const pagerEl = document.getElementById('inventoryGroupPager');
   if (!pagerEl) return;
@@ -3006,7 +4197,7 @@ function renderInventoryGroupPager() {
   pagerEl.classList.remove('d-none');
   pagerEl.innerHTML = `
     <div class="d-flex justify-content-between align-items-center">
-      <small class="text-muted">Page ${page} of ${totalPages} • Total groups/items: ${total}</small>
+      <small class="text-muted">Page ${page} of ${totalPages} â€¢ Total groups/items: ${total}</small>
       <div class="d-flex gap-2">
         <button class="btn btn-sm btn-outline-secondary" ${hasPrev ? '' : 'disabled'} onclick="window.changeInventoryPage(-1)">
           <i class="bi bi-arrow-left me-1"></i>Previous
@@ -3032,6 +4223,7 @@ window.changeInventoryPage = (delta = 0) => {
 function renderTable() {
   const tableBody = document.getElementById('inventoryTableBody');
   if (!tableBody) return;
+  syncInventorySavedViewControl();
   const headerName = document.getElementById('groupTableHeaderName');
   const headerType = document.getElementById('groupTableHeaderType');
   const headerQty = document.getElementById('groupTableHeaderQty');
@@ -3069,7 +4261,7 @@ function renderTable() {
       const candidateType = normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock');
       const matchBuilding = !buildingFilter || buildingFilter === 'all' || normalizeValue(candidateBuilding) === normalizeValue(buildingFilter);
       const matchType = !typeFilter || typeFilter === 'all' || normalizeValue(candidateType) === normalizeValue(typeFilter);
-      if (!(matchBuilding && matchType)) return false;
+      if (!(matchBuilding && matchType) || !stockItemMatchesSavedView(item)) return false;
       if (!searchTerm) return true;
       const haystack = [
         item.partName,
@@ -3089,6 +4281,7 @@ function renderTable() {
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
       updateDeleteAllAssetsButton();
       updateInventoryAiFloatingOffset();
+      renderActiveInventoryFilterChips();
       return;
     }
 
@@ -3099,7 +4292,8 @@ function renderTable() {
       groupedStock[key].push(item);
     });
 
-    const groupedEntries = Object.entries(groupedStock);
+    const groupedEntries = Object.entries(groupedStock)
+      .sort((a, b) => String(a[0] || '').localeCompare(String(b[0] || '')));
     tableBody.innerHTML = groupedEntries.map(([groupType, groupItems]) => {
       const totalQty = groupItems.reduce((sum, item) => sum + Number(item.quantityAvailable || 0), 0);
       const locationSet = new Set(groupItems.map((item) => String(item.location || 'Unknown')).filter(Boolean));
@@ -3132,6 +4326,7 @@ function renderTable() {
     }).join('');
     updateDeleteAllAssetsButton();
     updateInventoryAiFloatingOffset();
+    renderActiveInventoryFilterChips();
     return;
   }
 
@@ -3139,21 +4334,17 @@ function renderTable() {
   const filteredAssets = baseAssets.filter((asset) => {
     const installedParent = getInstalledParentInfo(asset);
     const parentSearchText = `${installedParent.parentName} ${installedParent.parentId} ${installedParent.parentTag}`.trim();
-    const candidateBuilding = currentInventoryView === 'components' && asset?.installedParentLocation
-      ? displayLocation(String(asset.installedParentLocation))
-      : displayLocation(asset.location);
-    const candidateDepartment = currentInventoryView === 'components' && asset?.installedParentDepartment
-      ? displayDepartment(String(asset.installedParentDepartment))
-      : displayDepartment(asset.department);
+    const candidateBuilding = getAssetDisplayLocation(asset, { preferInstalledParent: currentInventoryView === 'components' });
+    const candidateDepartment = getAssetDisplayDepartment(asset, { preferInstalledParent: currentInventoryView === 'components' });
     const candidateType = currentInventoryView === 'parents'
       ? canonicalType(asset.type)
       : getAssetViewTypeLabel(asset, currentInventoryView);
     const matchBuilding = !buildingFilter || buildingFilter === 'all' || normalizeValue(candidateBuilding) === normalizeValue(buildingFilter);
-    const matchDept = !deptFilter || deptFilter === 'all' || normalizeValue(candidateDepartment) === normalizeValue(deptFilter);
+    const matchDept = !deptFilter || deptFilter === 'all' || normalizeDepartmentForFilter(candidateDepartment) === normalizeDepartmentForFilter(deptFilter);
     const matchType = !typeFilter || typeFilter === 'all' || normalizeValue(candidateType) === normalizeValue(typeFilter);
     const assetLifecycle = normalizeLifecycleStatus(asset.lifecycleStatus || asset.lifecycle_status || 'in_stock');
     const matchLifecycle = !lifecycleFilter || lifecycleFilter === 'all' || normalizeValue(assetLifecycle) === normalizeValue(lifecycleFilter);
-    if (!(matchBuilding && matchDept && matchType && matchLifecycle)) return false;
+    if (!(matchBuilding && matchDept && matchType && matchLifecycle) || !assetMatchesSavedView(asset)) return false;
     if (!searchTerm) return true;
     const haystack = [
       asset.name,
@@ -3178,6 +4369,7 @@ function renderTable() {
     tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
     renderInventoryGroupPager();
     updateDeleteAllAssetsButton();
+    renderActiveInventoryFilterChips();
     return;
   }
 
@@ -3189,17 +4381,17 @@ function renderTable() {
       groupedByComponentType[componentType].push(asset);
     });
 
-    const groupedEntries = Object.entries(groupedByComponentType);
+    const groupedEntries = Object.entries(groupedByComponentType)
+      .sort((a, b) => String(a[0] || '').localeCompare(String(b[0] || '')));
     tableBody.innerHTML = groupedEntries.map(([componentType, componentGroup]) => {
       const encodedComponentType = encodeURIComponent(componentType);
       const parentSet = new Set(componentGroup.map((asset) => {
         const parent = getInstalledParentInfo(asset);
         return parent.parentName || parent.parentId || parent.parentTag;
       }).filter(Boolean));
-      const locationSet = new Set(componentGroup.map((asset) => {
-        if (asset?.installedParentLocation) return displayLocation(String(asset.installedParentLocation));
-        return displayLocation(asset.location);
-      }).filter(Boolean));
+      const locationSet = new Set(componentGroup.map((asset) => (
+        getAssetDisplayLocation(asset, { preferInstalledParent: currentInventoryView === 'components' })
+      )).filter(Boolean));
       const serialsSet = new Set(componentGroup.map((asset) => getDisplaySerial(asset)).filter(Boolean));
       const tagsSet = new Set(componentGroup.map((asset) => getDisplayAssetTag(asset)).filter(Boolean));
       const parentSummary = Array.from(parentSet).slice(0, 3).join(', ');
@@ -3239,15 +4431,20 @@ function renderTable() {
       groupedByTypeAndName[groupKey].push(asset);
     });
 
-    const groupedEntries = Object.entries(groupedByTypeAndName);
+    const groupedEntries = Object.entries(groupedByTypeAndName)
+      .sort((a, b) => {
+        const aName = String((a[0] || '').split('::')[1] || a[0] || '');
+        const bName = String((b[0] || '').split('::')[1] || b[0] || '');
+        return aName.localeCompare(bName);
+      });
     tableBody.innerHTML = groupedEntries.map(([groupKey, assetGroup]) => {
       const [typeLabel, assetName] = groupKey.split('::');
       const encodedAssetName = encodeURIComponent(assetName);
       const encodedAssetType = encodeURIComponent(canonicalType(assetGroup[0]?.type));
       const totalQty = getAssetsTotalQuantity(assetGroup);
       const firstAsset = assetGroup[0];
-      const locationsSet = new Set(assetGroup.map((asset) => displayLocation(asset.location)).filter(Boolean));
-      const departmentsSet = new Set(assetGroup.map((asset) => displayDepartment(asset.department)).filter(Boolean));
+      const locationsSet = new Set(assetGroup.map((asset) => getAssetDisplayLocation(asset)).filter(Boolean));
+      const departmentsSet = new Set(assetGroup.map((asset) => getAssetDisplayDepartment(asset)).filter(Boolean));
       const serialsSet = new Set(assetGroup.map((asset) => getDisplaySerial(asset)).filter(Boolean));
       const tagsSet = new Set(assetGroup.map((asset) => getDisplayAssetTag(asset)).filter(Boolean));
       const locationsFound = Array.from(locationsSet).join(', ') || 'Unknown';
@@ -3282,6 +4479,7 @@ function renderTable() {
     renderInventoryGroupPager();
   }
   updateDeleteAllAssetsButton();
+  renderActiveInventoryFilterChips();
 }
 
 function updateDeleteAllAssetsButton() {
@@ -3392,8 +4590,8 @@ async function handleAddAsset(e) {
   const idleAssets = currentAssets.filter(a =>
     normalizeValue(canonicalType(a.type)) === normalizeValue(type) &&
     (
-      normalizeValue(displayLocation(a.location)) === normalizeValue('Central Warehouse') ||
-      normalizeValue(displayDepartment(a.department)) === normalizeValue('Unassigned') ||
+      normalizeValue(getAssetDisplayLocation(a)) === normalizeValue('Central Warehouse') ||
+      normalizeValue(getAssetDisplayDepartment(a)) === normalizeValue('Unassigned') ||
       ['ACTIVE', 'AVAILABLE'].includes(String(a.status || '').toUpperCase())
     )
   );
@@ -3687,9 +4885,9 @@ window.viewAssetDetails = (assetName) => {
       const predictionTargetLabel = getAssetPredictionLabel(sampleAsset);
       let noteHtml = '';
       if (unknownCount > 0) {
-        noteHtml = `${unknownCount} item${unknownCount === 1 ? '' : 's'} ha${unknownCount === 1 ? 's' : 've'} unknown EOL status due to insufficient evidence or missing telemetry.`;
+        noteHtml = `${unknownCount} item${unknownCount === 1 ? '' : 's'} need more evidence before reliable EOL prediction. Next steps: verify specs, add purchase/warranty dates, and collect telemetry after deployment.`;
       } else if (lowConfidenceCount > 0) {
-        noteHtml = 'Backend EOL assessment is low confidence. Manual review is recommended.';
+        noteHtml = 'Current EOL confidence is low. Recommended: run AI Spec Verification and complete missing lifecycle data.';
       } else if (failingCount > 0) {
         noteHtml = `${failingCount} item(s) in this group need replacement planning soon.`;
       } else {
@@ -3725,7 +4923,7 @@ window.viewAssetDetails = (assetName) => {
       || profile.specs?.installedInAssetId
       || ''
     ).trim();
-    const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join(' · ');
+    const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join(' Â· ');
     const eolApplicable = isEolRelevantAsset(asset);
     const telemetryVisible = shouldShowTelemetryControl(asset, profile);
     const telemetryConfigured = Boolean(
@@ -3736,7 +4934,7 @@ window.viewAssetDetails = (assetName) => {
       || toBoolean(profile.specs?.trackWorkingHours)
     );
     const trackingLabel = profile.trackWorkingHours
-      ? `${getOperationalStateLabel(profile.telemetryStatus)} · ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` · ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
+      ? `${getOperationalStateLabel(profile.telemetryStatus)} Â· ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` Â· ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
       : (telemetryVisible
           ? 'Telemetry-capable (awaiting signal/configuration)'
           : (telemetryConfigured && isCentralWarehouseLocation(asset?.location)
@@ -3764,8 +4962,8 @@ window.viewAssetDetails = (assetName) => {
 	        </span>
 	        <div class="text-muted small mt-1">${UI.escapeHTML(displayLifecycleStatus(asset.lifecycleStatus || 'in_stock'))}</div>
 	      </td>
-      <td>${context.mode !== 'parents' && asset?.installedParentLocation ? displayLocation(String(asset.installedParentLocation)) : displayLocation(asset.location)}</td>
-      <td>${context.mode !== 'parents' && asset?.installedParentDepartment ? displayDepartment(String(asset.installedParentDepartment)) : displayDepartment(asset.department)}</td>
+      <td>${getAssetDisplayLocation(asset, { preferInstalledParent: context.mode !== 'parents' })}</td>
+      <td>${getAssetDisplayDepartment(asset, { preferInstalledParent: context.mode !== 'parents' })}</td>
 	      <td>
 	        ${eolApplicable ? `
           <div class="mb-1">
@@ -3792,20 +4990,20 @@ window.viewAssetDetails = (assetName) => {
 	        <div class="d-inline-flex flex-column align-items-end gap-1 inventory-row-actions">
 	          <div class="btn-group btn-group-sm" role="group" aria-label="Primary row actions">
 	            ${telemetryVisible ? `
-	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State">
+	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State" aria-label="View telemetry state for ${UI.escapeHTML(asset.customId)}">
 	              <i class="bi bi-activity"></i>
 	            </button>` : ''}
-	            <button class="btn btn-outline-info d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewQRCode('${asset.customId}')" title="View QR code">
+	            <button class="btn btn-outline-info d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.viewQRCode('${asset.customId}')" title="View QR code" aria-label="View QR code for ${UI.escapeHTML(asset.customId)}">
 	              <i class="bi bi-qr-code"></i>
 	            </button>
-		            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.viewTransferHistory('${asset.customId}')" title="View history">
+		            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.viewTransferHistory('${asset.customId}')" title="View history" aria-label="View transfer history for ${UI.escapeHTML(asset.customId)}">
 		              <i class="bi bi-clock-history"></i>
 		            </button>
-		            <button class="btn btn-outline-success d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.openAssetCmdb('${asset.customId}')" title="CMDB Details">
+		            <button class="btn btn-outline-success d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.openAssetCmdb('${asset.customId}')" title="CMDB Details" aria-label="Open CMDB details for ${UI.escapeHTML(asset.customId)}">
 		              <i class="bi bi-diagram-3"></i>
 		            </button>
 		            ${INVENTORY_ACCESS.canEditSpecs ? `
-		            <button class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center p-0" style="width:36px;height:36px;font-size:16px;" onclick="window.editSpecs('${asset.customId}', false)" title="Edit specs/details">
+		            <button class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.editSpecs('${asset.customId}', false)" title="Edit specs/details" aria-label="Edit specs for ${UI.escapeHTML(asset.customId)}">
 		              <i class="bi bi-pencil"></i>
 	            </button>` : ''}
 	          </div>
@@ -3858,9 +5056,6 @@ window.viewAssetDetails = (assetName) => {
     const groupActionsDiv = document.createElement('div');
     groupActionsDiv.className = 'd-flex gap-2 ms-auto';
     groupActionsDiv.innerHTML = `
-      <button class="btn btn-sm btn-outline-success" onclick="window.openGroupCmdb(decodeURIComponent('${encodedDetailGroupName}'))" title="Open Group CMDB">
-        <i class="bi bi-diagram-3"></i> Group CMDB
-      </button>
       <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels(decodeURIComponent('${encodedDetailGroupName}'), true)" title="Print QR Labels">
         <i class="bi bi-printer"></i> Print Labels
       </button>
@@ -4156,7 +5351,7 @@ function renderHistoryTimeline(entries = [], includeRelated = true) {
     const sourceMeta = [entry.sourceItemCustomId, entry.sourceItemAssetTag, entry.sourceItemSerialNumber]
       .map((value) => String(value || '').trim())
       .filter(Boolean)
-      .join(' • ');
+      .join(' â€¢ ');
     const linkedParent = String(entry.linkedParentAssetId || entry.linkedParentAssetName || '').trim()
       ? `Parent: ${entry.linkedParentAssetName || entry.linkedParentAssetId}${entry.linkedParentAssetTag ? ` (${entry.linkedParentAssetTag})` : ''}`
       : '';
@@ -4283,18 +5478,140 @@ function parseBulkCheckoutCodes(raw) {
   ));
 }
 
+function getBulkCheckoutFormState() {
+  const building = String(document.getElementById('bulkCheckoutBuilding')?.value || '').trim();
+  const department = normalizeDepartmentLabel(String(document.getElementById('bulkCheckoutDepartment')?.value || '').trim(), { fallbackUnassigned: false }) || '';
+  const room = String(document.getElementById('bulkCheckoutRoom')?.value || '').trim();
+  const assigneeRole = String(document.getElementById('bulkCheckoutAssigneeRole')?.value || '').trim();
+  const assigneeName = String(document.getElementById('bulkCheckoutAssignedTo')?.value || '').trim();
+  const expectedReturnDate = String(document.getElementById('bulkCheckoutExpectedReturnDate')?.value || '').trim();
+  const reason = String(document.getElementById('bulkCheckoutReason')?.value || '').trim();
+  const includeRelated = Boolean(document.getElementById('bulkCheckoutIncludeRelated')?.checked);
+  return {
+    building,
+    department,
+    room,
+    assigneeRole,
+    assigneeName,
+    expectedReturnDate,
+    reason,
+    includeRelated,
+  };
+}
+
+function updateBulkCheckoutDestinationSummary() {
+  const summaryEl = document.getElementById('bulkCheckoutDestinationSummary');
+  if (!summaryEl) return;
+  const state = getBulkCheckoutFormState();
+  const buildingLabel = state.building || 'Select Building';
+  const roomLabel = state.room || 'Room not specified';
+  const deptLabel = state.department || 'Select Department';
+  const assignee = [state.assigneeRole, state.assigneeName].filter(Boolean).join(' - ') || 'No assignee selected';
+  summaryEl.textContent = `Checking out assets to ${buildingLabel} / ${roomLabel}, under ${deptLabel}, assigned to ${assignee}.`;
+}
+
+function populateBulkCheckoutDestinationSelectors() {
+  const buildingSelect = document.getElementById('bulkCheckoutBuilding');
+  const departmentSelect = document.getElementById('bulkCheckoutDepartment');
+  if (!buildingSelect || !departmentSelect) return;
+
+  const previousBuilding = String(buildingSelect.value || '').trim();
+  const previousDepartment = String(departmentSelect.value || '').trim();
+  const buildings = getKnownBuildingOptions();
+  const departments = getKnownDepartmentOptions();
+
+  buildingSelect.innerHTML = `<option value="">Select Building</option>${buildings.map((value) => `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value)}</option>`).join('')}`;
+  departmentSelect.innerHTML = `<option value="">Select Department</option>${departments.map((value) => `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value)}</option>`).join('')}`;
+
+  if (previousBuilding && Array.from(buildingSelect.options).some((option) => option.value === previousBuilding)) {
+    buildingSelect.value = previousBuilding;
+  }
+  if (previousDepartment && Array.from(departmentSelect.options).some((option) => option.value === previousDepartment)) {
+    departmentSelect.value = previousDepartment;
+  }
+  updateBulkCheckoutDestinationSummary();
+}
+
+async function resolveAssetForBulkValidation(requestedCode) {
+  const normalizedCode = normalizeValue(requestedCode);
+  const inMemory = currentAssets.find((entry) => (
+    normalizeValue(entry?.customId) === normalizedCode
+    || normalizeValue(entry?.assetTag) === normalizedCode
+  ));
+  if (inMemory) return inMemory;
+
+  const exactById = await readInventoryJson(`/assets/${encodeURIComponent(requestedCode)}`).catch(() => null);
+  if (exactById && normalizeValue(exactById?.customId) === normalizedCode) return exactById;
+
+  const searchPayload = await readInventoryJson(`/assets?paginate=true&page=1&pageSize=50&q=${encodeURIComponent(requestedCode)}`).catch(() => null);
+  const items = Array.isArray(searchPayload?.items)
+    ? searchPayload.items
+    : (Array.isArray(searchPayload) ? searchPayload : []);
+  const exact = items.find((entry) => (
+    normalizeValue(entry?.customId) === normalizedCode
+    || normalizeValue(entry?.assetTag) === normalizedCode
+  ));
+  return exact || null;
+}
+
+function buildBulkCheckoutValidationRow(inputCode, asset, duplicate = false) {
+  if (duplicate) {
+    return { input: inputCode, assetId: inputCode, valid: false, message: 'Duplicate input in this batch.' };
+  }
+  if (!asset) {
+    return { input: inputCode, assetId: inputCode, valid: false, message: 'Asset not found in inventory.' };
+  }
+  const lifecycle = normalizeLifecycleStatus(asset.lifecycleStatus);
+  if (['retired', 'disposed', 'lost_stolen'].includes(lifecycle)) {
+    return {
+      input: inputCode,
+      assetId: asset.customId,
+      valid: false,
+      message: `Unavailable (${displayLifecycleStatus(lifecycle)}).`,
+    };
+  }
+  const custodyStatus = normalizeValue(asset.custodyStatus || '');
+  if (custodyStatus === 'checkedout') {
+    return {
+      input: inputCode,
+      assetId: asset.customId,
+      valid: false,
+      message: 'Already checked out.',
+    };
+  }
+  const specs = getAssetSpecs(asset);
+  const loanerStatus = normalizeValue(specs.loanerStatus || '');
+  if (loanerStatus === 'checkedout' || loanerStatus === 'overdue') {
+    return {
+      input: inputCode,
+      assetId: asset.customId,
+      valid: false,
+      message: `Loaner state blocks checkout (${specs.loanerStatus || 'checked out'}).`,
+    };
+  }
+  return {
+    input: inputCode,
+    assetId: asset.customId,
+    valid: true,
+    message: `${asset.name} | ${getAssetDisplayLocation(asset)} | ${getAssetDisplayDepartment(asset)}`,
+  };
+}
+
 function renderBulkCheckoutValidation() {
   const bodyEl = document.getElementById('bulkCheckoutValidationTableBody');
   const summaryEl = document.getElementById('bulkCheckoutValidationSummary');
+  const confirmBtn = document.getElementById('bulkCheckoutConfirmBtn');
   if (!bodyEl || !summaryEl) return;
   if (!bulkCheckoutValidationRows.length) {
     bodyEl.innerHTML = '<tr><td colspan="3" class="text-muted">No validation yet.</td></tr>';
     summaryEl.textContent = 'Ready.';
+    if (confirmBtn) confirmBtn.disabled = true;
     return;
   }
   const validCount = bulkCheckoutValidationRows.filter((row) => row.valid).length;
   const invalidCount = bulkCheckoutValidationRows.length - validCount;
   summaryEl.textContent = `Validated ${bulkCheckoutValidationRows.length} entries: ${validCount} valid, ${invalidCount} invalid.`;
+  if (confirmBtn) confirmBtn.disabled = invalidCount > 0;
   bodyEl.innerHTML = bulkCheckoutValidationRows.map((row) => `
     <tr>
       <td>${UI.escapeHTML(row.assetId || row.input || '-')}</td>
@@ -4307,68 +5624,96 @@ function renderBulkCheckoutValidation() {
 window.openBulkCheckoutModal = () => {
   bulkCheckoutValidationRows = [];
   renderBulkCheckoutValidation();
+  populateBulkCheckoutDestinationSelectors();
+  const assigneeRoleEl = document.getElementById('bulkCheckoutAssigneeRole');
+  if (assigneeRoleEl && !assigneeRoleEl.value) assigneeRoleEl.value = '';
   const receiptEl = document.getElementById('bulkCheckoutReceipt');
   if (receiptEl) receiptEl.innerHTML = '';
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('bulkCheckoutModal'));
   modal.show();
 };
 
-window.validateBulkCheckoutAssets = () => {
+window.validateBulkCheckoutAssets = async () => {
   const codesRaw = document.getElementById('bulkCheckoutAssetCodes')?.value || '';
   const ids = parseBulkCheckoutCodes(codesRaw);
+  if (!ids.length) {
+    bulkCheckoutValidationRows = [];
+    renderBulkCheckoutValidation();
+    showMessage('Enter at least one asset code to validate.', 'warning');
+    return;
+  }
+  const summaryEl = document.getElementById('bulkCheckoutValidationSummary');
+  if (summaryEl) summaryEl.textContent = `Validating ${ids.length} asset code(s) against server data...`;
   const seen = new Set();
-  bulkCheckoutValidationRows = ids.map((id) => {
-    if (seen.has(id)) return { input: id, assetId: id, valid: false, message: 'Duplicate scan' };
-    seen.add(id);
-    const asset = currentAssets.find((entry) => entry.customId === id || String(entry.assetTag || '').trim() === id);
-    if (!asset) return { input: id, assetId: id, valid: true, message: 'Not on current page; server-side validation will run during confirm.' };
-    const lifecycle = normalizeLifecycleStatus(asset.lifecycleStatus);
-    if (['retired', 'disposed', 'lost_stolen'].includes(lifecycle)) {
-      return { input: id, assetId: asset.customId, valid: false, message: `Unavailable (${displayLifecycleStatus(lifecycle)})` };
+  const rows = [];
+  for (const id of ids) {
+    if (seen.has(id)) {
+      rows.push(buildBulkCheckoutValidationRow(id, null, true));
+      continue;
     }
-    return {
-      input: id,
-      assetId: asset.customId,
-      valid: true,
-      message: `${asset.name} • ${displayLocation(asset.location)} • ${displayDepartment(asset.department)}`,
-    };
-  });
+    seen.add(id);
+    const asset = await resolveAssetForBulkValidation(id);
+    rows.push(buildBulkCheckoutValidationRow(id, asset, false));
+  }
+  bulkCheckoutValidationRows = rows;
   renderBulkCheckoutValidation();
-  if (!ids.length) showMessage('Enter at least one asset code to validate.', 'warning');
 };
 
 window.confirmBulkCheckout = async () => {
-  const destinationType = String(document.getElementById('bulkCheckoutDestinationType')?.value || 'building').trim();
-  const destination = String(document.getElementById('bulkCheckoutDestination')?.value || '').trim();
-  const assignedToName = String(document.getElementById('bulkCheckoutAssignedTo')?.value || '').trim();
-  const assignedDepartment = String(document.getElementById('bulkCheckoutDepartment')?.value || '').trim();
-  const expectedReturnDate = String(document.getElementById('bulkCheckoutExpectedReturnDate')?.value || '').trim();
-  const includeRelated = Boolean(document.getElementById('bulkCheckoutIncludeRelated')?.checked);
   const codesRaw = document.getElementById('bulkCheckoutAssetCodes')?.value || '';
   const ids = parseBulkCheckoutCodes(codesRaw);
+  const state = getBulkCheckoutFormState();
+  const destinationType = 'building';
+  const destination = state.building;
+  const assignedToName = [state.assigneeRole, state.assigneeName].filter(Boolean).join(' - ') || null;
+  const assignedDepartment = state.department || null;
+  const expectedReturnDate = state.expectedReturnDate || null;
+  const includeRelated = state.includeRelated;
   if (!ids.length) {
     showMessage('Please provide asset IDs/tags first.', 'warning');
     return;
   }
   if (!destination) {
-    showMessage('Destination is required for bulk checkout.', 'warning');
+    showMessage('Please select a destination building.', 'warning');
     return;
   }
-  if (!window.confirm(`Confirm bulk checkout of ${ids.length} item(s) to ${destinationType}: ${destination}?`)) return;
+  if (!assignedDepartment) {
+    showMessage('Please select a destination department.', 'warning');
+    return;
+  }
+  if (!bulkCheckoutValidationRows.length || bulkCheckoutValidationRows.length !== ids.length) {
+    await window.validateBulkCheckoutAssets();
+  }
+  const invalidRows = bulkCheckoutValidationRows.filter((row) => !row.valid);
+  if (invalidRows.length) {
+    showMessage('Confirm is blocked. Resolve invalid assets first.', 'warning');
+    renderBulkCheckoutValidation();
+    return;
+  }
+  const confirmed = await confirmInventoryAction({
+    title: 'Confirm Bulk Checkout',
+    message: `Checking out ${ids.length} asset(s) to ${destination} / ${state.room || 'Room not specified'}, under ${assignedDepartment}, assigned to ${assignedToName || 'No assignee'}. Continue?`,
+    confirmText: 'Confirm Checkout',
+    confirmClass: 'inventory-insight-primary',
+    type: 'warning',
+  });
+  if (!confirmed) return;
   try {
     const payload = {
       assetIds: ids,
       destinationType,
       destination,
-      assignedToName: assignedToName || null,
-      assignedDepartment: assignedDepartment || null,
-      expectedReturnDate: expectedReturnDate || null,
+      assignedToName,
+      assignedDepartment,
+      expectedReturnDate,
       includeRelated,
       includeComponents: includeRelated,
       includeAccessories: includeRelated,
       includeLicenses: includeRelated,
       includeConsumables: false,
       actor: 'inventory-ui-kiosk',
+      reason: state.reason || 'bulk_checkout',
+      notes: [state.reason, state.room ? `Room: ${state.room}` : ''].filter(Boolean).join(' | '),
     };
     const result = await postInventoryJson('/inventory/bulk-checkout', payload);
     const receiptEl = document.getElementById('bulkCheckoutReceipt');
@@ -4377,6 +5722,7 @@ window.confirmBulkCheckout = async () => {
       receiptEl.innerHTML = `
         <div class="alert alert-success mt-2 mb-0">
           <div><strong>Checkout complete.</strong> Success: ${UI.escapeHTML(String(summary.successfulCount ?? 0))}, Failed: ${UI.escapeHTML(String(summary.failedCount ?? 0))}</div>
+          <div class="small mt-1">Destination: ${UI.escapeHTML(destination)} / ${UI.escapeHTML(state.room || 'Room not specified')} | Department: ${UI.escapeHTML(assignedDepartment || '-')} | Assignee: ${UI.escapeHTML(assignedToName || '-')}</div>
           <div class="small mt-1">Related moved: components ${UI.escapeHTML(String(summary.relatedMoved?.components ?? 0))}, accessories ${UI.escapeHTML(String(summary.relatedMoved?.accessories ?? 0))}, licenses ${UI.escapeHTML(String(summary.relatedMoved?.licenses ?? 0))}, consumables ${UI.escapeHTML(String(summary.relatedMoved?.consumables ?? 0))}.</div>
         </div>
       `;
@@ -4429,25 +5775,43 @@ window.renderLoanerBoard = () => {
   summaryEl.textContent = `Showing ${rows.length} of ${loanerBoardRows.length} loaner record(s).`;
   bodyEl.innerHTML = rows.map((row) => {
     const status = String(row.loanerStatus || 'available').toLowerCase();
+    const isEligible = Boolean(row.loanerEligible);
     const badgeClass = status === 'overdue'
       ? 'bg-danger'
       : (status === 'checked_out' ? 'bg-warning text-dark' : 'bg-success');
-    const canCheckout = status !== 'checked_out' && status !== 'overdue';
+    const canCheckout = isEligible && status !== 'checked_out' && status !== 'overdue';
+    const canReturn = status === 'checked_out' || status === 'overdue';
+    const blockedReason = isEligible
+      ? ''
+      : 'This asset is not marked as a loaner. Mark it as a loaner before checkout.';
     return `
       <tr>
         <td>
           <div class="fw-semibold">${UI.escapeHTML(row.name || '-')}</div>
-          <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} • ${UI.escapeHTML(row.type || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} | ${UI.escapeHTML(row.type || '-')}</div>
         </td>
         <td><span class="badge ${badgeClass}">${UI.escapeHTML(status.replace(/_/g, ' '))}</span></td>
         <td>${UI.escapeHTML(row.loanedTo || '-')}</td>
         <td>${row.expectedReturnDate ? UI.formatDateTime(row.expectedReturnDate) : '-'}</td>
         <td>${UI.escapeHTML(row.location || '-')}</td>
         <td class="text-end">
-          ${canCheckout
-            ? `<button type="button" class="btn btn-sm btn-outline-primary" data-loaner-checkout-id="${UI.escapeHTML(row.assetId)}">Checkout</button>`
-            : `<button type="button" class="btn btn-sm btn-outline-secondary" data-loaner-return-id="${UI.escapeHTML(row.assetId)}">Return</button>`
-          }
+          <div class="d-flex justify-content-end gap-1">
+            <button
+              type="button"
+              class="btn btn-sm ${canCheckout ? 'btn-outline-primary' : 'btn-outline-secondary'}"
+              data-loaner-checkout-id="${UI.escapeHTML(row.assetId)}"
+              ${canCheckout ? '' : 'disabled'}
+              title="${UI.escapeHTML(blockedReason || (canReturn ? 'Asset is already loaned out.' : 'Checkout is unavailable for this row.'))}"
+            >Checkout</button>
+            <button
+              type="button"
+              class="btn btn-sm ${canReturn ? 'btn-outline-dark' : 'btn-outline-secondary'}"
+              data-loaner-return-id="${UI.escapeHTML(row.assetId)}"
+              ${canReturn ? '' : 'disabled'}
+              title="${UI.escapeHTML(canReturn ? 'Record loaner return.' : 'Loaner return is available only when asset is currently loaned out.')}"
+            >Return</button>
+          </div>
+          ${blockedReason ? `<div class="small text-muted mt-1">${UI.escapeHTML(blockedReason)}</div>` : ''}
         </td>
       </tr>
     `;
@@ -4455,13 +5819,69 @@ window.renderLoanerBoard = () => {
 };
 
 window.loanerCheckoutAsset = async (assetId) => {
-  const loanedTo = window.prompt('Loan to (student/staff name):', '');
-  if (!loanedTo) return;
-  const expectedDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '');
+  const row = (loanerBoardRows || []).find((entry) => String(entry.assetId || '') === String(assetId || ''));
+  if (!row) {
+    showMessage('Loaner asset row not found.', 'warning');
+    return;
+  }
+  if (!row.loanerEligible) {
+    showMessage('This asset is not marked as a loaner. Mark it as a loaner before checkout.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Loaner Checkout',
+    message: `Asset: ${row.name || assetId}`,
+    confirmText: 'Confirm Checkout',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'loanedTo',
+        label: 'Borrower / Role',
+        type: 'text',
+        value: row.loanedTo || '',
+        placeholder: 'Student or staff name',
+        required: true,
+      },
+      {
+        name: 'department',
+        label: 'Department',
+        type: 'select',
+        options: getKnownDepartmentOptions(),
+        value: normalizeDepartmentLabel(row.department || '', { fallbackUnassigned: false }) || '',
+        placeholder: 'Select Department',
+        required: true,
+      },
+      {
+        name: 'expectedReturnDate',
+        label: 'Expected Return Date',
+        type: 'date',
+        value: row.expectedReturnDate ? String(row.expectedReturnDate).slice(0, 10) : '',
+        required: false,
+      },
+      {
+        name: 'reason',
+        label: 'Reason',
+        type: 'text',
+        value: 'Loaner checkout',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
-      loanedTo,
-      expectedReturnDate: expectedDate || null,
+      loanedTo: form.values.loanedTo,
+      expectedReturnDate: form.values.expectedReturnDate || null,
+      notes: [form.values.reason, form.values.notes, form.values.department ? `Department: ${form.values.department}` : ''].filter(Boolean).join(' | '),
       actor: 'inventory-ui-loaner',
     });
     showMessage(`Loaner checkout recorded for ${assetId}.`, 'success');
@@ -4472,10 +5892,48 @@ window.loanerCheckoutAsset = async (assetId) => {
 };
 
 window.loanerReturnAsset = async (assetId) => {
-  const returnLocation = window.prompt('Return location (optional):', '');
+  const row = (loanerBoardRows || []).find((entry) => String(entry.assetId || '') === String(assetId || ''));
+  const form = await showInventoryFormModal({
+    title: 'Loaner Return',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Confirm Return',
+    confirmClass: 'btn-outline-dark',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'condition',
+        label: 'Return Condition',
+        type: 'select',
+        options: [
+          { value: 'good', label: 'Good' },
+          { value: 'damaged', label: 'Damaged' },
+          { value: 'missing_accessories', label: 'Missing accessories' },
+        ],
+        value: 'good',
+        required: true,
+      },
+      {
+        name: 'location',
+        label: 'Return Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: false,
+      },
+      {
+        name: 'notes',
+        label: 'Damage / Missing Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-return`, {
-      location: returnLocation || null,
+      location: form.values.location || null,
+      notes: [form.values.condition ? `Condition: ${form.values.condition}` : '', form.values.notes].filter(Boolean).join(' | '),
       actor: 'inventory-ui-loaner',
     });
     showMessage(`Loaner return recorded for ${assetId}.`, 'success');
@@ -4512,7 +5970,7 @@ window.renderAuditBoard = (payload = null) => {
   if (!bodyEl || !summaryEl || !pointsEl) return;
   const rows = Array.isArray(auditBoardRows) ? auditBoardRows : [];
   const counts = payload?.counts || {};
-  summaryEl.textContent = `Needs verification: ${counts.needsVerification ?? '-'} • Missing: ${counts.missing ?? '-'} • Stale: ${counts.staleVerification ?? '-'} • Location mismatch: ${counts.locationMismatch ?? '-'}`;
+  summaryEl.textContent = `Needs verification: ${counts.needsVerification ?? '-'} | Missing: ${counts.missing ?? '-'} | Stale: ${counts.staleVerification ?? '-'} | Location mismatch: ${counts.locationMismatch ?? '-'}`;
   pointsEl.textContent = Array.isArray(payload?.verifierPoints) && payload.verifierPoints.length
     ? `Verifier points: ${payload.verifierPoints.map((entry) => `${entry.name} (${entry.points})`).join(', ')}`
     : 'Verifier points: no data yet.';
@@ -4520,29 +5978,97 @@ window.renderAuditBoard = (payload = null) => {
     <tr>
       <td>
         <div class="fw-semibold">${UI.escapeHTML(row.name || '-')}</div>
-        <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} • ${UI.escapeHTML(row.type || '-')}</div>
+        <div class="small text-muted">${UI.escapeHTML(row.assetId || '-')} | ${UI.escapeHTML(row.type || '-')}</div>
       </td>
       <td>${UI.escapeHTML(String(row.status || '-').replace(/_/g, ' '))}</td>
       <td>${UI.escapeHTML(row.location || '-')}</td>
       <td>${row.lastVerifiedAt ? UI.formatDateTime(row.lastVerifiedAt) : '-'}</td>
       <td>${UI.escapeHTML(row.lastVerifiedBy || '-')}</td>
       <td class="text-end">
-        <button type="button" class="btn btn-sm btn-outline-success me-1" data-audit-verify-id="${UI.escapeHTML(row.assetId)}">Verify</button>
-        <button type="button" class="btn btn-sm btn-outline-danger" data-audit-missing-id="${UI.escapeHTML(row.assetId)}">Mark Missing</button>
+        <div class="d-flex flex-wrap justify-content-end gap-1">
+          <button type="button" class="btn btn-sm btn-outline-success" data-audit-action-id="${UI.escapeHTML(row.assetId)}" data-audit-action="verify">Verify</button>
+          <button type="button" class="btn btn-sm btn-outline-danger" data-audit-action-id="${UI.escapeHTML(row.assetId)}" data-audit-action="missing">Missing</button>
+          <button type="button" class="btn btn-sm btn-outline-warning text-dark" data-audit-action-id="${UI.escapeHTML(row.assetId)}" data-audit-action="damaged">Damaged</button>
+          <button type="button" class="btn btn-sm btn-outline-primary" data-audit-action-id="${UI.escapeHTML(row.assetId)}" data-audit-action="wrong_location">Wrong Location</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-audit-action-id="${UI.escapeHTML(row.assetId)}" data-audit-action="needs_review">Needs Review</button>
+        </div>
       </td>
     </tr>
   `).join('') || '<tr><td colspan="6" class="text-muted">No audit issues found.</td></tr>';
 };
 
+async function patchAuditSnapshot(assetId, patch = {}) {
+  const latestAsset = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`);
+  const currentSpecs = getAssetSpecs(latestAsset || {});
+  const mergedSpecs = {
+    ...currentSpecs,
+    ...patch,
+  };
+  await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/details`, {
+    specifications: mergedSpecs,
+  }, 'PATCH');
+}
+
+function getAuditRowByAssetId(assetId) {
+  return (auditBoardRows || []).find((row) => String(row.assetId || '') === String(assetId || '')) || null;
+}
+
 window.auditVerifyAssetLocation = async (assetId) => {
-  const location = window.prompt('Verified location (leave blank to keep current):', '');
-  const verifier = window.prompt('Verifier name:', 'inventory-tech');
-  if (!verifier) return;
+  const row = getAuditRowByAssetId(assetId);
+  const form = await showInventoryFormModal({
+    title: 'Mark Verified',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Save Verification',
+    confirmClass: 'btn-outline-success',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'location',
+        label: 'Observed Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: false,
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'select',
+        options: ['Good', 'Needs Review', 'Damaged'],
+        value: 'Good',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+      {
+        name: 'verifier',
+        label: 'Auditor',
+        type: 'text',
+        value: row?.lastVerifiedBy || 'inventory-tech',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/verify-location`, {
-      location: location || null,
-      verifier,
+      location: form.values.location || null,
+      verifier: form.values.verifier,
       markMissing: false,
+    });
+    await patchAuditSnapshot(assetId, {
+      verificationStatus: 'verified',
+      verificationCondition: form.values.condition || 'Good',
+      verificationNotes: form.values.notes || null,
+      verificationLocation: form.values.location || row?.location || null,
+      lastVerifiedAt: new Date().toISOString(),
+      lastVerifiedBy: form.values.verifier,
     });
     showMessage(`Asset ${assetId} verified.`, 'success');
     await Promise.all([window.loadAuditBoard(), loadAssets()]);
@@ -4552,18 +6078,745 @@ window.auditVerifyAssetLocation = async (assetId) => {
 };
 
 window.auditMarkAssetMissing = async (assetId) => {
-  const verifier = window.prompt('Verifier name:', 'inventory-tech');
-  if (!verifier) return;
-  if (!window.confirm(`Mark asset ${assetId} as missing?`)) return;
+  const row = getAuditRowByAssetId(assetId);
+  const form = await showInventoryFormModal({
+    title: 'Mark Missing',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Mark Missing',
+    confirmClass: 'btn-danger',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'location',
+        label: 'Observed Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: false,
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'select',
+        options: ['Missing', 'Damaged', 'Unknown'],
+        value: 'Missing',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+      {
+        name: 'verifier',
+        label: 'Auditor',
+        type: 'text',
+        value: row?.lastVerifiedBy || 'inventory-tech',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const confirmed = await confirmInventoryAction({
+    title: 'Confirm Missing Status',
+    message: `Mark asset ${assetId} as missing?`,
+    confirmText: 'Confirm Missing',
+    confirmClass: 'inventory-insight-danger',
+  });
+  if (!confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/verify-location`, {
-      verifier,
+      verifier: form.values.verifier,
       markMissing: true,
+    });
+    await patchAuditSnapshot(assetId, {
+      verificationStatus: 'missing',
+      verificationCondition: form.values.condition || 'Missing',
+      verificationNotes: form.values.notes || null,
+      verificationLocation: form.values.location || row?.location || null,
+      lastVerifiedAt: new Date().toISOString(),
+      lastVerifiedBy: form.values.verifier,
     });
     showMessage(`Asset ${assetId} marked missing.`, 'warning');
     await Promise.all([window.loadAuditBoard(), loadAssets()]);
   } catch (error) {
     showMessage(error.message || 'Failed to mark asset missing.', 'error');
+  }
+};
+
+window.auditMarkAssetDamaged = async (assetId) => {
+  const row = getAuditRowByAssetId(assetId);
+  const form = await showInventoryFormModal({
+    title: 'Mark Damaged',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Mark Damaged',
+    confirmClass: 'btn-warning',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'location',
+        label: 'Observed Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: false,
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'select',
+        options: ['Damaged', 'Needs Repair', 'Out of Service'],
+        value: 'Damaged',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+      {
+        name: 'verifier',
+        label: 'Auditor',
+        type: 'text',
+        value: row?.lastVerifiedBy || 'inventory-tech',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/status`, {
+      status: 'maintenance',
+      lifecycleStatus: 'pending_repair',
+      actor: form.values.verifier,
+      reason: 'audit_mark_damaged',
+    }, 'PATCH');
+    await patchAuditSnapshot(assetId, {
+      verificationStatus: 'damaged',
+      verificationCondition: form.values.condition || 'Damaged',
+      verificationNotes: form.values.notes || null,
+      verificationLocation: form.values.location || row?.location || null,
+      lastVerifiedAt: new Date().toISOString(),
+      lastVerifiedBy: form.values.verifier,
+    });
+    showMessage(`Asset ${assetId} marked damaged and moved to maintenance.`, 'warning');
+    await Promise.all([window.loadAuditBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to mark asset damaged.', 'error');
+  }
+};
+
+window.auditMarkWrongLocation = async (assetId) => {
+  const row = getAuditRowByAssetId(assetId);
+  const form = await showInventoryFormModal({
+    title: 'Wrong Location',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Record',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'location',
+        label: 'Observed Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: true,
+      },
+      {
+        name: 'updateLocation',
+        label: 'Update asset location to observed location now',
+        type: 'checkbox',
+        value: false,
+        required: false,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+      {
+        name: 'verifier',
+        label: 'Auditor',
+        type: 'text',
+        value: row?.lastVerifiedBy || 'inventory-tech',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  try {
+    if (form.values.updateLocation) {
+      const confirmed = await confirmInventoryAction({
+        title: 'Confirm Location Update',
+        message: `Update asset ${assetId} location to ${form.values.location}?`,
+        confirmText: 'Update Location',
+        confirmClass: 'inventory-insight-primary',
+        type: 'warning',
+      });
+      if (!confirmed) return;
+      await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/verify-location`, {
+        location: form.values.location,
+        verifier: form.values.verifier,
+        markMissing: false,
+      });
+    } else {
+      const latestAsset = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`);
+      await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/status`, {
+        status: latestAsset?.status || 'active',
+        lifecycleStatus: latestAsset?.lifecycleStatus || 'in_use',
+        actor: form.values.verifier,
+        reason: 'audit_wrong_location_needs_review',
+      }, 'PATCH');
+    }
+    await patchAuditSnapshot(assetId, {
+      verificationStatus: 'location_mismatch',
+      verificationCondition: 'Wrong location',
+      verificationNotes: form.values.notes || null,
+      verificationLocation: form.values.location,
+      lastVerifiedAt: new Date().toISOString(),
+      lastVerifiedBy: form.values.verifier,
+    });
+    showMessage(form.values.updateLocation ? 'Location updated after confirmation.' : 'Wrong-location audit recorded without changing asset location.', 'success');
+    await Promise.all([window.loadAuditBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to record wrong-location audit.', 'error');
+  }
+};
+
+window.auditMarkNeedsReview = async (assetId) => {
+  const row = getAuditRowByAssetId(assetId);
+  const form = await showInventoryFormModal({
+    title: 'Needs Review',
+    message: `Asset: ${row?.name || assetId}`,
+    confirmText: 'Mark Needs Review',
+    confirmClass: 'btn-secondary',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'location',
+        label: 'Observed Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: row?.location || '',
+        required: false,
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'select',
+        options: ['Needs Review', 'Pending Verification', 'Unknown'],
+        value: 'Needs Review',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: true,
+      },
+      {
+        name: 'verifier',
+        label: 'Auditor',
+        type: 'text',
+        value: row?.lastVerifiedBy || 'inventory-tech',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    const latestAsset = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`);
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/status`, {
+      status: latestAsset?.status || 'active',
+      lifecycleStatus: latestAsset?.lifecycleStatus || 'in_use',
+      actor: form.values.verifier,
+      reason: 'audit_needs_review',
+    }, 'PATCH');
+    await patchAuditSnapshot(assetId, {
+      verificationStatus: 'needs_review',
+      verificationCondition: form.values.condition || 'Needs Review',
+      verificationNotes: form.values.notes || null,
+      verificationLocation: form.values.location || row?.location || null,
+      lastVerifiedAt: new Date().toISOString(),
+      lastVerifiedBy: form.values.verifier,
+    });
+    showMessage(`Asset ${assetId} marked for review.`, 'info');
+    await Promise.all([window.loadAuditBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to mark asset for review.', 'error');
+  }
+};
+
+function procurementStatusBadgeClass(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'approved' || normalized === 'received' || normalized === 'closed') return 'bg-success';
+  if (normalized === 'ordered' || normalized === 'partially received' || normalized === 'under review') return 'bg-warning text-dark';
+  if (normalized === 'rejected' || normalized === 'cancelled') return 'bg-danger';
+  return 'bg-secondary';
+}
+
+function formatProcurementDate(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleDateString();
+}
+
+function getProcurementRequestById(requestId) {
+  const rows = Array.isArray(procurementBoardState?.board?.requests) ? procurementBoardState.board.requests : [];
+  return rows.find((row) => String(row.requestId || '') === String(requestId || '')) || null;
+}
+
+function renderProcurementBoard() {
+  const summaryEl = document.getElementById('procurementBoardSummary');
+  const badgesEl = document.getElementById('procurementStatusBadges');
+  const analyticsEl = document.getElementById('procurementAnalyticsSummary');
+  const priorityBody = document.getElementById('procurementPriorityTableBody');
+  const recBody = document.getElementById('procurementRecommendationsTableBody');
+  const requestsBody = document.getElementById('procurementRequestsTableBody');
+  if (!summaryEl || !badgesEl || !analyticsEl || !priorityBody || !recBody || !requestsBody) return;
+  const board = procurementBoardState.board;
+  if (!board) {
+    summaryEl.textContent = 'Procurement board data is unavailable.';
+    badgesEl.innerHTML = '';
+    analyticsEl.textContent = '';
+    priorityBody.innerHTML = '<tr><td colspan="4" class="text-muted">No data.</td></tr>';
+    recBody.innerHTML = '<tr><td colspan="6" class="text-muted">No recommendations.</td></tr>';
+    requestsBody.innerHTML = '<tr><td colspan="6" class="text-muted">No requests.</td></tr>';
+    return;
+  }
+  summaryEl.textContent = String(board.summary || 'Procurement board loaded.');
+  const counts = board.statusCounts && typeof board.statusCounts === 'object' ? board.statusCounts : {};
+  badgesEl.innerHTML = Object.entries(counts).map(([status, count]) => `
+    <span class="badge ${procurementStatusBadgeClass(status)}">${UI.escapeHTML(status)}: ${UI.escapeHTML(String(count || 0))}</span>
+  `).join('') || '<span class="text-muted small">No request counts.</span>';
+
+  const analytics = board.analytics || {};
+  analyticsEl.textContent = [
+    `Monthly spend estimate: ${Number(analytics.monthlySpendingEstimate || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}`,
+    `Open POs: ${analytics.openPurchaseOrders ?? 0}`,
+    `Aging approved/ordered requests: ${analytics.agingApprovedRequests ?? 0}`,
+    `Received: ${analytics.receivedVsPending?.received ?? 0}`,
+    `Pending: ${analytics.receivedVsPending?.pending ?? 0}`,
+  ].join(' | ');
+
+  const priorities = board.priorities || {};
+  const priorityRows = [];
+  (Array.isArray(priorities.urgentReplacements) ? priorities.urgentReplacements.slice(0, 6) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Urgent Replacements',
+      item: `${row.assetName || row.assetId || '-'}`,
+      need: `Window: ${row.procurementWindowMonths ?? '-'} month(s)`,
+      reason: row.reason || row.status || '-',
+    });
+  });
+  (Array.isArray(priorities.highRiskAssets) ? priorities.highRiskAssets.slice(0, 6) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'High Risk Assets',
+      item: `${row.assetName || row.assetId || '-'}`,
+      need: `${String(row.riskLevel || '-').toUpperCase()} (${row.riskScore ?? '-'})`,
+      reason: row.reason || '-',
+    });
+  });
+  (Array.isArray(priorities.lowStockItems) ? priorities.lowStockItems.slice(0, 6) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Low Stock',
+      item: row.itemName || '-',
+      need: `Current ${row.currentQuantity ?? '-'} | Reorder ${row.reorderPoint ?? '-'}`,
+      reason: row.reason || '-',
+    });
+  });
+  (Array.isArray(priorities.auditNeeds) ? priorities.auditNeeds.slice(0, 6) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Audit Needs',
+      item: row.assetName || row.assetId || '-',
+      need: String(row.eventType || '-').replace(/_/g, ' '),
+      reason: row.reason || '-',
+    });
+  });
+  priorityBody.innerHTML = priorityRows.map((row) => `
+    <tr>
+      <td>${UI.escapeHTML(row.stream)}</td>
+      <td>${UI.escapeHTML(row.item)}</td>
+      <td>${UI.escapeHTML(row.need)}</td>
+      <td>${UI.escapeHTML(row.reason)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="text-muted">No priority items detected.</td></tr>';
+
+  const recommendations = Array.isArray(board.aiRecommendations) ? board.aiRecommendations : [];
+  recBody.innerHTML = recommendations.map((row, index) => `
+    <tr>
+      <td>${UI.escapeHTML(row.itemName || '-')}</td>
+      <td>${UI.escapeHTML(row.type || '-')}</td>
+      <td>${UI.escapeHTML(String(row.recommendedQuantity ?? '-'))}</td>
+      <td>${UI.escapeHTML(String(row.priority || '-').toUpperCase())}</td>
+      <td>${UI.escapeHTML(row.reason || '-')}</td>
+      <td class="text-end">
+        <button type="button" class="btn btn-sm btn-outline-primary" data-procurement-create-ai="${UI.escapeHTML(String(index))}">Create Request</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="text-muted">No AI procurement recommendations available.</td></tr>';
+
+  const requests = Array.isArray(board.requests) ? board.requests : [];
+  requestsBody.innerHTML = requests.map((row) => {
+    const selectedQuote = Array.isArray(row.vendorQuotes) ? row.vendorQuotes.find((quote) => quote.selected) : null;
+    return `
+      <tr>
+        <td>
+          <div class="fw-semibold">${UI.escapeHTML(row.requestId || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(row.title || '-')}</div>
+        </td>
+        <td>
+          <div>${UI.escapeHTML(String(row.quantity || 1))} x ${UI.escapeHTML(row.itemType || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(row.reason || '-')}</div>
+        </td>
+        <td>
+          <div>${UI.escapeHTML(row.requestedBy || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(row.linkedDepartment || 'Unassigned')} | ${UI.escapeHTML(row.linkedLocation || '-')}</div>
+          ${selectedQuote ? `<div class="small text-muted">Selected quote: ${UI.escapeHTML(selectedQuote.vendorName || '-')} (${selectedQuote.totalPrice !== null ? Number(selectedQuote.totalPrice).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '-'})</div>` : ''}
+        </td>
+        <td><span class="badge ${procurementStatusBadgeClass(row.status)}">${UI.escapeHTML(row.status || '-')}</span></td>
+        <td>${UI.escapeHTML(formatProcurementDate(row.updatedAt))}</td>
+        <td class="text-end">
+          <div class="d-flex flex-wrap justify-content-end gap-1">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-procurement-update-status="${UI.escapeHTML(row.requestId || '')}">Status</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-procurement-add-quote="${UI.escapeHTML(row.requestId || '')}">Add Quote</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-procurement-create-po="${UI.escapeHTML(row.requestId || '')}">Create PO</button>
+            <button type="button" class="btn btn-sm btn-outline-success" data-procurement-receive="${UI.escapeHTML(row.requestId || '')}">Receive</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="6" class="text-muted">No procurement requests yet.</td></tr>';
+}
+
+window.openProcurementWorkspace = () => {
+  window.location.href = '/pages/procurement.html';
+};
+
+window.openProcurementBoardModal = async () => {
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('procurementBoardModal'));
+  modal.show();
+  await window.loadProcurementBoard();
+};
+
+window.loadProcurementBoard = async () => {
+  const summaryEl = document.getElementById('procurementBoardSummary');
+  const statusFilter = String(document.getElementById('procurementStatusFilter')?.value || 'all').trim() || 'all';
+  if (summaryEl) summaryEl.textContent = 'Loading procurement board...';
+  try {
+    procurementBoardState.loading = true;
+    procurementBoardState.board = await readInventoryJson(`/inventory/procurement/board?status=${encodeURIComponent(statusFilter)}`);
+    renderProcurementBoard();
+  } catch (error) {
+    if (summaryEl) summaryEl.textContent = 'Could not load procurement board.';
+    showMessage(error.message || 'Failed to load procurement board.', 'error');
+  } finally {
+    procurementBoardState.loading = false;
+  }
+};
+
+window.createProcurementRequestManual = async () => {
+  const form = await showInventoryFormModal({
+    title: 'Create Procurement Request',
+    message: 'Create a manual procurement request linked to inventory need.',
+    confirmText: 'Create Request',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'title', label: 'Title', type: 'text', value: '', required: true },
+      { name: 'itemCategory', label: 'Item Category', type: 'select', options: ['replacement', 'spare_stock', 'consumable', 'license', 'new_asset'], value: 'replacement', required: true },
+      { name: 'itemType', label: 'Item / Type', type: 'text', value: '', required: true },
+      { name: 'quantity', label: 'Quantity', type: 'number', value: '1', required: true, min: 1 },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high', 'critical'], value: 'medium', required: true },
+      { name: 'reason', label: 'Reason', type: 'textarea', rows: 3, required: true },
+      { name: 'linkedDepartment', label: 'Linked Department', type: 'select', options: ['Unassigned', ...STANDARD_MIU_DEPARTMENTS.filter((entry) => entry !== 'Unassigned')], value: 'Unassigned', required: false },
+      { name: 'linkedLocation', label: 'Linked Building/Location', type: 'select', options: getKnownBuildingOptions(), value: '', required: false },
+      { name: 'linkedAssetIds', label: 'Linked Asset IDs (comma separated)', type: 'text', value: '', required: false },
+      { name: 'requestedBy', label: 'Requested By', type: 'text', value: 'Inventory Team', required: true },
+      { name: 'requiredDate', label: 'Required Date', type: 'date', value: '', required: false },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const linkedAssetIds = String(form.values.linkedAssetIds || '')
+    .split(',')
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+  try {
+    await postInventoryJson('/inventory/procurement/requests', {
+      title: form.values.title,
+      itemCategory: form.values.itemCategory,
+      itemType: form.values.itemType,
+      quantity: Number(form.values.quantity || 1),
+      priority: form.values.priority,
+      reason: form.values.reason,
+      linkedAssetIds,
+      linkedDepartment: form.values.linkedDepartment || null,
+      linkedLocation: form.values.linkedLocation || null,
+      requestedBy: form.values.requestedBy || 'Inventory Team',
+      requiredDate: form.values.requiredDate || null,
+      notes: form.values.notes || '',
+      source: 'manual_request',
+    });
+    showMessage('Procurement request created.', 'success');
+    await window.loadProcurementBoard();
+  } catch (error) {
+    showMessage(error.message || 'Failed to create procurement request.', 'error');
+  }
+};
+
+window.createProcurementRequestFromAi = async (index) => {
+  const board = procurementBoardState.board || {};
+  const recs = Array.isArray(board.aiRecommendations) ? board.aiRecommendations : [];
+  const row = recs[index];
+  if (!row) {
+    showMessage('Recommendation not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Create Request From AI Recommendation',
+    message: 'Review details before creating procurement request.',
+    confirmText: 'Create Request',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'title', label: 'Title', type: 'text', value: `Procure ${row.itemName || 'item'}`, required: true },
+      { name: 'itemCategory', label: 'Item Category', type: 'select', options: ['spare_stock', 'replacement', 'consumable', 'license', 'new_asset'], value: 'spare_stock', required: true },
+      { name: 'itemType', label: 'Item / Type', type: 'text', value: row.type || row.itemName || '', required: true },
+      { name: 'quantity', label: 'Quantity', type: 'number', value: String(row.recommendedQuantity || 1), required: true, min: 1 },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high', 'critical'], value: String(row.priority || 'medium').toLowerCase(), required: true },
+      { name: 'reason', label: 'Reason', type: 'textarea', rows: 3, value: row.reason || '', required: true },
+      { name: 'requestedBy', label: 'Requested By', type: 'text', value: 'Inventory AI Copilot', required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, value: 'Generated from AI procurement recommendation. Review before approval.', required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson('/inventory/procurement/requests', {
+      title: form.values.title,
+      itemCategory: form.values.itemCategory,
+      itemType: form.values.itemType,
+      quantity: Number(form.values.quantity || 1),
+      priority: form.values.priority,
+      reason: form.values.reason,
+      requestedBy: form.values.requestedBy || 'Inventory AI Copilot',
+      notes: form.values.notes || '',
+      source: 'ai_recommendation',
+      aiContext: {
+        llmUsed: true,
+        sourceLabel: 'gemma_generated',
+        confidence: String(row.priority || 'medium').toLowerCase(),
+      },
+    });
+    showMessage('Procurement request created from AI recommendation.', 'success');
+    await window.loadProcurementBoard();
+  } catch (error) {
+    showMessage(error.message || 'Failed to create request from recommendation.', 'error');
+  }
+};
+
+window.updateProcurementRequestStatus = async (requestId) => {
+  const request = getProcurementRequestById(requestId);
+  if (!request) {
+    showMessage('Procurement request not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: `Update Status - ${requestId}`,
+    message: `${request.title || ''}`,
+    confirmText: 'Update Status',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'status', label: 'Status', type: 'select', options: ['Draft', 'Submitted', 'Under Review', 'Approved', 'Rejected', 'Ordered', 'Partially Received', 'Received', 'Closed', 'Cancelled'], value: request.status || 'Draft', required: true },
+      { name: 'decision', label: 'Decision', type: 'select', options: ['update', 'submit', 'approve', 'reject', 'order', 'receive', 'close', 'cancel'], value: 'update', required: true },
+      { name: 'approver', label: 'Approver', type: 'text', value: 'Inventory Team', required: true },
+      { name: 'reason', label: 'Reason / Comment', type: 'textarea', rows: 3, required: false },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/status`, {
+      status: form.values.status,
+      decision: form.values.decision,
+      approver: form.values.approver,
+      reason: form.values.reason || '',
+      notes: form.values.notes || '',
+    }, 'PATCH');
+    showMessage('Procurement request status updated.', 'success');
+    await window.loadProcurementBoard();
+  } catch (error) {
+    showMessage(error.message || 'Failed to update procurement status.', 'error');
+  }
+};
+
+window.addProcurementVendorQuote = async (requestId) => {
+  const request = getProcurementRequestById(requestId);
+  if (!request) {
+    showMessage('Procurement request not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: `Add Vendor Quote - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Save Quote',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'vendorName', label: 'Vendor Name', type: 'text', value: '', required: true },
+      { name: 'quotedItem', label: 'Quoted Item', type: 'text', value: request.itemType || request.title || '', required: true },
+      { name: 'unitPrice', label: 'Unit Price', type: 'number', value: '', required: false, min: 0, step: 0.01 },
+      { name: 'quantity', label: 'Quantity', type: 'number', value: String(request.quantity || 1), required: true, min: 1 },
+      { name: 'warrantyMonths', label: 'Warranty (months)', type: 'number', value: '', required: false, min: 0 },
+      { name: 'deliveryDays', label: 'Delivery Time (days)', type: 'number', value: '', required: false, min: 0 },
+      { name: 'reliabilityScore', label: 'Reliability Score (1-10)', type: 'number', value: '', required: false, min: 1, max: 10 },
+      { name: 'selected', label: 'Select this quote', type: 'checkbox', value: true, required: false },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/vendor-quotes`, {
+      vendorName: form.values.vendorName,
+      quotedItem: form.values.quotedItem,
+      unitPrice: form.values.unitPrice !== '' ? Number(form.values.unitPrice) : null,
+      quantity: Number(form.values.quantity || request.quantity || 1),
+      warrantyMonths: form.values.warrantyMonths !== '' ? Number(form.values.warrantyMonths) : null,
+      deliveryDays: form.values.deliveryDays !== '' ? Number(form.values.deliveryDays) : null,
+      reliabilityScore: form.values.reliabilityScore !== '' ? Number(form.values.reliabilityScore) : null,
+      selected: Boolean(form.values.selected),
+      notes: form.values.notes || '',
+    });
+    showMessage('Vendor quote added.', 'success');
+    await window.loadProcurementBoard();
+  } catch (error) {
+    showMessage(error.message || 'Failed to add vendor quote.', 'error');
+  }
+};
+
+window.createProcurementPurchaseOrder = async (requestId) => {
+  const request = getProcurementRequestById(requestId);
+  if (!request) {
+    showMessage('Procurement request not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: `Create Purchase Order - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Create PO',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'poNumber', label: 'PO Number', type: 'text', value: `PO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${requestId.slice(-4)}`, required: true },
+      { name: 'vendorName', label: 'Vendor', type: 'text', value: request.vendorQuotes?.find((row) => row.selected)?.vendorName || '', required: true },
+      { name: 'expectedDelivery', label: 'Expected Delivery', type: 'date', value: '', required: false },
+      { name: 'status', label: 'PO Status', type: 'select', options: ['ordered', 'processing', 'partial_delivery'], value: 'ordered', required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/purchase-order`, {
+      poNumber: form.values.poNumber,
+      vendorName: form.values.vendorName,
+      expectedDelivery: form.values.expectedDelivery || null,
+      status: form.values.status,
+      notes: form.values.notes || '',
+    });
+    showMessage('Purchase order created.', 'success');
+    await window.loadProcurementBoard();
+  } catch (error) {
+    showMessage(error.message || 'Failed to create purchase order.', 'error');
+  }
+};
+
+window.receiveProcurementRequest = async (requestId) => {
+  const request = getProcurementRequestById(requestId);
+  if (!request) {
+    showMessage('Procurement request not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: `Receive Request - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Confirm Receiving',
+    confirmClass: 'btn-success',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'receivedQuantity', label: 'Received Quantity', type: 'number', value: String(request.quantity || 1), required: true, min: 1 },
+      { name: 'receivedBy', label: 'Received By', type: 'text', value: 'inventory-receiving', required: true },
+      { name: 'condition', label: 'Condition', type: 'select', options: ['good', 'partial', 'damaged', 'needs_inspection'], value: 'good', required: true },
+      { name: 'applyTarget', label: 'Apply Receiving To', type: 'select', options: [{ value: 'none', label: 'Record only (no stock update)' }, { value: 'spare_stock', label: 'Spare Stock quantity update' }], value: 'none', required: true },
+      { name: 'spareStockItemId', label: 'Spare Stock Item ID (if apply target is spare stock)', type: 'text', value: '', required: false, placeholder: 'Paste spare stock item UUID' },
+      { name: 'notes', label: 'Receiving Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  if (String(form.values.applyTarget || '') === 'spare_stock' && !String(form.values.spareStockItemId || '').trim()) {
+    showMessage('Spare stock item ID is required when applying to spare stock.', 'warning');
+    return;
+  }
+  try {
+    const payload = {
+      receivedQuantity: Number(form.values.receivedQuantity || 1),
+      receivedBy: form.values.receivedBy || 'inventory-receiving',
+      condition: form.values.condition || 'good',
+      applyTarget: form.values.applyTarget || 'none',
+      spareStockItemId: form.values.spareStockItemId || null,
+      notes: form.values.notes || '',
+    };
+    const preview = await postInventoryJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/receive`, {
+      ...payload,
+      previewOnly: true,
+    });
+    const impact = preview?.impactPreview || {};
+    const confirmResult = await showInventoryFormModal({
+      title: 'Confirm Receiving Impact',
+      messageHtml: `
+        <div class="alert alert-light border small mb-1">
+          <div><strong>Request:</strong> ${UI.escapeHTML(String(impact.requestId || requestId))}</div>
+          <div><strong>Item:</strong> ${UI.escapeHTML(String(impact.itemName || request.itemType || '-'))}</div>
+          <div><strong>Quantity:</strong> ${UI.escapeHTML(String(impact.receivedQuantity || payload.receivedQuantity))}</div>
+          <div><strong>Apply Target:</strong> ${UI.escapeHTML(String(impact.applyTarget || payload.applyTarget).replace(/_/g, ' '))}</div>
+          ${impact.applyTarget === 'spare_stock'
+            ? `<div><strong>Stock Change:</strong> ${UI.escapeHTML(String(impact.spareStockBefore ?? '-'))} -> ${UI.escapeHTML(String(impact.spareStockAfter ?? '-'))}</div>`
+            : ''}
+          <div class="text-muted mt-1">${UI.escapeHTML(String(impact.summary || 'Review receiving impact before applying.'))}</div>
+        </div>
+      `,
+      confirmText: 'Apply Receiving',
+      confirmClass: 'btn-success',
+      dialogClass: 'modal-md',
+      fields: [{
+        name: 'confirmImpact',
+        label: 'I reviewed and approve this receiving impact',
+        type: 'checkbox',
+        value: false,
+        required: true,
+        validate: (value) => (value ? '' : 'You must confirm inventory impact to continue.'),
+      }],
+    });
+    if (!confirmResult?.confirmed) return;
+    const result = await postInventoryJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/receive`, {
+      ...payload,
+      confirmInventoryImpact: true,
+      previewOnly: false,
+    });
+    showMessage(result?.followUp || 'Receiving recorded.', 'success');
+    await Promise.all([window.loadProcurementBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to receive procurement request.', 'error');
   }
 };
 
@@ -4582,6 +6835,72 @@ function cmdbStatusLabel(status) {
   return labels[normalized] || (normalized ? normalized.replace(/_/g, ' ') : '-');
 }
 
+function formatCmdbValue(value) {
+  const raw = String(value ?? '').trim();
+  return raw ? UI.escapeHTML(raw) : '-';
+}
+
+function formatCmdbDate(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleDateString();
+}
+
+function formatCmdbCurrency(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return '-';
+  return amount.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function getCmdbRelationshipLabel(relationshipType) {
+  const normalized = normalizeValue(relationshipType);
+  const labelMap = {
+    assignedto: 'Assigned to this asset',
+    licensedto: 'Licensed to this asset',
+    installedin: 'Installed in this asset',
+    usedwith: 'Used with this asset',
+    consumedby: 'Consumed by this asset',
+    sparefor: 'Spare for this asset',
+    connectedto: 'Connected to this asset',
+    dependson: 'Depends on this asset',
+    relatedto: 'Related to this asset',
+  };
+  return labelMap[normalized] || `Related (${String(relationshipType || 'unknown').replace(/_/g, ' ')})`;
+}
+
+function getCmdbLifecycleEventLabel(eventType) {
+  const normalized = normalizeValue(eventType);
+  const labelMap = {
+    licenseimportedassigned: 'License assigned during import',
+    accessoryimportedassigned: 'Accessory assigned during import',
+    componentimported: 'Component installed during import',
+    assetimported: 'Asset created during import',
+    assetcreated: 'Asset created',
+    assettransferred: 'Asset transferred',
+    maintenancerecorded: 'Maintenance added',
+    custodycheckedout: 'Custody checkout',
+    custodycheckedin: 'Custody check-in',
+    loanercheckedout: 'Loaner checkout',
+    loanerreturned: 'Loaner return',
+    assetupdated: 'Asset details updated',
+  };
+  return labelMap[normalized] || capitalize(String(eventType || '-').replace(/_/g, ' '));
+}
+
+function getCmdbLifecycleRelatedSummary(row) {
+  const details = row && typeof row === 'object' ? row : {};
+  const merged = {
+    ...(details.oldValue && typeof details.oldValue === 'object' ? details.oldValue : {}),
+    ...(details.newValue && typeof details.newValue === 'object' ? details.newValue : {}),
+    ...(details.metadata && typeof details.metadata === 'object' ? details.metadata : {}),
+  };
+  const candidateName = merged.relatedAssetName || merged.relatedName || merged.componentName || merged.accessoryName || merged.licenseName || merged.parentName || merged.assetName;
+  const candidateTag = merged.relatedAssetTag || merged.relatedTag || merged.assetTag || merged.parentTag;
+  if (!candidateName && !candidateTag) return '';
+  return [candidateName, candidateTag].filter(Boolean).join(' | ');
+}
+
 function ensureCmdbModal() {
   let modalEl = document.getElementById(CMDB_MODAL_ID);
   if (!modalEl) {
@@ -4591,7 +6910,7 @@ function ensureCmdbModal() {
           <div class="modal-content">
             <div class="modal-header">
               <h5 class="modal-title fw-bold" id="${CMDB_MODAL_ID}-title">CMDB Management</h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body" id="${CMDB_MODAL_ID}-body"></div>
             <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>
@@ -4667,6 +6986,64 @@ function renderCmdbBody(customId, data, asset) {
   const loanerStatus = String(specs.loanerStatus || '').trim().toLowerCase();
   const showLoanerActions = !isConsumableContext && !isSparePartContext && !isLicenseContext;
   const showWifiPanel = !isConsumableContext && !isSparePartContext && !isLicenseContext;
+  const profile = getAssetProfile(asset || {});
+  const lifecycleSnapshot = getLifecycleSnapshot(asset || {});
+  const categoryLabelMap = {
+    asset: 'Parent Asset',
+    component: 'Component',
+    accessory: 'Accessory',
+    consumable: 'Consumable',
+    spare_part: 'Spare Stock',
+    license: 'License',
+  };
+  const categoryLabel = categoryLabelMap[categoryKey] || capitalize(String(categoryKey || 'asset').replace(/_/g, ' '));
+  const displayLocationLabel = getAssetDisplayLocation(asset);
+  const displayDepartmentLabel = getAssetDisplayDepartment(asset);
+  const assignedDepartmentLabel = normalizeDepartmentLabel(specs.assignedDepartment || asset?.assignedDepartment || '', { fallbackUnassigned: false });
+  const assignedPersonLabel = String(specs.loanedTo || asset?.assignedToName || asset?.assignedToUserId || asset?.assignedUser || '').trim();
+  const ownerLabel = String(specs.owner || specs.ownerName || '').trim();
+  const hasWifiData = Boolean(wifiInfo.macAddress || wifiInfo.lastSeenNetwork || wifiInfo.lastSeenAccessPoint || wifiInfo.lastSeenLocation || wifiInfo.lastSeenTimestamp);
+  const telemetryRelevant = Boolean(profile.trackWorkingHours || profile.hasTelemetry || shouldShowTelemetryControl(asset, profile));
+  const telemetrySummary = telemetryRelevant
+    ? `${getOperationalStateLabel(profile.telemetryStatus)} (${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` | ${Math.round(Number(profile.workingHours || 0)).toLocaleString()}h observed` : ''})`
+    : '';
+  const identityRows = [
+    { label: 'Asset Name', value: asset?.name || '' },
+    { label: 'Asset Tag / Unique ID', value: `${getDisplayAssetTag(asset) || '-'} | ${asset?.customId || '-'}` },
+    { label: 'Serial Number', value: getDisplaySerial(asset) || '' },
+    { label: 'Category / Record Type', value: categoryLabel },
+    { label: 'Asset Type', value: formatType(asset?.type || '-') },
+    { label: 'Brand / Model', value: [specs.brand || asset?.brand, specs.version || specs.model || asset?.model].filter(Boolean).join(' / ') || '' },
+    { label: 'Location', value: displayLocationLabel },
+    { label: 'Department', value: displayDepartmentLabel },
+    { label: 'Status', value: displayStatus(asset?.status || 'active') },
+    { label: 'Lifecycle Status', value: displayLifecycleStatus(asset?.lifecycleStatus || asset?.lifecycle_status || '') },
+    { label: 'Warranty Start', value: formatCmdbDate(asset?.warrantyStartDate || lifecycleSnapshot?.warrantyStartDate || specs.warrantyStartDate) },
+    { label: 'Warranty End', value: formatCmdbDate(asset?.warrantyEndDate || lifecycleSnapshot?.warrantyEndDate || specs.warrantyEndDate) },
+    { label: 'Purchase Cost', value: formatCmdbCurrency(asset?.purchaseCost || lifecycleSnapshot?.replacementCost || specs.purchaseCost || specs.replacementCost) },
+    { label: 'Assigned To', value: assignedPersonLabel },
+    { label: 'Assigned Department', value: assignedDepartmentLabel },
+    { label: 'Owner', value: ownerLabel },
+  ];
+  if (telemetrySummary) {
+    identityRows.push({ label: 'Telemetry State', value: telemetrySummary });
+  }
+  if ((isComponentContext || isAccessoryContext || isConsumableContext || isSparePartContext || isLicenseContext) && installedParent.hasParent) {
+    identityRows.push({ label: 'Parent Asset Name', value: installedParent.parentName || '-' });
+    identityRows.push({ label: 'Parent Asset Tag', value: installedParent.parentTag || installedParent.parentId || '-' });
+  }
+  const custodyStatus = String(asset?.custodyStatus || '').trim().toLowerCase();
+  const hasActiveAssignment = Boolean(
+    assignedPersonLabel
+    || ['assigned', 'checked_out'].includes(custodyStatus)
+    || (Array.isArray(data.custody) && data.custody.some((row) => row?.checkoutDate && !row?.returnedDate))
+  );
+  const isLoanedOut = ['checked_out', 'overdue'].includes(loanerStatus);
+  const custodyStateLabel = isLoanedOut
+    ? 'Loaned out'
+    : (hasActiveAssignment
+      ? (custodyStatus === 'checked_out' ? 'Checked out' : 'Assigned')
+      : (loanerStatus === 'returned' ? 'Returned' : 'Available'));
   const componentsRows = (data.components || []).map((component) => `
     <tr>
       <td>
@@ -4699,8 +7076,12 @@ function renderCmdbBody(customId, data, asset) {
     </tr>
   `).join('');
 
+  const componentNameById = new Map(
+    (data.components || []).map((row) => [String(row?.id || ''), String(row?.componentName || '').trim()]).filter((entry) => entry[0])
+  );
   const maintenanceRows = (data.maintenance || []).map((row) => `
     <tr>
+      <td>${row.componentId ? UI.escapeHTML(`Component: ${componentNameById.get(String(row.componentId)) || row.componentId}`) : 'Whole Asset'}</td>
       <td>${UI.escapeHTML(row.maintenanceType || '-')}</td>
       <td>${UI.escapeHTML(row.status || '-')}</td>
       <td>${UI.escapeHTML(row.performedBy || '-')}</td>
@@ -4719,18 +7100,42 @@ function renderCmdbBody(customId, data, asset) {
     </tr>
   `).join('');
 
-  const relRows = [
+  const allRelationshipRows = [
     ...((data.relationships?.outgoing || []).map((row) => ({ ...row, direction: 'outgoing' }))),
     ...((data.relationships?.incoming || []).map((row) => ({ ...row, direction: 'incoming' }))),
-  ].map((row) => `
-    <tr>
-      <td>${UI.escapeHTML(row.direction)}</td>
-      <td>${UI.escapeHTML(row.relationshipType || '-')}</td>
-      <td>${UI.escapeHTML(row.assetId || '-')}</td>
-      <td>${UI.escapeHTML(row.relatedAssetId || '-')}</td>
-      <td class="text-end">${row.direction === 'outgoing' ? `<button class="btn btn-sm btn-outline-danger" onclick="window.cmdbDeleteRelationship('${customId}','${row.id}')">Delete</button>` : ''}</td>
-    </tr>
-  `).join('');
+  ];
+  const snapshotAssets = Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : [];
+  const relRows = allRelationshipRows.map((row) => {
+    const relatedAssetId = row.direction === 'incoming' ? row.assetId : row.relatedAssetId;
+    const relatedAsset = currentAssets.find((entry) => entry.customId === relatedAssetId)
+      || snapshotAssets.find((entry) => String(entry?.customId || '') === String(relatedAssetId || ''))
+      || null;
+    const relatedName = relatedAsset?.name || relatedAssetId || '-';
+    const relatedCategory = relatedAsset
+      ? (categoryLabelMap[getAssetCategoryKey(relatedAsset)] || formatType(relatedAsset.type || 'asset'))
+      : '-';
+    const relatedTag = relatedAsset ? (getDisplayAssetTag(relatedAsset) || '-') : '-';
+    const relatedStatus = relatedAsset
+      ? displayLifecycleStatus(relatedAsset.lifecycleStatus || relatedAsset.status || '-')
+      : '-';
+    const relationshipLabel = row.direction === 'incoming'
+      ? `Linked to this asset (${getCmdbRelationshipLabel(row.relationshipType)})`
+      : getCmdbRelationshipLabel(row.relationshipType);
+    const technicalTitle = `Type: ${String(row.relationshipType || '-')} | Direction: ${String(row.direction || '-')}`;
+    return `
+      <tr>
+        <td>${UI.escapeHTML(relatedName)}</td>
+        <td>${UI.escapeHTML(relatedCategory)}</td>
+        <td title="${UI.escapeHTML(technicalTitle)}">${UI.escapeHTML(relationshipLabel)}</td>
+        <td>${UI.escapeHTML(relatedTag)}</td>
+        <td>${UI.escapeHTML(relatedStatus)}</td>
+        <td class="text-end">
+          ${relatedAssetId ? `<button class="btn btn-sm btn-outline-primary me-1" onclick="window.openAssetCmdb('${relatedAssetId}')">Open Asset</button>` : ''}
+          ${row.direction === 'outgoing' ? `<button class="btn btn-sm btn-outline-danger" onclick="window.cmdbDeleteRelationship('${customId}','${row.id}')">Delete</button>` : ''}
+        </td>
+      </tr>
+    `;
+  }).join('');
   const relatedParentRelationshipType = isComponentContext
     ? 'installed_in'
     : isAccessoryContext
@@ -4745,25 +7150,92 @@ function renderCmdbBody(customId, data, asset) {
   const componentInstalledInRows = installedParent.hasParent
     ? `
       <tr>
-        <td>${relatedParentRelationshipType}</td>
-        <td>${UI.escapeHTML(installedParent.parentName || '-')}</td>
-        <td>${UI.escapeHTML(installedParent.parentId || '-')}</td>
+        <td>${UI.escapeHTML(installedParent.parentName || installedParent.parentId || '-')}</td>
+        <td>Parent Asset</td>
+        <td title="${UI.escapeHTML(`Type: ${relatedParentRelationshipType} | Direction: outgoing`)}">${UI.escapeHTML(getCmdbRelationshipLabel(relatedParentRelationshipType))}</td>
         <td>${UI.escapeHTML(installedParent.parentTag || '-')}</td>
-        <td class="text-end">${installedParent.parentId ? `<button class="btn btn-sm btn-outline-primary" onclick="window.openAssetCmdb('${installedParent.parentId}')">Open Parent</button>` : ''}</td>
+        <td>${UI.escapeHTML('Active')}</td>
+        <td class="text-end">${installedParent.parentId ? `<button class="btn btn-sm btn-outline-primary" onclick="window.openAssetCmdb('${installedParent.parentId}')">Open Asset</button>` : ''}</td>
       </tr>
     `
     : '';
 
-  const lifecycleRows = (data.lifecycleEvents || []).slice(0, 80).map((row) => `
-    <tr>
-      <td>${row.createdAt ? UI.formatDateTime(row.createdAt) : '-'}</td>
-      <td>${UI.escapeHTML(row.eventType || '-')}</td>
-      <td>${UI.escapeHTML(row.reason || '-')}</td>
-      <td>${UI.escapeHTML(row.actor || '-')}</td>
-    </tr>
-  `).join('');
+  const lifecycleRows = (data.lifecycleEvents || []).slice(0, 80).map((row) => {
+    const eventLabel = getCmdbLifecycleEventLabel(row.eventType);
+    const relatedSummary = getCmdbLifecycleRelatedSummary(row);
+    return `
+      <tr>
+        <td>${row.createdAt ? UI.formatDateTime(row.createdAt) : '-'}</td>
+        <td title="${UI.escapeHTML(String(row.eventType || '-'))}">
+          <div>${UI.escapeHTML(eventLabel)}</div>
+          ${relatedSummary ? `<div class="small text-muted">${UI.escapeHTML(relatedSummary)}</div>` : ''}
+        </td>
+        <td>${UI.escapeHTML(row.reason || '-')}</td>
+        <td>${UI.escapeHTML(row.actor || '-')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const asset360Cost = getInventory360AssetCost(asset || {});
+  const asset360MissingData = getAssetDataQualityMissingFields(asset || {});
+  const explicitCostTotal = [
+    asset360Cost.purchaseCost,
+    asset360Cost.currentValue,
+    asset360Cost.maintenanceCost,
+    asset360Cost.replacementCost,
+  ].reduce((sum, value) => sum + inventory360Number(value), 0);
+  const relationshipCount = allRelationshipRows.length + (Array.isArray(data.components) ? data.components.length : 0) + (installedParent.hasParent ? 1 : 0);
+  const riskSignalCount = (isAssetHighRisk(asset || {}) ? 1 : 0) + (isAssetEolSoon(asset || {}) ? 1 : 0) + (wifiInfo.mismatch ? 1 : 0);
+  const asset360NextAction = asset360MissingData.length
+    ? { label: 'Fix missing data', action: `window.editSpecs('${customId}', false)`, reason: `${asset360MissingData.length} missing data field(s)` }
+    : (riskSignalCount
+      ? { label: 'Generate AI health summary', action: `window.cmdbAiHealthSummary('${customId}')`, reason: 'Risk/EOL evidence needs review' }
+      : { label: 'View lifecycle', action: '', reason: 'Asset 360 is currently serviceable' });
 
   return `
+    <div class="card border-0 shadow-sm mb-3 asset-digital-passport-card">
+      <div class="card-header bg-light py-2">
+        <strong class="small text-uppercase">Asset Identity</strong>
+      </div>
+      <div class="card-body py-2">
+        <div class="row g-2">
+          ${identityRows.map((row) => `
+            <div class="col-md-6">
+              <div class="small text-muted">${UI.escapeHTML(row.label)}</div>
+              <div class="fw-semibold small">${formatCmdbValue(row.value)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="asset-360-summary-grid mb-3">
+      <article class="asset-360-summary-card ${riskSignalCount ? 'is-review' : 'is-healthy'}">
+        <div class="asset-360-summary-label">Health / Risk / EOL</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(riskSignalCount ? `${riskSignalCount} signal(s)` : 'Healthy')}</div>
+        <p>${UI.escapeHTML(riskSignalCount ? 'Review EOL, lifecycle, telemetry, or location mismatch evidence.' : 'No major risk/EOL signal detected from loaded evidence.')}</p>
+      </article>
+      <article class="asset-360-summary-card ${asset360Cost.hasAny ? 'is-healthy' : 'is-review'}">
+        <div class="asset-360-summary-label">Cost Summary</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(asset360Cost.hasAny ? inventory360Currency(explicitCostTotal) : 'Cost missing')}</div>
+        <p>${UI.escapeHTML(asset360Cost.hasAny ? `Purchase ${inventory360Currency(asset360Cost.purchaseCost)} | Replacement ${inventory360Currency(asset360Cost.replacementCost)}` : 'Add purchase cost, replacement estimate, quote, or invoice data to improve cost analytics.')}</p>
+      </article>
+      <article class="asset-360-summary-card ${asset360MissingData.length ? 'is-review' : 'is-healthy'}">
+        <div class="asset-360-summary-label">Data Quality</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(asset360MissingData.length ? `${asset360MissingData.length} gap(s)` : 'Complete')}</div>
+        <p>${UI.escapeHTML(asset360MissingData.length ? asset360MissingData.join(', ') : 'Core identity/location/cost confidence is serviceable.')}</p>
+      </article>
+      <article class="asset-360-summary-card is-info">
+        <div class="asset-360-summary-label">Relationships</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(String(relationshipCount))}</div>
+        <p>${UI.escapeHTML('Components, accessories, licenses, and related CMDB links connected to this record.')}</p>
+      </article>
+      <article class="asset-360-summary-card ${asset360MissingData.length || riskSignalCount ? 'is-review' : 'is-healthy'}">
+        <div class="asset-360-summary-label">Next Best Action</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(asset360NextAction.label)}</div>
+        <p>${UI.escapeHTML(asset360NextAction.reason)}</p>
+        ${asset360NextAction.action ? `<button type="button" class="btn btn-sm btn-outline-primary" onclick="${UI.escapeHTML(asset360NextAction.action)}">${UI.escapeHTML(asset360NextAction.label)}</button>` : ''}
+      </article>
+    </div>
     ${isParentContext ? `
       <div class="alert alert-light border mb-3">
         <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start">
@@ -4790,12 +7262,17 @@ function renderCmdbBody(customId, data, asset) {
       </div>
     ` : ''}
     ${showWifiPanel ? `
-      <div class="alert ${wifiInfo.mismatch ? 'alert-warning' : 'alert-light'} border mb-3">
+      <div class="border rounded bg-light-subtle p-3 mb-3">
         <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start">
           <div>
-            <div class="small text-uppercase text-muted fw-semibold">Mock Wi-Fi Ghost Tracker</div>
-            <div class="small mt-1">MAC: ${UI.escapeHTML(wifiInfo.macAddress || '-')} • Last Seen: ${UI.escapeHTML(wifiInfo.lastSeenLocation || '-')}</div>
-            <div class="small text-muted">Network: ${UI.escapeHTML(wifiInfo.lastSeenNetwork || '-')} • AP: ${UI.escapeHTML(wifiInfo.lastSeenAccessPoint || '-')} • Seen At: ${wifiInfo.lastSeenTimestamp ? UI.formatDateTime(wifiInfo.lastSeenTimestamp) : '-'}</div>
+            <div class="small text-uppercase text-muted fw-semibold">Wi-Fi Location Tracker (Demo)</div>
+            <div class="small text-muted">Demo-safe tracker. Real Wi-Fi integration is not connected.</div>
+            ${hasWifiData
+      ? `
+              <div class="small mt-1">MAC: ${UI.escapeHTML(wifiInfo.macAddress || '-')} | Last Seen: ${UI.escapeHTML(wifiInfo.lastSeenLocation || '-')}</div>
+              <div class="small text-muted">Network: ${UI.escapeHTML(wifiInfo.lastSeenNetwork || '-')} | AP: ${UI.escapeHTML(wifiInfo.lastSeenAccessPoint || '-')} | Seen At: ${wifiInfo.lastSeenTimestamp ? UI.formatDateTime(wifiInfo.lastSeenTimestamp) : '-'}</div>
+            `
+      : '<div class="small mt-1 text-muted">No network activity recorded yet.</div>'}
             ${wifiInfo.mismatch ? `<div class="small text-warning-emphasis mt-1"><strong>Warning:</strong> Network location mismatch with assigned location.</div>` : ''}
           </div>
           <div class="d-flex gap-2">
@@ -4816,7 +7293,7 @@ function renderCmdbBody(customId, data, asset) {
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-components">
         <div class="d-flex justify-content-end gap-2 mb-2">
           <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${customId}')">Install From Stock</button>
-          <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${customId}')">Add Component</button>
+          <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${customId}')">Create & Add New Component</button>
         </div>
         <div class="table-responsive"><table class="table table-sm">
           <thead><tr><th>Name</th><th>Type</th><th>Brand/Model</th><th>Serial</th><th>Part No.</th><th>Status</th><th>Condition</th><th>Installed At</th><th class="text-end">Actions</th></tr></thead>
@@ -4825,26 +7302,33 @@ function renderCmdbBody(customId, data, asset) {
       </div>` : ''}
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-maintenance">
         <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddMaintenance('${customId}')">${maintenanceActionLabel}</button></div>
-        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Type</th><th>Status</th><th>By</th><th>At</th><th>Cost</th></tr></thead><tbody>${maintenanceRows || `<tr><td colspan="5" class="text-muted">${maintenanceEmptyLabel}</td></tr>`}</tbody></table></div>
+        <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Scope</th><th>Type</th><th>Status</th><th>By</th><th>At</th><th>Cost</th></tr></thead><tbody>${maintenanceRows || `<tr><td colspan="6" class="text-muted">${maintenanceEmptyLabel}</td></tr>`}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-custody">
         <div class="d-flex justify-content-end gap-2 mb-2">
           <button class="btn btn-sm btn-primary" onclick="window.cmdbAssignAsset('${customId}')">Assign/Checkout</button>
-          <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbCheckinAsset('${customId}')">Check-in</button>
-          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-info" onclick="window.cmdbLoanerCheckout('${customId}')">Loaner Checkout</button>` : ''}
-          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-dark" onclick="window.cmdbLoanerReturn('${customId}')">Loaner Return</button>` : ''}
+          <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbCheckinAsset('${customId}')" ${hasActiveAssignment ? '' : 'disabled'} title="${UI.escapeHTML(hasActiveAssignment ? 'Record check-in details.' : 'No active assignment to check in.')}">${hasActiveAssignment ? 'Check-in' : 'Check-in (N/A)'}</button>
+          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-info" onclick="window.cmdbLoanerCheckout('${customId}')" ${(loanerEligible && !isLoanedOut) ? '' : 'disabled'} title="${UI.escapeHTML(loanerEligible ? (isLoanedOut ? 'Asset is already loaned out.' : 'Record loaner checkout.') : 'This asset is not marked as a loaner. Mark it as a loaner before checkout.')}">Loaner Checkout</button>` : ''}
+          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-dark" onclick="window.cmdbLoanerReturn('${customId}')" ${isLoanedOut ? '' : 'disabled'} title="${UI.escapeHTML(isLoanedOut ? 'Record loaner return.' : 'Loaner return is available only when asset is currently loaned out.')}">Loaner Return</button>` : ''}
         </div>
-        ${showLoanerActions ? `<div class="small text-muted mb-2">Loaner: ${UI.escapeHTML(loanerEligible ? 'Eligible' : 'Not marked')} • Status: ${UI.escapeHTML(loanerStatus || 'available')} • Loaned To: ${UI.escapeHTML(String(specs.loanedTo || asset?.assignedToName || '-'))}</div>` : ''}
+        ${showLoanerActions ? `
+          <div class="small text-muted mb-2">
+            Loaner: ${UI.escapeHTML(loanerEligible ? 'Yes' : 'No')} | Custody: ${UI.escapeHTML(custodyStateLabel)}
+            ${isLoanedOut ? ` | Loaned To: ${UI.escapeHTML(String(specs.loanedTo || assignedPersonLabel || '-'))}` : ` | Assigned To: ${UI.escapeHTML(String(assignedPersonLabel || '-'))}`}
+            | Assigned Department: ${UI.escapeHTML(assignedDepartmentLabel || '-')}
+          </div>
+          ${!loanerEligible ? `<div class="small text-muted mb-2">This asset is not marked as a loaner. Mark it as loaner-eligible before loaner checkout.</div>` : ''}
+        ` : ''}
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Action</th><th>User</th><th>Checkout</th><th>Return</th><th>Reason</th></tr></thead><tbody>${custodyRows || '<tr><td colspan="5" class="text-muted">No custody history.</td></tr>'}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-relationships">
         <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddRelationship('${customId}')">Add Relationship</button></div>
         <div class="table-responsive"><table class="table table-sm">
-          <thead><tr><th>Direction/Type</th><th>Type/Parent Name</th><th>Asset/Parent ID</th><th>Related/Parent Tag</th><th></th></tr></thead>
+          <thead><tr><th>Related Item</th><th>Category</th><th>Relationship</th><th>Asset Tag</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
           <tbody>
             ${componentInstalledInRows}
             ${relRows}
-            ${(!relRows && !componentInstalledInRows) ? '<tr><td colspan="5" class="text-muted">No parent relationship found.</td></tr>' : ''}
+            ${(!relRows && !componentInstalledInRows) ? '<tr><td colspan="6" class="text-muted">No relationships found.</td></tr>' : ''}
           </tbody>
         </table></div>
       </div>
@@ -4880,21 +7364,40 @@ function renderCmdbBody(customId, data, asset) {
 }
 
 async function refreshCmdbModal(customId = cmdbState.assetId, preferredTab = cmdbState.activeTab || 'components') {
-  const asset = currentAssets.find((entry) => entry.customId === customId);
+  const lookupValue = String(customId || '').trim();
+  const resolveFromLoaded = () => currentAssets.find((entry) => (
+    String(entry?.customId || '').trim() === lookupValue
+    || normalizeValue(entry?.assetTag) === normalizeValue(lookupValue)
+  ));
+  let asset = resolveFromLoaded();
+  if (!asset && lookupValue) {
+    asset = await readInventoryJson(`/assets/${encodeURIComponent(lookupValue)}`).catch(() => null);
+  }
+  if (!asset && lookupValue) {
+    const searchPayload = await readInventoryJson(`/assets?paginate=true&page=1&pageSize=50&q=${encodeURIComponent(lookupValue)}`).catch(() => null);
+    const searchRows = Array.isArray(searchPayload?.items)
+      ? searchPayload.items
+      : (Array.isArray(searchPayload) ? searchPayload : []);
+    asset = searchRows.find((entry) => (
+      String(entry?.customId || '').trim() === lookupValue
+      || normalizeValue(entry?.assetTag) === normalizeValue(lookupValue)
+    )) || null;
+  }
   if (!asset) {
     showMessage('Asset not found.', 'error');
     return;
   }
+  const resolvedId = String(asset.customId || lookupValue).trim();
   const modal = ensureCmdbModal();
-  cmdbState.assetId = customId;
+  cmdbState.assetId = resolvedId;
   cmdbState.activeTab = preferredTab;
   const titleEl = document.getElementById(`${CMDB_MODAL_ID}-title`);
   const bodyEl = document.getElementById(`${CMDB_MODAL_ID}-body`);
-  if (titleEl) titleEl.textContent = `CMDB Management - ${asset.name} (${customId})`;
+  if (titleEl) titleEl.textContent = `CMDB Management - ${asset.name} (${resolvedId})`;
   if (bodyEl) bodyEl.innerHTML = '<div class="text-muted py-3">Loading CMDB data...</div>';
 
-  const data = await fetchCmdbData(customId);
-  if (bodyEl) bodyEl.innerHTML = renderCmdbBody(customId, data, asset);
+  const data = await fetchCmdbData(resolvedId);
+  if (bodyEl) bodyEl.innerHTML = renderCmdbBody(resolvedId, data, asset);
   const tabButtons = Array.from(document.querySelectorAll(`#${CMDB_MODAL_ID} [data-cmdb-tab]`));
   tabButtons.forEach((btn) => {
     btn.addEventListener('shown.bs.tab', (event) => {
@@ -4920,7 +7423,8 @@ function setInventoryView(nextView = 'parents') {
   bulkSpecReviewContext = null;
   if (currentInventoryView === 'spare_stock') {
     window.loadSpareStock()
-      .then(() => {
+      .then(async () => {
+        await refreshInventoryFilterSnapshot();
         if (currentInventoryView === 'spare_stock') {
           populateFilters();
           renderTable();
@@ -4936,11 +7440,19 @@ function setInventoryView(nextView = 'parents') {
 
 window.openAssetCmdb = async (customId) => {
   try {
-    const asset = currentAssets.find((entry) => entry.customId === customId);
+    const lookupValue = String(customId || '').trim();
+    let asset = currentAssets.find((entry) => (
+      String(entry?.customId || '').trim() === lookupValue
+      || normalizeValue(entry?.assetTag) === normalizeValue(lookupValue)
+    ));
+    if (!asset && lookupValue) {
+      asset = await readInventoryJson(`/assets/${encodeURIComponent(lookupValue)}`).catch(() => null);
+    }
     const categoryKey = getAssetCategoryKey(asset || {});
     const allowComponentsTab = asset && !(isInstalledComponentAsset(asset) || ['accessory', 'consumable', 'spare_part', 'license'].includes(categoryKey));
     const defaultTab = allowComponentsTab ? 'components' : 'maintenance';
-    await refreshCmdbModal(customId, cmdbState.assetId === customId ? cmdbState.activeTab : defaultTab);
+    const resolvedId = String(asset?.customId || lookupValue).trim();
+    await refreshCmdbModal(resolvedId, cmdbState.assetId === resolvedId ? cmdbState.activeTab : defaultTab);
   } catch (error) {
     showMessage(error.message || 'Failed to open CMDB modal.', 'error');
   }
@@ -5013,7 +7525,7 @@ function ensureGroupCmdbModal() {
           <div class="modal-content">
             <div class="modal-header">
               <h5 class="modal-title fw-bold" id="${GROUP_CMDB_MODAL_ID}-title">Group CMDB</h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body" id="${GROUP_CMDB_MODAL_ID}-body"></div>
             <div class="modal-footer">
@@ -5111,7 +7623,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
   `)).join('');
 
   const listRows = groupAssets.filter((asset) => {
-    const haystack = `${asset.customId} ${getDisplaySerial(asset)} ${displayLocation(asset.location)} ${displayDepartment(asset.department)}`.toLowerCase();
+    const haystack = `${asset.customId} ${getDisplaySerial(asset)} ${getAssetDisplayLocation(asset)} ${getAssetDisplayDepartment(asset)}`.toLowerCase();
     return !groupCmdbState.searchText || haystack.includes(groupCmdbState.searchText.toLowerCase());
   }).map((asset) => {
     const checked = selectedSet.has(asset.customId) ? 'checked' : '';
@@ -5119,7 +7631,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
       <label class="list-group-item list-group-item-action py-2">
         <input class="form-check-input me-2" type="checkbox" data-group-cmdb-checkbox="${asset.customId}" ${checked}>
         <span class="fw-semibold">${UI.escapeHTML(asset.customId)}</span>
-        <div class="small text-muted">${UI.escapeHTML(getDisplaySerial(asset) || 'No Serial')} · ${UI.escapeHTML(displayLocation(asset.location))}</div>
+        <div class="small text-muted">${UI.escapeHTML(getDisplaySerial(asset) || 'No Serial')} | ${UI.escapeHTML(getAssetDisplayLocation(asset))}</div>
       </label>
     `;
   }).join('');
@@ -5153,7 +7665,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
           <button class="btn btn-sm btn-outline-secondary w-100" id="${GROUP_CMDB_MODAL_ID}-select-all">Select All</button>
           <button class="btn btn-sm btn-outline-secondary w-100" id="${GROUP_CMDB_MODAL_ID}-clear-all">Clear</button>
         </div>
-        <div class="list-group" style="max-height: 440px; overflow:auto;">
+        <div class="list-group inventory-group-cmdb-unit-list">
           ${listRows || '<div class="text-muted small p-3">No units match this filter.</div>'}
         </div>
       </div>
@@ -5175,7 +7687,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
               ${selectedCount === 1 ? `
                 <div class="d-flex gap-2">
                   <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${selectedAssets[0].customId}')">Install From Stock</button>
-                  <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${selectedAssets[0].customId}')">Add Component</button>
+                  <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${selectedAssets[0].customId}')">Create & Add New Component</button>
                 </div>
               ` : ''}
             </div>
@@ -5336,17 +7848,26 @@ window.groupCmdbBulkAddMaintenance = async () => {
     showMessage('Select at least one unit.', 'warning');
     return;
   }
-  const maintenanceType = window.prompt('Maintenance type:', 'preventive_maintenance');
-  if (!maintenanceType) return;
-  const status = window.prompt('Status (completed/in_progress/scheduled):', 'completed') || 'completed';
-  const performedBy = window.prompt('Performed by (optional):', '') || '';
-  const reason = window.prompt('Reason/notes (optional):', '') || '';
+  const form = await showInventoryFormModal({
+    title: 'Bulk Maintenance',
+    message: `Apply to ${selectedIds.length} selected unit(s).`,
+    confirmText: 'Apply',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'maintenanceType', label: 'Maintenance Type', type: 'text', value: 'preventive_maintenance', required: true },
+      { name: 'status', label: 'Status', type: 'select', options: ['completed', 'in_progress', 'scheduled'], value: 'completed', required: true },
+      { name: 'performedBy', label: 'Performed By', type: 'text', required: false },
+      { name: 'reason', label: 'Reason / Notes', type: 'textarea', rows: 3, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
   for (const assetId of selectedIds) {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
-      maintenanceType,
-      status,
-      performedBy,
-      reason,
+      maintenanceType: form.values.maintenanceType,
+      status: form.values.status || 'completed',
+      performedBy: form.values.performedBy || '',
+      reason: form.values.reason || '',
       performedAt: new Date().toISOString(),
     });
   }
@@ -5360,16 +7881,31 @@ window.groupCmdbBulkAssign = async () => {
     showMessage('Select at least one unit.', 'warning');
     return;
   }
-  const assignedToName = window.prompt('Assign to (name):', '');
-  if (!assignedToName) return;
-  const assignedDepartment = window.prompt('Assigned department (optional):', '') || '';
-  const expectedReturnDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '') || '';
+  const form = await showInventoryFormModal({
+    title: 'Bulk Assign / Checkout',
+    message: `Apply to ${selectedIds.length} selected unit(s).`,
+    confirmText: 'Assign',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'assignedToRole', label: 'Assigned To Role', type: 'select', options: ['Lab Supervisor', 'Senior', 'Junior', 'Professor', 'Technician', 'Department Admin', 'Student Worker', 'Other'], required: true, colClass: 'col-md-6' },
+      { name: 'assignedToName', label: 'Assignee Name', type: 'text', required: true, colClass: 'col-md-6' },
+      { name: 'assignedDepartment', label: 'Department', type: 'select', options: getKnownDepartmentOptions(), required: true, colClass: 'col-md-6' },
+      { name: 'expectedReturnDate', label: 'Expected Return Date', type: 'date', required: false, colClass: 'col-md-6' },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 3, required: false, colClass: 'col-12' },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const assignedToName = [form.values.assignedToRole, form.values.assignedToName].filter(Boolean).join(' - ');
+  const assignedDepartment = form.values.assignedDepartment || '';
+  const expectedReturnDate = form.values.expectedReturnDate || '';
   for (const assetId of selectedIds) {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/assign`, {
       assignedToName,
       assignedDepartment,
       expectedReturnDate: expectedReturnDate || null,
       checkoutDate: new Date().toISOString(),
+      notes: form.values.notes || '',
     });
   }
   await loadAssets();
@@ -5383,11 +7919,24 @@ window.groupCmdbBulkCheckin = async () => {
     showMessage('Select at least one unit.', 'warning');
     return;
   }
-  const reason = window.prompt('Check-in reason/notes (optional):', '') || '';
+  const form = await showInventoryFormModal({
+    title: 'Bulk Check-in',
+    message: `Apply to ${selectedIds.length} selected unit(s).`,
+    confirmText: 'Check-in',
+    confirmClass: 'btn-outline-secondary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'conditionIn', label: 'Return Condition', type: 'select', options: ['good', 'needs_review', 'damaged'], value: 'good', required: true },
+      { name: 'reason', label: 'Notes', type: 'textarea', rows: 3, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
   for (const assetId of selectedIds) {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/check-in`, {
       returnedDate: new Date().toISOString(),
-      reason,
+      conditionIn: form.values.conditionIn || 'good',
+      reason: form.values.reason || '',
+      notes: form.values.reason || '',
     });
   }
   await loadAssets();
@@ -5398,17 +7947,18 @@ window.groupCmdbBulkCheckin = async () => {
 window.cmdbAiHealthSummary = async (assetId) => {
   const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-health`);
   if (!panel) return;
-  panel.innerHTML = `
-    <div class="alert alert-secondary mb-0">
-      <div class="d-flex align-items-center gap-2">
-        <span class="spinner-border spinner-border-sm" role="status"></span>
-        <span>Generating AI health summary...</span>
-      </div>
-    </div>
-  `;
+  const actionKey = `ai_health_${assetId}`;
+  if (!beginCmdbAiAction(actionKey)) return;
+  const stopLoadingHint = startAiPanelLoading(panel, 'Generating AI health summary...');
   try {
     const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/ai-health-summary`, {
       includeRelated: true,
+    });
+    stopLoadingHint();
+    const evidenceConfidence = normalizeInventoryAiConfidenceLabel(result?.confidence);
+    const evidenceReason = summarizeInventoryAiEvidenceReason({
+      missingData: Array.isArray(result?.missingData) ? result.missingData : [],
+      scannedCount: Number(result?.scannedCount || 0),
     });
     const listHtml = (items) => (Array.isArray(items) && items.length
       ? `<ul class="mb-2">${items.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>`
@@ -5417,10 +7967,21 @@ window.cmdbAiHealthSummary = async (assetId) => {
       <div class="alert alert-dark mb-2">
         <div class="d-flex justify-content-between align-items-center gap-2">
           <strong>AI Asset Health Summary</strong>
-          <span class="badge bg-${result.confidence === 'high' ? 'success' : result.confidence === 'medium' ? 'warning text-dark' : 'danger'}">${UI.escapeHTML(String(result.confidence || 'low').toUpperCase())}</span>
+          <span class="badge bg-${evidenceConfidence === 'high' ? 'success' : evidenceConfidence === 'medium' ? 'warning text-dark' : 'danger'}">Evidence confidence: ${UI.escapeHTML(String(evidenceConfidence || 'low').toUpperCase())}</span>
         </div>
         <div class="small mt-2">${UI.escapeHTML(result.summary || 'No summary available.')}</div>
-        ${result.llmUsed ? '<div class="small text-muted mt-1">Generated with local LLM assistance.</div>' : '<div class="small text-muted mt-1">Fallback summary used (LLM unavailable).</div>'}
+        ${aiSourceMetaHtml(result)}
+        ${evidenceConfidence === 'low' && !result?.fallbackUsed ? `
+          <details class="mt-2">
+            <summary class="small text-primary">Why low evidence confidence?</summary>
+            <div class="small text-muted mt-1">${UI.escapeHTML(
+              evidenceReason
+                ? `Low evidence confidence because ${evidenceReason}. This is not a Gemma failure.`
+                : 'Gemma generated the answer, but supporting asset evidence is limited.'
+            )}</div>
+            <div class="small text-muted mt-1">Add telemetry readings, warranty/purchase details, and maintenance history to improve confidence.</div>
+          </details>
+        ` : ''}
       </div>
       <div class="small"><strong>Main Risks</strong></div>${listHtml(result.risks)}
       <div class="small"><strong>Recent Changes</strong></div>${listHtml(result.recentChanges)}
@@ -5430,6 +7991,7 @@ window.cmdbAiHealthSummary = async (assetId) => {
       <div class="small"><strong>Missing Data</strong></div>${listHtml(result.missingData)}
     `;
   } catch (error) {
+    stopLoadingHint();
     panel.innerHTML = `
       <div class="alert alert-warning mb-0">
         <strong>AI summary unavailable.</strong>
@@ -5437,22 +7999,20 @@ window.cmdbAiHealthSummary = async (assetId) => {
       </div>
     `;
     showMessage(error.message || 'Failed to generate AI health summary.', 'warning');
+  } finally {
+    endCmdbAiAction(actionKey);
   }
 };
 
 window.cmdbAiRiskScore = async (assetId) => {
   const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-risk`);
   if (!panel) return;
-  panel.innerHTML = `
-    <div class="alert alert-secondary mb-0">
-      <div class="d-flex align-items-center gap-2">
-        <span class="spinner-border spinner-border-sm" role="status"></span>
-        <span>Calculating AI risk score...</span>
-      </div>
-    </div>
-  `;
+  const actionKey = `ai_risk_${assetId}`;
+  if (!beginCmdbAiAction(actionKey)) return;
+  const stopLoadingHint = startAiPanelLoading(panel, 'Calculating AI risk score...');
   try {
     const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/ai-risk-score`, {});
+    stopLoadingHint();
     const row = Array.isArray(result?.riskScores) ? result.riskScores[0] : null;
     if (!row) {
       panel.innerHTML = '<div class="alert alert-warning mb-0">No risk score available for this asset.</div>';
@@ -5472,6 +8032,7 @@ window.cmdbAiRiskScore = async (assetId) => {
           <span class="badge bg-${badgeClass}">${UI.escapeHTML(String(row.riskLevel || 'low').toUpperCase())} (${UI.escapeHTML(String(row.riskScore ?? '-'))})</span>
         </div>
         <div class="small mt-2">${UI.escapeHTML(result?.summary || 'Risk analysis completed.')}</div>
+        ${aiSourceMetaHtml(result)}
       </div>
       <div class="small"><strong>Reasons</strong></div>
       ${reasons.length ? `<ul class="mb-2">${reasons.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>` : '<div class="text-muted small mb-2">No detailed reasons.</div>'}
@@ -5481,6 +8042,7 @@ window.cmdbAiRiskScore = async (assetId) => {
       ${missingData.length ? `<ul class="mb-0">${missingData.map((item) => `<li>${UI.escapeHTML(String(item || ''))}</li>`).join('')}</ul>` : '<div class="text-muted small mb-0">None.</div>'}
     `;
   } catch (error) {
+    stopLoadingHint();
     panel.innerHTML = `
       <div class="alert alert-warning mb-0">
         <strong>AI risk score unavailable.</strong>
@@ -5488,22 +8050,20 @@ window.cmdbAiRiskScore = async (assetId) => {
       </div>
     `;
     showMessage(error.message || 'Failed to generate AI risk score.', 'warning');
+  } finally {
+    endCmdbAiAction(actionKey);
   }
 };
 
 window.cmdbDigitalTwin = async (assetId) => {
   const panel = document.getElementById(`${CMDB_MODAL_ID}-digital-twin`);
   if (!panel) return;
-  panel.innerHTML = `
-    <div class="alert alert-secondary mb-0">
-      <div class="d-flex align-items-center gap-2">
-        <span class="spinner-border spinner-border-sm" role="status"></span>
-        <span>Loading Digital Twin...</span>
-      </div>
-    </div>
-  `;
+  const actionKey = `digital_twin_${assetId}`;
+  if (!beginCmdbAiAction(actionKey)) return;
+  const stopLoadingHint = startAiPanelLoading(panel, 'Loading Digital Twin...');
   try {
     const result = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/digital-twin`);
+    stopLoadingHint();
     const risk = result?.riskScore || {};
     const kit = result?.kitHealth || {};
     const related = result?.relatedCounts || {};
@@ -5515,6 +8075,12 @@ window.cmdbDigitalTwin = async (assetId) => {
           <span class="badge bg-${result?.confidence === 'high' ? 'success' : result?.confidence === 'medium' ? 'warning text-dark' : 'danger'}">${UI.escapeHTML(String(result?.confidence || 'low').toUpperCase())}</span>
         </div>
         <div class="small mt-1">${UI.escapeHTML(String(result?.asset?.name || '-'))} (${UI.escapeHTML(String(result?.asset?.customId || '-'))})</div>
+        ${aiSourceMetaHtml({
+    llmUsed: Boolean(result?.llmUsed),
+    fallbackUsed: Boolean(result?.fallbackUsed),
+    llmStatus: String(result?.llmStatus || 'deterministic_only'),
+    fallbackReason: String(result?.fallbackReason || ''),
+  })}
       </div>
       <div class="small">
         <div><strong>Health Score:</strong> ${UI.escapeHTML(String(result?.healthScore ?? '-'))}</div>
@@ -5526,12 +8092,13 @@ window.cmdbDigitalTwin = async (assetId) => {
         <div><strong>Location:</strong> ${UI.escapeHTML(String(result?.currentLocation || '-'))}</div>
         <div><strong>Last Transfer:</strong> ${UI.escapeHTML(String(result?.lastTransfer?.timestamp ? UI.formatDateTime(result.lastTransfer.timestamp) : '-'))}</div>
         <div><strong>Last Maintenance:</strong> ${UI.escapeHTML(String(result?.lastMaintenance?.createdAt ? UI.formatDateTime(result.lastMaintenance.createdAt) : '-'))}</div>
-        <div><strong>Related Counts:</strong> Components ${UI.escapeHTML(String(related.components ?? 0))} • Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} • Licenses ${UI.escapeHTML(String(related.licenses ?? 0))} • Consumables ${UI.escapeHTML(String(related.consumables ?? 0))}</div>
+        <div><strong>Related Counts:</strong> Components ${UI.escapeHTML(String(related.components ?? 0))} â€¢ Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} â€¢ Licenses ${UI.escapeHTML(String(related.licenses ?? 0))} â€¢ Consumables ${UI.escapeHTML(String(related.consumables ?? 0))}</div>
       </div>
       ${issues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(issues.join(' | '))}</div>` : '<div class="small mt-2 text-muted">No open issues.</div>'}
       ${result?.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
     `;
   } catch (error) {
+    stopLoadingHint();
     panel.innerHTML = `
       <div class="alert alert-warning mb-0">
         <strong>Digital Twin unavailable.</strong>
@@ -5539,6 +8106,8 @@ window.cmdbDigitalTwin = async (assetId) => {
       </div>
     `;
     showMessage(error.message || 'Failed to load digital twin.', 'warning');
+  } finally {
+    endCmdbAiAction(actionKey);
   }
 };
 
@@ -5546,21 +8115,19 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
   const panel = document.getElementById(`${CMDB_MODAL_ID}-black-box`);
   if (!panel) return;
   const requestedGroup = String(group || 'all').trim().toLowerCase();
+  const actionKey = `black_box_${assetId}_${requestedGroup}`;
   const useCache = cmdbState.blackBoxTimelineAssetId === assetId && Array.isArray(cmdbState.blackBoxTimelineRows);
+  if (!useCache && !beginCmdbAiAction(actionKey)) return;
+  let stopLoadingHint = () => {};
   if (!useCache) {
-    panel.innerHTML = `
-      <div class="alert alert-secondary mb-0">
-        <div class="d-flex align-items-center gap-2">
-          <span class="spinner-border spinner-border-sm" role="status"></span>
-          <span>Loading Black Box Timeline...</span>
-        </div>
-      </div>
-    `;
+    stopLoadingHint = startAiPanelLoading(panel, 'Loading Black Box Timeline...');
     try {
       const payload = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/black-box-timeline?includeRelated=true`);
       cmdbState.blackBoxTimelineAssetId = assetId;
       cmdbState.blackBoxTimelineRows = Array.isArray(payload?.events) ? payload.events : [];
+      stopLoadingHint();
     } catch (error) {
+      stopLoadingHint();
       panel.innerHTML = `
         <div class="alert alert-warning mb-0">
           <strong>Black Box Timeline unavailable.</strong>
@@ -5568,7 +8135,10 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
         </div>
       `;
       showMessage(error.message || 'Failed to load black box timeline.', 'warning');
+      endCmdbAiAction(actionKey);
       return;
+    } finally {
+      endCmdbAiAction(actionKey);
     }
   }
 
@@ -5608,6 +8178,7 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
         <strong>Black Box Timeline</strong>
         <span class="small text-muted">Events: ${UI.escapeHTML(String(rows.length))}</span>
       </div>
+      ${aiSourceMetaHtml({ llmStatus: 'deterministic_only', llmUsed: false, fallbackUsed: false })}
       <div class="d-flex flex-wrap gap-2 mt-2">${controls}</div>
     </div>
     <div class="table-responsive">
@@ -5622,21 +8193,92 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
 window.cmdbAiDraftTicket = async (assetId) => {
   const panel = document.getElementById(`${CMDB_MODAL_ID}-ai-ticket`);
   if (!panel) return;
-  const issue = window.prompt('Describe the issue for ticket draft:', 'Asset risk or maintenance follow-up');
-  if (!issue) return;
-  panel.innerHTML = `
-    <div class="alert alert-secondary mb-0">
-      <div class="d-flex align-items-center gap-2">
-        <span class="spinner-border spinner-border-sm" role="status"></span>
-        <span>Drafting inventory ticket...</span>
-      </div>
-    </div>
-  `;
+  const actionKey = `ai_ticket_${assetId}`;
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  const form = await showInventoryFormModal({
+    title: 'Draft Ticket',
+    message: `Review and confirm before drafting a ticket. Asset: ${asset?.name || assetId}`,
+    confirmText: 'Create Draft',
+    confirmClass: 'btn-secondary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'assetName',
+        label: 'Asset Name',
+        type: 'text',
+        value: asset?.name || '-',
+        readonly: true,
+      },
+      {
+        name: 'assetTag',
+        label: 'Asset Tag',
+        type: 'text',
+        value: getDisplayAssetTag(asset || {}) || '-',
+        readonly: true,
+      },
+      {
+        name: 'location',
+        label: 'Location',
+        type: 'text',
+        value: getAssetDisplayLocation(asset || {}),
+        readonly: true,
+      },
+      {
+        name: 'department',
+        label: 'Department',
+        type: 'text',
+        value: getAssetDisplayDepartment(asset || {}),
+        readonly: true,
+      },
+      {
+        name: 'issueSummary',
+        label: 'Issue Summary',
+        type: 'text',
+        value: 'Asset risk or maintenance follow-up',
+        required: true,
+      },
+      {
+        name: 'description',
+        label: 'Description',
+        type: 'textarea',
+        rows: 4,
+        required: false,
+      },
+      {
+        name: 'priority',
+        label: 'Priority',
+        type: 'select',
+        options: ['low', 'medium', 'high', 'critical'],
+        value: 'medium',
+        required: true,
+      },
+      {
+        name: 'suggestedCategory',
+        label: 'Suggested Category',
+        type: 'select',
+        options: ['maintenance', 'risk', 'hardware', 'software', 'other'],
+        value: 'maintenance',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  if (!beginCmdbAiAction(actionKey)) return;
+
+  const issue = [
+    form.values.issueSummary,
+    form.values.description,
+    `Priority: ${form.values.priority}`,
+    `Category: ${form.values.suggestedCategory}`,
+  ].filter(Boolean).join(' | ');
+
+  const stopLoadingHint = startAiPanelLoading(panel, 'Drafting inventory ticket...');
   try {
     const result = await postInventoryJson('/inventory/ai/ticket-draft', {
       assetId,
       issue,
     });
+    stopLoadingHint();
     const draft = result?.ticketDraft || {};
     const draftText = [
       `Title: ${draft.title || '-'}`,
@@ -5655,11 +8297,13 @@ window.cmdbAiDraftTicket = async (assetId) => {
           <strong>AI Ticket Draft</strong>
           <span class="badge bg-${result?.confidence === 'high' ? 'success' : (result?.confidence === 'medium' ? 'warning text-dark' : 'danger')}">${UI.escapeHTML(String(result?.confidence || 'low').toUpperCase())}</span>
         </div>
-        <div class="small mt-1">Review before creating a real ticket.</div>
+        <div class="small mt-1">Review before creating a real ticket. Nothing is submitted automatically.</div>
+        ${aiSourceMetaHtml(result)}
       </div>
       <textarea class="form-control form-control-sm" rows="8" readonly>${UI.escapeHTML(draftText)}</textarea>
     `;
   } catch (error) {
+    stopLoadingHint();
     panel.innerHTML = `
       <div class="alert alert-warning mb-0">
         <strong>AI ticket draft unavailable.</strong>
@@ -5667,6 +8311,8 @@ window.cmdbAiDraftTicket = async (assetId) => {
       </div>
     `;
     showMessage(error.message || 'Failed to draft inventory ticket.', 'warning');
+  } finally {
+    endCmdbAiAction(actionKey);
   }
 };
 
@@ -5674,35 +8320,150 @@ window.cmdbViewComponentHistory = async (assetId, componentId) => {
   try {
     const rows = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/history`);
     const preview = (rows || []).slice(0, 8).map((row) => `${row.createdAt ? new Date(row.createdAt).toLocaleString() : '-'} - ${row.eventType || '-'} (${row.reason || 'n/a'})`).join('\n');
-    window.alert(preview || 'No component history entries yet.');
+    await showInventoryTextPreviewModal({
+      title: 'Component History',
+      message: 'Latest component history entries.',
+      text: preview || 'No component history entries yet.',
+      rows: 10,
+      confirmText: 'Close',
+    });
   } catch (error) {
     showMessage(error.message || 'Failed to load component history.', 'error');
   }
 };
 
 window.cmdbAddComponent = async (assetId) => {
-  const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
+  const parentAsset = currentAssets.find((asset) => asset.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
   const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
-  const optionsHint = componentOptions.slice(0, 12).join(', ');
-  const componentName = window.prompt('Component name (e.g., RAM 16GB):', '');
+  const form = await showInventoryFormModal({
+    title: 'Create & Add New Component',
+    message: `Parent asset: ${parentAsset?.name || assetId}`,
+    confirmText: 'Create Component',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'componentName',
+        label: 'Component Name',
+        type: 'text',
+        placeholder: 'RAM 16GB / SSD 1TB / GPU RTX...',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'componentType',
+        label: 'Component Type',
+        type: 'select',
+        options: componentOptions,
+        value: componentOptions[0] || 'component',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'brand',
+        label: 'Brand',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'model',
+        label: 'Model',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'serialNumber',
+        label: 'Serial Number',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'assetTag',
+        label: 'Asset Tag / Unique ID',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'partNumber',
+        label: 'Part Number',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'condition',
+        label: 'Condition',
+        type: 'select',
+        options: ['new', 'good', 'used', 'repair_needed'],
+        value: 'new',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'status',
+        label: 'Status / Lifecycle',
+        type: 'select',
+        options: ['installed', 'under_repair', 'in_stock'],
+        value: 'installed',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'createAsAsset',
+        label: 'Create as standalone inventory component asset',
+        type: 'checkbox',
+        value: true,
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+        colClass: 'col-12',
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const componentName = String(form.values.componentName || '').trim();
   if (!componentName) return;
-  const componentType = window.prompt(`Component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
-  const serialNumber = window.prompt('Component serial number (optional):', '') || '';
-  const partNumber = window.prompt('Part number (optional):', '') || '';
-  const existingChildAssetId = window.prompt('Existing component asset custom ID (optional):', '') || '';
-  const embeddedOnly = window.confirm('Create as embedded-only component row? Click Cancel to create/link inventory component asset (recommended).');
-  const createAsAsset = existingChildAssetId ? false : !embeddedOnly;
-  const reason = window.prompt('Reason/notes (optional):', '') || '';
+  const serialNumber = String(form.values.serialNumber || '').trim();
+  const assetTag = String(form.values.assetTag || '').trim();
+
+  const existingRows = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components?includeRemoved=true`).catch(() => []);
+  const duplicateExisting = (Array.isArray(existingRows) ? existingRows : []).find((row) => {
+    const rowStatus = normalizeLifecycleStatus(row?.status || '');
+    const removed = Boolean(row?.removedAt) || ['removed', 'replaced', 'retired', 'disposed'].includes(rowStatus);
+    if (removed) return false;
+    const serialMatch = serialNumber && normalizeValue(row?.serialNumber) === normalizeValue(serialNumber);
+    const tagMatch = assetTag && normalizeValue(row?.childAsset?.assetTag || row?.assetTag) === normalizeValue(assetTag);
+    return serialMatch || tagMatch;
+  });
+  if (duplicateExisting) {
+    showMessage('A component with the same serial number or asset tag is already installed on this asset.', 'warning');
+    return;
+  }
+
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components`, {
       componentName,
-      componentType,
-      serialNumber,
-      partNumber,
-      childAssetId: existingChildAssetId || null,
-      createAsAsset: existingChildAssetId ? false : createAsAsset,
-      reason,
-      status: 'installed',
+      componentType: form.values.componentType || 'component',
+      brand: form.values.brand || null,
+      model: form.values.model || null,
+      serialNumber: serialNumber || null,
+      assetTag: assetTag || null,
+      partNumber: form.values.partNumber || null,
+      condition: form.values.condition || 'new',
+      reason: form.values.notes || 'component_created_and_added',
+      notes: form.values.notes || null,
+      createAsAsset: Boolean(form.values.createAsAsset),
+      status: form.values.status || 'installed',
     });
     showMessage('Component added.', 'success');
     await loadAssets();
@@ -5712,23 +8473,41 @@ window.cmdbAddComponent = async (assetId) => {
   }
 };
 
+async function getCmdbComponentRecord(assetId, componentId) {
+  const rows = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components?includeRemoved=true`).catch(() => []);
+  return (Array.isArray(rows) ? rows : []).find((row) => String(row?.id || '') === String(componentId || '')) || null;
+}
+
 window.cmdbEditComponent = async (assetId, componentId) => {
   const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
   const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
-  const optionsHint = componentOptions.slice(0, 12).join(', ');
-  const componentName = window.prompt('Updated component name:', '');
-  if (!componentName) return;
-  const componentType = window.prompt(`Updated component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
-  const serialNumber = window.prompt('Updated serial (optional):', '') || '';
-  const partNumber = window.prompt('Updated part number (optional):', '') || '';
-  const condition = window.prompt('Updated condition (optional):', '') || '';
+  const target = await getCmdbComponentRecord(assetId, componentId);
+  if (!target) {
+    showMessage('Component not found.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Edit Component',
+    message: `Parent asset: ${parentAsset?.name || assetId}`,
+    confirmText: 'Save Changes',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'componentName', label: 'Component Name', type: 'text', value: target.componentName || '', required: true, colClass: 'col-md-6' },
+      { name: 'componentType', label: 'Component Type', type: 'select', options: componentOptions, value: target.componentType || componentOptions[0] || 'component', required: true, colClass: 'col-md-6' },
+      { name: 'serialNumber', label: 'Serial Number', type: 'text', value: target.serialNumber || '', required: false, colClass: 'col-md-6' },
+      { name: 'partNumber', label: 'Part Number', type: 'text', value: target.partNumber || '', required: false, colClass: 'col-md-6' },
+      { name: 'condition', label: 'Condition', type: 'text', value: target.condition || '', required: false, colClass: 'col-md-6' },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}`, {
-      componentName,
-      componentType,
-      serialNumber,
-      partNumber,
-      condition,
+      componentName: form.values.componentName,
+      componentType: form.values.componentType || 'component',
+      serialNumber: form.values.serialNumber || '',
+      partNumber: form.values.partNumber || '',
+      condition: form.values.condition || '',
     }, 'PUT');
     showMessage('Component updated.', 'success');
     await refreshCmdbModal(assetId, 'components');
@@ -5738,7 +8517,12 @@ window.cmdbEditComponent = async (assetId, componentId) => {
 };
 
 window.cmdbRemoveComponent = async (assetId, componentId) => {
-  const reason = window.prompt('Removal reason:', 'removed');
+  const reason = await promptInventoryValue({
+    title: 'Remove Component',
+    label: 'Removal reason',
+    value: 'removed',
+    required: true,
+  });
   if (!reason) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/remove`, { reason, status: 'removed' });
@@ -5752,17 +8536,29 @@ window.cmdbRemoveComponent = async (assetId, componentId) => {
 window.cmdbReplaceComponent = async (assetId, componentId) => {
   const parentAsset = currentAssets.find((asset) => asset.customId === assetId);
   const componentOptions = getComponentRegistryOptionsForAsset(parentAsset || {});
-  const optionsHint = componentOptions.slice(0, 12).join(', ');
-  const componentName = window.prompt('New component name:', '');
-  if (!componentName) return;
-  const componentType = window.prompt(`New component type (examples: ${optionsHint || 'ram, cpu, ssd'}):`, componentOptions[0] || 'component') || 'component';
-  const serialNumber = window.prompt('New component serial (optional):', '') || '';
-  const reason = window.prompt('Replacement reason:', 'replaced');
-  if (!reason) return;
+  const form = await showInventoryFormModal({
+    title: 'Replace Component',
+    message: 'Create replacement component and retire current one.',
+    confirmText: 'Replace Component',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'componentName', label: 'New Component Name', type: 'text', required: true, colClass: 'col-md-6' },
+      { name: 'componentType', label: 'New Component Type', type: 'select', options: componentOptions, value: componentOptions[0] || 'component', required: true, colClass: 'col-md-6' },
+      { name: 'serialNumber', label: 'New Component Serial', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'reason', label: 'Replacement Reason', type: 'text', value: 'replaced', required: true, colClass: 'col-md-6' },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/replace`, {
-      reason,
-      newComponent: { componentName, componentType, serialNumber, status: 'installed' },
+      reason: form.values.reason,
+      newComponent: {
+        componentName: form.values.componentName,
+        componentType: form.values.componentType || 'component',
+        serialNumber: form.values.serialNumber || '',
+        status: 'installed',
+      },
       oldStatus: 'replaced',
     });
     showMessage('Component replaced.', 'success');
@@ -5773,13 +8569,21 @@ window.cmdbReplaceComponent = async (assetId, componentId) => {
 };
 
 window.cmdbRepairComponent = async (assetId, componentId) => {
-  const reason = window.prompt('Repair reason:', 'repair');
-  if (!reason) return;
-  const nextStatus = window.prompt('Set status after repair (under_repair/installed):', 'under_repair') || 'under_repair';
+  const form = await showInventoryFormModal({
+    title: 'Repair Component',
+    confirmText: 'Record Repair',
+    confirmClass: 'btn-warning',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'reason', label: 'Repair Reason', type: 'text', value: 'repair', required: true },
+      { name: 'nextStatus', label: 'Status After Repair', type: 'select', options: ['under_repair', 'installed'], value: 'under_repair', required: true },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/repair`, {
-      reason,
-      status: nextStatus,
+      reason: form.values.reason,
+      status: form.values.nextStatus || 'under_repair',
       maintenanceType: 'component_repair',
       maintenanceStatus: 'completed',
     });
@@ -5791,7 +8595,12 @@ window.cmdbRepairComponent = async (assetId, componentId) => {
 };
 
 window.cmdbMarkFailedComponent = async (assetId, componentId) => {
-  const reason = window.prompt('Failure reason:', 'hardware failure');
+  const reason = await promptInventoryValue({
+    title: 'Mark Component Failed',
+    label: 'Failure reason',
+    value: 'hardware failure',
+    required: true,
+  });
   if (!reason) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/mark-failed`, { reason });
@@ -5803,37 +8612,224 @@ window.cmdbMarkFailedComponent = async (assetId, componentId) => {
 };
 
 window.cmdbRetireComponent = async (assetId, componentId) => {
-  const status = window.prompt('Retire status (retired/disposed):', 'retired') || 'retired';
-  const reason = window.prompt('Retire/Dispose reason:', status) || status;
-  if (!reason) return;
+  const form = await showInventoryFormModal({
+    title: 'Retire / Dispose Component',
+    confirmText: 'Apply',
+    confirmClass: 'btn-danger',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'status', label: 'Status', type: 'select', options: ['retired', 'disposed'], value: 'retired', required: true },
+      { name: 'reason', label: 'Reason', type: 'text', value: 'retired', required: true },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
-    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/retire`, { status, reason });
-    showMessage(`Component ${status}.`, status === 'disposed' ? 'warning' : 'success');
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/retire`, {
+      status: form.values.status || 'retired',
+      reason: form.values.reason || form.values.status || 'retired',
+    });
+    showMessage(`Component ${form.values.status || 'retired'}.`, form.values.status === 'disposed' ? 'warning' : 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
     showMessage(error.message || 'Failed to retire/dispose component.', 'error');
   }
 };
 
+async function getInstallableFreeComponentAssets(parentAssetId) {
+  await refreshInventoryFilterSnapshot();
+  const snapshotAssets = Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : [];
+  return snapshotAssets
+    .filter((asset) => {
+      const customId = String(asset?.customId || '').trim();
+      if (!customId || customId === parentAssetId) return false;
+      const categoryKey = getAssetCategoryKey(asset || {});
+      if (categoryKey !== 'component') return false;
+      const lifecycle = normalizeLifecycleStatus(asset?.lifecycleStatus || asset?.lifecycle_status || '');
+      if (['retired', 'disposed', 'lost_stolen'].includes(lifecycle)) return false;
+      const installedParent = String(asset?.installedParentCustomId || asset?.installedParentAssetId || '').trim();
+      if (installedParent && installedParent !== parentAssetId) return false;
+      const relatedParent = String(asset?.relatedParentCustomId || '').trim();
+      if (relatedParent && relatedParent !== parentAssetId) return false;
+      return true;
+    })
+    .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')));
+}
+
 window.cmdbInstallFromStock = async (assetId) => {
+  const sourceMode = await promptInventoryValue({
+    title: 'Install From Stock',
+    label: 'Source Mode',
+    type: 'select',
+    options: [
+      { value: 'existing_asset', label: 'Existing free asset' },
+      { value: 'spare_stock', label: 'Spare stock item' },
+    ],
+    value: 'existing_asset',
+    placeholder: 'Select source mode',
+    required: true,
+  });
+  if (!sourceMode) return;
+
+  const activeComponents = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components?includeRemoved=true`).catch(() => []);
+  const activeChildIds = new Set(
+    (Array.isArray(activeComponents) ? activeComponents : [])
+      .filter((row) => !row?.removedAt && !['removed', 'replaced', 'retired', 'disposed'].includes(normalizeLifecycleStatus(row?.status)))
+      .map((row) => String(row?.childAssetId || '').trim())
+      .filter(Boolean)
+  );
+
+  if (sourceMode === 'existing_asset') {
+    const candidates = await getInstallableFreeComponentAssets(assetId);
+    const filteredCandidates = candidates.filter((asset) => !activeChildIds.has(String(asset?.customId || '').trim()));
+    if (!filteredCandidates.length) {
+      showMessage('No free component assets are available for linking.', 'warning');
+      return;
+    }
+    const form = await showInventoryFormModal({
+      title: 'Install Existing Free Asset',
+      message: 'Select an available component asset to link to this parent asset.',
+      confirmText: 'Install Component',
+      confirmClass: 'btn-primary',
+      dialogClass: 'modal-lg',
+      fields: [
+        {
+          name: 'childAssetId',
+          label: 'Existing Free Asset',
+          type: 'select',
+          options: filteredCandidates.map((asset) => ({
+            value: asset.customId,
+            label: `${asset.name} | ${asset.customId} | ${getAssetDisplayLocation(asset)} | ${getAssetDisplayDepartment(asset)}`,
+          })),
+          placeholder: 'Select asset',
+          required: true,
+        },
+        {
+          name: 'reason',
+          label: 'Reason / Notes',
+          type: 'textarea',
+          rows: 3,
+          value: 'installed_from_existing_asset',
+          required: true,
+        },
+      ],
+    });
+    if (!form?.confirmed) return;
+    const selectedId = String(form.values.childAssetId || '').trim();
+    if (!selectedId || selectedId === assetId) {
+      showMessage('Invalid component selection.', 'warning');
+      return;
+    }
+    if (activeChildIds.has(selectedId)) {
+      showMessage('This component is already installed on the parent asset.', 'warning');
+      return;
+    }
+    const selected = filteredCandidates.find((asset) => String(asset.customId || '') === selectedId);
+    if (!selected) {
+      showMessage('Selected component asset was not found.', 'warning');
+      return;
+    }
+    try {
+      await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components`, {
+        childAssetId: selectedId,
+        componentName: selected.name || selectedId,
+        componentType: selected.componentType || getAssetSpecs(selected)?.componentType || 'component',
+        serialNumber: selected.serialNumber || null,
+        partNumber: selected.manufacturerPartNumber || null,
+        createAsAsset: false,
+        status: 'installed',
+        reason: form.values.reason || 'installed_from_existing_asset',
+        notes: form.values.reason || null,
+      });
+      showMessage('Existing asset linked as component.', 'success');
+      await loadAssets();
+      await refreshCmdbModal(assetId, 'components');
+    } catch (error) {
+      showMessage(error.message || 'Failed to link existing component asset.', 'error');
+    }
+    return;
+  }
+
   await window.loadSpareStock();
-  const stockLabel = spareStockItemsCache.filter((item) => Number(item.quantityAvailable) > 0)
-    .map((item) => `${item.id}: ${item.partName} (${item.quantityAvailable})`).join('\n');
-  if (!stockLabel) {
+  const availableStock = (spareStockItemsCache || []).filter((item) => Number(item.quantityAvailable) > 0);
+  if (!availableStock.length) {
     showMessage('No available spare stock items to install.', 'warning');
     return;
   }
-  const spareStockItemId = window.prompt(`Enter spare stock ID to install:\n${stockLabel}`, '') || '';
-  if (!spareStockItemId) return;
-  const reason = window.prompt('Install reason:', 'installed_from_stock') || 'installed_from_stock';
+  const stockForm = await showInventoryFormModal({
+    title: 'Install From Spare Stock',
+    message: 'Select spare stock item and quantity to install.',
+    confirmText: 'Install From Stock',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'spareStockItemId',
+        label: 'Spare Stock Item',
+        type: 'select',
+        options: availableStock.map((item) => ({
+          value: item.id,
+          label: `${item.partName} | ${item.componentType} | Qty ${item.quantityAvailable}`,
+        })),
+        required: true,
+      },
+      {
+        name: 'quantity',
+        label: 'Quantity',
+        type: 'number',
+        value: 1,
+        min: 1,
+        step: 1,
+        required: true,
+        validate: (value) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed) || parsed < 1) return 'Quantity must be 1 or more.';
+          if (!Number.isInteger(parsed)) return 'Quantity must be a whole number.';
+          return '';
+        },
+      },
+      {
+        name: 'reason',
+        label: 'Reason / Notes',
+        type: 'textarea',
+        rows: 3,
+        value: 'installed_from_stock',
+        required: true,
+      },
+    ],
+  });
+  if (!stockForm?.confirmed) return;
+
+  const spareStockItemId = String(stockForm.values.spareStockItemId || '').trim();
+  const quantity = Math.max(1, Math.trunc(Number(stockForm.values.quantity || 1)));
+  const selectedStock = availableStock.find((item) => String(item.id || '') === spareStockItemId);
+  if (!selectedStock) {
+    showMessage('Selected spare stock item was not found.', 'warning');
+    return;
+  }
+  if (quantity > Number(selectedStock.quantityAvailable || 0)) {
+    showMessage(`Only ${selectedStock.quantityAvailable} item(s) are available in stock.`, 'warning');
+    return;
+  }
+
   try {
-    const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/install-from-stock`, {
-      spareStockItemId,
-      reason,
-      createAsAsset: true,
-      status: 'installed',
-    });
-    showMessage(result?.lowStockWarning ? 'Installed from stock. Low stock warning triggered.' : 'Installed from stock.', result?.lowStockWarning ? 'warning' : 'success');
+    let lowStockTriggered = false;
+    let installedCount = 0;
+    for (let index = 0; index < quantity; index += 1) {
+      const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/install-from-stock`, {
+        spareStockItemId,
+        reason: stockForm.values.reason || 'installed_from_stock',
+        createAsAsset: true,
+        status: 'installed',
+      });
+      installedCount += 1;
+      if (result?.lowStockWarning) lowStockTriggered = true;
+    }
+    showMessage(
+      lowStockTriggered
+        ? `Installed ${installedCount} component(s) from stock. Low stock warning triggered.`
+        : `Installed ${installedCount} component(s) from stock.`,
+      lowStockTriggered ? 'warning' : 'success'
+    );
     await loadSpareStock();
     await loadAssets();
     await refreshCmdbModal(assetId, 'components');
@@ -5844,16 +8840,40 @@ window.cmdbInstallFromStock = async (assetId) => {
 
 window.cmdbReplaceFromStock = async (assetId, componentId) => {
   await window.loadSpareStock();
-  const stockLabel = spareStockItemsCache.filter((item) => Number(item.quantityAvailable) > 0)
-    .map((item) => `${item.id}: ${item.partName} (${item.quantityAvailable})`).join('\n');
-  if (!stockLabel) {
+  const availableStock = (spareStockItemsCache || []).filter((item) => Number(item.quantityAvailable) > 0);
+  if (!availableStock.length) {
     showMessage('No available spare stock items for replacement.', 'warning');
     return;
   }
-  const spareStockItemId = window.prompt(`Enter spare stock ID for replacement:\n${stockLabel}`, '') || '';
-  if (!spareStockItemId) return;
-  const reason = window.prompt('Replacement reason:', 'replaced_from_stock') || 'replaced_from_stock';
-  if (!reason) return;
+  const form = await showInventoryFormModal({
+    title: 'Replace From Spare Stock',
+    message: 'Choose spare stock item for replacement.',
+    confirmText: 'Replace Component',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'spareStockItemId',
+        label: 'Spare Stock Item',
+        type: 'select',
+        options: availableStock.map((item) => ({
+          value: item.id,
+          label: `${item.partName} | ${item.componentType} | Qty ${item.quantityAvailable}`,
+        })),
+        required: true,
+      },
+      {
+        name: 'reason',
+        label: 'Replacement Reason',
+        type: 'text',
+        value: 'replaced_from_stock',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const spareStockItemId = String(form.values.spareStockItemId || '').trim();
+  const reason = String(form.values.reason || '').trim() || 'replaced_from_stock';
   try {
     const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/replace-from-stock`, {
       spareStockItemId,
@@ -5874,18 +8894,112 @@ window.cmdbReplaceFromStock = async (assetId, componentId) => {
 };
 
 window.cmdbAddMaintenance = async (assetId) => {
-  const maintenanceType = window.prompt('Maintenance type:', 'preventive_maintenance');
-  if (!maintenanceType) return;
-  const status = window.prompt('Status (completed/in_progress/scheduled):', 'completed') || 'completed';
-  const performedBy = window.prompt('Performed by (optional):', '') || '';
-  const reason = window.prompt('Reason/notes (optional):', '') || '';
+  const components = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components`).catch(() => []);
+  const activeComponents = (Array.isArray(components) ? components : [])
+    .filter((row) => !row?.removedAt && !['removed', 'replaced', 'retired', 'disposed'].includes(normalizeLifecycleStatus(row?.status)))
+    .map((row) => ({
+      value: row.id,
+      label: `${row.componentName || row.id} | ${row.componentType || '-'}`,
+    }));
+  const form = await showInventoryFormModal({
+    title: 'Add Maintenance',
+    message: 'Maintenance supports whole-asset and component-specific records.',
+    confirmText: 'Save Maintenance',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'scope',
+        label: 'Scope',
+        type: 'select',
+        options: [
+          { value: 'whole_asset', label: 'Whole Asset' },
+          { value: 'specific_component', label: 'Specific Component' },
+        ],
+        value: 'whole_asset',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'componentId',
+        label: 'Component',
+        type: 'select',
+        options: activeComponents,
+        placeholder: activeComponents.length ? 'Select component' : 'No installed components available',
+        required: false,
+        colClass: 'col-md-6',
+        validate: (value, values) => {
+          if (values.scope === 'specific_component' && !String(value || '').trim()) {
+            return 'Select a component for component-specific maintenance.';
+          }
+          return '';
+        },
+      },
+      {
+        name: 'maintenanceType',
+        label: 'Maintenance Type',
+        type: 'text',
+        value: 'preventive_maintenance',
+        required: true,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'status',
+        label: 'Status',
+        type: 'select',
+        options: ['completed', 'in_progress', 'scheduled'],
+        value: 'completed',
+        required: true,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'cost',
+        label: 'Cost',
+        type: 'number',
+        value: '',
+        min: 0,
+        step: 0.01,
+        required: false,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'performedBy',
+        label: 'Performed By',
+        type: 'text',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'performedAt',
+        label: 'Date',
+        type: 'date',
+        value: new Date().toISOString().slice(0, 10),
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+        colClass: 'col-12',
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
-      maintenanceType,
-      status,
-      performedBy,
-      reason,
-      performedAt: new Date().toISOString(),
+      componentId: form.values.scope === 'specific_component' ? (form.values.componentId || null) : null,
+      maintenanceType: form.values.maintenanceType,
+      status: form.values.status || 'completed',
+      performedBy: form.values.performedBy || '',
+      reason: form.values.notes || '',
+      notes: form.values.notes || '',
+      cost: form.values.cost,
+      performedAt: form.values.performedAt
+        ? new Date(`${form.values.performedAt}T09:00:00`).toISOString()
+        : new Date().toISOString(),
     });
     showMessage('Maintenance record added.', 'success');
     await refreshCmdbModal(assetId, 'maintenance');
@@ -5895,17 +9009,107 @@ window.cmdbAddMaintenance = async (assetId) => {
 };
 
 window.cmdbAssignAsset = async (assetId) => {
-  const assignedToName = window.prompt('Assign to (name):', '');
-  if (!assignedToName) return;
-  const assignedDepartment = window.prompt('Assigned department (optional):', '') || '';
-  const expectedReturnDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '') || '';
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  const form = await showInventoryFormModal({
+    title: 'Assign / Checkout Asset',
+    message: `Asset: ${asset?.name || assetId}`,
+    confirmText: 'Assign Asset',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'assignmentType',
+        label: 'Assignment Type',
+        type: 'select',
+        options: ['Assigned', 'Checked out'],
+        value: 'Assigned',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'building',
+        label: 'Building',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: getAssetDisplayLocation(asset || {}),
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'department',
+        label: 'Department',
+        type: 'select',
+        options: getKnownDepartmentOptions(),
+        value: normalizeDepartmentLabel(getAssetDisplayDepartment(asset || ''), { fallbackUnassigned: false }) || '',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'room',
+        label: 'Room',
+        type: 'text',
+        value: '',
+        placeholder: 'Rooms will be configured later',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'assignedToRole',
+        label: 'Assigned To Role',
+        type: 'select',
+        options: ['Lab Supervisor', 'Senior', 'Junior', 'Professor', 'Technician', 'Department Admin', 'Student Worker', 'Other'],
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'assignedToName',
+        label: 'Assignee Name',
+        type: 'text',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'expectedReturnDate',
+        label: 'Expected Return Date',
+        type: 'date',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'notes',
+        label: 'Reason / Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+        colClass: 'col-12',
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  const assignedToName = [form.values.assignedToRole, form.values.assignedToName].filter(Boolean).join(' - ');
+  const assignedDepartment = form.values.department || '';
+  const expectedReturnDate = form.values.expectedReturnDate || '';
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/assign`, {
       assignedToName,
       assignedDepartment,
       expectedReturnDate: expectedReturnDate || null,
       checkoutDate: new Date().toISOString(),
+      reason: normalizeValue(form.values.assignmentType) === 'checkedout' ? 'checkout' : 'assignment',
+      notes: [
+        form.values.notes || '',
+        form.values.building ? `Building: ${form.values.building}` : '',
+        form.values.room ? `Room: ${form.values.room}` : '',
+      ].filter(Boolean).join(' | '),
     });
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/details`, {
+      specifications: {
+        ...getAssetSpecs(asset || {}),
+        assignedBuilding: form.values.building || null,
+        assignedRoom: form.values.room || null,
+      }
+    }, 'PATCH').catch(() => {});
     showMessage('Asset assigned/checked out.', 'success');
     await loadAssets();
     await refreshCmdbModal(assetId, 'custody');
@@ -5915,11 +9119,37 @@ window.cmdbAssignAsset = async (assetId) => {
 };
 
 window.cmdbCheckinAsset = async (assetId) => {
-  const reason = window.prompt('Check-in note/reason (optional):', '') || '';
+  const form = await showInventoryFormModal({
+    title: 'Check-in Asset',
+    message: `Asset ID: ${assetId}`,
+    confirmText: 'Confirm Check-in',
+    confirmClass: 'btn-outline-secondary',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'conditionIn',
+        label: 'Return Condition',
+        type: 'select',
+        options: ['good', 'needs_review', 'damaged', 'missing_accessories'],
+        value: 'good',
+        required: true,
+      },
+      {
+        name: 'reason',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/check-in`, {
       returnedDate: new Date().toISOString(),
-      reason,
+      conditionIn: form.values.conditionIn || 'good',
+      reason: form.values.reason || '',
+      notes: form.values.reason || '',
     });
     showMessage('Asset checked in.', 'success');
     await loadAssets();
@@ -5930,14 +9160,78 @@ window.cmdbCheckinAsset = async (assetId) => {
 };
 
 window.cmdbAddRelationship = async (assetId) => {
-  const relatedAssetId = window.prompt('Related asset custom ID:', '');
-  if (!relatedAssetId) return;
-  const relationshipType = window.prompt('Relationship type (uses/connected_to/depends_on/etc):', 'uses');
-  if (!relationshipType) return;
+  await refreshInventoryFilterSnapshot();
+  const candidates = (Array.isArray(inventoryFilterSnapshotState.allAssets) ? inventoryFilterSnapshotState.allAssets : [])
+    .filter((asset) => String(asset?.customId || '').trim() && String(asset?.customId || '').trim() !== String(assetId || '').trim())
+    .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')))
+    .slice(0, 1200);
+  const form = await showInventoryFormModal({
+    title: 'Add Relationship',
+    messageHtml: 'Direction: this asset <strong>links to</strong> the selected related item.',
+    confirmText: 'Add Relationship',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'relatedAssetId',
+        label: 'Related Item',
+        type: 'select',
+        options: candidates.map((asset) => ({
+          value: asset.customId,
+          label: `${asset.name} | ${asset.customId} | ${getAssetDisplayLocation(asset)} | ${getAssetDisplayDepartment(asset)}`,
+        })),
+        placeholder: 'Select related asset',
+        required: true,
+      },
+      {
+        name: 'relationshipType',
+        label: 'Relationship',
+        type: 'select',
+        options: [
+          { value: 'assigned_to', label: 'Assigned to this asset' },
+          { value: 'licensed_to', label: 'Licensed to this asset' },
+          { value: 'related_to', label: 'Related to this asset' },
+          { value: 'accessory_of', label: 'Accessory of this asset' },
+          { value: 'component_of', label: 'Component of this asset' },
+          { value: 'uses', label: 'Uses' },
+          { value: 'connected_to', label: 'Connected to' },
+          { value: 'depends_on', label: 'Depends on' },
+        ],
+        value: 'related_to',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const relatedAssetId = String(form.values.relatedAssetId || '').trim();
+  const relationshipType = String(form.values.relationshipType || '').trim();
+  if (!relatedAssetId || !relationshipType) return;
+  if (relatedAssetId === assetId) {
+    showMessage('An asset cannot be related to itself.', 'warning');
+    return;
+  }
+  const currentRelationships = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/relationships`).catch(() => ({ outgoing: [], incoming: [] }));
+  const isDuplicate = Array.isArray(currentRelationships?.outgoing)
+    && currentRelationships.outgoing.some((row) => (
+      String(row?.relatedAssetId || '') === relatedAssetId
+      && normalizeValue(row?.relationshipType) === normalizeValue(relationshipType)
+    ));
+  if (isDuplicate) {
+    showMessage('This relationship already exists.', 'warning');
+    return;
+  }
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/relationships`, {
       relatedAssetId,
       relationshipType,
+      notes: form.values.notes || null,
     });
     showMessage('Relationship added.', 'success');
     await refreshCmdbModal(assetId, 'relationships');
@@ -5947,6 +9241,13 @@ window.cmdbAddRelationship = async (assetId) => {
 };
 
 window.cmdbDeleteRelationship = async (assetId, relationshipId) => {
+  const confirmed = await confirmInventoryAction({
+    title: 'Delete Relationship',
+    message: 'Delete this relationship? This action cannot be undone.',
+    confirmText: 'Delete',
+    confirmClass: 'inventory-insight-danger',
+  });
+  if (!confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/relationships/${encodeURIComponent(relationshipId)}`, {}, 'DELETE');
     showMessage('Relationship removed.', 'success');
@@ -6028,13 +9329,63 @@ window.openSpareStockModalForType = async (componentType = '') => {
 };
 
 window.cmdbLoanerCheckout = async (assetId) => {
-  const loanedTo = window.prompt('Loan to (student/staff):', '');
-  if (!loanedTo) return;
-  const expectedReturnDate = window.prompt('Expected return date (YYYY-MM-DD, optional):', '') || '';
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  const specs = getAssetSpecs(asset || {});
+  if (!toBoolean(specs.loanerEligible)) {
+    showMessage('This asset is not marked as a loaner. Mark it as a loaner before checkout.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Loaner Checkout',
+    message: `Asset: ${asset?.name || assetId}`,
+    confirmText: 'Confirm Checkout',
+    confirmClass: 'btn-outline-info',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'loanedTo',
+        label: 'Borrower / Role',
+        type: 'text',
+        value: '',
+        required: true,
+      },
+      {
+        name: 'department',
+        label: 'Department',
+        type: 'select',
+        options: getKnownDepartmentOptions(),
+        value: normalizeDepartmentLabel(getAssetDisplayDepartment(asset || {}), { fallbackUnassigned: false }) || '',
+        required: true,
+      },
+      {
+        name: 'expectedReturnDate',
+        label: 'Expected Return Date',
+        type: 'date',
+        required: false,
+      },
+      {
+        name: 'reason',
+        label: 'Reason',
+        type: 'text',
+        value: 'loaner_checkout',
+        required: true,
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
-      loanedTo,
-      expectedReturnDate: expectedReturnDate || null,
+      loanedTo: form.values.loanedTo,
+      expectedReturnDate: form.values.expectedReturnDate || null,
+      reason: form.values.reason || 'loaner_checkout',
+      notes: [form.values.notes, form.values.department ? `Department: ${form.values.department}` : ''].filter(Boolean).join(' | '),
       actor: 'inventory-ui-cmdb',
     });
     showMessage('Loaner checkout recorded.', 'success');
@@ -6046,10 +9397,50 @@ window.cmdbLoanerCheckout = async (assetId) => {
 };
 
 window.cmdbLoanerReturn = async (assetId) => {
-  const location = window.prompt('Return location (optional):', '') || '';
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  const specs = getAssetSpecs(asset || {});
+  const loanerStatus = normalizeValue(specs.loanerStatus || '');
+  if (!(loanerStatus === 'checkedout' || loanerStatus === 'overdue')) {
+    showMessage('Loaner return is available only when the asset is currently loaned out.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Loaner Return',
+    message: `Asset: ${asset?.name || assetId}`,
+    confirmText: 'Confirm Return',
+    confirmClass: 'btn-outline-dark',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'condition',
+        label: 'Return Condition',
+        type: 'select',
+        options: ['good', 'damaged', 'missing_accessories'],
+        value: 'good',
+        required: true,
+      },
+      {
+        name: 'location',
+        label: 'Return Location',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: getAssetDisplayLocation(asset || {}),
+        required: false,
+      },
+      {
+        name: 'notes',
+        label: 'Damage / Missing Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-return`, {
-      location: location || null,
+      location: form.values.location || null,
+      notes: [form.values.condition ? `Condition: ${form.values.condition}` : '', form.values.notes].filter(Boolean).join(' | '),
       actor: 'inventory-ui-cmdb',
     });
     showMessage('Loaner return recorded.', 'success');
@@ -6061,10 +9452,80 @@ window.cmdbLoanerReturn = async (assetId) => {
 };
 
 window.cmdbMockWifiUpdate = async (assetId) => {
-  const macAddress = window.prompt('MAC address (optional):', '') || '';
-  const network = window.prompt('Last seen network (optional):', '') || '';
-  const accessPoint = window.prompt('Last seen access point (optional):', '') || '';
-  const location = window.prompt('Last seen location (e.g., N Building):', '') || '';
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  const specs = getAssetSpecs(asset || {});
+  const form = await showInventoryFormModal({
+    title: 'Update Last Seen Network',
+    message: 'Demo-safe update. Real Wi-Fi integration is not connected.',
+    confirmText: 'Save Update',
+    confirmClass: 'btn-outline-secondary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'macAddress',
+        label: 'MAC Address',
+        type: 'text',
+        value: specs.macAddress || '',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'network',
+        label: 'Network / SSID',
+        type: 'text',
+        value: specs.lastSeenNetwork || '',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'accessPoint',
+        label: 'Access Point',
+        type: 'text',
+        value: specs.lastSeenAccessPoint || '',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'location',
+        label: 'Seen At (Location)',
+        type: 'select',
+        options: getKnownBuildingOptions(),
+        value: specs.lastSeenLocation || '',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'seenAt',
+        label: 'Seen At Time',
+        type: 'date',
+        value: specs.lastSeenTimestamp ? String(specs.lastSeenTimestamp).slice(0, 10) : new Date().toISOString().slice(0, 10),
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'confidence',
+        label: 'Confidence / Source',
+        type: 'select',
+        options: ['high', 'medium', 'low', 'manual_demo'],
+        value: 'manual_demo',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'notes',
+        label: 'Notes',
+        type: 'textarea',
+        rows: 3,
+        required: false,
+        colClass: 'col-12',
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const macAddress = String(form.values.macAddress || '').trim();
+  const network = String(form.values.network || '').trim();
+  const accessPoint = String(form.values.accessPoint || '').trim();
+  const location = String(form.values.location || '').trim();
   if (!location && !network && !accessPoint && !macAddress) {
     showMessage('No Wi-Fi update values were provided.', 'warning');
     return;
@@ -6075,6 +9536,8 @@ window.cmdbMockWifiUpdate = async (assetId) => {
       lastSeenNetwork: network || null,
       lastSeenAccessPoint: accessPoint || null,
       lastSeenLocation: location || null,
+      seenAt: form.values.seenAt ? new Date(`${form.values.seenAt}T09:00:00`).toISOString() : null,
+      notes: [form.values.notes || '', form.values.confidence ? `Source: ${form.values.confidence}` : ''].filter(Boolean).join(' | '),
       actor: 'inventory-ui-cmdb',
     });
     if (result?.wifiTracking?.warning) {
@@ -6090,30 +9553,42 @@ window.cmdbMockWifiUpdate = async (assetId) => {
 };
 
 window.addSpareStockItem = async () => {
-  const partName = window.prompt('Part name:', '');
+  const form = await showInventoryFormModal({
+    title: 'Add Spare Stock Item',
+    confirmText: 'Add Item',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'partName', label: 'Part Name', type: 'text', required: true, colClass: 'col-md-6' },
+      { name: 'componentType', label: 'Component Type', type: 'select', options: SPARE_STOCK_TYPES?.length ? SPARE_STOCK_TYPES : ['Spare SSD'], value: SPARE_STOCK_TYPES?.[0] || 'Spare SSD', required: true, colClass: 'col-md-6' },
+      { name: 'brand', label: 'Brand', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'model', label: 'Model', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'partNumber', label: 'Part Number', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'quantityAvailable', label: 'Quantity Available', type: 'number', value: 0, min: 0, step: 1, required: true, colClass: 'col-md-6' },
+      { name: 'minimumStockLevel', label: 'Minimum Stock Level', type: 'number', value: 0, min: 0, step: 1, required: true, colClass: 'col-md-6' },
+      { name: 'reorderPoint', label: 'Reorder Point', type: 'number', value: 0, min: 0, step: 1, required: false, colClass: 'col-md-6' },
+      { name: 'location', label: 'Location', type: 'select', options: getKnownBuildingOptions(), value: 'Central Warehouse', required: false, colClass: 'col-md-6' },
+      { name: 'compatibleBrandsModels', label: 'Compatible Brands/Models', type: 'text', required: false, colClass: 'col-md-6', placeholder: 'Comma-separated' },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const partName = String(form.values.partName || '').trim();
   if (!partName) return;
-  const spareTypeHint = (SPARE_STOCK_TYPES || []).slice(0, 10).join(', ');
-  const componentType = window.prompt(`Component type (examples: ${spareTypeHint || 'Spare SSD'}):`, SPARE_STOCK_TYPES?.[0] || 'Spare SSD') || 'component';
-  const brand = window.prompt('Brand (optional):', '') || '';
-  const model = window.prompt('Model (optional):', '') || '';
-  const partNumber = window.prompt('Part number (optional):', '') || '';
-  const quantityAvailable = Number(window.prompt('Quantity available:', '0') || '0');
-  const minimumStockLevel = Number(window.prompt('Minimum stock level:', '0') || '0');
-  const reorderPoint = Number(window.prompt('Reorder point (optional):', '') || '0');
-  const location = window.prompt('Location (optional):', 'Central Warehouse') || '';
-  const compatibleBrandsModels = window.prompt('Compatible brands/models (comma-separated):', '') || '';
+  const quantityAvailable = Number(form.values.quantityAvailable || 0);
+  const minimumStockLevel = Number(form.values.minimumStockLevel || 0);
+  const reorderPoint = Number(form.values.reorderPoint || 0);
   try {
     await postInventoryJson('/inventory/spare-stock', {
       partName,
-      componentType,
-      brand,
-      model,
-      partNumber,
+      componentType: form.values.componentType || 'component',
+      brand: form.values.brand || '',
+      model: form.values.model || '',
+      partNumber: form.values.partNumber || '',
       quantityAvailable: Number.isFinite(quantityAvailable) ? quantityAvailable : 0,
       minimumStockLevel: Number.isFinite(minimumStockLevel) ? minimumStockLevel : 0,
       reorderPoint: Number.isFinite(reorderPoint) ? reorderPoint : 0,
-      location,
-      compatibleBrandsModels: compatibleBrandsModels.split(',').map((v) => v.trim()).filter(Boolean),
+      location: form.values.location || '',
+      compatibleBrandsModels: String(form.values.compatibleBrandsModels || '').split(',').map((v) => v.trim()).filter(Boolean),
     });
     showMessage('Spare stock item added.', 'success');
     await window.loadSpareStock();
@@ -6125,24 +9600,34 @@ window.addSpareStockItem = async () => {
 window.editSpareStockItem = async (id) => {
   const target = spareStockItemsCache.find((item) => item.id === id);
   if (!target) return;
-  const partName = window.prompt('Part name:', target.partName || '') || '';
+  const form = await showInventoryFormModal({
+    title: 'Edit Spare Stock Item',
+    confirmText: 'Save Changes',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'partName', label: 'Part Name', type: 'text', value: target.partName || '', required: true, colClass: 'col-md-6' },
+      { name: 'componentType', label: 'Component Type', type: 'select', options: SPARE_STOCK_TYPES?.length ? SPARE_STOCK_TYPES : ['component'], value: target.componentType || SPARE_STOCK_TYPES?.[0] || 'component', required: true, colClass: 'col-md-6' },
+      { name: 'brand', label: 'Brand', type: 'text', value: target.brand || '', required: false, colClass: 'col-md-6' },
+      { name: 'model', label: 'Model', type: 'text', value: target.model || '', required: false, colClass: 'col-md-6' },
+      { name: 'partNumber', label: 'Part Number', type: 'text', value: target.partNumber || '', required: false, colClass: 'col-md-6' },
+      { name: 'minimumStockLevel', label: 'Minimum Stock Level', type: 'number', value: Number(target.minimumStockLevel || 0), min: 0, step: 1, required: true, colClass: 'col-md-6' },
+      { name: 'location', label: 'Location', type: 'select', options: getKnownBuildingOptions(), value: target.location || '', required: false, colClass: 'col-md-6' },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const partName = String(form.values.partName || '').trim();
   if (!partName) return;
-  const spareTypeHint = (SPARE_STOCK_TYPES || []).slice(0, 10).join(', ');
-  const componentType = window.prompt(`Component type (examples: ${spareTypeHint || 'Spare SSD'}):`, target.componentType || SPARE_STOCK_TYPES?.[0] || 'component') || target.componentType;
-  const brand = window.prompt('Brand:', target.brand || '') || '';
-  const model = window.prompt('Model:', target.model || '') || '';
-  const partNumber = window.prompt('Part number:', target.partNumber || '') || '';
-  const minimumStockLevel = Number(window.prompt('Minimum stock level:', String(target.minimumStockLevel || 0)) || String(target.minimumStockLevel || 0));
-  const location = window.prompt('Location:', target.location || '') || '';
+  const minimumStockLevel = Number(form.values.minimumStockLevel || target.minimumStockLevel || 0);
   try {
     await postInventoryJson(`/inventory/spare-stock/${encodeURIComponent(id)}`, {
       partName,
-      componentType,
-      brand,
-      model,
-      partNumber,
+      componentType: form.values.componentType || target.componentType,
+      brand: form.values.brand || '',
+      model: form.values.model || '',
+      partNumber: form.values.partNumber || '',
       minimumStockLevel: Number.isFinite(minimumStockLevel) ? minimumStockLevel : target.minimumStockLevel,
-      location,
+      location: form.values.location || '',
     }, 'PATCH');
     showMessage('Spare stock item updated.', 'success');
     await window.loadSpareStock();
@@ -6152,7 +9637,21 @@ window.editSpareStockItem = async (id) => {
 };
 
 window.adjustSpareStockItem = async (id) => {
-  const delta = Number(window.prompt('Adjustment delta (+/- integer):', '1') || '0');
+  const deltaValue = await promptInventoryValue({
+    title: 'Adjust Spare Stock Quantity',
+    label: 'Adjustment Delta (+/- integer)',
+    type: 'number',
+    value: 1,
+    required: true,
+    validate: (value) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed === 0) {
+        return 'Enter a non-zero integer.';
+      }
+      return '';
+    },
+  });
+  const delta = Number(deltaValue || 0);
   if (!Number.isFinite(delta) || delta === 0) {
     showMessage('Please enter a non-zero integer.', 'warning');
     return;
@@ -6172,10 +9671,11 @@ function inventoryAiStatusLabel(status) {
     online: { text: 'Online', dotClass: '' },
     gemma: { text: 'Gemma ready', dotClass: '' },
     ready: { text: 'Gemma ready', dotClass: '' },
+    deterministic_only: { text: 'Rule-based', dotClass: 'warning' },
     fallback: { text: 'Fallback mode', dotClass: 'warning' },
     disabled: { text: 'Fallback mode', dotClass: 'warning' },
     offline: { text: 'Offline', dotClass: 'error' },
-    loading: { text: 'Thinking...', dotClass: 'warning' },
+    loading: { text: 'Gemma thinking', dotClass: 'warning' },
     error: { text: 'Offline', dotClass: 'error' },
   };
   return map[normalized] || map.online;
@@ -6194,19 +9694,260 @@ function setInventoryAiChatStatus(status) {
   }
   if (statusBadge) {
     const normalized = String(status || '').toLowerCase();
-    statusBadge.dataset.mode = normalized === 'fallback' || normalized === 'disabled'
+    statusBadge.dataset.mode = normalized === 'fallback' || normalized === 'disabled' || normalized === 'deterministic_only'
       ? 'fallback'
       : ((normalized === 'error' || normalized === 'offline') ? 'offline' : 'online');
     if (status === 'fallback') {
       statusBadge.title = 'Using rule-based fallback because Gemma is unavailable or slow.';
+    } else if (normalized === 'deterministic_only') {
+      statusBadge.title = 'This result is rule-based and does not require Gemma.';
     } else if (normalized === 'disabled') {
       statusBadge.title = 'LLM is disabled. Using rule-based fallback.';
+    } else if (normalized === 'loading') {
+      statusBadge.title = 'Gemma is processing your request.';
     } else if (status === 'error' || normalized === 'offline') {
       statusBadge.title = 'Inventory AI service is currently unreachable.';
     } else {
       statusBadge.title = 'Gemma and inventory AI service are available.';
     }
   }
+  syncInventorySavedViewControl();
+  renderActiveInventoryFilterChips();
+}
+
+function getInventorySavedViewMeta(view = inventorySavedView) {
+  return INVENTORY_SAVED_VIEWS.find((entry) => entry.value === view) || INVENTORY_SAVED_VIEWS[0];
+}
+
+function syncInventorySavedViewControl() {
+  const select = document.getElementById('inventorySavedViewSelect');
+  if (!select) return;
+  const allowedValues = new Set(INVENTORY_SAVED_VIEWS.map((entry) => entry.value));
+  if (!allowedValues.has(inventorySavedView)) inventorySavedView = 'all';
+  if (select.value !== inventorySavedView) select.value = inventorySavedView;
+}
+
+function getAssetDataQualityMissingFields(asset = {}) {
+  const specs = getAssetSpecs(asset);
+  const missing = [];
+  if (!getDisplaySerial(asset)) missing.push('serial');
+  if (!getAssetDisplayDepartment(asset) || normalizeDepartmentForFilter(getAssetDisplayDepartment(asset)) === normalizeDepartmentForFilter('Unassigned')) missing.push('department');
+  const displayLoc = getAssetDisplayLocation(asset);
+  if (!displayLoc || normalizeValue(displayLoc) === 'unknown' || normalizeValue(displayLoc) === 'unassigned') missing.push('location');
+  if (!(asset.purchaseDate || asset.acquiredAt || specs.purchaseDate || specs.acquiredAt)) missing.push('purchase date');
+  if (!(asset.warrantyEndDate || specs.warrantyEndDate || specs.warrantyEnd)) missing.push('warranty');
+  return missing;
+}
+
+function isRecentlyImportedAsset(asset = {}) {
+  const dateValue = asset.createdAt || asset.importedAt || getAssetSpecs(asset).importedAt || asset.updatedAt;
+  const parsed = dateValue ? new Date(dateValue) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return false;
+  return (Date.now() - parsed.getTime()) <= 14 * 86400000;
+}
+
+function isAssetHighRisk(asset = {}) {
+  const lifecycle = normalizeLifecycleStatus(asset.lifecycleStatus || asset.lifecycle_status || asset.status || '');
+  const riskLevel = String(asset.riskLevel || asset.aiRiskLevel || getAssetSpecs(asset).riskLevel || '').toLowerCase();
+  const maintenanceFlag = String(asset.maintenanceStatus || getAssetSpecs(asset).maintenanceStatus || '').toLowerCase();
+  return ['retired', 'disposed', 'lost_stolen', 'eol_expired', 'under_maintenance', 'pending_repair'].includes(lifecycle)
+    || ['critical', 'high', 'urgent'].includes(riskLevel)
+    || maintenanceFlag.includes('overdue')
+    || maintenanceFlag.includes('failed');
+}
+
+function isAssetEolSoon(asset = {}) {
+  const lifecycle = normalizeLifecycleStatus(asset.lifecycleStatus || asset.lifecycle_status || asset.status || '');
+  if (String(lifecycle || '').includes('eol') || lifecycle === 'retired') return true;
+  const eol = getEOLDetails(asset);
+  return String(eol?.eolStatus || '').toLowerCase().includes('due')
+    || String(eol?.eolStatus || '').toLowerCase().includes('overdue')
+    || Number(eol?.daysRemaining) <= 180;
+}
+
+function hasLinkedComponentIssue(asset = {}) {
+  const category = getAssetCategoryKey(asset);
+  if (!['component', 'accessory', 'license', 'spare_part'].includes(category)) return false;
+  const specs = getAssetSpecs(asset);
+  return !asset.parentAssetId
+    && !asset.parentAssetTag
+    && !asset.parentAsset?.customId
+    && !specs.parentAssetTag
+    && !specs.installedParentId;
+}
+
+function stockItemMatchesSavedView(item = {}, view = inventorySavedView) {
+  if (!view || view === 'all') return true;
+  const qty = Number(item.quantityAvailable ?? item.quantity ?? 0);
+  const reorder = Number(item.reorderPoint ?? item.minQuantity ?? item.minimumQuantity ?? NaN);
+  if (view === 'low_stock') return Number.isFinite(reorder) ? qty <= reorder : qty <= 0;
+  if (view === 'missing_data') return !item.partName || !item.location || !item.componentType;
+  if (view === 'needs_review') return stockItemMatchesSavedView(item, 'low_stock') || stockItemMatchesSavedView(item, 'missing_data');
+  if (view === 'recently_imported') {
+    const parsed = item.receivedAt || item.createdAt || item.updatedAt ? new Date(item.receivedAt || item.createdAt || item.updatedAt) : null;
+    return parsed && !Number.isNaN(parsed.getTime()) && (Date.now() - parsed.getTime()) <= 14 * 86400000;
+  }
+  return true;
+}
+
+function assetMatchesSavedView(asset = {}, view = inventorySavedView) {
+  if (!view || view === 'all') return true;
+  if (view === 'missing_data') return getAssetDataQualityMissingFields(asset).length > 0;
+  if (view === 'recently_imported') return isRecentlyImportedAsset(asset);
+  if (view === 'high_risk') return isAssetHighRisk(asset);
+  if (view === 'eol_soon') return isAssetEolSoon(asset);
+  if (view === 'unassigned') {
+    const department = getAssetDisplayDepartment(asset);
+    const assignedTo = asset.assignedToName || asset.assignedToUserId || asset.owner || getAssetSpecs(asset).assignedTo;
+    return normalizeDepartmentForFilter(department) === normalizeDepartmentForFilter('Unassigned') || !String(assignedTo || '').trim();
+  }
+  if (view === 'linked_component_issues') return hasLinkedComponentIssue(asset);
+  if (view === 'needs_review') {
+    return getAssetDataQualityMissingFields(asset).length > 0
+      || isAssetHighRisk(asset)
+      || isAssetEolSoon(asset)
+      || hasLinkedComponentIssue(asset);
+  }
+  if (view === 'low_stock') return false;
+  return true;
+}
+
+function setInventorySavedView(view = 'all', options = {}) {
+  const nextView = getInventorySavedViewMeta(view).value;
+  inventorySavedView = nextView;
+  localStorage.setItem('opsmind_inventory_saved_view', inventorySavedView);
+  syncInventorySavedViewControl();
+  inventoryPageState.page = 1;
+  if (!options.skipLoad && inventorySavedView === 'low_stock' && currentInventoryView !== 'spare_stock') {
+    setInventoryView('spare_stock');
+    return;
+  }
+  if (!options.skipLoad && inventorySavedView === 'linked_component_issues' && currentInventoryView === 'parents') {
+    setInventoryView('components');
+    return;
+  }
+  if (options.skipLoad || currentInventoryView === 'spare_stock') {
+    renderTable();
+    return;
+  }
+  loadAssets().catch((error) => {
+    showMessage(error.message || 'Failed to apply saved view.', 'error');
+  });
+}
+
+function renderActiveInventoryFilterChips() {
+  const el = document.getElementById('inventoryActiveFilterChips');
+  if (!el) return;
+  const chips = [];
+  const search = String(document.getElementById('searchInput')?.value || '').trim();
+  const building = document.getElementById('filterBuilding')?.value || 'all';
+  const dept = document.getElementById('filterDept')?.value || 'all';
+  const type = document.getElementById('filterType')?.value || 'all';
+  const lifecycle = document.getElementById('filterLifecycle')?.value || 'all';
+  if (inventorySavedView && inventorySavedView !== 'all') chips.push({ key: 'saved_view', label: `View: ${getInventorySavedViewMeta().label}` });
+  if (search) chips.push({ key: 'search', label: `Search: ${search}` });
+  if (building !== 'all') chips.push({ key: 'building', label: `Building: ${displayLocation(building)}` });
+  if (dept !== 'all') chips.push({ key: 'dept', label: `Department: ${normalizeDepartmentLabel(dept)}` });
+  if (type !== 'all') chips.push({ key: 'type', label: `Type: ${type}` });
+  if (lifecycle !== 'all') chips.push({ key: 'lifecycle', label: `Lifecycle: ${displayLifecycleStatus(lifecycle)}` });
+  el.innerHTML = chips.length
+    ? chips.map((chip) => `
+      <button type="button" class="inventory-filter-chip" data-inventory-clear-filter="${UI.escapeHTML(chip.key)}" aria-label="Remove ${UI.escapeHTML(chip.label)} filter">
+        <span>${UI.escapeHTML(chip.label)}</span>
+        <i class="bi bi-x-lg" aria-hidden="true"></i>
+      </button>
+    `).join('')
+    : '<span class="inventory-filter-chip is-muted">No active filters</span>';
+}
+
+function clearInventoryFilterChip(key = '') {
+  const filterKey = String(key || '').trim();
+  if (filterKey === 'saved_view') inventorySavedView = 'all';
+  if (filterKey === 'search') {
+    const searchInput = document.getElementById('searchInput');
+    if (searchInput) searchInput.value = '';
+  }
+  if (filterKey === 'building') {
+    const el = document.getElementById('filterBuilding');
+    if (el) el.value = 'all';
+  }
+  if (filterKey === 'dept') {
+    const el = document.getElementById('filterDept');
+    if (el) el.value = 'all';
+  }
+  if (filterKey === 'type') {
+    const el = document.getElementById('filterType');
+    if (el) el.value = 'all';
+  }
+  if (filterKey === 'lifecycle') {
+    const el = document.getElementById('filterLifecycle');
+    if (el) el.value = 'all';
+  }
+  localStorage.setItem('opsmind_inventory_saved_view', inventorySavedView);
+  syncInventorySavedViewControl();
+  syncFilters();
+}
+
+function beginCmdbAiAction(actionKey) {
+  if (cmdbAiInFlightActions.has(actionKey)) {
+    showMessage('This AI action is already running. Please wait for the current response.', 'info');
+    return false;
+  }
+  cmdbAiInFlightActions.add(actionKey);
+  return true;
+}
+
+function endCmdbAiAction(actionKey) {
+  cmdbAiInFlightActions.delete(actionKey);
+}
+
+function startAiPanelLoading(panel, message) {
+  if (!panel) return () => {};
+  panel.innerHTML = `
+    <div class="alert alert-secondary mb-0">
+      <div class="d-flex align-items-center gap-2">
+        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+        <span data-ai-loading-text>${UI.escapeHTML(message || 'Running AI analysis...')}</span>
+      </div>
+    </div>
+  `;
+  const textEl = panel.querySelector('[data-ai-loading-text]');
+  const longWaitTimer = setTimeout(() => {
+    if (!textEl) return;
+    textEl.textContent = 'Gemma is thinking... First response may take longer while the local model wakes up.';
+  }, INVENTORY_AI_LONG_WAIT_MS);
+  return () => clearTimeout(longWaitTimer);
+}
+
+function aiSourceMetaHtml(result = {}) {
+  const llmUsed = Boolean(result?.llmUsed);
+  const llmStatus = String(result?.llmStatus || '').trim().toLowerCase();
+  const fallbackUsed = Boolean(result?.fallbackUsed);
+  const fallbackReason = String(result?.fallbackReason || '').trim();
+  if (llmUsed) {
+    return '<div class="small text-muted mt-1"><span class="badge bg-success-subtle text-success-emphasis border">Gemma-generated</span> Inventory AI service + local Gemma reasoning.</div>';
+  }
+  if (llmStatus === 'deterministic_only') {
+    return '<div class="small text-muted mt-1"><span class="badge bg-info-subtle text-info-emphasis border">Rule-based summary</span> This result is deterministic and does not require Gemma.</div>';
+  }
+  if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
+    const reasonText = fallbackReason ? ` Reason: ${UI.escapeHTML(fallbackReason)}.` : '';
+    return `<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">Fallback summary</span> AI model unavailable. Showing deterministic CMDB summary.${reasonText}</div>`;
+  }
+  return '<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">Inventory AI service</span></div>';
+}
+
+function aiSourceMetaText(result = {}) {
+  const llmUsed = Boolean(result?.llmUsed);
+  const llmStatus = String(result?.llmStatus || '').trim().toLowerCase();
+  const fallbackUsed = Boolean(result?.fallbackUsed);
+  const fallbackReason = String(result?.fallbackReason || '').trim();
+  if (llmUsed) return 'Source: Gemma-generated.';
+  if (llmStatus === 'deterministic_only') return 'Source: Rule-based deterministic logic.';
+  if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
+    return `Source: Deterministic fallback${fallbackReason ? ` (${fallbackReason})` : ''}.`;
+  }
+  return 'Source: Inventory AI service.';
 }
 
 function updateInventoryAiFloatingOffset() {
@@ -6232,10 +9973,53 @@ function normalizeInventoryAiSuggestions(actions = []) {
     .slice(0, 6);
 }
 
+function normalizeInventoryAiMissingData(entry = {}) {
+  const direct = Array.isArray(entry?.missingData) ? entry.missingData : [];
+  if (direct.length) {
+    return direct.map((value) => String(value || '').trim()).filter(Boolean);
+  }
+  const actionResultMissing = Array.isArray(entry?.actionResult?.missingData) ? entry.actionResult.missingData : [];
+  return actionResultMissing.map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function summarizeInventoryAiEvidenceReason(entry = {}) {
+  const reasons = [];
+  const normalizedMissing = normalizeInventoryAiMissingData(entry).map((value) => normalizeValue(value));
+  if (normalizedMissing.some((value) => value.includes('telemetry'))) reasons.push('telemetry is missing');
+  if (normalizedMissing.some((value) => value.includes('eol'))) reasons.push('EOL evidence is limited');
+  if (normalizedMissing.some((value) => value.includes('warranty'))) reasons.push('warranty data is missing');
+  if (normalizedMissing.some((value) => value.includes('purchase'))) reasons.push('purchase date is missing');
+  if (normalizedMissing.some((value) => value.includes('serial'))) reasons.push('serial data is incomplete');
+  if (normalizedMissing.some((value) => value.includes('history') || value.includes('lifecycle'))) reasons.push('lifecycle history is limited');
+  if (!reasons.length && Number(entry?.scannedCount || 0) <= 0) reasons.push('supporting asset evidence is limited');
+  return Array.from(new Set(reasons)).slice(0, 3).join(', ');
+}
+
+function updateInventoryAiPromptLayout(hasMessages = false) {
+  const panel = document.getElementById('inventoryAiChatPanel');
+  const promptsEl = document.getElementById('inventoryAiQuickPrompts');
+  const toggleBtn = document.getElementById('inventoryAiPromptToggleBtn');
+  if (!panel || !promptsEl) return;
+  panel.classList.toggle('has-messages', Boolean(hasMessages));
+  const autoCollapsed = Boolean(hasMessages) && !inventoryAiChatState.loading;
+  const collapsed = typeof inventoryAiChatState.promptsCollapsed === 'boolean'
+    ? inventoryAiChatState.promptsCollapsed
+    : autoCollapsed;
+  promptsEl.dataset.collapsed = collapsed ? 'true' : 'false';
+  if (toggleBtn) {
+    toggleBtn.textContent = collapsed ? 'Expand' : 'Collapse';
+    toggleBtn.setAttribute('aria-label', collapsed ? 'Expand quick prompts' : 'Collapse quick prompts');
+    toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  }
+}
+
 function getInventoryAiChatContext() {
   const searchValue = String(document.getElementById('searchInput')?.value || '').trim();
   const building = String(document.getElementById('filterBuilding')?.value || '').trim();
-  const department = String(document.getElementById('filterDept')?.value || '').trim();
+  const selectedDepartment = String(document.getElementById('filterDept')?.value || '').trim();
+  const department = selectedDepartment && selectedDepartment !== 'all'
+    ? toBackendDepartmentFilterValue(selectedDepartment)
+    : selectedDepartment;
   const type = String(document.getElementById('filterType')?.value || '').trim();
   const lifecycleStatus = String(document.getElementById('filterLifecycle')?.value || '').trim();
   const selectedAssetId = cmdbState.assetId || historyViewState.assetId || selectedAssetCustomId || null;
@@ -6254,13 +10038,64 @@ function getInventoryAiChatContext() {
   };
 }
 
+function normalizeLocationForFilter(value) {
+  return normalizeValue(displayLocation(value));
+}
+
+function populateInventoryMapFilterOptions() {
+  const typeSelect = document.getElementById('assetMapTypeFilter');
+  const locationSelect = document.getElementById('assetMapLocationFilter');
+  const departmentSelect = document.getElementById('assetMapDepartmentFilter');
+  if (!typeSelect || !locationSelect || !departmentSelect) return;
+
+  const previousType = String(typeSelect.value || 'all');
+  const previousLocation = String(locationSelect.value || 'all');
+  const previousDepartment = String(departmentSelect.value || 'all');
+  const mapAssets = Array.isArray(inventoryMapState.allAssets) ? inventoryMapState.allAssets : [];
+
+  const knownTypes = Array.from(new Set(
+    mapAssets
+      .map((asset) => String(asset.mapTypeLabel || asset.type || asset.componentType || '').trim())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b));
+
+  const knownLocations = new Set(getKnownBuildingOptions());
+  mapAssets.forEach((asset) => {
+    const label = String(asset.mapDisplayLocation || getAssetDisplayLocation(asset) || '').trim();
+    if (label) knownLocations.add(label);
+  });
+  const sortedLocations = Array.from(knownLocations).sort((a, b) => a.localeCompare(b));
+
+  const knownDepartments = new Set(getKnownDepartmentOptions());
+  mapAssets.forEach((asset) => {
+    const label = normalizeDepartmentLabel(asset.department);
+    if (label) knownDepartments.add(label);
+  });
+  const sortedDepartments = Array.from(knownDepartments).sort((a, b) => {
+    const aIndex = STANDARD_MIU_DEPARTMENTS.indexOf(a);
+    const bIndex = STANDARD_MIU_DEPARTMENTS.indexOf(b);
+    if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
+    if (aIndex !== -1) return -1;
+    if (bIndex !== -1) return 1;
+    return a.localeCompare(b);
+  });
+
+  typeSelect.innerHTML = `<option value="all">All Types</option>${knownTypes.map((value) => `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value)}</option>`).join('')}`;
+  locationSelect.innerHTML = `<option value="all">All Locations</option>${sortedLocations.map((value) => `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value)}</option>`).join('')}`;
+  departmentSelect.innerHTML = `<option value="all">All Departments</option>${sortedDepartments.map((value) => `<option value="${UI.escapeHTML(value)}">${UI.escapeHTML(value)}</option>`).join('')}`;
+
+  typeSelect.value = Array.from(typeSelect.options).some((option) => option.value === previousType) ? previousType : 'all';
+  locationSelect.value = Array.from(locationSelect.options).some((option) => option.value === previousLocation) ? previousLocation : 'all';
+  departmentSelect.value = Array.from(departmentSelect.options).some((option) => option.value === previousDepartment) ? previousDepartment : 'all';
+}
+
 function getInventoryMapUiFilters() {
   return {
     search: String(document.getElementById('assetMapSearchInput')?.value || '').trim().toLowerCase(),
     view: inventoryMapViewToCategory(document.getElementById('assetMapViewFilter')?.value || 'all'),
-    type: String(document.getElementById('assetMapTypeFilter')?.value || '').trim().toLowerCase(),
-    location: String(document.getElementById('assetMapLocationFilter')?.value || '').trim().toLowerCase(),
-    department: String(document.getElementById('assetMapDepartmentFilter')?.value || '').trim().toLowerCase(),
+    type: String(document.getElementById('assetMapTypeFilter')?.value || 'all').trim(),
+    location: String(document.getElementById('assetMapLocationFilter')?.value || 'all').trim(),
+    department: String(document.getElementById('assetMapDepartmentFilter')?.value || 'all').trim(),
     lifecycle: String(document.getElementById('assetMapLifecycleFilter')?.value || 'all').trim().toLowerCase(),
     telemetryOnly: Boolean(document.getElementById('assetMapTelemetryOnly')?.checked),
     nearEolOnly: Boolean(document.getElementById('assetMapNearEolOnly')?.checked),
@@ -6368,23 +10203,26 @@ function assetMatchesInventoryMapFilters(asset, filters) {
     asset.mapDisplayLocation,
     displayLocation(asset.installedParentLocation || ''),
     displayLocation(asset.location || ''),
-    String(asset.department || ''),
+    getAssetDisplayDepartment(asset),
     String(asset.serialNumber || ''),
     String(asset.assetTag || ''),
     String(asset.mapParentLabel || ''),
   ].join(' ').toLowerCase();
   if (filters.search && !haystack.includes(filters.search)) return false;
-  if (filters.type) {
-    const typeHaystack = `${String(asset.mapTypeLabel || '')} ${String(asset.type || '')} ${String(asset.componentType || '')}`.toLowerCase();
-    if (!typeHaystack.includes(filters.type)) return false;
+  if (filters.type && filters.type !== 'all') {
+    const selectedType = normalizeValue(filters.type);
+    const assetType = normalizeValue(String(asset.mapTypeLabel || asset.type || asset.componentType || ''));
+    if (!selectedType || assetType !== selectedType) return false;
   }
-  if (filters.location) {
-    const locationHaystack = `${String(asset.mapDisplayLocation || '')} ${String(asset.mapLocationName || '')}`.toLowerCase();
-    if (!locationHaystack.includes(filters.location)) return false;
+  if (filters.location && filters.location !== 'all') {
+    const selectedLocation = normalizeLocationForFilter(filters.location);
+    const assetLocation = normalizeLocationForFilter(asset.mapDisplayLocation || asset.mapLocationName || asset.location || '');
+    if (!selectedLocation || assetLocation !== selectedLocation) return false;
   }
-  if (filters.department) {
-    const deptHaystack = String(asset.department || '').toLowerCase();
-    if (!deptHaystack.includes(filters.department)) return false;
+  if (filters.department && filters.department !== 'all') {
+    const selectedDepartment = normalizeDepartmentForFilter(filters.department);
+    const assetDepartment = normalizeDepartmentForFilter(asset.department || '');
+    if (!selectedDepartment || assetDepartment !== selectedDepartment) return false;
   }
   return true;
 }
@@ -6441,13 +10279,23 @@ function copyInventoryMapCalibrationJson() {
   if (clipboardApi) {
     clipboardApi.writeText(payload)
       .then(() => showMessage('Map coordinates JSON copied to clipboard.', 'success'))
-      .catch(() => {
-        window.prompt('Copy map coordinates JSON:', payload);
-        showMessage('Clipboard unavailable. JSON opened in prompt for manual copy.', 'warning');
+      .catch(async () => {
+        await showInventoryTextPreviewModal({
+          title: 'Map Coordinates JSON',
+          message: 'Clipboard unavailable. Copy the JSON below manually.',
+          text: payload,
+          rows: 12,
+        });
+        showMessage('Clipboard unavailable. JSON opened for manual copy.', 'warning');
       });
   } else {
-    window.prompt('Copy map coordinates JSON:', payload);
-    showMessage('Clipboard unavailable. JSON opened in prompt for manual copy.', 'warning');
+    showInventoryTextPreviewModal({
+      title: 'Map Coordinates JSON',
+      message: 'Clipboard unavailable. Copy the JSON below manually.',
+      text: payload,
+      rows: 12,
+    }).catch(() => {});
+    showMessage('Clipboard unavailable. JSON opened for manual copy.', 'warning');
   }
   console.log('[InventoryMapCalibration]', payload);
 }
@@ -6465,11 +10313,12 @@ function renderInventoryMapCalibrationPanel() {
   const aliases = selectedEntry ? [selectedEntry.name, ...(selectedEntry.aliases || [])] : [];
   panel.innerHTML = `
     <div class="fw-semibold mb-1">Calibration mode is ON</div>
-    <div class="small mb-1">Drag yellow markers to align with buildings, then use Copy Coords.</div>
+    <div class="small mb-1">Step 1: drag yellow markers to building centers.</div>
+    <div class="small mb-1">Step 2: click <strong>Copy Coords</strong> to copy JSON in final display coordinate space.</div>
     <div class="small"><strong>Selected:</strong> ${UI.escapeHTML(selectedEntry?.name || 'None')}</div>
     <div class="small"><strong>xPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.xPercent).toFixed(2) : '-')}</div>
     <div class="small"><strong>yPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.yPercent).toFixed(2) : '-')}</div>
-    <div class="small mt-1"><strong>Aliases:</strong> ${UI.escapeHTML(aliases.join(' • ') || '-')}</div>
+    <div class="small mt-1"><strong>Aliases:</strong> ${UI.escapeHTML(aliases.join(' â€¢ ') || '-')}</div>
   `;
 }
 
@@ -6491,6 +10340,9 @@ window.renderInventoryMapCalibrationMarkers = () => {
       <div
         class="inventory-map-calibration-marker ${draggingClass} ${selectedClass}"
         data-calibration-location-key="${UI.escapeHTML(entry.key)}"
+        role="button"
+        tabindex="0"
+        aria-label="Calibration marker for ${UI.escapeHTML(entry.name)}. Drag to reposition."
         style="left:${UI.escapeHTML(String(projected.xPercent))}%;top:${UI.escapeHTML(String(projected.yPercent))}%;"
         title="Drag to calibrate ${UI.escapeHTML(entry.name)}"
       >${UI.escapeHTML(entry.name)}</div>
@@ -6535,6 +10387,8 @@ window.renderInventoryMapMarkers = () => {
         type="button"
         class="inventory-map-marker ${baseClass} ${statusAlert} ${riskAlert} ${activeClass}"
         data-location-key="${UI.escapeHTML(group.locationKey)}"
+        aria-label="${UI.escapeHTML(group.locationName)} marker with ${UI.escapeHTML(String(group.items.length))} asset(s). Click to view location assets."
+        aria-pressed="${inventoryMapState.selectedLocationKey && inventoryMapState.selectedLocationKey === group.locationKey ? 'true' : 'false'}"
         style="left:${UI.escapeHTML(String(projected.xPercent))}%;top:${UI.escapeHTML(String(projected.yPercent))}%;"
         title="${UI.escapeHTML(group.locationName)} (${group.items.length})"
       >${UI.escapeHTML(String(group.items.length))}</button>
@@ -6562,10 +10416,10 @@ window.renderInventoryMapLocationAssets = () => {
     const nearEol = inventoryMapState.filteredAssets.filter((asset) => asset.mapNearEol || asset.mapHighRisk).length;
     const maintenance = inventoryMapState.filteredAssets.filter((asset) => asset.mapNeedsMaintenance).length;
     const topRawHtml = locationStats.topRaw.length
-      ? locationStats.topRaw.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' • ')
+      ? locationStats.topRaw.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' â€¢ ')
       : 'None';
     const topNormalizedHtml = locationStats.topNormalized.length
-      ? locationStats.topNormalized.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' • ')
+      ? locationStats.topNormalized.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' â€¢ ')
       : 'None';
     listEl.innerHTML = `
       <div class="inventory-map-summary-card">
@@ -6634,9 +10488,9 @@ window.renderInventoryMapLocationAssets = () => {
       return `
         <div class="inventory-map-asset-card">
           <div class="fw-semibold small">${UI.escapeHTML(asset.name || 'Asset')}</div>
-          <div class="small text-muted">${UI.escapeHTML(asset.customId || '-')} • ${UI.escapeHTML(asset.mapViewType || asset.category || '-')}</div>
-          <div class="small text-muted">${UI.escapeHTML(displayLocation(asset.location || '-'))} • ${UI.escapeHTML(String(asset.department || '-'))}</div>
-          <div class="small text-muted">${UI.escapeHTML(String(asset.lifecycleStatus || asset.status || '-'))}${asset.mapTelemetryEnabled ? ' • telemetry' : ''}${asset.mapNearEol ? ' • near EOL' : ''}${asset.mapHighRisk ? ' • high risk' : ''}</div>
+          <div class="small text-muted">${UI.escapeHTML(asset.customId || '-')} â€¢ ${UI.escapeHTML(asset.mapViewType || asset.category || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(getAssetDisplayLocation(asset))} | ${UI.escapeHTML(getAssetDisplayDepartment(asset))}</div>
+          <div class="small text-muted">${UI.escapeHTML(String(asset.lifecycleStatus || asset.status || '-'))}${asset.mapTelemetryEnabled ? ' â€¢ telemetry' : ''}${asset.mapNearEol ? ' â€¢ near EOL' : ''}${asset.mapHighRisk ? ' â€¢ high risk' : ''}</div>
           ${actionButtons}
         </div>
       `;
@@ -6646,10 +10500,10 @@ window.renderInventoryMapLocationAssets = () => {
         <div><strong>Normalized key:</strong> ${UI.escapeHTML(String(selectedMarker.locationKey || '-'))}</div>
         <div><strong>Normalized location:</strong> ${UI.escapeHTML(selectedMarker.locationName)}</div>
         <div><strong>Asset count:</strong> ${UI.escapeHTML(String(selectedMarker.items.length))}</div>
-        <div class="mt-1"><strong>Accepted aliases:</strong> ${UI.escapeHTML(acceptedAliases.join(' • ') || '-')}</div>
-        <div class="mt-1"><strong>Matched alias examples:</strong> ${UI.escapeHTML(matchedAliases.join(' • ') || '-')}</div>
-        <div class="mt-1"><strong>Match methods:</strong> ${UI.escapeHTML(matchMethods.join(' • ') || '-')}</div>
-        <div class="mt-1"><strong>Raw location examples:</strong> ${UI.escapeHTML(rawExamples.join(' • ') || '-')}</div>
+        <div class="mt-1"><strong>Accepted aliases:</strong> ${UI.escapeHTML(acceptedAliases.join(' â€¢ ') || '-')}</div>
+        <div class="mt-1"><strong>Matched alias examples:</strong> ${UI.escapeHTML(matchedAliases.join(' â€¢ ') || '-')}</div>
+        <div class="mt-1"><strong>Match methods:</strong> ${UI.escapeHTML(matchMethods.join(' â€¢ ') || '-')}</div>
+        <div class="mt-1"><strong>Raw location examples:</strong> ${UI.escapeHTML(rawExamples.join(' â€¢ ') || '-')}</div>
       </div>
     `);
   }
@@ -6679,7 +10533,7 @@ window.filterInventoryMapAssets = () => {
   const countsEl = document.getElementById('assetMapCountsSummary');
   if (countsEl) {
     const stats = buildInventoryMapLocationStats(filtered);
-    countsEl.textContent = `Displayed: ${filtered.length} / ${inventoryMapState.allAssets.length} asset(s) • Raw locations: ${stats.rawLocationCount} • Normalized locations: ${stats.normalizedLocationCount} • Unmapped: ${stats.unmappedCount}`;
+    countsEl.textContent = `Displayed: ${filtered.length} / ${inventoryMapState.allAssets.length} asset(s) â€¢ Raw locations: ${stats.rawLocationCount} â€¢ Normalized locations: ${stats.normalizedLocationCount} â€¢ Unmapped: ${stats.unmappedCount}`;
   }
   if (inventoryMapState.selectedLocationKey) {
     const stillExists = inventoryMapState.groupedMarkers.some((marker) => marker.locationKey === inventoryMapState.selectedLocationKey);
@@ -6715,7 +10569,7 @@ window.loadInventoryMapAssets = async (forceReload = false) => {
     let spareStockRows = [];
     try {
       const sparePayload = await readInventoryJson('/inventory/spare-stock');
-      spareStockRows = Array.isArray(sparePayload) ? sparePayload : [];
+      spareStockRows = Array.isArray(sparePayload?.items) ? sparePayload.items : [];
     } catch (_spareErr) {
       spareStockRows = [];
     }
@@ -6742,6 +10596,7 @@ window.loadInventoryMapAssets = async (forceReload = false) => {
       inventoryViewType: 'spare_stock',
     }));
     inventoryMapState.allAssets = [...pages, ...spareAsAssets].map((asset) => normalizeInventoryMapAsset(asset));
+    populateInventoryMapFilterOptions();
     inventoryMapState.mapImageReady = true;
     inventoryMapState.mapImageMissing = false;
     updateInventoryMapCanvasLayout();
@@ -6800,11 +10655,20 @@ function renderInventoryAiMatchedItems(items = []) {
     <div class="inventory-ai-chat-match">
       <div class="d-flex justify-content-between align-items-start gap-2">
         <div>
-          <div class="fw-semibold small">${UI.escapeHTML(item.name || item.assetName || 'Asset')}</div>
-          <div class="small text-muted">${UI.escapeHTML(item.assetId || item.customId || '-')} • ${UI.escapeHTML(item.category || item.type || '-')}</div>
-          <div class="small text-muted">${UI.escapeHTML(item.location || '-')} • ${UI.escapeHTML(item.status || item.lifecycleStatus || '-')}</div>
+          <div class="fw-semibold small"><i class="bi bi-box-seam me-1"></i>${UI.escapeHTML(item.name || item.assetName || 'Asset')}</div>
+          <div class="small text-muted">Asset Tag: ${UI.escapeHTML(item.assetTag || item.assetId || item.customId || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(item.category || item.type || '-')} | ${UI.escapeHTML(item.location || '-')} | ${UI.escapeHTML(item.department || '-')}</div>
+          <div class="small text-muted">Status: ${UI.escapeHTML(item.status || item.lifecycleStatus || '-')}</div>
+          ${item.reason ? `<div class="small mt-1">${UI.escapeHTML(item.reason)}</div>` : ''}
         </div>
-        ${(item.assetId || item.customId) ? `<button type="button" class="btn btn-sm btn-outline-primary inventory-ai-view-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View</button>` : ''}
+        ${(item.assetId || item.customId) ? `
+          <div class="d-flex flex-column gap-1">
+            <button type="button" class="btn btn-sm btn-outline-primary inventory-ai-view-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">Open CMDB</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-view-components-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View Components</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-health-asset-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">Generate Health Summary</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-view-lifecycle-btn" data-asset-id="${UI.escapeHTML(item.assetId || item.customId)}">View Lifecycle Events</button>
+          </div>
+        ` : ''}
       </div>
     </div>
   `).join('');
@@ -6877,9 +10741,9 @@ function renderInventoryAiActionCard(entry = {}) {
         <div class="small mt-2">
           <strong>Metrics:</strong>
           <div class="mt-1">
-            Total Assets: ${UI.escapeHTML(String(metrics.totalAssets ?? '-'))} •
-            High Risk: ${UI.escapeHTML(String(metrics.highRiskAssets ?? '-'))} •
-            Near EOL: ${UI.escapeHTML(String(metrics.nearEolAssets ?? '-'))} •
+            Total Assets: ${UI.escapeHTML(String(metrics.totalAssets ?? '-'))} â€¢
+            High Risk: ${UI.escapeHTML(String(metrics.highRiskAssets ?? '-'))} â€¢
+            Near EOL: ${UI.escapeHTML(String(metrics.nearEolAssets ?? '-'))} â€¢
             Expiring Licenses: ${UI.escapeHTML(String(metrics.expiringLicenses ?? '-'))}
           </div>
         </div>
@@ -6911,7 +10775,7 @@ function renderInventoryAiActionCard(entry = {}) {
           <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-copy-report-btn" data-report-encoded="${UI.escapeHTML(encodedBrief)}">Copy</button>
         </div>
         <div class="small mt-2">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
-        <div class="small text-muted mt-2">Transfers: ${UI.escapeHTML(String(metrics.transfers ?? 0))} • Maintenance: ${UI.escapeHTML(String(metrics.maintenanceEvents ?? 0))} • Audit: ${UI.escapeHTML(String(metrics.auditEvents ?? 0))}</div>
+        <div class="small text-muted mt-2">Transfers: ${UI.escapeHTML(String(metrics.transfers ?? 0))} â€¢ Maintenance: ${UI.escapeHTML(String(metrics.maintenanceEvents ?? 0))} â€¢ Audit: ${UI.escapeHTML(String(metrics.auditEvents ?? 0))}</div>
         ${highlights.length ? `<div class="small mt-2"><strong>Highlights:</strong> ${UI.escapeHTML(highlights.join(' | '))}</div>` : ''}
         ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
         ${actions.length ? `<div class="small mt-2"><strong>Actions:</strong> ${UI.escapeHTML(actions.join(' | '))}</div>` : ''}
@@ -6926,8 +10790,8 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Executive Inventory Dashboard</div>
-        <div class="small text-muted mt-1">Total Assets: ${UI.escapeHTML(String(result.totalAssets ?? 0))} • High Risk: ${UI.escapeHTML(String(result.highRisk ?? 0))} • Near EOL: ${UI.escapeHTML(String(result.nearEol ?? 0))}</div>
-        <div class="small text-muted mt-1">Low Stock: ${UI.escapeHTML(String(result.lowStock ?? 0))} • Maintenance Issues: ${UI.escapeHTML(String(result.openMaintenanceIssues ?? 0))} • Recent Transfers: ${UI.escapeHTML(String(result.recentTransfers ?? 0))}</div>
+        <div class="small text-muted mt-1">Total Assets: ${UI.escapeHTML(String(result.totalAssets ?? 0))} â€¢ High Risk: ${UI.escapeHTML(String(result.highRisk ?? 0))} â€¢ Near EOL: ${UI.escapeHTML(String(result.nearEol ?? 0))}</div>
+        <div class="small text-muted mt-1">Low Stock: ${UI.escapeHTML(String(result.lowStock ?? 0))} â€¢ Maintenance Issues: ${UI.escapeHTML(String(result.openMaintenanceIssues ?? 0))} â€¢ Recent Transfers: ${UI.escapeHTML(String(result.recentTransfers ?? 0))}</div>
         <div class="small mt-2"><strong>Categories:</strong> ${UI.escapeHTML(Object.entries(byCategory).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         <div class="small mt-2"><strong>Locations:</strong> ${UI.escapeHTML(Object.entries(byLocation).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         ${recommendations.length ? `<div class="small mt-2"><strong>Recommendations:</strong> ${UI.escapeHTML(recommendations.join(' | '))}</div>` : ''}
@@ -6944,10 +10808,10 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Digital Twin: ${UI.escapeHTML(String(asset.name || asset.customId || '-'))}</div>
-        <div class="small text-muted mt-1">${UI.escapeHTML(String(asset.customId || '-'))} • ${UI.escapeHTML(String(asset.type || '-'))} • ${UI.escapeHTML(String(result.currentLocation || '-'))}</div>
-        <div class="small mt-2">Health Score: ${UI.escapeHTML(String(result.healthScore ?? '-'))} • Risk: ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
-        <div class="small mt-1">Kit Health: ${UI.escapeHTML(String(kit.label || kit.status || '-'))} • EOL: ${UI.escapeHTML(String(result.eolStatus?.status || '-'))} • Warranty: ${UI.escapeHTML(String(result.warrantyStatus?.status || '-'))}</div>
-        <div class="small mt-1">Related: Components ${UI.escapeHTML(String(related.components ?? 0))} • Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} • Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}</div>
+        <div class="small text-muted mt-1">${UI.escapeHTML(String(asset.customId || '-'))} â€¢ ${UI.escapeHTML(String(asset.type || '-'))} â€¢ ${UI.escapeHTML(String(result.currentLocation || '-'))}</div>
+        <div class="small mt-2">Health Score: ${UI.escapeHTML(String(result.healthScore ?? '-'))} â€¢ Risk: ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
+        <div class="small mt-1">Kit Health: ${UI.escapeHTML(String(kit.label || kit.status || '-'))} â€¢ EOL: ${UI.escapeHTML(String(result.eolStatus?.status || '-'))} â€¢ Warranty: ${UI.escapeHTML(String(result.warrantyStatus?.status || '-'))}</div>
+        <div class="small mt-1">Related: Components ${UI.escapeHTML(String(related.components ?? 0))} â€¢ Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} â€¢ Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}</div>
         ${openIssues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(openIssues.join(' | '))}</div>` : ''}
         ${result.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
       </div>
@@ -6965,10 +10829,10 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Black Box Timeline</div>
-        <div class="small text-muted mt-1">Total Events: ${UI.escapeHTML(String(result.totalEvents ?? events.length))} • Returned: ${UI.escapeHTML(String(result.returnedEvents ?? events.length))}</div>
+        <div class="small text-muted mt-1">Total Events: ${UI.escapeHTML(String(result.totalEvents ?? events.length))} â€¢ Returned: ${UI.escapeHTML(String(result.returnedEvents ?? events.length))}</div>
         <div class="small mt-2"><strong>Groups:</strong> ${UI.escapeHTML(Object.entries(grouped).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         <div class="small mt-2">
-          ${events.map((event) => `${event.timestamp ? UI.formatDateTime(event.timestamp) : '-'} • ${event.label || event.eventType || 'Event'}`).join('<br>') || 'No events.'}
+          ${events.map((event) => `${event.timestamp ? UI.formatDateTime(event.timestamp) : '-'} â€¢ ${event.label || event.eventType || 'Event'}`).join('<br>') || 'No events.'}
         </div>
       </div>
     `;
@@ -6982,8 +10846,24 @@ function renderInventoryAiActionCard(entry = {}) {
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Action Plan (Review Before Execute)</div>
         <div class="small text-muted mt-1">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
-        <div class="small mt-2">Affected Items: ${UI.escapeHTML(String(affected))} • Proposed Changes: ${UI.escapeHTML(String(proposed))}</div>
+        <div class="small mt-2">Affected Items: ${UI.escapeHTML(String(affected))} â€¢ Proposed Changes: ${UI.escapeHTML(String(proposed))}</div>
         ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
+      </div>
+    `;
+  }
+
+  if (mode === 'demo_guide') {
+    return `
+      <div class="inventory-ai-chat-match mt-2 inventory-ai-demo-guide-card">
+        <div class="fw-semibold small">Thesis Demo Walkthrough</div>
+        <div class="small text-muted mt-1">Read-only guide. It navigates and explains; it does not create, approve, receive, or delete records.</div>
+        <div class="inventory-ai-quick-action-grid mt-2">
+          <button type="button" class="btn btn-sm btn-outline-primary inventory-ai-open-page-btn" data-ai-open-page="/pages/inventory-command-center.html">Open Command Center</button>
+          <button type="button" class="btn btn-sm btn-outline-primary inventory-ai-open-page-btn" data-ai-open-page="/pages/procurement.html">Open Procurement</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-ai-prompt="Give me the daily briefing.">Daily Briefing</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-ai-prompt="Classify inventory by ABC.">ABC</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-ai-prompt="Explain FIFO recommendation.">FIFO</button>
+        </div>
       </div>
     `;
   }
@@ -6997,47 +10877,89 @@ function renderInventoryAiChatMessages() {
   const input = document.getElementById('inventoryAiChatInput');
   if (!container) return;
   const messages = inventoryAiChatState.messages || [];
+  updateInventoryAiPromptLayout(messages.length > 0);
   const emptyState = `
     <div class="inventory-ai-chat-empty">
-      <div class="inventory-ai-chat-empty-title"><i class="bi bi-stars me-1"></i>Hi Ismail 👋</div>
-      <div class="inventory-ai-chat-empty-sub">I can help you understand inventory health, missing data, stock, EOL, maintenance, duplicates, and imports.</div>
+      <div class="inventory-ai-chat-empty-title"><i class="bi bi-stars me-1"></i>Inventory Copilot Ready</div>
+      <div class="inventory-ai-chat-empty-sub">Ask me about assets, missing data, procurement, EOL risk, maintenance, or CMDB health.</div>
+      <div class="inventory-ai-empty-prompts mt-2">
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Summarize the health of UXKIT Main CS Desktop PC 001">Summarize asset health</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Explain Inventory 360 and what I should do next.">Explain Inventory 360</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Explain Procurement 360 and the next best procurement action.">Explain Procurement 360</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="What is the cost impact across inventory and procurement? Use real cost evidence only.">Cost impact</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="What data is missing from Inventory 360 and Request 360?">Missing data</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Which assets need maintenance?">Maintenance priorities</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="What should we buy next?">What should we buy next?</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Classify inventory by ABC.">Classify by ABC</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Calculate EOQ for toner.">Calculate EOQ</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Compare EOQ and MOQ for projector lamps.">Compare EOQ vs MOQ</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Which stock should be issued first?">FIFO issue priority</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Find possible duplicate assets.">Find duplicate assets</button>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="Generate monthly inventory report">Monthly report</button>
+      </div>
     </div>
   `;
   const rows = messages.map((entry) => {
     const role = entry.role === 'user' ? 'user' : 'assistant';
-    const resolvedConfidence = resolveInventoryAiEntryConfidence(entry);
+    const isAssistant = role === 'assistant';
+    const resolvedConfidence = isAssistant ? resolveInventoryAiEntryConfidence(entry) : null;
+    const evidenceReason = isAssistant ? summarizeInventoryAiEvidenceReason(entry) : '';
     const metaPills = [];
-    if (resolvedConfidence) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Confidence: ${UI.escapeHTML(String(resolvedConfidence).toUpperCase())}</span>`);
+    if (isAssistant) {
+      if (entry.llmUsed) {
+        metaPills.push('<span class="inventory-ai-chat-pill is-success">Gemma</span>');
+        metaPills.push('<span class="inventory-ai-chat-pill is-success">AI-generated</span>');
+        metaPills.push('<span class="inventory-ai-chat-pill is-info">Fallback: No</span>');
+      }
+      if (entry.fallbackUsed) {
+        metaPills.push('<span class="inventory-ai-chat-pill is-warning">Fallback</span>');
+      }
+      if (String(entry.llmStatus || '').toLowerCase() === 'deterministic_only') {
+        metaPills.push('<span class="inventory-ai-chat-pill is-info">Deterministic</span>');
+      }
+      if (resolvedConfidence) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Evidence confidence: ${UI.escapeHTML(capitalize(String(resolvedConfidence)))}</span>`);
+      }
+      if (resolvedConfidence === 'low') {
+        metaPills.push('<span class="inventory-ai-chat-pill is-warning">Data quality: Limited</span>');
+      }
+      if (entry.sourceLabel) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Source: ${UI.escapeHTML(String(entry.sourceLabel).replace(/_/g, ' '))}</span>`);
+      }
+      if (entry.dataScope) {
+        const scopeLabel = String(entry.dataScope) === 'filtered_view' ? 'Scope: current filtered view' : 'Scope: full inventory';
+        metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(scopeLabel)}</span>`);
+      }
+      if (Number.isFinite(Number(entry.scannedCount)) && Number(entry.scannedCount) > 0) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Scanned: ${UI.escapeHTML(String(entry.scannedCount))}</span>`);
+      }
+      if (entry.missingCount !== null && entry.missingCount !== undefined && Number.isFinite(Number(entry.missingCount)) && Number(entry.missingCount) >= 0) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Missing serials: ${UI.escapeHTML(String(entry.missingCount))}</span>`);
+      }
+      if (Array.isArray(entry.excludedCategories) && entry.excludedCategories.length) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Excluded: ${UI.escapeHTML(entry.excludedCategories.join(', '))}</span>`);
+      }
+      if (entry.intent) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Intent: ${UI.escapeHTML(String(entry.intent))}</span>`);
+      }
+      if (entry.routedAction) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Routed: ${UI.escapeHTML(String(entry.routedAction))}</span>`);
+      }
+      if (entry.actionLabel) metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(entry.actionLabel)}</span>`);
+      if (entry.matchedAssetName || entry.matchedAssetTag) {
+        const matchLabel = entry.matchedAssetTag
+          ? `${String(entry.matchedAssetName || 'Matched asset')} (${String(entry.matchedAssetTag)})`
+          : String(entry.matchedAssetName);
+        metaPills.push(`<span class="inventory-ai-chat-pill is-match">Matched asset: ${UI.escapeHTML(matchLabel)}</span>`);
+      }
+      if (entry.matchMethod) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Match: ${UI.escapeHTML(String(entry.matchMethod).replace(/_/g, ' '))}</span>`);
+      }
+      if (entry.extractedAssetQuery) {
+        metaPills.push(`<span class="inventory-ai-chat-pill">Query: ${UI.escapeHTML(String(entry.extractedAssetQuery))}</span>`);
+      }
     }
-    if (entry.fallbackUsed) metaPills.push('<span class="inventory-ai-chat-pill">Fallback mode</span>');
-    if (entry.fallbackReason) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Reason: ${UI.escapeHTML(String(entry.fallbackReason))}</span>`);
-    }
-    if (entry.dataScope) {
-      const scopeLabel = String(entry.dataScope) === 'filtered_view' ? 'Based on current filtered view' : 'Based on full inventory';
-      metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(scopeLabel)}</span>`);
-    }
-    if (Number.isFinite(Number(entry.scannedCount)) && Number(entry.scannedCount) > 0) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Scanned: ${UI.escapeHTML(String(entry.scannedCount))}</span>`);
-    }
-    if (entry.missingCount !== null && entry.missingCount !== undefined && Number.isFinite(Number(entry.missingCount)) && Number(entry.missingCount) >= 0) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Missing serials: ${UI.escapeHTML(String(entry.missingCount))}</span>`);
-    }
-    if (Array.isArray(entry.excludedCategories) && entry.excludedCategories.length) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Excluded: ${UI.escapeHTML(entry.excludedCategories.join(', '))}</span>`);
-    }
-    if (entry.llmUsed) {
-      metaPills.push('<span class="inventory-ai-chat-pill">Gemma used</span>');
-    }
-    if (entry.intent) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Intent: ${UI.escapeHTML(String(entry.intent))}</span>`);
-    }
-    if (entry.routedAction) {
-      metaPills.push(`<span class="inventory-ai-chat-pill">Routed: ${UI.escapeHTML(String(entry.routedAction))}</span>`);
-    }
-    if (entry.actionLabel) metaPills.push(`<span class="inventory-ai-chat-pill">${UI.escapeHTML(entry.actionLabel)}</span>`);
-    const suggestionItems = normalizeInventoryAiSuggestions(entry.suggestedActions);
+    const suggestionItems = isAssistant ? normalizeInventoryAiSuggestions(entry.suggestedActions) : [];
     const suggestionPills = suggestionItems
       .map((action) => `<span class="inventory-ai-chat-pill">${UI.escapeHTML(action)}</span>`)
       .join('');
@@ -7045,16 +10967,42 @@ function renderInventoryAiChatMessages() {
     const senderIcon = role === 'user' ? 'bi-person-fill' : 'bi-robot';
     const timestamp = formatInventoryAiChatTime(entry.createdAt);
     const timestampHtml = timestamp ? `<span class="ms-auto">${timestamp}</span>` : '';
-    const matchedItemsHtml = renderInventoryAiMatchedItems(entry.matchedItems || []);
-    const actionCardHtml = renderInventoryAiActionCard(entry);
+    const matchedItemsHtml = isAssistant ? renderInventoryAiMatchedItems(entry.matchedItems || []) : '';
+    const actionCardHtml = isAssistant ? renderInventoryAiActionCard(entry) : '';
+    const evidenceHelpHtml = isAssistant && resolvedConfidence === 'low' && !entry.fallbackUsed
+      ? `
+        <details class="mt-2">
+          <summary class="small text-primary">Why is evidence confidence low?</summary>
+          <div class="small text-muted mt-1">
+            ${UI.escapeHTML(
+              evidenceReason
+                ? `Low evidence confidence because ${evidenceReason}. This is not a Gemma failure.`
+                : 'This answer used Gemma, but supporting asset evidence is limited.'
+            )}
+          </div>
+          <div class="small text-muted mt-1">Improve this by adding purchase/warranty dates, telemetry readings, and maintenance history.</div>
+        </details>
+      `
+      : '';
+    const fallbackCardHtml = isAssistant && entry.fallbackUsed
+      ? `
+        <div class="inventory-ai-chat-fallback mt-2">
+          <div class="fw-semibold small">Fallback summary</div>
+          <div class="small mt-1">AI model unavailable for this response. Showing deterministic output.</div>
+          ${entry.fallbackReason ? `<div class="small mt-1 text-muted">Reason: ${UI.escapeHTML(String(entry.fallbackReason).replace(/_/g, ' '))}</div>` : ''}
+        </div>
+      `
+      : '';
     return `
       <div class="inventory-ai-chat-msg ${role}">
         <div class="inventory-ai-msg-head"><i class="bi ${senderIcon}"></i><span>${senderLabel}</span>${timestampHtml}</div>
-        <div>${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${UI.escapeHTML(String(entry.text || ''))}</div>
-        ${(metaPills.length || suggestionPills || matchedItemsHtml) ? `
+        <div class="inventory-ai-chat-answer">${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${UI.escapeHTML(String(entry.text || ''))}</div>
+        ${(metaPills.length || suggestionPills || matchedItemsHtml || fallbackCardHtml) ? `
           <div class="inventory-ai-chat-meta">
             ${metaPills.length ? `<div>${metaPills.join('')}</div>` : ''}
             ${suggestionPills ? `<div class="mt-1"><strong>Suggested Actions:</strong><div class="mt-1">${suggestionPills}</div></div>` : ''}
+            ${evidenceHelpHtml}
+            ${fallbackCardHtml}
             ${matchedItemsHtml}
             ${actionCardHtml}
           </div>
@@ -7062,8 +11010,17 @@ function renderInventoryAiChatMessages() {
       </div>
     `;
   }).join('');
+  const loadingElapsed = inventoryAiChatState.loadingSince ? (Date.now() - Number(inventoryAiChatState.loadingSince)) : 0;
+  const loadingText = loadingElapsed >= INVENTORY_AI_LONG_WAIT_MS
+    ? 'Gemma is thinking... First response may take longer while the local model wakes up.'
+    : 'Gemma is analyzing inventory data...';
   const loadingRow = inventoryAiChatState.loading
-    ? `<div class="inventory-ai-chat-msg assistant"><span class="spinner-border spinner-border-sm me-2"></span>Inventory AI is thinking…</div>`
+    ? `
+      <div class="inventory-ai-chat-msg assistant inventory-ai-chat-loading">
+        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+        <span>${UI.escapeHTML(loadingText)}</span>
+      </div>
+    `
     : '';
   container.innerHTML = (rows || emptyState) + loadingRow;
   if (sendBtn) sendBtn.disabled = inventoryAiChatState.loading;
@@ -7076,7 +11033,7 @@ function ensureInventoryAiWelcomeMessage() {
   inventoryAiChatState.messages.push({
     role: 'assistant',
     text: 'Ask me about inventory status, stock health, maintenance priorities, duplicates, EOL risk, or import quality.',
-    confidence: 'medium',
+    confidence: '',
     fallbackUsed: false,
     createdAt: Date.now(),
   });
@@ -7111,7 +11068,7 @@ window.openInventoryAiChatWithPrompt = async (prompt) => {
 function detectInventoryAiActionFromMessage(queryText) {
   const q = String(queryText || '')
     .toLowerCase()
-    .replace(/[’‘`´]/g, "'")
+    .replace(/[â€™â€˜`Â´]/g, "'")
     .replace(/\s+/g, ' ')
     .trim();
   if (!q) return null;
@@ -7119,7 +11076,7 @@ function detectInventoryAiActionFromMessage(queryText) {
 
   if (
     /(?:what changed|show changes|daily brief|today(?:'s)? inventory brief|inventory changes this week)/.test(q)
-    || has('what changed today', "today's inventory brief", 'show inventory changes this week', 'daily brief')
+    || has('what changed today', "today's inventory brief", 'show inventory changes this week', 'daily brief', 'give me the daily briefing')
   ) return 'daily_brief';
   if (
     /(?:generate|create|give|show|build).*(?:monthly).*(?:inventory|asset).*(?:report|summary)/.test(q)
@@ -7127,15 +11084,23 @@ function detectInventoryAiActionFromMessage(queryText) {
   ) return 'monthly_report';
   if (
     /(?:executive dashboard|management summary|executive summary).*(?:inventory|asset)/.test(q)
-    || has('show executive dashboard', 'generate executive inventory dashboard summary', 'inventory management summary')
+    || has('show executive dashboard', 'generate executive inventory dashboard summary', 'inventory management summary', 'inventory command center', 'command center summary', 'what needs attention today', 'show inventory risks', 'which buildings are highest risk', 'which building is highest risk')
   ) return 'executive_dashboard';
+  if (has('prepare my thesis demo steps', 'thesis demo steps', 'prepare demo steps', 'demo walkthrough')) return 'demo_guide';
   if (has('digital twin', 'asset digital twin', 'show digital twin for this asset')) return 'digital_twin';
   if (has('black box timeline', 'blackbox timeline', 'show black box timeline for this asset', 'asset timeline')) return 'black_box_timeline';
   if ((has('missing serial', 'without serial', 'missing data', 'data quality')) && !has('ticket')) return 'missing_data';
   if (has('license') && has('expire', 'expiring', 'expiry', 'renew')) return 'search';
   if (has('low stock', 'stock forecast', 'spare stock forecast')) return 'spare_stock_forecast';
   if (has('tech exchange', 'reallocation', 're-allocate', 'reuse before buy', 'internal transfer suggestion')) return 'reallocation';
-  if (has('buy next', 'what should we buy', 'procurement', 'purchase next')) return 'procurement';
+  if (has('buy next', 'what should we buy', 'procurement', 'purchase next', 'which procurement requests need approval', 'urgent procurement priorities', 'why is this item recommended', 'show urgent procurement priorities')) return 'procurement';
+  if (has('abc analysis', 'classify inventory by abc', 'a items', 'b items', 'c items')) return 'abc_analysis';
+  if (has('eoq', 'economic order quantity', 'moq', 'minimum order quantity')) return 'eoq_moq';
+  if (has('fifo', 'issued first', 'oldest batch', 'stock should be issued first', 'explain fifo recommendation')) return 'fifo_batches';
+  if (has('budget impact', 'exceed budget', 'budget review', 'finance status')) return 'finance_summary';
+  if (has('best quote', 'vendor quote', 'quote comparison', 'best supplier', 'compare vendor quotes')) return 'quote_comparison';
+  if (has('dead stock', 'obsolete stock')) return 'fifo_batches';
+  if (has('shortage risk', 'risk of shortage')) return 'spare_stock_forecast';
   if (has('duplicate assets', 'duplicate serial', 'duplicate asset tag', 'find duplicates')) return 'duplicates';
   if (has('need maintenance', 'maintenance recommendation', 'maintenance priorities')) return 'maintenance';
   if (has('near eol', 'end of life', 'replacement priority', 'replace first')) return 'replacement_priority';
@@ -7160,6 +11125,11 @@ function inventoryAiEndpointForMode(mode, context = {}) {
     reallocation: '/inventory/ai/reallocation-suggestions',
     maintenance: '/inventory/ai/maintenance-recommendations',
     procurement: '/inventory/ai/procurement-recommendations',
+    abc_analysis: '/inventory/procurement/abc-analysis',
+    eoq_moq: '/inventory/procurement/eoq-moq',
+    fifo_batches: '/inventory/procurement/fifo/batches?itemKind=spare_stock',
+    finance_summary: '/inventory/procurement/finance/summary',
+    quote_comparison: '/inventory/procurement/board?status=all',
     duplicates: '/inventory/ai/duplicate-detection',
     relationship_suggestions: '/inventory/ai/relationship-suggestions',
     ticket_draft: '/inventory/ai/ticket-draft',
@@ -7167,6 +11137,7 @@ function inventoryAiEndpointForMode(mode, context = {}) {
     monthly_report: '/inventory/ai/monthly-report',
     executive_dashboard: '/inventory/executive-dashboard',
     plan_action: '/inventory/ai/plan-action',
+    demo_guide: '',
   };
   if (mode === 'digital_twin') {
     return selectedId ? `/assets/${encodeURIComponent(selectedId)}/digital-twin` : '';
@@ -7182,10 +11153,40 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
   if (!actionMode || inventoryAiChatState.loading) return;
   window.toggleInventoryAiChat(true);
   inventoryAiChatState.loading = true;
+  inventoryAiChatState.loadingSince = Date.now();
   setInventoryAiChatStatus('loading');
   renderInventoryAiChatMessages();
   try {
     const context = getInventoryAiChatContext();
+    if (actionMode === 'demo_guide') {
+      inventoryAiChatState.messages.push({
+        role: 'assistant',
+        text: 'Here is a safe thesis demo path: start in Inventory Command Center, show evidence-driven priorities, open Asset 360/CMDB, ask the Copilot for a daily briefing, review procurement recommendations, create a request only after review, compare vendor quotes, create a PO, receive stock with impact preview, then finish with ABC, EOQ/MOQ, FIFO, Finance, Suppliers, and reports.',
+        confidence: 'high',
+        fallbackUsed: false,
+        missingData: [],
+        matchedItems: [],
+        suggestedActions: [
+          'Open Command Center',
+          'Open Procurement',
+          'Show AI Daily Briefing',
+          'Show ABC / EOQ / FIFO',
+          'No data changes happen unless you confirm a workflow.',
+        ],
+        actionLabel: 'Thesis demo guide',
+        createdAt: Date.now(),
+        dataScope: 'deterministic_guide',
+        llmUsed: false,
+        llmStatus: 'deterministic_only',
+        sourceLabel: 'Deterministic',
+        intent: 'demo_guide',
+        routedAction: 'demo_guide',
+        routedEndpoint: 'frontend_local',
+        actionResult: { mode: 'demo_guide' },
+      });
+      setInventoryAiChatStatus('deterministic_only');
+      return;
+    }
     const endpoint = inventoryAiEndpointForMode(actionMode, context);
     if (!endpoint) {
       throw new Error('Select/open an asset first, then run this action.');
@@ -7223,7 +11224,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
       let query = '';
       if (actionMode === 'executive_dashboard') {
         const params = new URLSearchParams();
-        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', payload.filters.department);
+        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', toBackendDepartmentFilterValue(payload.filters.department));
         if (payload?.filters?.building && payload.filters.building !== 'all') params.set('location', payload.filters.building);
         if (payload?.filters?.type && payload.filters.type !== 'all') params.set('type', payload.filters.type);
         query = params.toString() ? `?${params.toString()}` : '';
@@ -7238,13 +11239,16 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
       text: response.text,
       confidence: response.confidence,
       fallbackUsed: response.fallbackUsed,
+      missingData: Array.isArray(response.missingData) ? response.missingData : [],
       matchedItems: response.matchedItems || [],
       suggestedActions: response.suggestedActions || [],
       actionLabel: inventoryAiQuickActionLabel(actionMode),
       createdAt: Date.now(),
       dataScope: response.dataScope || null,
       llmUsed: Boolean(response.llmUsed),
+      llmStatus: String(response.llmStatus || ''),
       fallbackReason: String(response.fallbackReason || ''),
+      sourceLabel: String(response.sourceLabel || ''),
       intent: String(result?.intent || actionMode),
       routedAction: actionMode,
       routedEndpoint: endpoint,
@@ -7267,6 +11271,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
     showMessage(error.message || 'Inventory AI action failed.', 'error');
   } finally {
     inventoryAiChatState.loading = false;
+    inventoryAiChatState.loadingSince = null;
     renderInventoryAiChatMessages();
   }
 };
@@ -7282,6 +11287,32 @@ window.openInventoryAiMatchedAsset = async (customId) => {
   }
 };
 
+window.openInventoryAiMatchedAssetTab = async (customId, tab = 'components') => {
+  const assetId = String(customId || '').trim();
+  const tabKey = String(tab || 'components').trim() || 'components';
+  if (!assetId) return;
+  try {
+    await refreshCmdbModal(assetId, tabKey);
+  } catch (_error) {
+    showMessage('Could not open the requested CMDB tab.', 'warning');
+  }
+};
+
+window.runInventoryAiMatchedAssetHealth = async (customId) => {
+  const assetId = String(customId || '').trim();
+  if (!assetId) return;
+  try {
+    await window.openAssetCmdb(assetId);
+    setTimeout(() => {
+      if (typeof window.cmdbAiHealthSummary === 'function') {
+        window.cmdbAiHealthSummary(assetId);
+      }
+    }, 120);
+  } catch (_error) {
+    showMessage('Could not open AI health summary for the matched asset.', 'warning');
+  }
+};
+
 window.sendInventoryAiChatMessage = async () => {
   if (inventoryAiChatState.loading) return;
   const input = document.getElementById('inventoryAiChatInput');
@@ -7290,6 +11321,7 @@ window.sendInventoryAiChatMessage = async () => {
   inventoryAiChatState.messages.push({ role: 'user', text: message, createdAt: Date.now() });
   if (input) input.value = '';
   inventoryAiChatState.loading = true;
+  inventoryAiChatState.loadingSince = Date.now();
   setInventoryAiChatStatus('loading');
   renderInventoryAiChatMessages();
 
@@ -7297,6 +11329,7 @@ window.sendInventoryAiChatMessage = async () => {
     const detectedAction = detectInventoryAiActionFromMessage(message);
     if (detectedAction && detectedAction !== 'assistant') {
       inventoryAiChatState.loading = false;
+      inventoryAiChatState.loadingSince = null;
       renderInventoryAiChatMessages();
       await window.runInventoryAiQuickAction(detectedAction, message);
       return;
@@ -7326,6 +11359,7 @@ window.sendInventoryAiChatMessage = async () => {
       text: answer,
       confidence: String(result?.confidence || 'low'),
       fallbackUsed: Boolean(result?.fallbackUsed),
+      missingData: Array.isArray(result?.missingData) ? result.missingData : [],
       intent: String(result?.intent || ''),
       scannedCount: Number(result?.scannedCount || 0),
       missingCount: result?.missingCount ?? null,
@@ -7336,10 +11370,18 @@ window.sendInventoryAiChatMessage = async () => {
       createdAt: Date.now(),
       dataScope: String(result?.dataScope || ''),
       llmUsed: Boolean(result?.llmUsed),
+      llmStatus: String(result?.llmStatus || ''),
       fallbackReason: String(result?.fallbackReason || ''),
+      sourceLabel: String(result?.sourceLabel || ''),
       routedAction: String(result?.routedAction || ''),
       routedEndpoint: String(result?.routedEndpoint || ''),
       actionResult: result?.actionResult || null,
+      extractedAssetQuery: String(result?.extractedAssetQuery || ''),
+      matchedAssetId: String(result?.matchedAssetId || ''),
+      matchedAssetTag: String(result?.matchedAssetTag || ''),
+      matchedAssetName: String(result?.matchedAssetName || ''),
+      matchMethod: String(result?.matchMethod || ''),
+      searchedBy: Array.isArray(result?.searchedBy) ? result.searchedBy : [],
     });
     setInventoryAiChatStatus(
       String(result?.llmStatus || '')
@@ -7357,6 +11399,7 @@ window.sendInventoryAiChatMessage = async () => {
     showMessage(error.message || 'Inventory AI assistant request failed.', 'error');
   } finally {
     inventoryAiChatState.loading = false;
+    inventoryAiChatState.loadingSince = null;
     renderInventoryAiChatMessages();
   }
 };
@@ -7481,6 +11524,11 @@ function inventoryAiQuickActionLabel(mode) {
     reallocation: 'AI reallocation suggestions ready',
     maintenance: 'Maintenance recommendations ready',
     procurement: 'Procurement recommendations ready',
+    abc_analysis: 'ABC analysis ready',
+    eoq_moq: 'EOQ/MOQ analysis ready',
+    fifo_batches: 'FIFO batch visibility ready',
+    finance_summary: 'Finance summary ready',
+    quote_comparison: 'Quote comparison context ready',
     duplicates: 'Duplicate detection completed',
     relationship_suggestions: 'Relationship suggestions generated',
     ticket_draft: 'Inventory ticket draft prepared',
@@ -7490,6 +11538,7 @@ function inventoryAiQuickActionLabel(mode) {
     digital_twin: 'Digital Twin loaded',
     black_box_timeline: 'Black Box Timeline loaded',
     plan_action: 'Natural language action plan ready',
+    demo_guide: 'Thesis demo guide ready',
   };
   return map[mode] || 'Inventory AI action completed';
 }
@@ -7503,6 +11552,10 @@ function buildChatResponseFromMode(mode, payload) {
     llmUsed: Boolean(payload?.llmUsed),
     llmStatus: String(payload?.llmStatus || ''),
     fallbackReason: String(payload?.fallbackReason || ''),
+    sourceLabel: String(payload?.sourceLabel || ''),
+    missingData: Array.isArray(payload?.missingData)
+      ? payload.missingData
+      : (Array.isArray(payload?.missing_data) ? payload.missing_data : []),
   };
   if (mode === 'missing_data') {
     return {
@@ -7591,7 +11644,7 @@ function buildChatResponseFromMode(mode, payload) {
           assetId: item.itemName || '-',
           name: item.itemName || 'Spare Stock Item',
           category: item.componentType || 'Spare Stock',
-          type: `Current ${item.currentQuantity ?? '-'} → Recommended ${item.recommendedQuantity ?? '-'}`,
+          type: `Current ${item.currentQuantity ?? '-'} -> Recommended ${item.recommendedQuantity ?? '-'}`,
           location: '-',
           status: item.reason || '-',
         }))
@@ -7651,12 +11704,113 @@ function buildChatResponseFromMode(mode, payload) {
           category: item.type || 'Procurement',
           type: item.priority || '-',
           location: '-',
-          status: `Qty ${item.recommendedQuantity ?? '-'}${item.reason ? ` • ${item.reason}` : ''}`,
+          status: `Qty ${item.recommendedQuantity ?? '-'}${item.reason ? ` â€¢ ${item.reason}` : ''}`,
         }))
         : [],
       suggestedActions: Array.isArray(payload?.recommendedPurchases)
         ? payload.recommendedPurchases.slice(0, 6).map((item) => `Buy ${item.recommendedQuantity ?? '?'} ${item.itemName || 'item'}`)
         : [],
+    };
+  }
+
+  if (mode === 'abc_analysis') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.rows)
+        ? payload.rows.slice(0, 10).map((row) => ({
+          assetId: row.itemId || '-',
+          name: row.itemName || 'Item',
+          category: `ABC ${row.abcClass || '-'}`,
+          type: row.category || '-',
+          location: row.location || '-',
+          status: row.reason || '-',
+        }))
+        : [],
+      suggestedActions: ['Prioritize A-class items for strict control and procurement review.'],
+    };
+  }
+
+  if (mode === 'eoq_moq') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.rows)
+        ? payload.rows.slice(0, 10).map((row) => ({
+          assetId: row.stockItemId || '-',
+          name: row.itemName || 'Stock Item',
+          category: row.dataQuality || 'EOQ',
+          type: `EOQ ${row.eoq ?? '-'} / MOQ ${row.moq ?? '-'}`,
+          location: '-',
+          status: row.warning || row.reason || '-',
+        }))
+        : [],
+      suggestedActions: ['Fill D/S/H inputs for items with missing EOQ data before final quantity decisions.'],
+    };
+  }
+
+  if (mode === 'fifo_batches') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.rows)
+        ? payload.rows.slice(0, 10).map((row) => ({
+          assetId: row.id || '-',
+          name: row.itemName || 'Batch Item',
+          category: 'FIFO Batch',
+          type: row.batchCode || row.id || '-',
+          location: row.location || '-',
+          status: `Received ${row.receivedAt ? UI.formatDateTime(row.receivedAt) : '-'} | Available ${row.quantityAvailable ?? '-'}`,
+        }))
+        : [],
+      suggestedActions: ['Issue oldest FIFO batches first. Use override only with documented reason.'],
+    };
+  }
+
+  if (mode === 'finance_summary') {
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: Array.isArray(payload?.overBudgetRequests)
+        ? payload.overBudgetRequests.slice(0, 10).map((row) => ({
+          assetId: row.requestNumber || '-',
+          name: row.title || 'Procurement Request',
+          category: row.financeStatus || 'Finance',
+          type: `Est. ${row.estimatedBudget ?? '-'} / Avail. ${row.allocationAvailable ?? '-'}`,
+          location: '-',
+          status: row.exceedsBudget ? 'Exceeds budget' : 'Within budget',
+        }))
+        : [],
+      suggestedActions: ['Review over-budget requests before approval and adjust allocation or scope.'],
+    };
+  }
+
+  if (mode === 'quote_comparison') {
+    const requests = Array.isArray(payload?.requests) ? payload.requests : [];
+    const quoteRows = [];
+    requests.forEach((request) => {
+      (Array.isArray(request.vendorQuotes) ? request.vendorQuotes : []).forEach((quote) => {
+        quoteRows.push({
+          requestId: request.requestId || request.id || '-',
+          title: request.title || '-',
+          vendorName: quote.vendorName || '-',
+          price: quote.totalPrice ?? null,
+          status: quote.status || '-',
+        });
+      });
+    });
+    return {
+      ...baseMeta,
+      text: String(payload?.summary || inventoryAiQuickActionLabel(mode)),
+      matchedItems: quoteRows.slice(0, 10).map((row) => ({
+        assetId: row.requestId,
+        name: row.title,
+        category: row.vendorName,
+        type: row.price !== null ? `Quote ${row.price}` : 'Quote',
+        location: '-',
+        status: row.status,
+      })),
+      suggestedActions: ['Open Procurement page to run per-request vendor quote comparison and select best value.'],
     };
   }
 
@@ -7759,7 +11913,7 @@ function buildChatResponseFromMode(mode, payload) {
         category: payload?.riskScore?.riskLevel || payload?.kitHealth?.label || 'Digital Twin',
         type: `Health ${payload?.healthScore ?? '-'} / Risk ${payload?.riskScore?.riskScore ?? '-'}`,
         location: payload?.currentLocation || '-',
-        status: `Components ${related.components ?? 0} • Accessories ${related.accessories ?? 0} • Licenses ${related.licenses ?? 0}`,
+        status: `Components ${related.components ?? 0} â€¢ Accessories ${related.accessories ?? 0} â€¢ Licenses ${related.licenses ?? 0}`,
       }],
       suggestedActions: Array.isArray(payload?.openIssues) && payload.openIssues.length
         ? payload.openIssues.slice(0, 6)
@@ -7818,6 +11972,11 @@ function inventoryAiModeMeta(mode) {
     reallocation: { title: 'AI Reallocation / Tech Exchange', queryRequired: false, placeholder: '' },
     maintenance: { title: 'AI Maintenance Recommendations', queryRequired: false, placeholder: '' },
     procurement: { title: 'AI Procurement Recommendations', queryRequired: false, placeholder: '' },
+    abc_analysis: { title: 'ABC Analysis', queryRequired: false, placeholder: '' },
+    eoq_moq: { title: 'EOQ / MOQ', queryRequired: false, placeholder: '' },
+    fifo_batches: { title: 'FIFO Batch Visibility', queryRequired: false, placeholder: '' },
+    finance_summary: { title: 'Procurement Finance Summary', queryRequired: false, placeholder: '' },
+    quote_comparison: { title: 'Vendor Quote Comparison', queryRequired: false, placeholder: '' },
     duplicates: { title: 'AI Duplicate Check', queryRequired: false, placeholder: '' },
     relationship_suggestions: { title: 'AI Relationship Suggestions', queryRequired: false, placeholder: '' },
     ticket_draft: { title: 'AI Ticket Draft', queryRequired: true, placeholder: 'Describe the issue to draft a ticket' },
@@ -7827,6 +11986,7 @@ function inventoryAiModeMeta(mode) {
     digital_twin: { title: 'Asset Digital Twin', queryRequired: false, placeholder: '' },
     black_box_timeline: { title: 'Asset Black Box Timeline', queryRequired: false, placeholder: '' },
     plan_action: { title: 'AI Natural Language Action Plan', queryRequired: true, placeholder: 'Example: Transfer all Lab A PCs to Computer Lab B' },
+    demo_guide: { title: 'Thesis Demo Guide', queryRequired: false, placeholder: '' },
   };
   return map[mode] || map.assistant;
 }
@@ -7901,7 +12061,7 @@ window.runInventoryAiAction = async () => {
       let query = '';
       if (mode === 'executive_dashboard') {
         const params = new URLSearchParams();
-        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', payload.filters.department);
+        if (payload?.filters?.department && payload.filters.department !== 'all') params.set('department', toBackendDepartmentFilterValue(payload.filters.department));
         if (payload?.filters?.building && payload.filters.building !== 'all') params.set('location', payload.filters.building);
         if (payload?.filters?.type && payload.filters.type !== 'all') params.set('type', payload.filters.type);
         query = params.toString() ? `?${params.toString()}` : '';
@@ -7923,6 +12083,75 @@ window.runInventoryAiAction = async () => {
   }
 };
 
+function toImportFriendlyMessage(message, severity = 'warning') {
+  const original = String(message || '').trim();
+  if (!original) return '';
+  const withTechnical = (plain) => `${plain} (Technical: ${original})`;
+
+  if (/^Unrecognized asset type in registry\s*\(/i.test(original)) {
+    return withTechnical('This asset type is accepted but not in the standard registry. It will still import using the nearest supported type.');
+  }
+  if (/^Component type\s*\(.+\)\s*is not in current registry/i.test(original)) {
+    return withTechnical('This component type is not in the standard registry. It will still import as a custom component type.');
+  }
+  if (/^Accessory type\s*\(.+\)\s*is outside the standard accessory registry/i.test(original)) {
+    return withTechnical('This accessory type is outside the standard registry. It will still import as a custom accessory type.');
+  }
+  if (/^Consumable type\s*\(.+\)\s*is outside the standard consumable registry/i.test(original)) {
+    return withTechnical('This consumable type is outside the standard registry. It will still import as a custom consumable type.');
+  }
+  if (/^Spare stock type\s*\(.+\)\s*is outside the standard spare-stock registry/i.test(original)) {
+    return withTechnical('This spare stock type is outside the standard registry. It will still import as a custom spare stock type.');
+  }
+  if (/^License type\s*\(.+\)\s*is outside the standard license registry/i.test(original)) {
+    return withTechnical('This license type is outside the standard registry. It will still import as a custom license type.');
+  }
+  if (/^Parent Asset Tag is required for component rows\.?$/i.test(original)) {
+    return 'Component rows need Parent Asset Tag so they can be linked to a parent asset.';
+  }
+  if (/^Parent Asset Tag is required for related item rows\.?$/i.test(original)) {
+    return 'Related item rows need Parent Asset Tag so they can be linked to a parent asset.';
+  }
+  if (/^Unknown Parent Asset Tag\s*\(/i.test(original) || /^Parent asset not found for related item row\.?$/i.test(original)) {
+    return withTechnical('Parent Asset Tag was not found in this file or current inventory. Create/import the parent first, then retry.');
+  }
+  if (/^Duplicate serial number in file\s*\(/i.test(original)) {
+    return withTechnical('This serial number appears more than once in this file. Keep one row per unique serial number.');
+  }
+  if (/^Duplicate asset tag in file\s*\(/i.test(original)) {
+    return withTechnical('This asset tag appears more than once in this file. Keep one row per unique asset tag.');
+  }
+  if (/^Serial number already exists in DB\s*\(/i.test(original)) {
+    return withTechnical('This serial number already exists in inventory. Update the existing asset or use a unique serial number.');
+  }
+  if (/^Asset tag already exists in DB\s*\(/i.test(original)) {
+    return withTechnical('This asset tag already exists in inventory. Update the existing asset or use a unique asset tag.');
+  }
+  if (/^Invalid category\s*\(/i.test(original)) {
+    return withTechnical('Category is not supported. Use one of the Inventory-supported categories.');
+  }
+  if (/^Invalid Record Type$/i.test(original)) {
+    return withTechnical('Record Type is not supported. Use parent_asset, component/component_asset, accessory, consumable, spare_stock, or license.');
+  }
+  if (/^Component Type is empty; defaulting to component$/i.test(original)) {
+    return 'Component Type is empty. Inventory will default this row to "component".';
+  }
+  if (/^\d+\s+warning\(s\)\s+detected/i.test(original)) {
+    return original;
+  }
+  if (severity === 'error' && /^Import commit rejected due to validation errors\.?$/i.test(original)) {
+    return 'Import cannot continue until blocking validation errors are fixed.';
+  }
+  return original;
+}
+
+function formatImportMessages(messages = [], severity = 'warning') {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .map((msg) => toImportFriendlyMessage(msg, severity))
+    .filter(Boolean);
+}
+
 function renderImportPreviewRows(rows = []) {
   const tableBody = document.getElementById('importPreviewTableBody');
   if (!tableBody) return;
@@ -7931,7 +12160,10 @@ function renderImportPreviewRows(rows = []) {
     return;
   }
   tableBody.innerHTML = rows.map((row) => {
-    const message = [...(row.errors || []), ...(row.warnings || [])].join(' | ') || 'OK';
+    const message = [
+      ...formatImportMessages(row.errors || [], 'error'),
+      ...formatImportMessages(row.warnings || [], 'warning'),
+    ].join(' | ') || 'OK';
     const status = row.statusLabel || 'valid';
     const displayRecordType = row.recordType === 'embedded_component' ? 'component' : (row.recordType || '-');
     const statusBadge = status === 'error'
@@ -7968,11 +12200,16 @@ function setImportPreviewUiState(preview = null) {
     return;
   }
   renderImportPreviewRows(preview.normalizedRows || []);
+  const warningCount = (preview.normalizedRows || [])
+    .reduce((sum, row) => sum + (Array.isArray(row?.warnings) ? row.warnings.length : 0), 0);
   if (summary) {
-    summary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
+    summary.textContent = `Rows: ${preview.totalRows || 0} | Valid: ${preview.validRows || 0} | Invalid: ${preview.invalidRows || 0} | Warnings: ${warningCount} | Can Import: ${preview.canImport ? 'Yes' : 'No'}`;
   }
   if (commitSummary) {
-    const msg = [...(preview.errors || []), ...(preview.warnings || [])].join(' | ');
+    const msg = [
+      ...formatImportMessages(preview.errors || [], 'error'),
+      ...formatImportMessages(preview.warnings || [], 'warning'),
+    ].join(' | ');
     commitSummary.textContent = msg || '';
     commitSummary.className = `small mt-2 ${preview.canImport ? 'text-muted' : 'text-danger'}`;
   }
@@ -8128,6 +12365,7 @@ function renderImportRepairSuggestions() {
             type="checkbox"
             class="form-check-input"
             data-import-repair-select-id="${UI.escapeHTML(String(fix.id || ''))}"
+            aria-label="Select suggestion for row ${UI.escapeHTML(String(fix.rowNumber || '-'))}, field ${UI.escapeHTML(toImportRepairFieldLabel(fix.field))}"
             ${fix.selected ? 'checked' : ''}
             ${status !== 'pending' ? 'disabled' : ''}
           />
@@ -8144,12 +12382,14 @@ function renderImportRepairSuggestions() {
             type="button"
             class="btn btn-sm btn-outline-success me-1"
             data-import-repair-apply-id="${UI.escapeHTML(String(fix.id || ''))}"
+            aria-label="Apply suggestion for row ${UI.escapeHTML(String(fix.rowNumber || '-'))}, field ${UI.escapeHTML(toImportRepairFieldLabel(fix.field))}"
             ${status !== 'pending' ? 'disabled' : ''}
           >Apply</button>
           <button
             type="button"
             class="btn btn-sm btn-outline-secondary"
             data-import-repair-ignore-id="${UI.escapeHTML(String(fix.id || ''))}"
+            aria-label="Ignore suggestion for row ${UI.escapeHTML(String(fix.rowNumber || '-'))}, field ${UI.escapeHTML(toImportRepairFieldLabel(fix.field))}"
             ${status !== 'pending' ? 'disabled' : ''}
           >Ignore</button>
         </td>
@@ -8320,12 +12560,14 @@ async function applyImportRepairsByIds(ids = [], options = {}) {
 function resetImportAssetsState() {
   importPreviewCache = null;
   importAiHeaderMappings = null;
+  lastImportCommitMeta = null;
   const fileInput = document.getElementById('importAssetsFile');
   const dropHint = document.getElementById('importDropZoneHint');
   const aiMappingSummary = document.getElementById('importAiMappingSummary');
   const aiRepairSummary = document.getElementById('importAiRepairSummary');
   const docText = document.getElementById('importDocumentText');
   const docSummary = document.getElementById('importDocumentSummary');
+  const postCommitActions = document.getElementById('importPostCommitActions');
   setImportPreviewUiState(null);
   resetImportRepairState();
   if (aiMappingSummary) aiMappingSummary.textContent = 'No AI mapping yet.';
@@ -8334,6 +12576,11 @@ function resetImportAssetsState() {
   if (docSummary) docSummary.textContent = 'No document extraction run yet.';
   if (fileInput) fileInput.value = '';
   if (dropHint) dropHint.textContent = 'No file selected.';
+  if (postCommitActions) {
+    postCommitActions.classList.add('d-none');
+    delete postCommitActions.dataset.importBatchId;
+    delete postCommitActions.dataset.importedAt;
+  }
 }
 
 window.openImportAssetsModal = async () => {
@@ -8348,9 +12595,11 @@ window.copyImportTemplateCsv = async () => {
   const template = [
     'Record Type,Asset Name,Category,Asset Type,Brand,Model,Serial Number,Asset Tag,Manufacturer Part Number,Location,Department,Status,Lifecycle Status,Parent Asset Tag,Component Type,Condition,Quantity,Minimum Stock Level,Reorder Point,Vendor,Purchase Date,Warranty Start Date,Warranty End Date,Purchase Cost,Assigned To,Notes',
     'parent_asset,Dell OptiPlex Lab PC,Asset,Desktop,Dell,OptiPlex 7090,PC-SN-001,UNI-PC-LAB-A-001,LAT7090,Main Building,Computer Science,active,in_use,,,,1,,,Dell,2024-01-15,2024-01-15,2027-01-15,25000,IT Lab,Main PC',
-    'embedded_component,RAM 16GB DDR4,Component,Electronics,Kingston,16GB DDR4,RAM-SN-001,UNI-RAM-001,KVR16GB,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,RAM,Good,1,,,,,,,,Initial RAM',
-    'embedded_component,SSD 512GB,Component,Electronics,Samsung,512GB SSD,SSD-SN-001,UNI-SSD-001,SAM512,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,Storage,Good,1,,,,,,,,Initial SSD',
-    'spare_stock,Samsung 512GB SSD,Spare Stock,Spare SSD,Samsung,512GB SSD,,SPARE-SSD-512,SAM512,Central Warehouse,Computer Science,active,in_stock,,Spare SSD,New,3,1,1,Dell,,,,1500,,Compatible with Dell OptiPlex',
+    'component,RAM 16GB DDR4,Component,Electronics,Kingston,16GB DDR4,RAM-SN-001,UNI-RAM-001,KVR16GB,Main Building,Computer Science,active,in_use,UNI-PC-LAB-A-001,RAM,Good,1,,,,,,,,Initial RAM',
+    'accessory,USB-C Dock,Accessory,Dock,Anker,PowerExpand,DOC-SN-100,UNI-DOCK-001,ANK-DOC-100,Main Building,Computer Science,active,assigned,UNI-PC-LAB-A-001,,Good,1,,,Anker,2024-01-20,,,2200,Lab Supervisor,Assigned accessory',
+    'license,Windows 11 Pro License,License,Software License,Microsoft,Windows 11 Pro,LIC-SN-001,UNI-LIC-W11-001,MS-W11-PRO,Main Building,Computer Science,active,assigned,UNI-PC-LAB-A-001,,Good,1,,,Microsoft,2024-01-20,,,1200,Lab Supervisor,Linked license',
+    'consumable,Printer Toner Black,Consumable,Toner,HP,CF259A,,CONS-TONER-001,HP-CF259A,Central Warehouse,Computer Science,active,in_stock,,,New,5,2,2,HP,2024-02-10,,,450,,Consumable stock',
+    'spare_stock,Samsung 512GB SSD,Spare Stock,Spare SSD,Samsung,512GB SSD,,SPARE-SSD-512,SAM512,Central Warehouse,Computer Science,active,in_stock,,Spare SSD,New,3,1,1,Dell,2024-01-20,,,1500,,Compatible with Dell OptiPlex',
   ].join('\n');
   try {
     await navigator.clipboard.writeText(template);
@@ -8363,20 +12612,15 @@ window.copyImportTemplateCsv = async () => {
 window.previewImportAssets = async () => {
   const fileInput = document.getElementById('importAssetsFile');
   if (!fileInput || !fileInput.files || !fileInput.files.length) {
-    showMessage('Please choose a CSV or XLSX file.', 'warning');
+    showMessage('Please choose a CSV file.', 'warning');
     return;
   }
   const file = fileInput.files[0];
   const name = String(file.name || '');
   const lower = name.toLowerCase();
 
-  if (!(lower.endsWith('.csv') || lower.endsWith('.xlsx') || lower.endsWith('.xls'))) {
-    showMessage('Invalid file type. Please upload CSV or XLSX.', 'warning');
-    return;
-  }
-
-  if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
-    showMessage('XLSX preview is not enabled yet. Please use CSV for now.', 'warning');
+  if (!lower.endsWith('.csv')) {
+    showMessage('CSV is supported now. Please upload a CSV file. XLSX is planned for a later pass.', 'warning');
     return;
   }
   const text = await file.text();
@@ -8423,12 +12667,18 @@ window.runImportAiColumnMapping = async () => {
     });
     const mappedCount = Object.keys(importAiHeaderMappings || {}).length;
     const unmapped = Array.isArray(result?.unmappedColumns) ? result.unmappedColumns : [];
-    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    const warnings = formatImportMessages(Array.isArray(result?.warnings) ? result.warnings : [], 'warning');
+    const sourceNote = aiSourceMetaText(result);
     if (summaryEl) {
-      summaryEl.textContent = `Mapped ${mappedCount} column(s). Unmapped: ${unmapped.length}. ${warnings.length ? `Warnings: ${warnings.join(' | ')}` : ''}`;
+      summaryEl.textContent = `Mapped ${mappedCount} column(s). Unmapped: ${unmapped.length}. ${warnings.length ? `Warnings: ${warnings.join(' | ')}` : ''} ${sourceNote}`;
       summaryEl.className = `small mb-2 ${mappedCount ? 'text-success' : 'text-warning'}`;
     }
-    showMessage(mappedCount ? 'AI column mappings ready. Click Preview to validate rows.' : 'No confident AI mappings found.', mappedCount ? 'success' : 'warning');
+    showMessage(
+      mappedCount
+        ? `AI column mappings ready. Click Preview to validate rows. ${sourceNote}`
+        : `No confident AI mappings found. ${sourceNote}`,
+      mappedCount ? 'success' : 'warning',
+    );
   } catch (error) {
     if (summaryEl) {
       summaryEl.textContent = 'AI mapping failed. You can still run normal preview.';
@@ -8453,7 +12703,7 @@ window.runImportAiRepairErrors = async () => {
       normalizedRows: importPreviewCache.normalizedRows,
     });
     const fixes = Array.isArray(result?.fixes) ? result.fixes : [];
-    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    const warnings = formatImportMessages(Array.isArray(result?.warnings) ? result.warnings : [], 'warning');
     importAiRepairState.suggestions = normalizeImportRepairSuggestions(fixes);
     importAiRepairState.beforeMetrics = {
       invalidRows: Number(importPreviewCache.invalidRows || 0),
@@ -8462,11 +12712,12 @@ window.runImportAiRepairErrors = async () => {
     };
     importAiRepairState.lastApplySummary = `Before invalid: ${importAiRepairState.beforeMetrics.invalidRows}. Apply fixes and re-run validation.`;
     renderImportRepairSuggestions();
+    const sourceNote = aiSourceMetaText(result);
     if (summaryEl) {
-      summaryEl.textContent = `${result?.summary || 'AI repair suggestions generated.'} Fixes: ${fixes.length}. Safe fixes: ${importAiRepairState.suggestions.filter((fix) => fix.canAutoApply).length}. ${warnings.length ? `Warnings: ${warnings.slice(0, 4).join(' | ')}` : ''}`;
+      summaryEl.textContent = `${result?.summary || 'AI repair suggestions generated.'} Fixes: ${fixes.length}. Safe fixes: ${importAiRepairState.suggestions.filter((fix) => fix.canAutoApply).length}. ${warnings.length ? `Warnings: ${warnings.slice(0, 4).join(' | ')}` : ''} ${sourceNote}`;
       summaryEl.className = `small mb-2 ${fixes.length ? 'text-success' : 'text-warning'}`;
     }
-    showMessage('AI repair suggestions generated. Review and apply fixes before confirming import.', fixes.length ? 'success' : 'warning');
+    showMessage(`AI repair suggestions generated. Review and apply fixes before confirming import. ${sourceNote}`, fixes.length ? 'success' : 'warning');
   } catch (error) {
     if (summaryEl) {
       summaryEl.textContent = 'AI import error repair failed.';
@@ -8579,7 +12830,7 @@ window.runImportAiInvoiceMatch = async () => {
     });
     const matches = Array.isArray(result?.matches) ? result.matches : [];
     const unmatchedItems = Array.isArray(result?.unmatchedItems) ? result.unmatchedItems : [];
-    const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+    const warnings = formatImportMessages(Array.isArray(result?.warnings) ? result.warnings : [], 'warning');
     if (summaryEl) {
       summaryEl.textContent = `${result?.summary || 'Invoice matching completed.'} Matches: ${matches.length}. Unmatched: ${unmatchedItems.length}. ${warnings.length ? `Warnings: ${warnings.slice(0, 3).join(' | ')}` : ''}`;
       summaryEl.className = `small mb-2 ${matches.length ? 'text-success' : 'text-warning'}`;
@@ -8629,6 +12880,10 @@ window.previewDocumentImportRows = async () => {
 
 window.commitImportAssets = async () => {
   const summary = document.getElementById('importCommitSummary');
+  const postCommitActions = document.getElementById('importPostCommitActions');
+  const commitBtn = document.getElementById('commitImportBtn');
+  const originalCommitBtnHtml = commitBtn?.innerHTML || 'Confirm Import';
+  let keepCommitDisabled = false;
   if (!importPreviewCache || !Array.isArray(importPreviewCache.normalizedRows)) {
     showMessage('Run preview first.', 'warning');
     return;
@@ -8637,6 +12892,10 @@ window.commitImportAssets = async () => {
     showMessage('Import cannot proceed while preview has errors.', 'error');
     return;
   }
+  if (commitBtn) {
+    commitBtn.disabled = true;
+    commitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Importing...';
+  }
   try {
     const filename = importPreviewCache.filename || (document.getElementById('importAssetsFile')?.files?.[0]?.name || 'import.csv');
     const result = await postInventoryJson('/assets/import/commit', {
@@ -8644,23 +12903,57 @@ window.commitImportAssets = async () => {
       normalizedRows: importPreviewCache.normalizedRows,
     });
     const parentAssets = Number(result.createdParentAssets || 0);
+    const componentsLinked = Number(result.createdComponents || 0);
     const accessoryAssets = Number(result.createdAccessoryAssets || 0);
     const licenseAssets = Number(result.createdLicenseAssets || 0);
+    const consumablesCreated = Number(result.createdConsumableAssets || 0);
     const accessoryLinks = Number(result.createdAccessoryLinks || 0);
     const licenseLinks = Number(result.createdLicenseLinks || 0);
+    const spareStockUpdated = Number(result.createdSpareStockItems || 0);
+    const skippedRows = Array.isArray(result.skippedRows) ? result.skippedRows : [];
+    const rowErrors = formatImportMessages(Array.isArray(result.errors) ? result.errors : [], 'error');
+    const warnings = formatImportMessages(Array.isArray(result.warnings) ? result.warnings : [], 'warning');
+    const failedRows = skippedRows.length + rowErrors.length;
+    const importBatchId = String(result.importBatchId || '-').trim() || '-';
+    const importTimestamp = result.importTimestamp
+      ? new Date(result.importTimestamp).toLocaleString()
+      : new Date().toLocaleString();
+
+    lastImportCommitMeta = {
+      importBatchId,
+      importTimestamp,
+      filename,
+    };
+
     if (summary) {
-      summary.textContent = `Import complete. Parent assets: ${parentAssets}, Components linked: ${result.createdComponents || 0}, Accessories: ${accessoryAssets} (links: ${accessoryLinks}), Licenses: ${licenseAssets} (links: ${licenseLinks}), Spare Stock: ${result.createdSpareStockItems || 0}, Skipped: ${(result.skippedRows || []).length}.`;
+      summary.innerHTML = `
+        <div class="fw-semibold ${result.success ? 'text-success' : 'text-warning'}">Import ${result.success ? 'completed' : 'finished with issues'}.</div>
+        <div class="small text-muted mt-1">Batch ID: <code>${UI.escapeHTML(importBatchId)}</code> | Imported at: ${UI.escapeHTML(importTimestamp)}</div>
+        <div class="small mt-1">Parent assets created: <strong>${UI.escapeHTML(String(parentAssets))}</strong></div>
+        <div class="small">Components linked: <strong>${UI.escapeHTML(String(componentsLinked))}</strong></div>
+        <div class="small">Accessories created: <strong>${UI.escapeHTML(String(accessoryAssets))}</strong> (linked: ${UI.escapeHTML(String(accessoryLinks))})</div>
+        <div class="small">Licenses created: <strong>${UI.escapeHTML(String(licenseAssets))}</strong> (linked: ${UI.escapeHTML(String(licenseLinks))})</div>
+        <div class="small">Consumables created: <strong>${UI.escapeHTML(String(consumablesCreated))}</strong></div>
+        <div class="small">Spare stock rows updated/created: <strong>${UI.escapeHTML(String(spareStockUpdated))}</strong></div>
+        <div class="small">Warnings: <strong>${UI.escapeHTML(String(warnings.length))}</strong> | Failed rows: <strong>${UI.escapeHTML(String(failedRows))}</strong></div>
+        ${
+          warnings.length
+            ? `<div class="small text-muted mt-1"><strong>Warnings:</strong> ${UI.escapeHTML(warnings.slice(0, 4).join(' | '))}</div>`
+            : ''
+        }
+      `;
       summary.className = `small mt-2 ${result.success ? 'text-success' : 'text-danger'}`;
     }
-    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Parent assets: ${parentAssets}, Components linked: ${result.createdComponents || 0}, Accessories: ${accessoryAssets} (links: ${accessoryLinks}), Licenses: ${licenseAssets} (links: ${licenseLinks}), Spare Stock: ${result.createdSpareStockItems || 0}.`;
+    if (postCommitActions) {
+      postCommitActions.classList.remove('d-none');
+      postCommitActions.dataset.importBatchId = importBatchId;
+      postCommitActions.dataset.importedAt = importTimestamp;
+    }
+    keepCommitDisabled = true;
+    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Batch: ${importBatchId}. Parent: ${parentAssets}, Components linked: ${componentsLinked}, Accessories linked: ${accessoryLinks}, Licenses linked: ${licenseLinks}, Consumables: ${consumablesCreated}, Spare stock: ${spareStockUpdated}.`;
     showMessage(summaryMessage, result.success ? 'success' : 'warning');
     if (result.success) {
-      const modalEl = document.getElementById('importAssetsModal');
-      if (modalEl) {
-        const modal = bootstrap.Modal.getInstance(modalEl) || bootstrap.Modal.getOrCreateInstance(modalEl);
-        modal.hide();
-      }
-      resetImportAssetsState();
+      if (importPreviewCache) importPreviewCache.canImport = false;
       const refreshTasks = [
         loadAssets(),
         window.loadSpareStock(),
@@ -8675,7 +12968,31 @@ window.commitImportAssets = async () => {
     }
   } catch (error) {
     showMessage(error.message || 'Failed to commit import.', 'error');
+  } finally {
+    if (commitBtn) {
+      commitBtn.innerHTML = originalCommitBtnHtml;
+      commitBtn.disabled = keepCommitDisabled ? true : !importPreviewCache?.canImport;
+    }
   }
+};
+
+window.viewImportedAssetsAfterCommit = async () => {
+  setInventoryView('parents');
+  const modalEl = document.getElementById('importAssetsModal');
+  if (modalEl) {
+    const modal = bootstrap.Modal.getInstance(modalEl) || bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.hide();
+  }
+  await loadAssets();
+  if (lastImportCommitMeta?.importBatchId) {
+    showMessage(`Showing latest inventory view after import batch ${lastImportCommitMeta.importBatchId}.`, 'info');
+  }
+};
+
+window.importAnotherFileAfterCommit = () => {
+  resetImportAssetsState();
+  const fileInput = document.getElementById('importAssetsFile');
+  if (fileInput) fileInput.focus();
 };
 
 window.updateLocationOptions = function() {
@@ -8904,7 +13221,13 @@ async function runSpecPreviewRequest(mode = 'cache_only') {
   const currentText = String(specsInput?.value || '').trim();
   const currentPlaceholder = String(specsInput?.placeholder || '');
   if (currentText && !isSpecsPlaceholderLike(currentText, currentPlaceholder)) {
-    const overwrite = window.confirm('Technical Specs already contain text. Replace with AI-generated specs?');
+    const overwrite = await confirmInventoryAction({
+      title: 'Replace Existing Specs',
+      message: 'Technical Specs already contain text. Replace with AI-generated specs?',
+      confirmText: 'Replace',
+      confirmClass: 'inventory-insight-warning',
+      type: 'warning',
+    });
     if (!overwrite) return;
   }
 
@@ -9269,7 +13592,7 @@ window.viewOperationalTelemetry = async (customId) => {
         <div class="modal-content border-0 shadow-lg inventory-insight-content">
           <div class="modal-header">
             <h5 class="modal-title fw-bold"><i class="bi bi-activity me-2"></i>Device State</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
             <p class="text-muted small mb-3">Live status is computed from real telemetry when available for <strong>${UI.escapeHTML(customId)}</strong>.</p>
@@ -9521,7 +13844,7 @@ window.exportAssetsToDetailedPDF = function() {
     return;
   }
 
-  // ðŸ› FIX: Dynamically maps the global jsPDF regardless of ES6 module restrictions
+  // Ã°Å¸Ââ€º FIX: Dynamically maps the global jsPDF regardless of ES6 module restrictions
   const jsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
 
   if (!jsPDF) {
@@ -9567,8 +13890,8 @@ window.exportAssetsToDetailedPDF = function() {
       `Serial Number: ${getDisplaySerial(asset) || 'Missing'}`,
       `Asset Tag: ${getDisplayAssetTag(asset) || 'N/A'}`,
       `Type: ${formatType(asset.type)}`,
-      `Location: ${displayLocation(asset.location)}`,
-      `Department: ${displayDepartment(asset.department)}`,
+      `Location: ${getAssetDisplayLocation(asset)}`,
+      `Department: ${getAssetDisplayDepartment(asset)}`,
       `Status: ${displayStatus(asset.status)}`,
       `Brand: ${profile.brand || 'N/A'}`,
       `Version: ${profile.version || 'N/A'}`,
@@ -9591,7 +13914,7 @@ window.exportAssetsToDetailedPDF = function() {
       doc.setFont(undefined, 'normal');
 
       Object.entries(asset.specifications).forEach(([key, value]) => {
-        const specText = `â€¢ ${key}: ${value}`;
+        const specText = `- ${key}: ${value}`;
         const splitText = doc.splitTextToSize(specText, contentWidth - 4);
         splitText.forEach(line => {
           doc.text(line, margin + 4, yPosition);
@@ -9617,18 +13940,64 @@ window.exportAssetsToDetailedPDF = function() {
 };
 
 window.generateEOLReport = async function() {
-  const monthsInput = window.prompt('EOL horizon months (3 / 6 / 12 / custom):', '12');
-  if (monthsInput === null) return;
-  const monthsAhead = Number(monthsInput) > 0 ? Number(monthsInput) : 12;
-  const departmentInput = window.prompt('Department filter (optional):', String(document.getElementById('filterDept')?.value || 'all'));
-  if (departmentInput === null) return;
-  const locationInput = window.prompt('Location filter (optional):', String(document.getElementById('filterBuilding')?.value || 'all'));
-  if (locationInput === null) return;
-  const typeInput = window.prompt('Type filter (optional):', String(document.getElementById('filterType')?.value || 'all'));
-  if (typeInput === null) return;
+  const form = await showInventoryFormModal({
+    title: 'Generate EOL Budget Report',
+    confirmText: 'Generate Report',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'monthsAhead',
+        label: 'EOL Horizon (months)',
+        type: 'number',
+        value: 12,
+        min: 1,
+        step: 1,
+        required: true,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'department',
+        label: 'Department Filter',
+        type: 'select',
+        options: ['all', ...getKnownDepartmentOptions()],
+        value: String(document.getElementById('filterDept')?.value || 'all'),
+        required: false,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'location',
+        label: 'Location Filter',
+        type: 'select',
+        options: ['all', ...getKnownBuildingOptions()],
+        value: String(document.getElementById('filterBuilding')?.value || 'all'),
+        required: false,
+        colClass: 'col-md-4',
+      },
+      {
+        name: 'type',
+        label: 'Type Filter',
+        type: 'select',
+        options: [
+          { value: 'all', label: 'All Types' },
+          ...((ASSET_TYPES || [])
+            .filter((entry) => entry?.value)
+            .map((entry) => ({ value: entry.value, label: entry.label || entry.value }))),
+        ],
+        value: String(document.getElementById('filterType')?.value || 'all'),
+        required: false,
+        colClass: 'col-md-6',
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const monthsAhead = Number(form.values.monthsAhead) > 0 ? Number(form.values.monthsAhead) : 12;
+  const departmentInput = String(form.values.department || 'all');
+  const locationInput = String(form.values.location || 'all');
+  const typeInput = String(form.values.type || 'all');
   const payload = {
     monthsAhead,
-    department: departmentInput && departmentInput !== 'all' ? departmentInput : null,
+    department: departmentInput && departmentInput !== 'all' ? toBackendDepartmentFilterValue(departmentInput) : null,
     location: locationInput && locationInput !== 'all' ? locationInput : null,
     type: typeInput && typeInput !== 'all' ? typeInput : null,
   };
@@ -9882,23 +14251,7 @@ function isLicenseViewAsset(asset) {
 }
 
 function getAssetsForInventoryView(view = currentInventoryView) {
-  const normalizedView = normalizeInventoryView(view);
-  if (normalizedView === 'components') {
-    return currentAssets.filter((asset) => isInstalledComponentAsset(asset));
-  }
-  if (normalizedView === 'accessories') {
-    return currentAssets.filter((asset) => isAccessoryViewAsset(asset));
-  }
-  if (normalizedView === 'consumables') {
-    return currentAssets.filter((asset) => isConsumableViewAsset(asset));
-  }
-  if (normalizedView === 'licenses') {
-    return currentAssets.filter((asset) => isLicenseViewAsset(asset));
-  }
-  if (normalizedView === 'spare_stock') {
-    return currentAssets.filter((asset) => isSparePartAsset(asset));
-  }
-  return currentAssets.filter((asset) => isParentViewAsset(asset));
+  return getAssetsForInventoryViewFromList(currentAssets, view);
 }
 
 function getAssetsForCurrentInventoryView() {

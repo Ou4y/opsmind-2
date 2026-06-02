@@ -7,793 +7,8 @@
     
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/assets/css/main.css?v=4" rel="stylesheet">
-    <style>
-        .inventory-create-modal-dialog {
-            max-width: 880px;
-        }
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
 
-        .inventory-create-modal-content {
-            max-height: min(92vh, 980px);
-        }
-
-        .inventory-create-form {
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            flex: 1 1 auto;
-        }
-
-        .inventory-create-modal-body {
-            overflow-y: auto;
-            padding: 1rem 1.1rem 0.75rem;
-        }
-
-        .inventory-create-panel {
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 0.7rem;
-            padding: 0.85rem;
-            background: #fff;
-        }
-
-        .inventory-create-panel-title {
-            font-size: 0.78rem;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: #64748b;
-            font-weight: 700;
-            margin-bottom: 0.65rem;
-        }
-
-        .inventory-create-modal-body .form-label {
-            font-size: 0.8rem;
-            font-weight: 700;
-            margin-bottom: 0.25rem;
-        }
-
-        .inventory-spec-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-        }
-
-        #assetSpecs {
-            min-height: 170px;
-            max-height: 240px;
-            resize: vertical;
-            overflow-y: auto;
-            font-size: 0.9rem;
-        }
-
-        .inventory-telemetry-card {
-            margin-bottom: 0;
-            padding: 0.65rem 0.75rem;
-        }
-
-        .inventory-telemetry-card.telemetry-compact-info {
-            background: #f8fafc;
-            border-color: rgba(148, 163, 184, 0.38);
-            padding: 0.5rem 0.65rem;
-        }
-
-        .inventory-create-modal-footer {
-            position: sticky;
-            bottom: 0;
-            z-index: 2;
-            background: #fff;
-            border-top: 1px solid rgba(15, 23, 42, 0.09);
-            padding: 0.75rem 1rem;
-        }
-
-        @media (max-width: 991.98px) {
-            .inventory-create-modal-dialog {
-                max-width: 96vw;
-                margin: 0.75rem auto;
-            }
-
-            .inventory-create-modal-body {
-                padding: 0.9rem 0.9rem 0.6rem;
-            }
-
-            .inventory-spec-actions {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        .inventory-ai-prediction-banner {
-            border: 1px solid #d8b4fe;
-            border-left: 4px solid #7e22ce;
-            border-radius: 0.75rem;
-            background: #faf5ff;
-            padding: 0.75rem 0.9rem;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.55rem 0.9rem;
-            align-items: flex-start;
-        }
-
-        .inventory-ai-prediction-label {
-            font-size: 0.76rem;
-            font-weight: 800;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: #6b21a8;
-            white-space: nowrap;
-        }
-
-        .inventory-ai-prediction-copy {
-            min-width: 0;
-        }
-
-        .inventory-ai-prediction-main {
-            margin: 0;
-            color: #1f2937;
-            line-height: 1.4;
-            white-space: normal;
-            overflow-wrap: anywhere;
-        }
-
-        .inventory-ai-prediction-note {
-            margin-top: 0.35rem;
-            font-size: 0.86rem;
-            color: #b45309;
-        }
-
-        .inventory-group-cmdb-layout {
-            display: grid;
-            grid-template-columns: minmax(230px, 300px) 1fr;
-            gap: 0.9rem;
-        }
-
-        @media (max-width: 991.98px) {
-            .inventory-group-cmdb-layout {
-                grid-template-columns: 1fr;
-            }
-            .inventory-ai-prediction-banner {
-                flex-direction: column;
-                align-items: stretch;
-            }
-        }
-
-        #importDropZone {
-            cursor: pointer;
-            border-style: dashed !important;
-            transition: border-color 0.15s ease, background-color 0.15s ease;
-        }
-
-        #importDropZone.is-dragover {
-            border-color: #0d6efd !important;
-            background: #e7f1ff !important;
-        }
-
-        .inventory-ai-chat-launcher {
-            position: fixed;
-            right: 22px;
-            bottom: var(--inventory-ai-launcher-bottom, 22px);
-            width: 58px;
-            height: 58px;
-            border-radius: 999px;
-            border: 0;
-            background: linear-gradient(145deg, #4f46e5 0%, #2563eb 48%, #1d4ed8 100%);
-            color: #fff;
-            box-shadow: 0 18px 40px rgba(37, 99, 235, 0.38);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1030;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .inventory-ai-chat-launcher:hover {
-            transform: translateY(-3px) scale(1.01);
-            box-shadow: 0 22px 46px rgba(37, 99, 235, 0.5);
-        }
-
-        .inventory-ai-chat-launcher::before {
-            content: "";
-            position: absolute;
-            inset: -8px;
-            border-radius: 999px;
-            background: radial-gradient(circle, rgba(59, 130, 246, 0.4) 0%, rgba(59, 130, 246, 0) 70%);
-            animation: inventory-ai-pulse 2.2s ease-out infinite;
-            pointer-events: none;
-        }
-
-        .inventory-ai-chat-launcher-label {
-            position: absolute;
-            right: 70px;
-            background: rgba(15, 23, 42, 0.92);
-            color: #f8fafc;
-            padding: 0.28rem 0.55rem;
-            border-radius: 0.45rem;
-            font-size: 0.7rem;
-            white-space: nowrap;
-            opacity: 0;
-            transform: translateX(6px);
-            transition: all 0.15s ease;
-            pointer-events: none;
-        }
-
-        .inventory-ai-chat-launcher:hover .inventory-ai-chat-launcher-label {
-            opacity: 1;
-            transform: translateX(0);
-        }
-
-        @keyframes inventory-ai-pulse {
-            0% { transform: scale(1); opacity: 0.9; }
-            100% { transform: scale(1.35); opacity: 0; }
-        }
-
-        .inventory-ai-chat-panel {
-            position: fixed;
-            right: 22px;
-            bottom: calc(var(--inventory-ai-launcher-bottom, 22px) + 68px);
-            width: min(420px, calc(100vw - 1.3rem));
-            max-height: min(72vh, 720px);
-            display: flex;
-            flex-direction: column;
-            background: rgba(255, 255, 255, 0.93);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(148, 163, 184, 0.24);
-            border-radius: 1.45rem;
-            box-shadow: 0 28px 56px rgba(15, 23, 42, 0.22);
-            overflow: hidden;
-            z-index: 1030;
-            opacity: 0;
-            transform: translateY(16px) scale(0.98);
-            pointer-events: none;
-            transition: opacity 0.2s ease, transform 0.2s ease;
-        }
-
-        .inventory-ai-chat-panel.is-open {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-            pointer-events: auto;
-        }
-
-        .inventory-ai-chat-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.84rem 0.95rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-            background: linear-gradient(130deg, rgba(239, 246, 255, 0.98) 0%, rgba(238, 242, 255, 0.98) 100%);
-        }
-
-        .inventory-ai-chat-status {
-            font-size: 0.72rem;
-            color: #334155;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.34rem;
-            border: 1px solid rgba(15, 23, 42, 0.1);
-            border-radius: 999px;
-            padding: 0.1rem 0.45rem;
-            background: #fff;
-        }
-
-        .inventory-ai-chat-status[data-mode="fallback"] {
-            border-color: rgba(245, 158, 11, 0.35);
-            background: #fffbeb;
-            color: #92400e;
-        }
-
-        .inventory-ai-chat-status[data-mode="offline"] {
-            border-color: rgba(239, 68, 68, 0.3);
-            background: #fef2f2;
-            color: #7f1d1d;
-        }
-
-        .inventory-ai-status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: #22c55e;
-            flex: 0 0 auto;
-        }
-
-        .inventory-ai-status-dot.warning {
-            background: #f59e0b;
-        }
-
-        .inventory-ai-status-dot.error {
-            background: #ef4444;
-        }
-
-        .inventory-ai-chat-body {
-            padding: 0.85rem 0.9rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 0.64rem;
-            background: linear-gradient(180deg, rgba(248, 250, 252, 0.66) 0%, rgba(241, 245, 249, 0.74) 100%);
-        }
-
-        .inventory-ai-chat-msg {
-            max-width: 93%;
-            border-radius: 1.05rem;
-            padding: 0.62rem 0.76rem;
-            line-height: 1.36;
-            font-size: 0.88rem;
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-            border: 1px solid rgba(148, 163, 184, 0.2);
-        }
-
-        .inventory-ai-chat-msg.user {
-            align-self: flex-end;
-            background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-            color: #1e3a8a;
-            border-color: rgba(59, 130, 246, 0.18);
-        }
-
-        .inventory-ai-chat-msg.assistant {
-            align-self: flex-start;
-            background: rgba(255, 255, 255, 0.95);
-            color: #0f172a;
-        }
-
-        .inventory-ai-msg-head {
-            display: flex;
-            align-items: center;
-            gap: 0.3rem;
-            font-size: 0.72rem;
-            color: #64748b;
-            margin-bottom: 0.24rem;
-        }
-
-        .inventory-ai-chat-pill {
-            display: inline-flex;
-            align-items: center;
-            border: 1px solid rgba(59, 130, 246, 0.2);
-            border-radius: 999px;
-            background: #eff6ff;
-            font-size: 0.7rem;
-            line-height: 1.2;
-            color: #1e40af;
-            padding: 0.16rem 0.48rem;
-            margin-right: 0.2rem;
-            margin-top: 0.2rem;
-        }
-
-        .inventory-ai-chat-meta {
-            margin-top: 0.35rem;
-            font-size: 0.72rem;
-            color: #64748b;
-        }
-
-        .inventory-ai-chat-subtitle {
-            margin-top: 0.12rem;
-            font-size: 0.7rem;
-            color: #64748b;
-        }
-
-        .inventory-ai-quick-prompts {
-            padding: 0.7rem 0.9rem 0.56rem;
-            border-bottom: 1px solid rgba(15, 23, 42, 0.07);
-            background: rgba(255, 255, 255, 0.95);
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.44rem;
-        }
-
-        .inventory-ai-prompt-cards {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.4rem;
-        }
-
-        .inventory-ai-prompt-card {
-            text-align: left;
-            border: 1px solid rgba(37, 99, 235, 0.2);
-            background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 100%);
-            color: #1e40af;
-            border-radius: 0.95rem;
-            padding: 0.54rem 0.62rem;
-            font-size: 0.78rem;
-            line-height: 1.25;
-        }
-
-        .inventory-ai-prompt-card:hover {
-            border-color: rgba(37, 99, 235, 0.36);
-            transform: translateY(-1px);
-        }
-
-        .inventory-ai-prompt-more summary {
-            list-style: none;
-            cursor: pointer;
-            color: #334155;
-            font-size: 0.75rem;
-            user-select: none;
-        }
-
-        .inventory-ai-prompt-more summary::-webkit-details-marker {
-            display: none;
-        }
-
-        .inventory-ai-prompt-more-body {
-            margin-top: 0.35rem;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.35rem;
-        }
-
-        .inventory-ai-quick-btn {
-            font-size: 0.73rem;
-            border-radius: 999px;
-            padding: 0.24rem 0.62rem;
-        }
-
-        .inventory-ai-chat-input {
-            border-top: 1px solid rgba(15, 23, 42, 0.08);
-            padding: 0.72rem 0.92rem;
-            background: rgba(255, 255, 255, 0.97);
-        }
-
-        #inventoryAiChatInput {
-            border-radius: 1rem;
-            border: 1px solid rgba(148, 163, 184, 0.32);
-            padding: 0.52rem 0.66rem;
-            resize: none;
-            min-height: 44px;
-            max-height: 132px;
-        }
-
-        #inventoryAiChatSendBtn {
-            border-radius: 999px;
-            width: 38px;
-            height: 38px;
-            margin-left: 0.42rem;
-            align-self: flex-end;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0;
-            background: linear-gradient(145deg, #2563eb, #1d4ed8);
-            border-color: #1d4ed8;
-        }
-
-        .inventory-ai-chat-match {
-            margin-top: 0.45rem;
-            border: 1px solid rgba(148, 163, 184, 0.26);
-            border-radius: 0.9rem;
-            background: #fff;
-            padding: 0.5rem 0.58rem;
-        }
-
-        .inventory-ai-chat-empty {
-            border: 1px dashed rgba(30, 64, 175, 0.26);
-            border-radius: 1rem;
-            background: linear-gradient(140deg, #eff6ff 0%, #eef2ff 100%);
-            padding: 0.72rem 0.76rem;
-            color: #1e3a8a;
-            font-size: 0.82rem;
-        }
-
-        .inventory-ai-chat-empty-title {
-            font-weight: 700;
-            margin-bottom: 0.2rem;
-            color: #1e3a8a;
-        }
-
-        .inventory-ai-chat-empty-sub {
-            font-size: 0.78rem;
-            color: #334155;
-        }
-
-        .inventory-ai-chat-match + .inventory-ai-chat-match {
-            margin-top: 0.3rem;
-        }
-
-        @media (max-width: 576px) {
-            .inventory-ai-chat-panel {
-                right: 12px;
-                left: 12px;
-                width: auto;
-                bottom: calc(var(--inventory-ai-launcher-bottom-mobile, 16px) + 66px);
-                max-height: 70vh;
-            }
-            .inventory-ai-chat-launcher {
-                right: 16px;
-                bottom: var(--inventory-ai-launcher-bottom-mobile, 16px);
-            }
-            .inventory-ai-chat-launcher-label {
-                display: none;
-            }
-            .inventory-ai-prompt-cards {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Hide global project AI helper only on Inventory page to avoid double floating bots. */
-        .inventory-page #aiFloatingAssistant,
-        .inventory-page .ai-floating-assistant {
-            display: none !important;
-        }
-
-        .inventory-map-modal .modal-dialog {
-            max-width: min(99vw, 1780px);
-        }
-
-        .inventory-map-modal .modal-content {
-            height: min(96vh, 1280px);
-            border: 0;
-            border-radius: 1rem;
-            overflow: hidden;
-        }
-
-        .inventory-map-modal .modal-body {
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            overflow: auto;
-        }
-
-        .inventory-map-layout {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) 360px;
-            gap: 0.8rem;
-            height: 100%;
-            min-height: 0;
-        }
-
-        .inventory-map-main {
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 0.6rem;
-        }
-
-        .inventory-map-controls {
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 0.8rem;
-            padding: 0.55rem 0.6rem;
-            background: #f8fafc;
-        }
-
-        .inventory-map-controls .form-label {
-            font-size: 0.73rem;
-            margin-bottom: 0.16rem !important;
-        }
-
-        .inventory-map-controls .form-check-label {
-            font-size: 0.76rem;
-        }
-
-        .inventory-map-canvas-wrap {
-            position: relative;
-            border: 1px solid rgba(148, 163, 184, 0.3);
-            border-radius: 0.8rem;
-            background: #f1f5f9;
-            overflow: hidden;
-            min-height: 0;
-            flex: 1 1 auto;
-            height: min(100%, clamp(440px, calc(100vh - 320px), 860px));
-            min-height: 360px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .inventory-map-canvas {
-            position: relative;
-            width: 100%;
-            height: 100%;
-            display: block;
-            overflow: hidden;
-        }
-
-        .inventory-map-canvas img {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            transform: translate(-50%, -50%) rotate(var(--inventory-map-image-rotation, 0deg));
-            transform-origin: center center;
-            display: block;
-            border-radius: 0.55rem;
-            user-select: none;
-        }
-
-        .inventory-map-marker-layer {
-            position: absolute;
-            inset: 0;
-            pointer-events: none;
-            z-index: 4;
-        }
-
-        .inventory-map-calibration-layer {
-            position: absolute;
-            inset: 0;
-            z-index: 5;
-            pointer-events: none;
-        }
-
-        .inventory-map-marker {
-            position: absolute;
-            transform: translate(-50%, -50%);
-            min-width: 30px;
-            height: 30px;
-            border-radius: 999px;
-            border: 2px solid #fff;
-            box-shadow: 0 5px 16px rgba(15, 23, 42, 0.28);
-            color: #fff;
-            font-size: 0.74rem;
-            font-weight: 700;
-            padding: 0 0.45rem;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            pointer-events: auto;
-            cursor: pointer;
-            transition: transform 0.14s ease;
-        }
-
-        .inventory-map-marker:hover {
-            transform: translate(-50%, -50%) scale(1.06);
-        }
-
-        .inventory-map-marker.active {
-            outline: 3px solid rgba(15, 23, 42, 0.42);
-            outline-offset: 1px;
-            transform: translate(-50%, -50%) scale(1.08);
-        }
-
-        .inventory-map-marker.parents { background: #2563eb; }
-        .inventory-map-marker.components { background: #7c3aed; }
-        .inventory-map-marker.accessories { background: #0891b2; }
-        .inventory-map-marker.consumables { background: #f97316; }
-        .inventory-map-marker.spare_stock { background: #f59e0b; }
-        .inventory-map-marker.licenses { background: #6b7280; }
-        .inventory-map-marker.status-alert { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.35), 0 5px 16px rgba(15, 23, 42, 0.28); }
-        .inventory-map-marker.risk-alert { box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.45), 0 5px 16px rgba(15, 23, 42, 0.28); }
-
-        .inventory-map-calibration-marker {
-            position: absolute;
-            transform: translate(-50%, -50%);
-            border: 2px dashed #0f172a;
-            background: rgba(250, 204, 21, 0.95);
-            color: #111827;
-            font-size: 0.68rem;
-            font-weight: 700;
-            line-height: 1;
-            border-radius: 999px;
-            padding: 0.18rem 0.5rem;
-            cursor: grab;
-            pointer-events: auto;
-            user-select: none;
-            box-shadow: 0 5px 14px rgba(15, 23, 42, 0.22);
-            white-space: nowrap;
-        }
-
-        .inventory-map-calibration-marker.dragging {
-            cursor: grabbing;
-            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.35);
-        }
-
-        .inventory-map-calibration-marker.active {
-            outline: 3px solid rgba(14, 116, 144, 0.35);
-            outline-offset: 2px;
-        }
-
-        .inventory-map-calibration-panel {
-            border: 1px dashed rgba(15, 23, 42, 0.28);
-            border-radius: 0.65rem;
-            padding: 0.35rem 0.45rem;
-            background: rgba(254, 252, 232, 0.96);
-            margin-top: 0.45rem;
-            font-size: 0.72rem;
-            color: #713f12;
-            max-height: 90px;
-            overflow: auto;
-        }
-
-        .inventory-map-side {
-            min-height: 0;
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 0.8rem;
-            background: #fff;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .inventory-map-side-header {
-            border-bottom: 1px solid rgba(148, 163, 184, 0.24);
-            padding: 0.65rem 0.75rem;
-            background: #f8fafc;
-        }
-
-        .inventory-map-side-body {
-            min-height: 0;
-            overflow-y: auto;
-            padding: 0.65rem 0.75rem;
-        }
-
-        .inventory-map-asset-card {
-            border: 1px solid rgba(148, 163, 184, 0.28);
-            border-radius: 0.75rem;
-            padding: 0.52rem 0.62rem;
-            margin-bottom: 0.5rem;
-            background: #fff;
-        }
-
-        .inventory-map-unmapped {
-            border-top: 1px dashed rgba(148, 163, 184, 0.35);
-            margin-top: 0.65rem;
-            padding-top: 0.55rem;
-        }
-
-        .inventory-map-summary-card {
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            border-radius: 0.7rem;
-            padding: 0.5rem 0.6rem;
-            background: #f8fafc;
-            margin-bottom: 0.5rem;
-        }
-
-        .inventory-action-modal .modal-dialog {
-            max-width: min(96vw, 1080px);
-        }
-
-        .inventory-action-modal .modal-body {
-            max-height: min(72vh, 760px);
-            overflow-y: auto;
-        }
-
-        .inventory-map-legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.35rem;
-        }
-
-        .inventory-map-legend-item {
-            border-radius: 999px;
-            padding: 0.12rem 0.5rem;
-            font-size: 0.72rem;
-            font-weight: 600;
-            color: #fff;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.28rem;
-        }
-
-        .inventory-map-legend-dot {
-            width: 0.55rem;
-            height: 0.55rem;
-            border-radius: 999px;
-            background: rgba(255, 255, 255, 0.88);
-            display: inline-block;
-        }
-
-        .inventory-map-legend-item.parents { background: #2563eb; }
-        .inventory-map-legend-item.components { background: #7c3aed; }
-        .inventory-map-legend-item.accessories { background: #0891b2; }
-        .inventory-map-legend-item.stock { background: #f59e0b; color: #111827; }
-        .inventory-map-legend-item.licenses { background: #6b7280; }
-        .inventory-map-legend-item.maintenance { background: #ef4444; }
-        .inventory-map-legend-item.risk { background: #f97316; }
-        .inventory-map-legend-item.telemetry { background: #16a34a; }
-
-        @media (max-width: 1199.98px) {
-            .inventory-map-layout {
-                grid-template-columns: 1fr;
-            }
-            .inventory-map-canvas-wrap {
-                height: min(100%, clamp(400px, calc(100vh - 360px), 740px));
-                min-height: 320px;
-            }
-        }
-
-        @media (max-width: 767.98px) {
-            .inventory-map-canvas-wrap {
-                height: min(100%, clamp(340px, calc(100vh - 390px), 620px));
-                min-height: 280px;
-            }
-        }
-    </style>
     
     <script src="/assets/js/config.js?v=2"></script>
 </head>
@@ -808,58 +23,102 @@
             <div id="eolAlertBanner" class="d-none"></div>
 
             <div class="inventory-toolbar d-flex justify-content-between align-items-center mb-4">
-                <div>
+                <div class="inventory-toolbar-heading">
                     <h2 class="h3 fw-bold mb-1">University Inventory</h2>
                     <p class="text-muted small mb-0">Grouped View</p>
                 </div>
                 
-                <div class="inventory-toolbar-actions d-flex gap-2 align-items-start">
-                    <div class="input-group input-group-sm inventory-search-group">
+                <div class="inventory-toolbar-actions inventory-toolbar-actions-refined d-flex gap-2 align-items-start">
+                    <div class="input-group input-group-sm inventory-search-group inventory-toolbar-search">
                         <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
                         <input type="text" id="searchInput" class="form-control border-start-0" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
                     </div>
 
-                    <button class="btn btn-outline-dark mb-3" onclick="printSelectedLabels()">
-                        <i class="bi bi-qr-code"></i> Print Labels
-                    </button>
+                    <div class="inventory-toolbar-cluster inventory-toolbar-primary">
+                        <button class="btn btn-primary inventory-action-primary" id="openImportAssetsBtn" data-role-required="technician">
+                            <i class="bi bi-upload"></i> Import Assets
+                        </button>
+                        <button class="btn btn-primary inventory-action-primary d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal" data-role-required="technician">
+                            <i class="bi bi-plus-lg"></i> Create Asset
+                        </button>
+                    </div>
 
-                    <button class="btn btn-outline-success mb-3" onclick="exportAssetsToDetailedPDF()">
-                        <i class="bi bi-file-pdf"></i> Export PDF with QR & Specs
-                    </button>
+                    <div class="inventory-toolbar-cluster inventory-toolbar-shortcuts">
+                        <button class="btn btn-outline-info inventory-action-shortcut" id="openProcurementBoardBtn">
+                            <i class="bi bi-bag-check"></i> Procurement Workspace
+                        </button>
+                        <button class="btn btn-outline-primary inventory-action-shortcut" id="openAssetMapBtn">
+                            <i class="bi bi-geo-alt-fill"></i> Asset Map
+                        </button>
+                    </div>
 
-                    <button class="btn btn-outline-danger mb-3" onclick="generateEOLReport()">
-                        <i class="bi bi-graph-up-arrow"></i> Predictive EOL Budget
-                    </button>
-
-                    <button class="btn btn-outline-danger mb-3 inventory-delete-all-btn" id="deleteAllAssetsBtn" onclick="window.deleteAllAssets()" disabled>
-                        <i class="bi bi-trash3"></i> Delete All
-                    </button>
-
-                    <button class="btn btn-outline-secondary mb-3" id="openImportAssetsBtn">
-                        <i class="bi bi-upload"></i> Import Assets
-                    </button>
-
-                    <button class="btn btn-outline-primary mb-3" id="openAssetMapBtn">
-                        <i class="bi bi-geo-alt-fill"></i> Asset Map
-                    </button>
-
-                    <button class="btn btn-outline-primary mb-3" id="openBulkCheckoutBtn">
-                        <i class="bi bi-upc-scan"></i> Bulk Checkout
-                    </button>
-
-                    <button class="btn btn-outline-secondary mb-3" id="openLoanerBoardBtn">
-                        <i class="bi bi-laptop"></i> Loaners
-                    </button>
-
-                    <button class="btn btn-outline-warning mb-3" id="openAuditBoardBtn">
-                        <i class="bi bi-clipboard-check"></i> Audit Board
-                    </button>
-
-                    <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
-                        <i class="bi bi-plus-lg"></i> Create Asset
-                    </button>
+                    <div class="dropdown inventory-toolbar-more">
+                        <button class="btn btn-outline-secondary dropdown-toggle inventory-action-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-grid-3x3-gap me-1"></i> More Actions
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end inventory-more-actions-menu">
+                            <div class="inventory-dropdown-section-label">Documents</div>
+                            <button class="dropdown-item" type="button" onclick="printSelectedLabels()">
+                                <i class="bi bi-qr-code me-2"></i>Print Labels
+                            </button>
+                            <button class="dropdown-item" type="button" onclick="exportAssetsToDetailedPDF()">
+                                <i class="bi bi-file-pdf me-2"></i>Export PDF with QR & Specs
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label">Planning</div>
+                            <button class="dropdown-item" type="button" onclick="generateEOLReport()">
+                                <i class="bi bi-graph-up-arrow me-2"></i>Predictive EOL Budget
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label">Operations</div>
+                            <button class="dropdown-item" type="button" id="openBulkCheckoutBtn">
+                                <i class="bi bi-upc-scan me-2"></i>Bulk Checkout
+                            </button>
+                            <button class="dropdown-item" type="button" id="openLoanerBoardBtn">
+                                <i class="bi bi-laptop me-2"></i>Loaners
+                            </button>
+                            <button class="dropdown-item" type="button" id="openAuditBoardBtn">
+                                <i class="bi bi-clipboard-check me-2"></i>Audit Board
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label is-danger">Danger Zone</div>
+                            <button class="dropdown-item inventory-delete-all-btn" type="button" id="deleteAllAssetsBtn" onclick="window.deleteAllAssets()" data-role-required="admin" disabled>
+                                <i class="bi bi-trash3 me-2"></i>Delete Parent Assets
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
+
+            <section class="ops-360-section inventory-360-section" aria-labelledby="inventory360Title">
+                <div class="ops-360-header">
+                    <div>
+                        <div class="ops-360-eyebrow">Portfolio intelligence</div>
+                        <h2 id="inventory360Title">Inventory 360 Analytics</h2>
+                        <p>Portfolio-level visibility across assets, stock, risk, cost, data quality, and procurement impact.</p>
+                    </div>
+                    <div class="ops-360-header-actions">
+                        <button type="button" class="btn btn-sm btn-primary" data-inventory-360-action="next-best">
+                            <i class="bi bi-bullseye me-1"></i>Next Best Action
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-inventory-360-action="explain">
+                            <i class="bi bi-stars me-1"></i>Explain Inventory 360
+                        </button>
+                    </div>
+                </div>
+                <div class="ops-definition-strip" aria-label="Inventory analytics definitions">
+                    <span title="Inventory 360 summarizes the full asset and stock portfolio.">Inventory 360 = full portfolio</span>
+                    <span title="Asset 360 is the drill-down for one selected asset.">Asset 360 = one asset drill-down</span>
+                    <span title="Data Quality measures missing identity, location, warranty, cost, and relationship evidence.">Data Quality</span>
+                    <span title="Cost Impact uses only stored purchase, replacement, quote, invoice, stock, or maintenance cost fields.">Cost Impact</span>
+                    <span title="Gemma explains real evidence; deterministic means rule-based calculations.">Gemma / Deterministic</span>
+                </div>
+                <div id="inventory360Grid" class="ops-360-grid" aria-live="polite">
+                    <div class="ops-skeleton-card"></div>
+                    <div class="ops-skeleton-card"></div>
+                    <div class="ops-skeleton-card"></div>
+                </div>
+            </section>
 
             <div class="card border-0 bg-light mb-4 inventory-filter-card">
                 <div class="card-body py-3">
@@ -882,6 +141,23 @@
                         <button class="btn btn-sm btn-outline-primary" id="inventoryLicensesViewBtn">
                             <i class="bi bi-key me-1"></i> Licenses
                         </button>
+                    </div>
+                    <div class="inventory-saved-view-bar" aria-label="Saved inventory views and active filters">
+                        <div class="inventory-saved-view-control">
+                            <label for="inventorySavedViewSelect" class="form-label form-label-sm mb-1">Saved View</label>
+                            <select id="inventorySavedViewSelect" class="form-select form-select-sm">
+                                <option value="all">All Assets</option>
+                                <option value="low_stock">Low Stock</option>
+                                <option value="needs_review">Needs Review</option>
+                                <option value="high_risk">High Risk</option>
+                                <option value="missing_data">Missing Data</option>
+                                <option value="recently_imported">Recently Imported</option>
+                                <option value="eol_soon">EOL Soon</option>
+                                <option value="unassigned">Unassigned</option>
+                                <option value="linked_component_issues">Linked Components Issues</option>
+                            </select>
+                        </div>
+                        <div id="inventoryActiveFilterChips" class="inventory-filter-chip-row" aria-live="polite"></div>
                     </div>
                     <div class="row g-3 align-items-center">
                         <div class="col-auto">
@@ -925,7 +201,7 @@
                 </div>
             </div>
 
-            <div class="card border-0 shadow-sm mb-4">
+            <div class="card border-0 shadow-sm mb-4 inventory-spec-insight-card">
                 <div class="card-body py-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
                     <div>
                         <div class="fw-bold small text-uppercase text-muted">AI Spec Verification</div>
@@ -967,21 +243,30 @@
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Import Assets (CSV/XLSX)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title fw-bold">Import Assets (CSV)</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-info py-2">
                         <div class="fw-semibold">Template columns</div>
                         <div class="small">Record Type, Asset Name, Category, Asset Type, Brand, Model, Serial Number, Asset Tag, Manufacturer Part Number, Location, Department, Status, Lifecycle Status, Parent Asset Tag, Component Type, Condition, Quantity, Minimum Stock Level, Reorder Point, Vendor, Purchase Date, Warranty Start Date, Warranty End Date, Purchase Cost, Assigned To, Notes.</div>
+                        <div class="small mt-1">
+                            Supported record types: <code>parent_asset</code>, <code>component</code> (alias for embedded component), <code>component_asset</code>, <code>accessory</code>, <code>consumable</code>, <code>spare_stock</code>, <code>license</code>.
+                        </div>
+                        <div class="small">
+                            Use <strong>Parent Asset Tag</strong> to link components, accessories, and licenses to the parent asset.
+                        </div>
                     </div>
                     <div class="alert alert-secondary py-2 small">
                         PDF assisted import coming later. PDF imports will require AI extraction and manual review before committing.
                     </div>
+                    <div class="alert alert-light border py-2 small">
+                        <strong>Import steps:</strong> Step 1 Upload CSV, Step 2 Preview, Step 3 AI Fix Errors (optional), Step 4 Confirm Import.
+                    </div>
                     <div id="importDropZone" class="border border-2 border-dashed rounded-3 p-3 text-center mb-3 bg-light-subtle">
-                        <div class="fw-semibold mb-1">Drag & drop CSV/XLSX file here, or click to browse</div>
-                        <div class="small text-muted mb-2">CSV is supported now. XLSX will be enabled in a later pass.</div>
-                        <input type="file" id="importAssetsFile" class="form-control" accept=".csv,.xlsx,.xls" />
+                        <div class="fw-semibold mb-1">Drag & drop CSV file here, or click to browse</div>
+                        <div class="small text-muted mb-2">CSV is supported now. XLSX coming later.</div>
+                        <input type="file" id="importAssetsFile" class="form-control" accept=".csv" />
                     </div>
                     <div class="row g-2 mb-3">
                         <div class="col-md-6 d-flex gap-2">
@@ -1019,15 +304,15 @@
                             <table class="table table-sm align-middle mb-1">
                                 <thead>
                                     <tr>
-                                        <th style="width:42px;">Sel</th>
-                                        <th style="width:64px;">Row</th>
-                                        <th style="width:120px;">Field</th>
+                                        <th class="inventory-import-col-select">Sel</th>
+                                        <th class="inventory-import-col-row">Row</th>
+                                        <th class="inventory-import-col-field">Field</th>
                                         <th>Old Value</th>
                                         <th>Suggested Value</th>
                                         <th>Reason</th>
-                                        <th style="width:90px;">Confidence</th>
-                                        <th style="width:98px;">Status</th>
-                                        <th style="width:130px;">Actions</th>
+                                        <th class="inventory-import-col-confidence">Confidence</th>
+                                        <th class="inventory-import-col-status">Status</th>
+                                        <th class="inventory-import-col-actions">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="importAiRepairTableBody">
@@ -1068,6 +353,13 @@
                         </table>
                     </div>
                     <div id="importCommitSummary" class="small mt-2"></div>
+                    <div id="importPostCommitActions" class="d-none mt-2">
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="importViewAssetsBtn">View Imported Assets</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="importAnotherFileBtn">Import Another File</button>
+                            <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1082,7 +374,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold"><i class="bi bi-geo-alt-fill me-2"></i>MIU Inventory Asset Map</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body pt-2 pb-2">
                     <div class="inventory-map-layout">
@@ -1107,15 +399,21 @@
                                     </div>
                                     <div class="col-md-2">
                                         <label for="assetMapTypeFilter" class="form-label form-label-sm mb-1">Type</label>
-                                        <input type="text" id="assetMapTypeFilter" class="form-control form-control-sm" placeholder="Type" />
+                                        <select id="assetMapTypeFilter" class="form-select form-select-sm" aria-label="Filter map by type">
+                                            <option value="all">All Types</option>
+                                        </select>
                                     </div>
                                     <div class="col-md-2">
                                         <label for="assetMapLocationFilter" class="form-label form-label-sm mb-1">Location</label>
-                                        <input type="text" id="assetMapLocationFilter" class="form-control form-control-sm" placeholder="Building / Lab" />
+                                        <select id="assetMapLocationFilter" class="form-select form-select-sm" aria-label="Filter map by location">
+                                            <option value="all">All Locations</option>
+                                        </select>
                                     </div>
                                     <div class="col-md-2">
                                         <label for="assetMapDepartmentFilter" class="form-label form-label-sm mb-1">Department</label>
-                                        <input type="text" id="assetMapDepartmentFilter" class="form-control form-control-sm" placeholder="Department" />
+                                        <select id="assetMapDepartmentFilter" class="form-select form-select-sm" aria-label="Filter map by department">
+                                            <option value="all">All Departments</option>
+                                        </select>
                                     </div>
                                     <div class="col-md-2 d-flex gap-2">
                                         <button type="button" class="btn btn-sm btn-outline-secondary w-100" id="assetMapResetFiltersBtn">Reset</button>
@@ -1176,7 +474,7 @@
                                 </div>
                                 <div class="small text-muted mt-2" id="assetMapCountsSummary">Ready.</div>
                                 <div id="assetMapCalibrationPanel" class="inventory-map-calibration-panel d-none">
-                                    Calibration mode is ON. Drag yellow markers to align with buildings, then copy JSON.
+                                    Calibration mode is ON. Step 1 drag yellow markers to building centers. Step 2 click Copy Coords.
                                 </div>
                             </div>
                             <div class="inventory-map-canvas-wrap">
@@ -1224,7 +522,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold"><i class="bi bi-upc-scan me-2"></i>Bulk Checkout / Kiosk Mode</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="small text-muted mb-2">Scan or paste one asset customId/tag per line. Nothing is transferred until you click Confirm Checkout.</div>
@@ -1234,30 +532,51 @@
                             <textarea id="bulkCheckoutAssetCodes" class="form-control form-control-sm" rows="8" placeholder="UNI-PC-LAB-A-001&#10;UNI-PC-LAB-A-002"></textarea>
                         </div>
                         <div class="col-md-7">
+                            <div class="alert alert-light border py-2 px-3 small mb-2">
+                                Building = physical location, Department = organizational owner, Room = specific location inside the building, Assigned To = responsible person/role.
+                            </div>
                             <div class="row g-2">
                                 <div class="col-md-6">
-                                    <label for="bulkCheckoutDestinationType" class="form-label form-label-sm">Destination Type</label>
-                                    <select id="bulkCheckoutDestinationType" class="form-select form-select-sm">
-                                        <option value="building">Location/Building</option>
-                                        <option value="department">Department</option>
-                                        <option value="user">User/Professor</option>
+                                    <label for="bulkCheckoutBuilding" class="form-label form-label-sm">1. Building</label>
+                                    <select id="bulkCheckoutBuilding" class="form-select form-select-sm" aria-label="Bulk checkout building">
+                                        <option value="">Select Building</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label for="bulkCheckoutDestination" class="form-label form-label-sm">Destination</label>
-                                    <input id="bulkCheckoutDestination" class="form-control form-control-sm" placeholder="Computer Lab A">
+                                    <label for="bulkCheckoutDepartment" class="form-label form-label-sm">2. Department</label>
+                                    <select id="bulkCheckoutDepartment" class="form-select form-select-sm" aria-label="Bulk checkout department">
+                                        <option value="">Select Department</option>
+                                    </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label for="bulkCheckoutAssignedTo" class="form-label form-label-sm">Assigned To</label>
-                                    <input id="bulkCheckoutAssignedTo" class="form-control form-control-sm" placeholder="Lab Supervisor">
+                                    <label for="bulkCheckoutRoom" class="form-label form-label-sm">3. Room</label>
+                                    <input id="bulkCheckoutRoom" class="form-control form-control-sm" placeholder="Rooms will be configured later">
                                 </div>
                                 <div class="col-md-6">
-                                    <label for="bulkCheckoutDepartment" class="form-label form-label-sm">Department</label>
-                                    <input id="bulkCheckoutDepartment" class="form-control form-control-sm" placeholder="IT Department">
+                                    <label for="bulkCheckoutAssigneeRole" class="form-label form-label-sm">4. Assigned To Role</label>
+                                    <select id="bulkCheckoutAssigneeRole" class="form-select form-select-sm" aria-label="Bulk checkout assignee role">
+                                        <option value="">Select Role</option>
+                                        <option value="Lab Supervisor">Lab Supervisor</option>
+                                        <option value="Senior">Senior</option>
+                                        <option value="Junior">Junior</option>
+                                        <option value="Professor">Professor</option>
+                                        <option value="Technician">Technician</option>
+                                        <option value="Department Admin">Department Admin</option>
+                                        <option value="Student Worker">Student Worker</option>
+                                        <option value="Other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutAssignedTo" class="form-label form-label-sm">5. Assignee Name (Optional)</label>
+                                    <input id="bulkCheckoutAssignedTo" class="form-control form-control-sm" placeholder="Dr. Ahmed / Lab Supervisor">
                                 </div>
                                 <div class="col-md-6">
                                     <label for="bulkCheckoutExpectedReturnDate" class="form-label form-label-sm">Expected Return (Optional)</label>
                                     <input id="bulkCheckoutExpectedReturnDate" type="date" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-12">
+                                    <label for="bulkCheckoutReason" class="form-label form-label-sm">6. Reason / Notes</label>
+                                    <textarea id="bulkCheckoutReason" class="form-control form-control-sm" rows="2" placeholder="Reason for checkout / class / audit / deployment"></textarea>
                                 </div>
                                 <div class="col-md-6 d-flex flex-column justify-content-end">
                                     <div class="form-check">
@@ -1269,6 +588,9 @@
                                         <button type="button" class="btn btn-sm btn-outline-success" id="bulkCheckoutConfirmBtn">Confirm Checkout</button>
                                     </div>
                                 </div>
+                            </div>
+                            <div id="bulkCheckoutDestinationSummary" class="small text-muted mt-2">
+                                Checkout summary will appear here.
                             </div>
                             <div id="bulkCheckoutValidationSummary" class="small text-muted mt-2">Ready.</div>
                             <div class="table-responsive mt-2">
@@ -1301,12 +623,12 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold"><i class="bi bi-laptop me-2"></i>Loaner Checkout Board</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="small text-muted mb-2">Smart locker integrations are future work. This MVP tracks loaner checkout/return in software.</div>
                     <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
-                        <div class="input-group input-group-sm" style="max-width: 360px;">
+                        <div class="input-group input-group-sm inventory-modal-search-wide">
                             <span class="input-group-text"><i class="bi bi-search"></i></span>
                             <input id="loanerSearchInput" class="form-control" placeholder="Search by name/id/user">
                         </div>
@@ -1345,12 +667,12 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold"><i class="bi bi-clipboard-check me-2"></i>Audit / Bounty Board</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="small text-muted mb-2">This MVP tracks verification, stale checks, missing assets, and location mismatches. Full gamification leaderboard is future work.</div>
                     <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
-                        <div class="input-group input-group-sm" style="max-width: 220px;">
+                        <div class="input-group input-group-sm inventory-modal-input-compact">
                             <span class="input-group-text">Stale After</span>
                             <input id="auditStaleDaysInput" type="number" min="1" max="3650" class="form-control" value="90">
                             <span class="input-group-text">days</span>
@@ -1386,12 +708,111 @@
         </div>
     </div>
 
+    <div class="modal fade inventory-action-modal" id="procurementBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-bag-check me-2"></i>Procurement Management</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">
+                        ITIL/ITAM aligned workflow foundation: request -> review/approve -> order -> receive -> lifecycle trace.
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <label for="procurementStatusFilter" class="small text-muted mb-0">Request Status</label>
+                            <select id="procurementStatusFilter" class="form-select form-select-sm">
+                                <option value="all">All Statuses</option>
+                                <option value="Draft">Draft</option>
+                                <option value="Submitted">Submitted</option>
+                                <option value="Under Review">Under Review</option>
+                                <option value="Approved">Approved</option>
+                                <option value="Rejected">Rejected</option>
+                                <option value="Ordered">Ordered</option>
+                                <option value="Partially Received">Partially Received</option>
+                                <option value="Received">Received</option>
+                                <option value="Closed">Closed</option>
+                                <option value="Cancelled">Cancelled</option>
+                            </select>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-primary" id="procurementCreateRequestBtn"><i class="bi bi-plus-lg me-1"></i>New Request</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="procurementBoardRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                        </div>
+                    </div>
+                    <div id="procurementBoardSummary" class="small text-muted mb-2">Loading procurement board...</div>
+                    <div id="procurementStatusBadges" class="d-flex flex-wrap gap-1 mb-2"></div>
+                    <div id="procurementAnalyticsSummary" class="small text-muted mb-3"></div>
+
+                    <div class="fw-semibold small mb-1">Priority Board</div>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Priority Stream</th>
+                                    <th>Item</th>
+                                    <th>Need</th>
+                                    <th>Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementPriorityTableBody">
+                                <tr><td colspan="4" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="fw-semibold small mb-1">AI Purchase Recommendations</div>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Type</th>
+                                    <th>Qty</th>
+                                    <th>Priority</th>
+                                    <th>Reason</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementRecommendationsTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="fw-semibold small mb-1">Procurement Requests</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Request</th>
+                                    <th>Need</th>
+                                    <th>Owner</th>
+                                    <th>Status</th>
+                                    <th>Updated</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementRequestsTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="inventoryAiModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold" id="inventoryAiModalTitle">Inventory AI</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="inventoryAiInputSection" class="mb-3">
@@ -1414,7 +835,7 @@
         </div>
     </div>
 
-    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher" title="Inventory AI">
+    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher" title="Inventory AI" aria-label="Open Inventory AI assistant">
         <i class="bi bi-stars fs-4"></i>
         <span class="inventory-ai-chat-launcher-label">Inventory AI</span>
     </button>
@@ -1422,54 +843,84 @@
     <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel" aria-label="Inventory AI Chat">
         <div class="inventory-ai-chat-header">
             <div>
-                <div class="fw-bold small mb-0"><i class="bi bi-stars me-1"></i>Inventory AI</div>
-                <div class="inventory-ai-chat-subtitle">Ask about assets, stock, EOL, and maintenance.</div>
+                <div class="inventory-ai-chat-title"><i class="bi bi-stars"></i>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">Gemma</span></div>
+                <div class="inventory-ai-chat-subtitle">Ask about CMDB health, missing data, maintenance, EOL risk, and procurement.</div>
                 <div class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
+                    <span class="inventory-ai-chat-status-label">Status</span>
                     <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
                     <span id="inventoryAiChatStatusText">Gemma ready</span>
                 </div>
             </div>
             <div class="d-flex gap-1">
-                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatMinimizeBtn" title="Minimize">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatMinimizeBtn" title="Minimize" aria-label="Minimize Inventory AI chat">
                     <i class="bi bi-dash-lg"></i>
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatCloseBtn" title="Close">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatCloseBtn" title="Close" aria-label="Close Inventory AI chat">
                     <i class="bi bi-x-lg"></i>
                 </button>
             </div>
         </div>
         <div class="inventory-ai-quick-prompts" id="inventoryAiQuickPrompts">
+            <div class="inventory-ai-prompt-header">
+                <div class="inventory-ai-prompt-group-title mb-0">Quick Prompts</div>
+                <button type="button" class="btn btn-outline-secondary btn-sm inventory-ai-prompt-toggle" id="inventoryAiPromptToggleBtn" aria-label="Collapse quick prompts">Collapse</button>
+            </div>
             <div class="inventory-ai-prompt-cards w-100">
-                <button type="button" class="inventory-ai-prompt-card" data-ai-action="missing_data">Find missing data</button>
-                <button type="button" class="inventory-ai-prompt-card" data-ai-action="risk_scores">Risk scores</button>
-                <button type="button" class="inventory-ai-prompt-card" data-ai-action="replacement_priority">Replacement priorities</button>
-                <button type="button" class="inventory-ai-prompt-card" data-ai-action="monthly_report">Monthly report</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="missing_data">Find Issues</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="procurement">Plan Purchases</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-prompt="Explain Inventory 360 and what I should do next.">Inventory 360</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-prompt="Summarize the health of UXKIT Main CS Desktop PC 001">Asset Health</button>
             </div>
             <details class="inventory-ai-prompt-more w-100">
                 <summary><i class="bi bi-chevron-down me-1"></i>More prompts</summary>
                 <div class="inventory-ai-prompt-more-body">
+                    <span class="inventory-ai-prompt-group-title w-100">Find Issues</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What needs attention today?">Attention today</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which building is highest risk?">Highest-risk building</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are missing serial numbers?">Missing serial numbers</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show low stock spare items.">Low stock items</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="risk_scores">Risk scores</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Find possible duplicate assets.">Find duplicate assets</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets need maintenance?">Assets needing maintenance</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Find possible duplicate assets.">Possible duplicates</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show low stock spare items.">Low stock items</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Plan Purchases</span>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which licenses expire soon?">Licenses expiring soon</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should we procure next?">Procurement suggestions</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What changed today?">What changed today?</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate executive inventory dashboard summary.">Executive dashboard summary</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Why is this item recommended?">Why recommended?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Compare vendor quotes.">Compare vendor quotes</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What is the budget impact?">Budget impact</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain Procurement 360 and the next best procurement action.">Procurement 360</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What is the cost impact across inventory and procurement? Use real cost evidence only.">Cost impact</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="replacement_priority">Replacement priorities</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="spare_stock_forecast">Spare stock forecast</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Asset Health</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What components are linked to UX260531-MAIN-PC-001?">Linked components</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain Asset 360 for this asset.">Explain Asset 360</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are near EOL?">Assets near EOL</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which components were recently replaced?">Recently replaced components</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show digital twin for this asset.">Digital Twin (selected asset)</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show black box timeline for this asset.">Black Box Timeline (selected asset)</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Reports</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What changed today?">What changed today?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Give me the daily briefing.">Daily briefing</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate monthly inventory report.">Monthly report</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate executive inventory dashboard summary.">Executive dashboard summary</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should I do next? Use real OpsMind evidence only.">What should I do next?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Prepare my thesis demo steps.">Thesis demo steps</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Advanced</span>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="search">AI inventory search</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="procurement">Procurement AI</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="maintenance">Maintenance AI</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="duplicates">Duplicate check</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="data_corrections">Data corrections</button>
-                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="spare_stock_forecast">Spare stock forecast</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="reallocation">Tech Exchange</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="relationship_suggestions">Suggest relationships</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="ticket_draft">Draft inventory ticket</button>
                     <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="plan_action">Plan inventory action</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show me dead stock.">Dead stock</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain FIFO recommendation.">Explain FIFO</button>
                 </div>
             </details>
         </div>
@@ -1477,11 +928,11 @@
         <div class="inventory-ai-chat-input">
             <div class="input-group input-group-sm">
                 <textarea id="inventoryAiChatInput" class="form-control" rows="2" placeholder="Ask about inventory, stock, maintenance, EOL..." aria-label="Inventory AI Assistant message"></textarea>
-                <button type="button" class="btn btn-primary" id="inventoryAiChatSendBtn">
+                <button type="button" class="btn btn-primary" id="inventoryAiChatSendBtn" aria-label="Send message to Inventory AI assistant">
                     <i class="bi bi-send"></i>
                 </button>
             </div>
-            <div class="small text-muted mt-1">Try: “Which PCs in Lab A need maintenance?” Press Enter to send.</div>
+            <div class="small text-muted mt-1">Press Enter to send. Shift+Enter for a new line.</div>
         </div>
     </section>
 
@@ -1490,11 +941,11 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Spare Stock</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
-                        <div class="input-group input-group-sm" style="max-width: 360px;">
+                        <div class="input-group input-group-sm inventory-modal-search-wide">
                             <span class="input-group-text"><i class="bi bi-search"></i></span>
                             <input type="text" id="spareStockSearchInput" class="form-control" placeholder="Search part/type/part no..." />
                         </div>
@@ -1543,7 +994,7 @@
             <div class="modal-content inventory-create-modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Create New Asset</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <form id="addAssetForm" class="inventory-create-form">
                     <div class="modal-body inventory-create-modal-body">
@@ -1802,7 +1253,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-warning text-dark">
                     <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Technical Specs</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-secondary py-2 mb-3 small">
@@ -1834,7 +1285,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-dark text-white">
                     <h5 class="modal-title fw-bold"><i class="bi bi-cpu me-2"></i>Asset Specifications</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="specTargetHeader" class="mb-3 p-3 bg-light rounded border"></div>
@@ -1852,7 +1303,7 @@
                         <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Details</h5>
                         <small class="text-muted" id="detailModalSubtitle">Manage individual items</small>
                     </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 
                 <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -1862,7 +1313,7 @@
                     </div>
                     
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-outline-success" id="bulkGroupCmdbBtn"><i class="bi bi-diagram-3 me-1"></i> Group CMDB</button>
+                        <button class="btn btn-sm btn-outline-success" id="bulkGroupCmdbBtn"><i class="bi bi-diagram-3 me-1"></i> Open Group CMDB</button>
                         <button class="btn btn-sm btn-warning text-dark d-none" id="bulkSpecReviewBtn" title="Review pending AI-detected specs in this group">
                             <i class="bi bi-patch-check me-1"></i> Review Specs (0)
                         </button>
@@ -1898,7 +1349,7 @@
             <div class="modal-content border-0 shadow">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Transfer Asset(s)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-info py-2 mb-3 small">
@@ -2010,7 +1461,7 @@
             <div class="modal-content">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold">Audit Trail</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
@@ -2031,7 +1482,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold"><i class="bi bi-patch-check me-2"></i>Spec Verification Review</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <input type="hidden" id="specVerificationAssetId">
@@ -2065,7 +1516,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold"><i class="bi bi-collection-check me-2"></i>Bulk Spec Verification Review</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-secondary py-2 mb-3 small">
@@ -2112,7 +1563,7 @@
             ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
 
         if (!AuthService.isAuthenticated() || !canAccessInventory) {
-            sessionStorage.setItem('opsmind_error', '⚠️ Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
+            sessionStorage.setItem('opsmind_error', 'Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
             window.location.href = context.dashboardPath || '/pages/dashboard.html';
         }
     </script>

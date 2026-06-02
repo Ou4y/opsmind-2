@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procurement - OpsMind</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
+    <script src="/assets/js/config.js?v=2"></script>
+
+</head>
+<body class="app-body procurement-page">
+    <nav class="navbar-main" id="navbar-container"></nav>
+    <div class="app-wrapper">
+        <div id="sidebar-container"></div>
+
+        <main class="main-content">
+            <div class="page-header procurement-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">Procurement Management</h1>
+                    <p class="page-subtitle">ITIL/ITAM-aligned request, approval, ordering, receiving, and inventory traceability.</p>
+                </div>
+                <div class="page-header-actions d-flex flex-wrap gap-2 procurement-header-actions">
+                    <button type="button" class="btn btn-outline-secondary" id="procOpenInventoryBtn">
+                        <i class="bi bi-hdd-stack me-1"></i>Inventory
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" id="procAskCopilotBtn">
+                        <i class="bi bi-stars me-1"></i>Ask Copilot
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="procRefreshBtn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                    <button type="button" class="btn btn-primary" id="procCreateRequestBtn" data-role-required="procurement">
+                        <i class="bi bi-plus-lg me-1"></i>Create Request
+                    </button>
+                </div>
+            </div>
+
+            <div class="page-content procurement-page-content">
+                <div class="proc-note mb-3 d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <strong>AI + Inventory linked procurement:</strong> recommendations are generated from live stock, EOL, risk, audit, and maintenance evidence.
+                    </div>
+                    <div class="small text-muted">
+                        <span class="proc-status-dot ready" id="procLoadDot"></span>
+                        <span id="procLoadStatusText">Ready.</span>
+                    </div>
+                </div>
+
+                <section class="ops-360-section procurement-360-section" aria-labelledby="procurement360Title">
+                    <div class="ops-360-header">
+                        <div>
+                            <div class="ops-360-eyebrow">Procurement intelligence</div>
+                            <h2 id="procurement360Title">Procurement 360 Analytics</h2>
+                            <p>Request lifecycle, vendor decisions, budget pressure, receiving impact, and inventory-linked procurement intelligence.</p>
+                        </div>
+                        <div class="ops-360-header-actions">
+                            <button type="button" class="btn btn-sm btn-primary" data-proc-360-action="continue" data-role-required="procurement">
+                                <i class="bi bi-play-circle me-1"></i>Continue Workflow
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary" data-proc-360-action="explain">
+                                <i class="bi bi-stars me-1"></i>Explain Procurement 360
+                            </button>
+                        </div>
+                    </div>
+                    <div class="ops-definition-strip" aria-label="Procurement analytics definitions">
+                        <span title="Procurement 360 summarizes all procurement requests, quotes, POs, receiving, finance, suppliers, and AI recommendations.">Procurement 360 = full procurement overview</span>
+                        <span title="Request 360 is the drill-down for one selected procurement request.">Request 360 = one request drill-down</span>
+                        <span title="EOQ estimates economical order quantity when demand/cost evidence exists. MOQ is supplier minimum order quantity.">EOQ / MOQ</span>
+                        <span title="FIFO suggests issuing the oldest available stock batch first when batch evidence exists.">FIFO</span>
+                        <span title="Budget Impact uses internal allocations, estimates, quotes, POs, receiving, and invoices when present.">Budget Impact</span>
+                    </div>
+                    <div id="procurement360Grid" class="ops-360-grid" aria-live="polite">
+                        <div class="ops-skeleton-card"></div>
+                        <div class="ops-skeleton-card"></div>
+                        <div class="ops-skeleton-card"></div>
+                    </div>
+                </section>
+
+                <div class="row g-3 mb-3 procurement-kpi-grid">
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="proc-kpi-card">
+                            <div class="proc-kpi-label">Open Requests</div>
+                            <div class="proc-kpi-value" id="procSummaryOpen">0</div>
+                            <div class="proc-kpi-sub">Draft, Submitted, Under Review</div>
+                        </div>
+                    </div>
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="proc-kpi-card">
+                            <div class="proc-kpi-label">Pending Approvals</div>
+                            <div class="proc-kpi-value" id="procSummaryApprovals">0</div>
+                            <div class="proc-kpi-sub">Submitted or Under Review</div>
+                        </div>
+                    </div>
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="proc-kpi-card">
+                            <div class="proc-kpi-label">Ordered / In Transit</div>
+                            <div class="proc-kpi-value" id="procSummaryOrdered">0</div>
+                            <div class="proc-kpi-sub">Ordered + Partially Received</div>
+                        </div>
+                    </div>
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="proc-kpi-card">
+                            <div class="proc-kpi-label">AI Recommendations</div>
+                            <div class="proc-kpi-value" id="procSummaryRecommendations">0</div>
+                            <div class="proc-kpi-sub">Review, convert, or ignore</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card proc-section-card mb-3">
+                    <div class="card-body py-2">
+                        <div class="row g-2 align-items-center">
+                            <div class="col-md-4">
+                                <label for="procStatusFilter" class="form-label form-label-sm mb-1">Request Status Filter</label>
+                                <select id="procStatusFilter" class="form-select form-select-sm">
+                                    <option value="all">All Statuses</option>
+                                    <option value="Draft">Draft</option>
+                                    <option value="Submitted">Submitted</option>
+                                    <option value="Under Review">Under Review</option>
+                                    <option value="Approved">Approved</option>
+                                    <option value="Rejected">Rejected</option>
+                                    <option value="Ordered">Ordered</option>
+                                    <option value="Partially Received">Partially Received</option>
+                                    <option value="Received">Received</option>
+                                    <option value="Closed">Closed</option>
+                                    <option value="Cancelled">Cancelled</option>
+                                </select>
+                            </div>
+                            <div class="col-md-8">
+                                <div class="small text-muted mt-4" id="procBoardSummary">Loading procurement board...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="proc-tabs-shell mb-3">
+                <ul class="nav nav-pills mb-0 proc-tabs-nav" id="procTabs" role="tablist">
+                    <li class="proc-tab-group-label" aria-hidden="true"><span>Main</span></li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="proc-dashboard-tab" data-bs-toggle="pill" data-bs-target="#proc-dashboard-pane" type="button" role="tab" aria-controls="proc-dashboard-pane" aria-selected="true">Dashboard</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-recommendations-tab" data-bs-toggle="pill" data-bs-target="#proc-recommendations-pane" type="button" role="tab" aria-controls="proc-recommendations-pane" aria-selected="false">AI Recommendations</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-requests-tab" data-bs-toggle="pill" data-bs-target="#proc-requests-pane" type="button" role="tab" aria-controls="proc-requests-pane" aria-selected="false">Requests</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-quotes-tab" data-bs-toggle="pill" data-bs-target="#proc-quotes-pane" type="button" role="tab" aria-controls="proc-quotes-pane" aria-selected="false">Vendor Quotes</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-po-tab" data-bs-toggle="pill" data-bs-target="#proc-po-pane" type="button" role="tab" aria-controls="proc-po-pane" aria-selected="false">Purchase Orders</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-receiving-tab" data-bs-toggle="pill" data-bs-target="#proc-receiving-pane" type="button" role="tab" aria-controls="proc-receiving-pane" aria-selected="false">Receiving</button>
+                    </li>
+                    <li class="proc-tab-group-label" aria-hidden="true"><span>Analysis</span></li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-abc-tab" data-bs-toggle="pill" data-bs-target="#proc-abc-pane" type="button" role="tab" aria-controls="proc-abc-pane" aria-selected="false">ABC Analysis</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-eoq-tab" data-bs-toggle="pill" data-bs-target="#proc-eoq-pane" type="button" role="tab" aria-controls="proc-eoq-pane" aria-selected="false">EOQ / MOQ</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-fifo-tab" data-bs-toggle="pill" data-bs-target="#proc-fifo-pane" type="button" role="tab" aria-controls="proc-fifo-pane" aria-selected="false">FIFO</button>
+                    </li>
+                    <li class="proc-tab-group-label" aria-hidden="true"><span>Business</span></li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-finance-tab" data-bs-toggle="pill" data-bs-target="#proc-finance-pane" type="button" role="tab" aria-controls="proc-finance-pane" aria-selected="false">Finance</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-suppliers-tab" data-bs-toggle="pill" data-bs-target="#proc-suppliers-pane" type="button" role="tab" aria-controls="proc-suppliers-pane" aria-selected="false">Suppliers</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="proc-analytics-tab" data-bs-toggle="pill" data-bs-target="#proc-analytics-pane" type="button" role="tab" aria-controls="proc-analytics-pane" aria-selected="false">Analytics</button>
+                    </li>
+                </ul>
+                </div>
+
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="proc-dashboard-pane" role="tabpanel" aria-labelledby="proc-dashboard-tab" tabindex="0">
+                        <div class="row g-3">
+                            <div class="col-12 col-xl-8">
+                                <div class="card proc-section-card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5 class="mb-0 fs-6">Priority Board</h5>
+                                        <span class="small text-muted">Low stock, EOL, risk, maintenance, audit</span>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Priority Stream</th>
+                                                        <th>Item</th>
+                                                        <th>Need</th>
+                                                        <th>Reason</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="procPriorityTableBody">
+                                                    <tr><td colspan="4" class="text-muted">Loading...</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-12 col-xl-4">
+                                <div class="card proc-section-card h-100">
+                                    <div class="card-header">
+                                        <h5 class="mb-0 fs-6">Status Mix</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div id="procStatusBadges" class="d-flex flex-wrap gap-1"></div>
+                                        <div class="small text-muted mt-3" id="procAnalyticsQuickSummary">Loading...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-recommendations-pane" role="tabpanel" aria-labelledby="proc-recommendations-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0 fs-6">AI Procurement Recommendations</h5>
+                                <span class="small text-muted">Gemma or deterministic evidence-based recommendations</span>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Item</th>
+                                                <th>Type</th>
+                                                <th>Qty</th>
+                                                <th>Priority</th>
+                                                <th>Reason</th>
+                                                <th>Status</th>
+                                                <th class="text-end">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procRecommendationsTableBody">
+                                            <tr><td colspan="7" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-requests-pane" role="tabpanel" aria-labelledby="proc-requests-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header">
+                                <h5 class="mb-0 fs-6">Procurement Requests</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="proc-request-view-toolbar" aria-label="Procurement request view switch">
+                                    <div>
+                                        <div class="proc-view-kicker">Request Views</div>
+                                        <div class="proc-view-copy">Table is default. Kanban and Priority Board are read-only decision views.</div>
+                                    </div>
+                                    <div class="btn-group btn-group-sm" role="group" aria-label="Choose procurement request view">
+                                        <button type="button" class="btn btn-primary" data-proc-request-view="table">Table</button>
+                                        <button type="button" class="btn btn-outline-primary" data-proc-request-view="kanban">Kanban</button>
+                                        <button type="button" class="btn btn-outline-primary" data-proc-request-view="priority">Priority Board</button>
+                                    </div>
+                                </div>
+                                <div class="proc-kanban-shell mb-3 d-none" id="procKanbanPanel" aria-labelledby="procKanbanTitle">
+                                    <div class="proc-kanban-header">
+                                        <div>
+                                            <div class="proc-kanban-kicker">Request Lifecycle</div>
+                                            <h6 id="procKanbanTitle" class="mb-0">Procurement Kanban Preview</h6>
+                                        </div>
+                                        <span class="small text-muted">Read-only workflow map. Use card actions to update safely.</span>
+                                    </div>
+                                    <div id="procKanbanBoard" class="proc-kanban-board"></div>
+                                </div>
+                                <div class="proc-request-priority-shell mb-3 d-none" id="procRequestPriorityPanel" aria-labelledby="procRequestPriorityTitle">
+                                    <div class="proc-kanban-header">
+                                        <div>
+                                            <div class="proc-kanban-kicker">Priority Board</div>
+                                            <h6 id="procRequestPriorityTitle" class="mb-0">Urgency / Source View</h6>
+                                        </div>
+                                        <span class="small text-muted">Read-only grouping for triage and leadership review.</span>
+                                    </div>
+                                    <div id="procRequestPriorityBoard" class="proc-request-priority-grid"></div>
+                                </div>
+                                <div class="table-responsive" id="procRequestsTablePanel">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Request</th>
+                                                <th>Need</th>
+                                                <th>Owner / Scope</th>
+                                                <th>Status</th>
+                                                <th>Updated</th>
+                                                <th class="text-end">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procRequestsTableBody">
+                                            <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-quotes-pane" role="tabpanel" aria-labelledby="proc-quotes-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header">
+                                <h5 class="mb-0 fs-6">Vendor Quotes</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="procVendorBattleCards" class="proc-vendor-battle-grid mb-3"></div>
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Request</th>
+                                                <th>Vendor</th>
+                                                <th>Item</th>
+                                                <th>Price</th>
+                                                <th>Warranty</th>
+                                                <th>Delivery</th>
+                                                <th>Status</th>
+                                                <th class="text-end">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procQuotesTableBody">
+                                            <tr><td colspan="8" class="text-muted">No quotes yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-po-pane" role="tabpanel" aria-labelledby="proc-po-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header">
+                                <h5 class="mb-0 fs-6">Purchase Orders</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>PO Number</th>
+                                                <th>Request</th>
+                                                <th>Vendor</th>
+                                                <th>Status</th>
+                                                <th>Expected Delivery</th>
+                                                <th>Updated</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procPurchaseOrdersTableBody">
+                                            <tr><td colspan="6" class="text-muted">No purchase orders yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-receiving-pane" role="tabpanel" aria-labelledby="proc-receiving-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header">
+                                <h5 class="mb-0 fs-6">Receiving History</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Request</th>
+                                                <th>Received By</th>
+                                                <th>Date</th>
+                                                <th>Quantity</th>
+                                                <th>Condition</th>
+                                                <th>Inventory Impact</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procReceivingTableBody">
+                                            <tr><td colspan="6" class="text-muted">No receiving records yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-abc-pane" role="tabpanel" aria-labelledby="proc-abc-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0 fs-6">ABC Classification</h5>
+                                <div class="d-flex gap-2 align-items-center">
+                                    <select id="procAbcClassFilter" class="form-select form-select-sm">
+                                        <option value="ALL">All Classes</option>
+                                        <option value="A">A</option>
+                                        <option value="B">B</option>
+                                        <option value="C">C</option>
+                                    </select>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="procAbcRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="small text-muted mb-2" id="procAbcSummary">Loading ABC analysis...</div>
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Item</th>
+                                                <th>Category</th>
+                                                <th>Class</th>
+                                                <th>Score</th>
+                                                <th>Reason</th>
+                                                <th>Control Level</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procAbcTableBody">
+                                            <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-eoq-pane" role="tabpanel" aria-labelledby="proc-eoq-tab" tabindex="0">
+                        <div class="card proc-section-card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0 fs-6">EOQ / MOQ Decision Support</h5>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="procEoqRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
+                            </div>
+                            <div class="card-body">
+                                <div class="small text-muted mb-2" id="procEoqSummary">Loading EOQ/MOQ insights...</div>
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Item</th>
+                                                <th>D / S / H</th>
+                                                <th>EOQ</th>
+                                                <th>MOQ</th>
+                                                <th>Recommended Qty</th>
+                                                <th>Data Quality</th>
+                                                <th>Warning</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procEoqTableBody">
+                                            <tr><td colspan="7" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-fifo-pane" role="tabpanel" aria-labelledby="proc-fifo-tab" tabindex="0">
+                        <div class="card proc-section-card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0 fs-6">FIFO Batch Visibility</h5>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="procFifoRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
+                            </div>
+                            <div class="card-body">
+                                <div class="small text-muted mb-2" id="procFifoSummary">Loading FIFO batches...</div>
+                                <div id="procFifoQueueCards" class="proc-fifo-queue-grid mb-3"></div>
+                                <div class="table-responsive">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Batch</th>
+                                                <th>Item</th>
+                                                <th>Received</th>
+                                                <th>Age</th>
+                                                <th>Available</th>
+                                                <th>Source</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="procFifoTableBody">
+                                            <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-finance-pane" role="tabpanel" aria-labelledby="proc-finance-tab" tabindex="0">
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <div class="card proc-section-card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5 class="mb-0 fs-6">Finance & Budget Foundation</h5>
+                                        <div class="d-flex gap-2">
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="procFinanceRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" id="procFinanceCreateCenterBtn">Add Cost Center</button>
+                                        </div>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="small text-muted mb-2" id="procFinanceSummary">Loading finance summary...</div>
+                                        <div id="procBudgetThermometer" class="proc-budget-thermometer-wrap mb-3"></div>
+                                        <div id="procFinanceTotals" class="small mb-2"></div>
+                                        <div class="table-responsive">
+                                            <table class="table table-sm align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Allocation</th>
+                                                        <th>Department/Building</th>
+                                                        <th>Allocated</th>
+                                                        <th>Reserved</th>
+                                                        <th>Committed</th>
+                                                        <th>Spent</th>
+                                                        <th>Available</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="procFinanceTableBody">
+                                                    <tr><td colspan="7" class="text-muted">Loading...</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-suppliers-pane" role="tabpanel" aria-labelledby="proc-suppliers-tab" tabindex="0">
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <div class="card proc-section-card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5 class="mb-0 fs-6">Supplier Integration Foundation</h5>
+                                        <div class="d-flex gap-2">
+                                            <button type="button" class="btn btn-sm btn-outline-secondary" id="procSuppliersRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" id="procSupplierCreateBtn">Add Supplier</button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" id="procCatalogCreateBtn">Add Catalog Item</button>
+                                        </div>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="small text-muted mb-2" id="procSuppliersSummary">Loading suppliers...</div>
+                                        <div class="table-responsive mb-3">
+                                            <table class="table table-sm align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Supplier</th>
+                                                        <th>Reliability</th>
+                                                        <th>Lead Time</th>
+                                                        <th>Status</th>
+                                                        <th>Contact</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="procSuppliersTableBody">
+                                                    <tr><td colspan="5" class="text-muted">Loading...</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div class="table-responsive">
+                                            <table class="table table-sm align-middle mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Catalog Item</th>
+                                                        <th>Vendor</th>
+                                                        <th>Price</th>
+                                                        <th>MOQ / Pack</th>
+                                                        <th>Lead/Warranty</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="procCatalogTableBody">
+                                                    <tr><td colspan="5" class="text-muted">Loading...</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="proc-analytics-pane" role="tabpanel" aria-labelledby="proc-analytics-tab" tabindex="0">
+                        <div class="row g-3">
+                            <div class="col-md-6 col-xl-4">
+                                <div class="proc-kpi-card">
+                                    <div class="proc-kpi-label">Monthly Spend Estimate</div>
+                                    <div class="proc-kpi-value" id="procAnalyticsSpend">$0</div>
+                                    <div class="proc-kpi-sub">From selected quotes in current month</div>
+                                </div>
+                            </div>
+                            <div class="col-md-6 col-xl-4">
+                                <div class="proc-kpi-card">
+                                    <div class="proc-kpi-label">Open Purchase Orders</div>
+                                    <div class="proc-kpi-value" id="procAnalyticsOpenPo">0</div>
+                                    <div class="proc-kpi-sub">Issued and partially received orders</div>
+                                </div>
+                            </div>
+                            <div class="col-md-6 col-xl-4">
+                                <div class="proc-kpi-card">
+                                    <div class="proc-kpi-label">Aging Approved/Ordered</div>
+                                    <div class="proc-kpi-value" id="procAnalyticsAging">0</div>
+                                    <div class="proc-kpi-sub">Requests older than 14 days</div>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="card proc-section-card">
+                                    <div class="card-header">
+                                        <h5 class="mb-0 fs-6">Top Requested Items</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div id="procTopItemsList" class="small text-muted">No analytics data yet.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module">
+        import AuthService from '/services/authService.js';
+        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+        const technicianLevel = String(context.technicianLevel || '').toUpperCase();
+        const canAccess =
+            context.roleCategory === 'ADMIN' ||
+            ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
+        if (!AuthService.isAuthenticated() || !canAccess) {
+            sessionStorage.setItem('opsmind_error', 'Access denied: Procurement is available to Admin and Technician levels (Junior/Senior/Supervisor).');
+            window.location.href = context.dashboardPath || '/pages/dashboard.html';
+        }
+    </script>
+<script type="module" src="/assets/js/pages/procurement.js?v=erp-foundation-2"></script>
+</body>
+</html>
