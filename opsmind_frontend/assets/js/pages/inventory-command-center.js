@@ -2,9 +2,12 @@ import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
 
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
+const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
 const ALLOWED_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
 const PAGE_SIZE = 500;
 const MAX_ASSET_PAGES = 12;
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const AUTO_REFRESH_PREF_KEY = 'opsmind_auto_refresh_enabled';
 
 const state = {
   assets: [],
@@ -14,6 +17,8 @@ const state = {
   loadedAt: null,
   errors: [],
   briefingRequestId: 0,
+  autoRefreshTimer: null,
+  refreshing: false,
   walkthroughStep: -1,
   focusMode: String(localStorage.getItem('opsmind_inventory_focus_mode') || '').toLowerCase() === 'true',
 };
@@ -94,9 +99,14 @@ function formatCount(value) {
 }
 
 function formatCurrency(value) {
+  if (value === null || typeof value === 'undefined' || String(value).trim() === '') return 'Cost data missing';
   const amount = Number(value);
-  if (!Number.isFinite(amount)) return 'Data missing';
-  return amount.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  if (!Number.isFinite(amount)) return 'Cost data missing';
+  return new Intl.NumberFormat('en-EG', {
+    style: 'currency',
+    currency: 'EGP',
+    maximumFractionDigits: 0,
+  }).format(amount);
 }
 
 function formatDateTime(value) {
@@ -104,6 +114,52 @@ function formatDateTime(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return '-';
   return parsed.toLocaleString();
+}
+
+function timeAgo(value) {
+  if (!value) return 'not updated yet';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'not updated yet';
+  const diffSeconds = Math.max(0, Math.round((Date.now() - parsed.getTime()) / 1000));
+  if (diffSeconds < 45) return 'just now';
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  return parsed.toLocaleString();
+}
+
+function autoRefreshEnabled() {
+  return String(localStorage.getItem(AUTO_REFRESH_PREF_KEY) || 'true').toLowerCase() !== 'false';
+}
+
+function shouldPauseAutoRefresh() {
+  if (document.visibilityState === 'hidden') return true;
+  if (document.querySelector('.modal.show')) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = String(active.tagName || '').toLowerCase();
+  return ['input', 'textarea', 'select'].includes(tag) || active.isContentEditable;
+}
+
+function updateFreshnessStatus(status = 'ready', message = '') {
+  const text = document.getElementById('iccLoadStatus');
+  const dot = document.getElementById('iccLoadDot');
+  if (dot) {
+    dot.classList.remove('ready', 'loading', 'error', 'stale');
+    dot.classList.add(status === 'error' ? 'error' : (status === 'refreshing' ? 'loading' : 'ready'));
+  }
+  if (!text) return;
+  if (status === 'refreshing') {
+    text.textContent = message || 'Refreshing Command Center evidence...';
+    return;
+  }
+  if (status === 'error') {
+    text.textContent = message || `Failed to refresh. Last updated ${timeAgo(state.loadedAt)}.`;
+    return;
+  }
+  const autoText = autoRefreshEnabled() ? `Auto-refreshes every ${AUTO_REFRESH_INTERVAL_MS / 1000}s` : 'Auto-refresh paused';
+  text.textContent = message || `Updated ${timeAgo(state.loadedAt)}. ${autoText}.`;
 }
 
 function toTitle(value) {
@@ -364,22 +420,21 @@ function buildSummary() {
 
 function setLoading(loading, message = '') {
   const dot = document.getElementById('iccLoadDot');
-  const text = document.getElementById('iccLoadStatus');
   if (dot) {
     dot.classList.remove('ready', 'loading', 'error');
     dot.classList.add(loading ? 'loading' : 'ready');
   }
-  if (text) text.textContent = message || (loading ? 'Loading Inventory Command Center...' : `Ready. Updated ${formatDateTime(state.loadedAt)}.`);
+  if (loading) updateFreshnessStatus('refreshing', message || 'Loading Inventory Command Center...');
+  else updateFreshnessStatus('ready', message);
 }
 
 function setError(message) {
   const dot = document.getElementById('iccLoadDot');
-  const text = document.getElementById('iccLoadStatus');
   if (dot) {
     dot.classList.remove('ready', 'loading');
     dot.classList.add('error');
   }
-  if (text) text.textContent = message || 'Command Center loaded with partial data.';
+  updateFreshnessStatus('error', message || 'Command Center loaded with partial data.');
 }
 
 function emptyState(title, copy) {
@@ -1232,38 +1287,45 @@ function buildDashboardExplanationPrompt() {
   ].join(' ');
 }
 
-async function loadCommandCenter() {
-  setLoading(true);
-  renderSkeletons();
+async function loadCommandCenter(options = {}) {
+  const background = Boolean(options.background);
+  if (state.refreshing) return;
+  state.refreshing = true;
+  setLoading(true, background ? 'Refreshing Command Center evidence...' : 'Loading Inventory Command Center...');
+  if (!background) renderSkeletons();
   state.errors = [];
 
-  const [assetsRes, boardRes, auditRes, executiveRes] = await Promise.allSettled([
-    fetchAllAssets(),
-    readJson('/inventory/procurement/board?status=all'),
-    readJson('/inventory/audit-board'),
-    readJson('/inventory/executive-dashboard'),
-  ]);
+  try {
+    const [assetsRes, boardRes, auditRes, executiveRes] = await Promise.allSettled([
+      fetchAllAssets(),
+      readJson('/inventory/procurement/board?status=all'),
+      readJson('/inventory/audit-board'),
+      readJson('/inventory/executive-dashboard'),
+    ]);
 
-  if (assetsRes.status === 'fulfilled') state.assets = assetsRes.value;
-  else state.errors.push(`Assets: ${assetsRes.reason?.message || 'failed'}`);
+    if (assetsRes.status === 'fulfilled') state.assets = assetsRes.value;
+    else state.errors.push(`Assets: ${assetsRes.reason?.message || 'failed'}`);
 
-  if (boardRes.status === 'fulfilled') state.board = boardRes.value;
-  else state.errors.push(`Procurement: ${boardRes.reason?.message || 'failed'}`);
+    if (boardRes.status === 'fulfilled') state.board = boardRes.value;
+    else state.errors.push(`Procurement: ${boardRes.reason?.message || 'failed'}`);
 
-  if (auditRes.status === 'fulfilled') state.audit = auditRes.value;
-  else state.errors.push(`Audit: ${auditRes.reason?.message || 'failed'}`);
+    if (auditRes.status === 'fulfilled') state.audit = auditRes.value;
+    else state.errors.push(`Audit: ${auditRes.reason?.message || 'failed'}`);
 
-  if (executiveRes.status === 'fulfilled') state.executive = executiveRes.value;
-  else state.errors.push(`Executive dashboard: ${executiveRes.reason?.message || 'failed'}`);
+    if (executiveRes.status === 'fulfilled') state.executive = executiveRes.value;
+    else state.errors.push(`Executive dashboard: ${executiveRes.reason?.message || 'failed'}`);
 
-  state.loadedAt = new Date().toISOString();
-  renderAll();
+    state.loadedAt = new Date().toISOString();
+    renderAll();
 
-  if (state.errors.length) {
-    setError(`Loaded with partial data. ${state.errors.join(' | ')}`);
-    UI.warning('Inventory Command Center loaded with partial data.');
-  } else {
-    setLoading(false);
+    if (state.errors.length) {
+      setError(`Loaded with partial data. ${state.errors.join(' | ')}`);
+      UI.warning('Inventory Command Center loaded with partial data.');
+    } else {
+      setLoading(false);
+    }
+  } finally {
+    state.refreshing = false;
   }
 }
 
@@ -1309,6 +1371,166 @@ function handleAction(action) {
   }
 }
 
+function diagnosticsFeatureRows(aiReady, diagnostics = {}) {
+  const source = aiReady ? 'Gemma ready' : 'Fallback available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  return [
+    ['Inventory AI Daily Briefing', 'Yes', source, 'Creates a narrative from precomputed inventory/procurement evidence.'],
+    ['Explain this dashboard', 'Hybrid', source, 'Facts come from the Command Center; Gemma explains them.'],
+    ['Inventory 360 explanation', 'Hybrid', source, 'Deterministic metrics first, Gemma narrative second.'],
+    ['Asset health summary', 'Yes', source, 'Uses compact CMDB evidence for one asset.'],
+    ['Procurement recommendation explanation', 'Hybrid', source, 'Recommendations are grounded in stock, EOL, audit, and request data.'],
+    ['Vendor quote comparison explanation', 'Hybrid', source, 'Quote facts remain deterministic; Gemma explains tradeoffs.'],
+    ['Budget impact explanation', 'Hybrid', source, 'Budget math is deterministic; Gemma summarizes implications.'],
+    ['FIFO explanation', 'Hybrid', source, 'Batch order is deterministic; Gemma explains the recommendation.'],
+    ['EOQ/MOQ explanation', 'Hybrid', source, 'EOQ/MOQ math is deterministic; Gemma explains missing data/conflicts.'],
+    ['Copilot prompt response', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+  ];
+}
+
+async function fetchGemmaDiagnostics() {
+  const startedAt = performance.now();
+  const [healthRes, diagnosticsRes, backendRes, testRes] = await Promise.allSettled([
+    fetch(`${INVENTORY_AI_URL}/health`).then((response) => response.json()),
+    fetch(`${INVENTORY_AI_URL}/ai/diagnostics`).then((response) => response.json()),
+    readJson('/inventory/ai/diagnostics'),
+    postJson('/inventory/ai/test-gemma', {}),
+  ]);
+  const health = healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' };
+  const diagnostics = diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' };
+  const backend = backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' };
+  const test = testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' };
+  const latencyMs = Math.round(performance.now() - startedAt);
+  return { health, diagnostics, backend, test, latencyMs };
+}
+
+function renderGemmaDiagnosticsBody(result) {
+  const health = result?.health || {};
+  const diagnostics = result?.diagnostics || {};
+  const backend = result?.backend || {};
+  const test = result?.test || {};
+  const aiReady = String(health.llm_status || diagnostics.llm_status || '').toLowerCase() === 'ready'
+    || Boolean(test.llmUsed || test.usedGemma || test.gemmaUsed);
+  const model = health.llm_model || diagnostics.llm_model || diagnostics.model || test.model || 'Unknown';
+  const provider = health.llm_provider || diagnostics.llm_provider || 'Unknown';
+  const lastError = health.llm_last_error || diagnostics.llm_last_error || backend.error || test.error || '';
+  const rows = diagnosticsFeatureRows(aiReady, diagnostics);
+  return `
+    <div class="ops-gemma-diagnostics">
+      <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
+        <div>
+          <div class="ops-gemma-kicker">Inventory AI diagnostics</div>
+          <h3>${escapeHtml(aiReady ? 'Gemma is ready for inventory AI features' : 'Gemma readiness needs attention')}</h3>
+          <p>${escapeHtml(aiReady ? 'Feature facts remain deterministic; Gemma is available for explanation and summarization.' : 'OpsMind will keep deterministic fallback available until Gemma responds successfully.')}</p>
+        </div>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+      </div>
+      <div class="ops-gemma-metrics">
+        <div><strong>Provider</strong><span>${escapeHtml(provider)}</span></div>
+        <div><strong>Model</strong><span>${escapeHtml(model)}</span></div>
+        <div><strong>Latency</strong><span>${escapeHtml(`${result?.latencyMs ?? '-'} ms`)}</span></div>
+        <div><strong>Ollama tags</strong><span>${escapeHtml(String(diagnostics.ollama_tags_reachable ?? diagnostics.tagsReachable ?? 'Unknown'))}</span></div>
+        <div><strong>Selected model</strong><span>${escapeHtml(String(diagnostics.selected_model_present ?? diagnostics.modelPresent ?? 'Unknown'))}</span></div>
+        <div><strong>Backend bridge</strong><span>${escapeHtml(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
+      </div>
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle ops-gemma-table">
+          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Source returned</th><th>Safe test note</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map(([feature, requires, source, note]) => `
+              <tr>
+                <td>${escapeHtml(feature)}</td>
+                <td>${escapeHtml(requires)}</td>
+                <td><span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(source)}</span></td>
+                <td>${escapeHtml(note)}</td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-gemma-retest>Test</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-icc-gemma-ask="${escapeHtml(feature)}">Ask Gemma</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function openGemmaDiagnostics() {
+  const modalId = 'iccGemmaDiagnosticsModal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content ops-diagnostics-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and fallback honesty.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+            </div>
+            <div class="modal-body" id="${modalId}Body">
+              <div class="ops-loading-stack">
+                <span class="ops-skeleton-line lg"></span>
+                <span class="ops-skeleton-line md"></span>
+                <span class="ops-skeleton-card"></span>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+    modalEl.addEventListener('click', (event) => {
+      if (event.target?.closest('[data-icc-gemma-retest]')) openGemmaDiagnostics();
+      const askBtn = event.target?.closest('[data-icc-gemma-ask]');
+      if (askBtn) {
+        const feature = askBtn.getAttribute('data-icc-gemma-ask') || 'Inventory AI';
+        navigateToInventoryAction('ai', `Test Gemma for ${feature}. Use real inventory/procurement evidence only and state whether Gemma or fallback was used.`);
+      }
+    });
+    document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openGemmaDiagnostics());
+  }
+  const body = document.getElementById(`${modalId}Body`);
+  if (body) {
+    body.innerHTML = `
+      <div class="ops-loading-stack">
+        <span class="ops-skeleton-line lg"></span>
+        <span class="ops-skeleton-line md"></span>
+        <span class="ops-skeleton-card"></span>
+      </div>
+    `;
+  }
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  try {
+    const result = await fetchGemmaDiagnostics();
+    if (body) body.innerHTML = renderGemmaDiagnosticsBody(result);
+  } catch (error) {
+    if (body) body.innerHTML = emptyState('Diagnostics unavailable', error.message || 'Could not complete read-only Gemma diagnostics.');
+  }
+}
+
+function setupAutoRefresh() {
+  if (state.autoRefreshTimer) clearInterval(state.autoRefreshTimer);
+  state.autoRefreshTimer = setInterval(() => {
+    if (!autoRefreshEnabled() || shouldPauseAutoRefresh()) {
+      updateFreshnessStatus('ready');
+      return;
+    }
+    loadCommandCenter({ background: true }).catch((error) => {
+      console.warn('[InventoryCommandCenter] Auto refresh failed:', error?.message || error);
+      updateFreshnessStatus('error', 'Failed to auto-refresh Command Center evidence.');
+    });
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
 function bindActions() {
   const refreshBtn = document.getElementById('iccRefreshBtn');
   if (refreshBtn) refreshBtn.addEventListener('click', () => loadCommandCenter());
@@ -1316,6 +1538,8 @@ function bindActions() {
   if (focusBtn) focusBtn.addEventListener('click', () => setFocusMode(!state.focusMode));
   const explainBtn = document.getElementById('iccExplainDashboardBtn');
   if (explainBtn) explainBtn.addEventListener('click', () => handleAction('explain-dashboard'));
+  const gemmaBtn = document.getElementById('iccGemmaDiagnosticsBtn');
+  if (gemmaBtn) gemmaBtn.addEventListener('click', () => openGemmaDiagnostics());
   const demoStartBtn = document.getElementById('iccDemoStartBtn');
   const demoNextBtn = document.getElementById('iccDemoNextBtn');
   if (demoStartBtn) demoStartBtn.addEventListener('click', () => advanceWalkthrough(true));
@@ -1343,5 +1567,6 @@ function bindActions() {
 document.addEventListener('DOMContentLoaded', async () => {
   if (!ensureAccess()) return;
   bindActions();
+  setupAutoRefresh();
   await loadCommandCenter();
 });

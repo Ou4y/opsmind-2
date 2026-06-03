@@ -2,6 +2,9 @@ import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
 
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
+const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const AUTO_REFRESH_PREF_KEY = 'opsmind_auto_refresh_enabled';
 const PROCUREMENT_STATUSES = [
   'Draft',
   'Submitted',
@@ -60,6 +63,8 @@ const state = {
   finance: null,
   suppliers: null,
   supplierCatalog: null,
+  loadedAt: 0,
+  refreshTimer: null,
   requestView: localStorage.getItem('opsmind_procurement_request_view') || 'table',
 };
 
@@ -146,9 +151,40 @@ function formatDateTime(value) {
 }
 
 function formatCurrency(value) {
+  if (value === null || typeof value === 'undefined' || String(value).trim() === '') return 'Cost data missing';
   const amount = Number(value);
-  if (!Number.isFinite(amount)) return '-';
-  return amount.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  if (!Number.isFinite(amount)) return 'Cost data missing';
+  return new Intl.NumberFormat('en-EG', {
+    style: 'currency',
+    currency: 'EGP',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatRelativeTime(value) {
+  if (!value) return 'not updated yet';
+  const timestamp = typeof value === 'number' ? value : new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 'not updated yet';
+  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (diffSeconds < 45) return 'just now';
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  return new Date(timestamp).toLocaleString();
+}
+
+function autoRefreshEnabled() {
+  return String(localStorage.getItem(AUTO_REFRESH_PREF_KEY) || 'true').toLowerCase() !== 'false';
+}
+
+function shouldPauseProcurementAutoRefresh() {
+  if (document.visibilityState === 'hidden') return true;
+  if (document.querySelector('.modal.show')) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = String(active.tagName || '').toLowerCase();
+  return ['input', 'textarea', 'select'].includes(tag) || active.isContentEditable;
 }
 
 function statusBadgeClass(status) {
@@ -276,22 +312,42 @@ function setProcurementSkeletonState() {
 function setLoadingState(loading, message) {
   const dot = document.getElementById('procLoadDot');
   const text = document.getElementById('procLoadStatusText');
+  const badge = document.getElementById('procFreshnessBadge');
   state.loading = Boolean(loading);
   if (dot) {
     dot.classList.remove('ready', 'loading', 'error');
     dot.classList.add(loading ? 'loading' : 'ready');
   }
-  if (text) text.textContent = message || (loading ? 'Loading procurement board...' : 'Ready.');
+  const defaultMessage = loading
+    ? 'Loading procurement board...'
+    : `Updated ${formatRelativeTime(state.loadedAt)}. ${autoRefreshEnabled() ? `Auto-refreshes every ${AUTO_REFRESH_INTERVAL_MS / 1000}s.` : 'Auto-refresh paused.'}`;
+  const finalMessage = message || defaultMessage;
+  if (text) text.textContent = finalMessage;
+  if (badge) {
+    badge.className = `ops-freshness-pill ${loading ? 'is-refreshing' : 'is-ready'}`;
+    badge.innerHTML = `
+      <i class="bi ${loading ? 'bi-arrow-repeat' : 'bi-check2-circle'}" aria-hidden="true"></i>
+      <span>${escapeHtml(finalMessage)}</span>
+    `;
+  }
 }
 
 function setLoadError(message) {
   const dot = document.getElementById('procLoadDot');
   const text = document.getElementById('procLoadStatusText');
+  const badge = document.getElementById('procFreshnessBadge');
   if (dot) {
     dot.classList.remove('ready', 'loading');
     dot.classList.add('error');
   }
   if (text) text.textContent = message || 'Failed to load procurement board.';
+  if (badge) {
+    badge.className = 'ops-freshness-pill is-error';
+    badge.innerHTML = `
+      <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+      <span>${escapeHtml(message || 'Failed to load procurement board.')}</span>
+    `;
+  }
 }
 
 function formatOptions(options = []) {
@@ -1004,7 +1060,7 @@ function renderBoard() {
   const quickSummary = document.getElementById('procAnalyticsQuickSummary');
   if (quickSummary) {
     quickSummary.textContent = [
-      `Monthly spend: ${formatCurrency(analytics.monthlySpendingEstimate || 0)}`,
+      `Monthly spend: ${formatCurrency(analytics.monthlySpendingEstimate)}`,
       `Open POs: ${Number(analytics.openPurchaseOrders || 0)}`,
       `Aging requests: ${Number(analytics.agingApprovedRequests || 0)}`,
       `EOL-driven: ${Number(analytics.eolDrivenCandidates || 0)}`,
@@ -1230,7 +1286,7 @@ function renderBoard() {
   const openPo = document.getElementById('procAnalyticsOpenPo');
   const aging = document.getElementById('procAnalyticsAging');
   const topItems = document.getElementById('procTopItemsList');
-  if (spend) spend.textContent = formatCurrency(analytics.monthlySpendingEstimate || 0);
+  if (spend) spend.textContent = formatCurrency(analytics.monthlySpendingEstimate);
   if (openPo) openPo.textContent = String(Number(analytics.openPurchaseOrders || 0));
   if (aging) aging.textContent = String(Number(analytics.agingApprovedRequests || 0));
   if (topItems) {
@@ -1474,22 +1530,22 @@ function renderFinancePanel() {
   summaryEl.textContent = payload.summary || 'Finance summary loaded.';
   renderBudgetThermometer(totals);
   totalsEl.innerHTML = `
-    <span class="badge text-bg-light me-1 mb-1">Allocated: ${escapeHtml(formatCurrency(totals.allocated || 0))}</span>
-    <span class="badge text-bg-light me-1 mb-1">Reserved: ${escapeHtml(formatCurrency(totals.reserved || 0))}</span>
-    <span class="badge text-bg-light me-1 mb-1">Committed: ${escapeHtml(formatCurrency(totals.committed || 0))}</span>
-    <span class="badge text-bg-light me-1 mb-1">Spent: ${escapeHtml(formatCurrency(totals.spent || 0))}</span>
-    <span class="badge text-bg-light me-1 mb-1">Available: ${escapeHtml(formatCurrency(totals.available || 0))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Allocated: ${escapeHtml(formatCurrency(totals.allocated))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Reserved: ${escapeHtml(formatCurrency(totals.reserved))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Committed: ${escapeHtml(formatCurrency(totals.committed))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Spent: ${escapeHtml(formatCurrency(totals.spent))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Available: ${escapeHtml(formatCurrency(totals.available))}</span>
   `;
   const rows = Array.isArray(payload.allocations) ? payload.allocations : [];
   tbody.innerHTML = rows.slice(0, 200).map((row) => `
     <tr>
       <td><div class="fw-semibold">${escapeHtml(row.costCenter || '-')}</div><div class="small text-muted">${escapeHtml(row.period || '-')}</div></td>
       <td>${escapeHtml(`${row.department || 'Unassigned'} / ${row.building || '-'}`)}</td>
-      <td>${escapeHtml(formatCurrency(row.allocatedAmount || 0))}</td>
-      <td>${escapeHtml(formatCurrency(row.reservedAmount || 0))}</td>
-      <td>${escapeHtml(formatCurrency(row.committedAmount || 0))}</td>
-      <td>${escapeHtml(formatCurrency(row.spentAmount || 0))}</td>
-      <td>${escapeHtml(formatCurrency(row.availableAmount || 0))}</td>
+      <td>${escapeHtml(formatCurrency(row.allocatedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.reservedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.committedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.spentAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.availableAmount))}</td>
     </tr>
   `).join('') || '<tr><td colspan="7" class="text-muted">No budget allocations yet.</td></tr>';
 }
@@ -1522,16 +1578,18 @@ function renderSuppliersPanel() {
   `).join('') || '<tr><td colspan="5" class="text-muted">No supplier catalog items yet.</td></tr>';
 }
 
-async function loadBoard() {
+async function loadBoard(options = {}) {
+  const background = Boolean(options.background);
   const statusFilterEl = document.getElementById('procStatusFilter');
   state.statusFilter = String(statusFilterEl?.value || 'all').trim() || 'all';
-  setLoadingState(true, 'Loading procurement board...');
-  setProcurementSkeletonState();
+  setLoadingState(true, background ? 'Refreshing procurement evidence...' : 'Loading procurement board...');
+  if (!background) setProcurementSkeletonState();
   try {
     state.board = await readJson(`/inventory/procurement/board?status=${encodeURIComponent(state.statusFilter)}`);
+    state.loadedAt = Date.now();
     renderBoard();
     await loadErpFoundationPanels();
-    setLoadingState(false, 'Ready.');
+    setLoadingState(false);
   } catch (error) {
     console.error(error);
     setLoadError(error.message || 'Failed to load board');
@@ -2388,8 +2446,182 @@ function continueRequestWorkflow(requestId) {
   else if (next.type === 'receive') receiveRequest(requestId);
 }
 
+function procurementGemmaFeatureRows(aiReady, diagnostics = {}) {
+  const source = aiReady ? 'Gemma ready' : 'Fallback available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  return [
+    ['AI purchase recommendations', 'Hybrid', source, 'Recommendations are grounded in stock, EOL, audit, maintenance, and request evidence.'],
+    ['Procurement 360 explanation', 'Hybrid', source, 'Deterministic board metrics first; Gemma explains priorities.'],
+    ['Vendor quote comparison', 'Hybrid', source, 'Quote facts are deterministic; Gemma explains best-value tradeoffs.'],
+    ['Budget impact explanation', 'Hybrid', source, 'Budget math remains deterministic; Gemma summarizes risk and actions.'],
+    ['FIFO explanation', 'Hybrid', source, 'FIFO queue is deterministic; Gemma explains oldest-batch reasoning.'],
+    ['EOQ/MOQ explanation', 'Hybrid', source, 'Formula results stay deterministic; Gemma explains missing data/conflicts.'],
+    ['Procurement Copilot prompt', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+  ];
+}
+
+async function fetchProcurementGemmaDiagnostics() {
+  const startedAt = performance.now();
+  const [healthRes, diagnosticsRes, backendRes, testRes] = await Promise.allSettled([
+    fetch(`${INVENTORY_AI_URL}/health`).then((response) => response.json()),
+    fetch(`${INVENTORY_AI_URL}/ai/diagnostics`).then((response) => response.json()),
+    readJson('/inventory/ai/diagnostics'),
+    sendJson('/inventory/ai/test-gemma', {}),
+  ]);
+  return {
+    health: healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' },
+    diagnostics: diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' },
+    backend: backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' },
+    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' },
+    latencyMs: Math.round(performance.now() - startedAt),
+  };
+}
+
+function renderProcurementGemmaDiagnosticsBody(result = {}) {
+  const health = result.health || {};
+  const diagnostics = result.diagnostics || {};
+  const backend = result.backend || {};
+  const test = result.test || {};
+  const aiReady = String(health.llm_status || diagnostics.llm_status || '').toLowerCase() === 'ready'
+    || Boolean(test.llmUsed || test.usedGemma || test.gemmaUsed);
+  const model = health.llm_model || diagnostics.llm_model || diagnostics.model || test.model || 'Unknown';
+  const provider = health.llm_provider || diagnostics.llm_provider || 'Unknown';
+  const lastError = health.llm_last_error || diagnostics.llm_last_error || backend.error || test.error || '';
+  const rows = procurementGemmaFeatureRows(aiReady, diagnostics);
+  return `
+    <div class="ops-gemma-diagnostics">
+      <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
+        <div>
+          <div class="ops-gemma-kicker">Procurement AI diagnostics</div>
+          <h3>${escapeHtml(aiReady ? 'Gemma is ready for Procurement AI' : 'Procurement AI fallback is available')}</h3>
+          <p>${escapeHtml(aiReady ? 'Procurement calculations remain deterministic; Gemma is available for explanation and narrative recommendations.' : 'OpsMind will continue showing rule-based procurement evidence until Gemma is available.')}</p>
+        </div>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+      </div>
+      <div class="ops-gemma-metrics">
+        <div><strong>Provider</strong><span>${escapeHtml(provider)}</span></div>
+        <div><strong>Model</strong><span>${escapeHtml(model)}</span></div>
+        <div><strong>Latency</strong><span>${escapeHtml(`${result.latencyMs ?? '-'} ms`)}</span></div>
+        <div><strong>Timeout</strong><span>${escapeHtml(String(diagnostics.timeout_seconds ?? diagnostics.timeoutSeconds ?? 'Unknown'))}</span></div>
+        <div><strong>Selected model</strong><span>${escapeHtml(String(diagnostics.selected_model_present ?? diagnostics.modelPresent ?? 'Unknown'))}</span></div>
+        <div><strong>Backend bridge</strong><span>${escapeHtml(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
+      </div>
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle ops-gemma-table">
+          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map(([feature, requires, source, note]) => `
+              <tr>
+                <td>${escapeHtml(feature)}</td>
+                <td>${escapeHtml(requires)}</td>
+                <td><span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(source)}</span></td>
+                <td>${escapeHtml(note)}</td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-gemma-retest>Test</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-gemma-ask="${escapeHtml(feature)}">Ask Gemma</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function openProcurementGemmaDiagnostics() {
+  const modalId = 'procGemmaDiagnosticsModal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content ops-diagnostics-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Procurement AI readiness, source labels, and fallback safety.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+            </div>
+            <div class="modal-body" id="${modalId}Body">
+              <div class="ops-loading-stack">
+                <span class="ops-skeleton-line lg"></span>
+                <span class="ops-skeleton-line md"></span>
+                <span class="ops-skeleton-card"></span>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+    modalEl.addEventListener('click', (event) => {
+      if (event.target?.closest('[data-proc-gemma-retest]')) openProcurementGemmaDiagnostics();
+      const askBtn = event.target?.closest('[data-proc-gemma-ask]');
+      if (askBtn) {
+        const feature = askBtn.getAttribute('data-proc-gemma-ask') || 'Procurement AI';
+        sessionStorage.setItem('inventory_copilot_prefill', `Test ${feature} with Gemma. Use real procurement evidence only and state whether Gemma, hybrid, deterministic, or fallback was used.`);
+        window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
+      }
+    });
+    document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openProcurementGemmaDiagnostics());
+  }
+  const body = document.getElementById(`${modalId}Body`);
+  if (body) {
+    body.innerHTML = `
+      <div class="ops-loading-stack">
+        <span class="ops-skeleton-line lg"></span>
+        <span class="ops-skeleton-line md"></span>
+        <span class="ops-skeleton-card"></span>
+      </div>
+    `;
+  }
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  try {
+    const result = await fetchProcurementGemmaDiagnostics();
+    if (body) body.innerHTML = renderProcurementGemmaDiagnosticsBody(result);
+  } catch (error) {
+    if (body) {
+      body.innerHTML = `
+        <div class="ops-empty-state-card ops-empty-state-card-danger">
+          <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
+          <div>
+            <div class="ops-empty-state-title">Diagnostics unavailable</div>
+            <div class="ops-empty-state-copy">${escapeHtml(error.message || 'Could not complete read-only Gemma diagnostics.')}</div>
+          </div>
+        </div>
+      `;
+    }
+  }
+}
+
+function setupProcurementAutoRefresh() {
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(() => {
+    if (state.loading) return;
+    if (!autoRefreshEnabled() || shouldPauseProcurementAutoRefresh()) {
+      setLoadingState(false);
+      return;
+    }
+    loadBoard({ background: true }).catch((error) => {
+      console.warn('[Procurement] Auto refresh failed:', error?.message || error);
+      setLoadError('Failed to auto-refresh procurement evidence.');
+    });
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
 function handleProcurement360Action(action = '') {
   const value = String(action || '').trim();
+  if (value === 'gemma-diagnostics') {
+    openProcurementGemmaDiagnostics();
+    return;
+  }
   if (value === 'continue') {
     continueProcurementWorkflow();
     return;
@@ -2621,6 +2853,7 @@ function bindActions() {
 document.addEventListener('DOMContentLoaded', async () => {
   if (!ensureAccess()) return;
   bindActions();
+  setupProcurementAutoRefresh();
   await loadBoard();
   applyInitialProcurementHash();
 });

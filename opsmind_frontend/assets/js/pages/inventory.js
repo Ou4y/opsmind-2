@@ -3,6 +3,9 @@ import AuthService from '/services/authService.js';
 
 // Config is set as globals in config.js (loaded in HTML head)
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
+const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const AUTO_REFRESH_PREF_KEY = 'opsmind_auto_refresh_enabled';
 
 // Define configuration variables globally so the rest of the script can use them
 let BUILDINGS = [];
@@ -106,6 +109,9 @@ let inventoryPageState = {
   pageSize: 50,
   total: 0,
   totalPages: 1,
+  loadedAt: 0,
+  refreshTimer: null,
+  refreshing: false,
 };
 let transferSelectionState = {
   targetAssetIds: [],
@@ -437,6 +443,44 @@ const DEPARTMENT_ALIASES = {
 
 function normalizeValue(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function formatCurrencyEGP(value, options = {}) {
+  if (value === null || typeof value === 'undefined' || String(value).trim() === '') return options.missingLabel || 'Cost data missing';
+  const amount = Number(value);
+  const allowZero = options.allowZero !== false;
+  if (!Number.isFinite(amount) || (!allowZero && amount <= 0)) return options.missingLabel || 'Cost data missing';
+  return new Intl.NumberFormat('en-EG', {
+    style: 'currency',
+    currency: 'EGP',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatRelativeTime(value) {
+  if (!value) return 'not updated yet';
+  const timestamp = typeof value === 'number' ? value : new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 'not updated yet';
+  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (diffSeconds < 45) return 'just now';
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  return new Date(timestamp).toLocaleString();
+}
+
+function isAutoRefreshEnabled() {
+  return String(localStorage.getItem(AUTO_REFRESH_PREF_KEY) || 'true').toLowerCase() !== 'false';
+}
+
+function shouldPauseInventoryAutoRefresh() {
+  if (document.visibilityState === 'hidden') return true;
+  if (document.querySelector('.modal.show')) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = String(active.tagName || '').toLowerCase();
+  return ['input', 'textarea', 'select'].includes(tag) || active.isContentEditable;
 }
 
 function canonicalType(type) {
@@ -1853,6 +1897,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (chip) clearInventoryFilterChip(chip.getAttribute('data-inventory-clear-filter'));
     });
   }
+  setupInventoryAutoRefresh();
   document.addEventListener('click', (event) => {
     const actionBtn = event.target?.closest('[data-inventory-360-action]');
     if (actionBtn) handleInventory360Action(actionBtn.getAttribute('data-inventory-360-action'));
@@ -2606,6 +2651,48 @@ function renderInventoryLoadError(error, endpoint) {
   updateInventoryAiFloatingOffset();
 }
 
+function updateInventoryFreshnessStatus(status = 'ready', message = '') {
+  const badge = document.getElementById('inventoryFreshnessBadge');
+  const table = document.getElementById('inventoryTableFreshness');
+  const autoText = isAutoRefreshEnabled()
+    ? `Auto-refreshes every ${AUTO_REFRESH_INTERVAL_MS / 1000}s`
+    : 'Auto-refresh paused';
+  const loadedText = inventoryPageState.loadedAt ? `Updated ${formatRelativeTime(inventoryPageState.loadedAt)}` : 'Waiting for first load';
+  const label = message || (status === 'refreshing'
+    ? 'Refreshing inventory data...'
+    : (status === 'error' ? `Refresh failed. ${loadedText}.` : `${loadedText}. ${autoText}.`));
+  const stateClass = status === 'error' ? 'is-error' : (status === 'refreshing' ? 'is-refreshing' : 'is-ready');
+  if (badge) {
+    badge.className = `ops-freshness-pill ${stateClass}`;
+    badge.innerHTML = `
+      <i class="bi ${status === 'refreshing' ? 'bi-arrow-repeat' : (status === 'error' ? 'bi-exclamation-triangle' : 'bi-check2-circle')}" aria-hidden="true"></i>
+      <span>${UI.escapeHTML(label)}</span>
+    `;
+  }
+  if (table) {
+    table.innerHTML = `
+      <span class="ops-freshness-pill ${stateClass}">
+        <i class="bi ${status === 'refreshing' ? 'bi-arrow-repeat' : (status === 'error' ? 'bi-exclamation-triangle' : 'bi-clock-history')}" aria-hidden="true"></i>
+        <span>${UI.escapeHTML(label)}</span>
+      </span>
+    `;
+  }
+}
+
+function setupInventoryAutoRefresh() {
+  if (inventoryPageState.refreshTimer) clearInterval(inventoryPageState.refreshTimer);
+  inventoryPageState.refreshTimer = setInterval(() => {
+    if (!isAutoRefreshEnabled() || shouldPauseInventoryAutoRefresh() || loadAssetsInFlightPromise) {
+      updateInventoryFreshnessStatus('ready');
+      return;
+    }
+    loadAssets({ background: true }).catch((error) => {
+      console.warn('[Inventory] Auto refresh failed:', error?.message || error);
+      updateInventoryFreshnessStatus('error', 'Failed to auto-refresh inventory data.');
+    });
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
 function refreshInventorySecondaryEvidence() {
   Promise.allSettled([
     loadAssetAiJobStatuses(),
@@ -2623,13 +2710,15 @@ function refreshInventorySecondaryEvidence() {
   });
 }
 
-async function loadAssets() {
+async function loadAssets(options = {}) {
   if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
+  const background = Boolean(options.background);
 
   loadAssetsInFlightPromise = (async () => {
     let endpoint = '/assets';
     try {
-      showInventoryTableLoadingState();
+      updateInventoryFreshnessStatus('refreshing', background ? 'Refreshing inventory evidence...' : 'Loading inventory data...');
+      if (!background) showInventoryTableLoadingState();
       const searchTerm = String(document.getElementById('searchInput')?.value || '').trim();
       const buildingFilter = String(document.getElementById('filterBuilding')?.value || 'all');
       const deptFilter = String(document.getElementById('filterDept')?.value || 'all');
@@ -2662,6 +2751,7 @@ async function loadAssets() {
       inventoryPageState.totalPages = normalized.totalPages;
       inventoryPageState.page = normalized.page;
       inventoryPageState.pageSize = normalized.pageSize;
+      inventoryPageState.loadedAt = Date.now();
       await refreshInventoryFilterSnapshot().catch((error) => {
         console.warn('[Inventory] Full filter snapshot failed; using current page data:', error?.message || error);
       });
@@ -2671,9 +2761,11 @@ async function loadAssets() {
       refreshInventory360ProcurementBoard().catch(() => {});
       updateDeleteAllAssetsButton();
       refreshInventorySecondaryEvidence();
+      updateInventoryFreshnessStatus('ready');
     } catch (error) {
       console.error('Error:', error);
       renderInventoryLoadError(error, endpoint);
+      updateInventoryFreshnessStatus('error', `Data loaded failed at ${endpoint}. ${error?.message || 'Check logs.'}`);
     }
   })();
 
@@ -3881,8 +3973,8 @@ function inventory360Cost(value) {
 
 function inventory360Currency(value) {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 'Missing';
-  return parsed.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'Cost data missing';
+  return formatCurrencyEGP(parsed);
 }
 
 function getInventory360AssetCost(asset = {}) {
@@ -3951,6 +4043,15 @@ function buildInventory360Summary() {
     acc[label] = (acc[label] || 0) + 1;
     return acc;
   }, {});
+  const categoryCounts = {
+    parents: getAssetsForInventoryViewFromList(assets, 'parents').length,
+    components: getAssetsForInventoryViewFromList(assets, 'components').length,
+    accessories: getAssetsForInventoryViewFromList(assets, 'accessories').length,
+    consumables: getAssetsForInventoryViewFromList(assets, 'consumables').length,
+    spare_stock: stockRows.length,
+    licenses: getAssetsForInventoryViewFromList(assets, 'licenses').length,
+  };
+  const spareStockQuantity = stockRows.reduce((sum, row) => sum + inventory360Number(row.quantityAvailable ?? row.quantity ?? row.availableQuantity, 0), 0);
   const highRiskAssets = assets.filter((asset) => isAssetHighRisk(asset)).length;
   const eolSoonAssets = assets.filter((asset) => isAssetEolSoon(asset)).length;
   const staleTelemetryAssets = assets.filter((asset) => {
@@ -4012,6 +4113,8 @@ function buildInventory360Summary() {
     inTransitAssets,
     unassignedAssets,
     typeMix,
+    categoryCounts,
+    spareStockQuantity,
     highRiskAssets,
     eolSoonAssets,
     staleTelemetryAssets,
@@ -4079,6 +4182,27 @@ function inventory360Card({ title, value, subtitle, severity = 'info', source = 
   `;
 }
 
+function renderInventory360Totals(summary = buildInventory360Summary()) {
+  const el = document.getElementById('inventory360Totals');
+  if (!el) return;
+  const categories = [
+    { label: 'All asset records', value: summary.totalAssets, action: 'view-parents', helper: 'DB-backed asset records' },
+    { label: 'Parent Assets', value: summary.categoryCounts?.parents ?? 0, action: 'view-parents', helper: 'Lifecycle-managed units' },
+    { label: 'Components', value: summary.categoryCounts?.components ?? 0, action: 'view-components', helper: 'Installed child items' },
+    { label: 'Accessories', value: summary.categoryCounts?.accessories ?? 0, action: 'view-accessories', helper: 'Linked or standalone accessories' },
+    { label: 'Consumables', value: summary.categoryCounts?.consumables ?? 0, action: 'view-consumables', helper: 'Consumable records' },
+    { label: 'Spare Stock', value: summary.categoryCounts?.spare_stock ?? 0, action: 'view-spare-stock', helper: `${summary.spareStockQuantity || 0} quantity on hand` },
+    { label: 'Licenses', value: summary.categoryCounts?.licenses ?? 0, action: 'view-licenses', helper: 'Software/license records' },
+  ];
+  el.innerHTML = categories.map((item, index) => `
+    <button type="button" class="ops-total-card ${index === 0 ? 'is-primary' : ''}" data-inventory-360-action="${UI.escapeHTML(item.action)}">
+      <span class="ops-total-card-label">${UI.escapeHTML(item.label)}</span>
+      <strong>${UI.escapeHTML(String(item.value ?? 0))}</strong>
+      <small>${UI.escapeHTML(item.helper)}</small>
+    </button>
+  `).join('');
+}
+
 function buildInventory360NextActions(summary) {
   const actions = [
     {
@@ -4135,6 +4259,7 @@ function renderInventory360Analytics() {
   const knownCostTotal = summary.totalAssetValue + summary.replacementForecast + summary.maintenanceCost + summary.stockValue;
   const nextActions = buildInventory360NextActions(summary);
 
+  renderInventory360Totals(summary);
   grid.innerHTML = [
     inventory360Card({
       title: 'Inventory Health',
@@ -4225,6 +4350,163 @@ async function refreshInventory360ProcurementBoard(force = false) {
   return inventory360AnalyticsState.inFlightPromise;
 }
 
+function inventoryGemmaFeatureRows(aiReady, diagnostics = {}) {
+  const source = aiReady ? 'Gemma ready' : 'Fallback available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  return [
+    ['Inventory AI Daily Briefing', 'Yes', source, 'Daily brief endpoint should use Gemma for narrative when ready.'],
+    ['Explain Inventory 360', 'Hybrid', source, 'Inventory facts are deterministic; Gemma explains the loaded evidence.'],
+    ['Asset health summary', 'Yes', source, 'CMDB evidence packet should route through Inventory AI service.'],
+    ['AI Risk Score', 'Hybrid', source, 'Risk facts are deterministic; Gemma can explain reasons and next actions.'],
+    ['Draft Ticket', 'Yes/Hybrid', source, 'Draft text can be Gemma-generated, but user review remains required.'],
+    ['AI Import Repair', 'Hybrid', source, 'Column/error evidence is compact; safe fixes still require review.'],
+    ['AI Map Columns', 'Hybrid', source, 'Header/sample evidence is sent only when mapping needs AI.'],
+    ['AI Spec Verification', 'Hybrid', source, 'Trusted-source/spec facts remain evidence-backed.'],
+    ['Procurement recommendation explanation', 'Hybrid', source, 'Uses real stock/EOL/audit/request evidence.'],
+    ['Copilot prompt response', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+  ];
+}
+
+async function fetchInventoryGemmaDiagnostics() {
+  const startedAt = performance.now();
+  const [healthRes, diagnosticsRes, backendRes, testRes] = await Promise.allSettled([
+    fetch(`${INVENTORY_AI_URL}/health`).then((response) => response.json()),
+    fetch(`${INVENTORY_AI_URL}/ai/diagnostics`).then((response) => response.json()),
+    readInventoryJson('/inventory/ai/diagnostics'),
+    postInventoryJson('/inventory/ai/test-gemma', {}),
+  ]);
+  return {
+    health: healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' },
+    diagnostics: diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' },
+    backend: backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' },
+    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' },
+    latencyMs: Math.round(performance.now() - startedAt),
+  };
+}
+
+function renderInventoryGemmaDiagnosticsBody(result = {}) {
+  const health = result.health || {};
+  const diagnostics = result.diagnostics || {};
+  const backend = result.backend || {};
+  const test = result.test || {};
+  const aiReady = String(health.llm_status || diagnostics.llm_status || '').toLowerCase() === 'ready'
+    || Boolean(test.llmUsed || test.usedGemma || test.gemmaUsed);
+  const model = health.llm_model || diagnostics.llm_model || diagnostics.model || test.model || 'Unknown';
+  const provider = health.llm_provider || diagnostics.llm_provider || 'Unknown';
+  const lastError = health.llm_last_error || diagnostics.llm_last_error || backend.error || test.error || '';
+  const rows = inventoryGemmaFeatureRows(aiReady, diagnostics);
+  return `
+    <div class="ops-gemma-diagnostics">
+      <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
+        <div>
+          <div class="ops-gemma-kicker">Inventory AI diagnostics</div>
+          <h3>${UI.escapeHTML(aiReady ? 'Gemma is ready for Inventory AI' : 'Inventory AI is using fallback readiness')}</h3>
+          <p>${UI.escapeHTML(aiReady ? 'Calculations stay deterministic; Gemma is available for summaries, explanations, and recommendation wording.' : 'Fallback remains available. Retest after Ollama/Gemma is running and warmed up.')}</p>
+        </div>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${UI.escapeHTML(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+      </div>
+      <div class="ops-gemma-metrics">
+        <div><strong>Provider</strong><span>${UI.escapeHTML(provider)}</span></div>
+        <div><strong>Model</strong><span>${UI.escapeHTML(model)}</span></div>
+        <div><strong>Latency</strong><span>${UI.escapeHTML(`${result.latencyMs ?? '-'} ms`)}</span></div>
+        <div><strong>Timeout</strong><span>${UI.escapeHTML(String(diagnostics.timeout_seconds ?? diagnostics.timeoutSeconds ?? 'Unknown'))}</span></div>
+        <div><strong>Keep alive</strong><span>${UI.escapeHTML(String(diagnostics.keep_alive ?? diagnostics.keepAlive ?? 'Unknown'))}</span></div>
+        <div><strong>Backend bridge</strong><span>${UI.escapeHTML(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
+      </div>
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${UI.escapeHTML(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle ops-gemma-table">
+          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Readiness/source</th><th>What this verifies</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map(([feature, requires, source, note]) => `
+              <tr>
+                <td>${UI.escapeHTML(feature)}</td>
+                <td>${UI.escapeHTML(requires)}</td>
+                <td><span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${UI.escapeHTML(source)}</span></td>
+                <td>${UI.escapeHTML(note)}</td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-gemma-retest>Test</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-inventory-gemma-ask="${UI.escapeHTML(feature)}">Ask Gemma</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function openInventoryGemmaDiagnostics() {
+  const modalId = 'inventoryGemmaDiagnosticsModal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content ops-diagnostics-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and fallback labels.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+            </div>
+            <div class="modal-body" id="${modalId}Body">
+              <div class="ops-loading-stack">
+                <span class="ops-skeleton-line lg"></span>
+                <span class="ops-skeleton-line md"></span>
+                <span class="ops-skeleton-card"></span>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+    modalEl.addEventListener('click', (event) => {
+      if (event.target?.closest('[data-inventory-gemma-retest]')) openInventoryGemmaDiagnostics();
+      const askBtn = event.target?.closest('[data-inventory-gemma-ask]');
+      if (askBtn) {
+        const feature = askBtn.getAttribute('data-inventory-gemma-ask') || 'Inventory AI';
+        openInventoryCopilotWithPrompt(`Test ${feature} with Gemma. Use real inventory evidence only and state whether Gemma, hybrid, deterministic, or fallback was used.`);
+      }
+    });
+    document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openInventoryGemmaDiagnostics());
+  }
+  const body = document.getElementById(`${modalId}Body`);
+  if (body) {
+    body.innerHTML = `
+      <div class="ops-loading-stack">
+        <span class="ops-skeleton-line lg"></span>
+        <span class="ops-skeleton-line md"></span>
+        <span class="ops-skeleton-card"></span>
+      </div>
+    `;
+  }
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  try {
+    const result = await fetchInventoryGemmaDiagnostics();
+    if (body) body.innerHTML = renderInventoryGemmaDiagnosticsBody(result);
+  } catch (error) {
+    if (body) {
+      body.innerHTML = `
+        <div class="ops-empty-state-card ops-empty-state-card-danger">
+          <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
+          <div>
+            <div class="ops-empty-state-title">Diagnostics unavailable</div>
+            <div class="ops-empty-state-copy">${UI.escapeHTML(error.message || 'Could not complete read-only Gemma diagnostics.')}</div>
+          </div>
+        </div>
+      `;
+    }
+  }
+}
+
 function openInventoryCopilotWithPrompt(prompt = '') {
   const value = String(prompt || '').trim();
   if (value) sessionStorage.setItem('inventory_copilot_prefill', value);
@@ -4241,6 +4523,23 @@ function openInventoryCopilotWithPrompt(prompt = '') {
 
 function handleInventory360Action(action = '') {
   const value = String(action || '').trim();
+  const viewActionMap = {
+    'view-parents': 'parents',
+    'view-components': 'components',
+    'view-accessories': 'accessories',
+    'view-consumables': 'consumables',
+    'view-spare-stock': 'spare_stock',
+    'view-licenses': 'licenses',
+  };
+  if (viewActionMap[value]) {
+    setInventorySavedView('all', { skipLoad: true });
+    setInventoryView(viewActionMap[value]);
+    return;
+  }
+  if (value === 'gemma-diagnostics') {
+    openInventoryGemmaDiagnostics();
+    return;
+  }
   if (value === 'assets') {
     setInventorySavedView('all');
     return;
@@ -6504,7 +6803,7 @@ function renderProcurementBoard() {
 
   const analytics = board.analytics || {};
   analyticsEl.textContent = [
-    `Monthly spend estimate: ${Number(analytics.monthlySpendingEstimate || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}`,
+    `Monthly spend estimate: ${formatCurrencyEGP(analytics.monthlySpendingEstimate)}`,
     `Open POs: ${analytics.openPurchaseOrders ?? 0}`,
     `Aging approved/ordered requests: ${analytics.agingApprovedRequests ?? 0}`,
     `Received: ${analytics.receivedVsPending?.received ?? 0}`,
@@ -6584,7 +6883,7 @@ function renderProcurementBoard() {
         <td>
           <div>${UI.escapeHTML(row.requestedBy || '-')}</div>
           <div class="small text-muted">${UI.escapeHTML(row.linkedDepartment || 'Unassigned')} | ${UI.escapeHTML(row.linkedLocation || '-')}</div>
-          ${selectedQuote ? `<div class="small text-muted">Selected quote: ${UI.escapeHTML(selectedQuote.vendorName || '-')} (${selectedQuote.totalPrice !== null ? Number(selectedQuote.totalPrice).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '-'})</div>` : ''}
+          ${selectedQuote ? `<div class="small text-muted">Selected quote: ${UI.escapeHTML(selectedQuote.vendorName || '-')} (${selectedQuote.totalPrice !== null ? UI.escapeHTML(formatCurrencyEGP(selectedQuote.totalPrice)) : '-'})</div>` : ''}
         </td>
         <td><span class="badge ${procurementStatusBadgeClass(row.status)}">${UI.escapeHTML(row.status || '-')}</span></td>
         <td>${UI.escapeHTML(formatProcurementDate(row.updatedAt))}</td>
@@ -6952,7 +7251,7 @@ function formatCmdbDate(value) {
 function formatCmdbCurrency(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return '-';
-  return amount.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  return formatCurrencyEGP(amount);
 }
 
 function getCmdbRelationshipLabel(relationshipType) {
