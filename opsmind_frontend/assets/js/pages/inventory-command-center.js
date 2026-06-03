@@ -1,5 +1,6 @@
 import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
+import { initInventoryAiCopilot } from '/assets/js/components/inventoryAiCopilot.js';
 
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
 const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
@@ -1336,10 +1337,39 @@ function navigateToInventoryAction(action, prompt = '') {
   window.location.href = '/pages/inventory.html';
 }
 
+function openCommandCenterCopilot(prompt = 'What needs attention today?') {
+  if (typeof window.openInventoryAiChatWithPrompt === 'function') {
+    window.openInventoryAiChatWithPrompt(prompt);
+    return;
+  }
+  navigateToInventoryAction('ai', prompt);
+}
+
+function commandCenterCopilotContext() {
+  const summary = buildSummary();
+  return {
+    page: 'inventory_command_center',
+    dashboard: {
+      totalAssets: summary.totalAssets,
+      lowStockCount: summary.lowStockCount,
+      highRiskCount: summary.highRiskCount,
+      eolSoonCount: summary.eolSoonCount,
+      pendingApprovals: summary.pendingApprovals,
+      openPurchaseOrders: summary.openPurchaseOrders,
+      missingDataCount: summary.missingDataCount,
+      dataQualityScore: summary.dataQualityScore,
+      auditIssueCount: summary.auditIssueCount,
+      staleTelemetryCount: summary.staleTelemetryCount,
+    },
+    freshness: state.loadedAt,
+    source: 'inventory_command_center_loaded_evidence',
+  };
+}
+
 function handleAction(action) {
   const value = String(action || '').trim();
   if (value === 'explain-dashboard') {
-    navigateToInventoryAction('ai', buildDashboardExplanationPrompt());
+    openCommandCenterCopilot(buildDashboardExplanationPrompt());
     return;
   }
   if (value === 'assets') {
@@ -1367,7 +1397,7 @@ function handleAction(action) {
     return;
   }
   if (value === 'ai') {
-    navigateToInventoryAction('ai', 'What needs attention today?');
+    openCommandCenterCopilot('What needs attention today? Explain priorities from this Command Center page using real evidence only.');
   }
 }
 
@@ -1554,7 +1584,7 @@ function bindActions() {
     const promptBtn = event.target?.closest('[data-icc-ai-prompt]');
     if (promptBtn) {
       const prompt = String(promptBtn.getAttribute('data-icc-ai-prompt') || '').trim();
-      navigateToInventoryAction('ai', prompt || 'What needs attention today?');
+      openCommandCenterCopilot(prompt || 'What needs attention today?');
     }
   });
   window.addEventListener('storage', (event) => {
@@ -1566,6 +1596,21 @@ function bindActions() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!ensureAccess()) return;
+  initInventoryAiCopilot({
+    pageKey: 'inventory_command_center',
+    pageLabel: 'Command Center',
+    contextProvider: commandCenterCopilotContext,
+    prompts: [
+      { label: 'What needs attention?', prompt: 'What needs attention today on this Inventory Command Center?' },
+      { label: 'Explain this page', prompt: 'Explain this Command Center using only loaded inventory and procurement evidence.' },
+      { label: 'Cost risks', prompt: 'Show cost and budget risks from this Command Center.' },
+      { label: 'Missing data', prompt: 'Which missing data weakens inventory confidence most?' },
+    ],
+    quickActions: [
+      { label: 'Open Inventory 360', url: '/pages/inventory.html#inventory360' },
+      { label: 'Open Procurement', url: '/pages/procurement.html' },
+    ],
+  });
   bindActions();
   setupAutoRefresh();
   await loadCommandCenter();

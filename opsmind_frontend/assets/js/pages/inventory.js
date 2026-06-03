@@ -133,6 +133,7 @@ let inventoryAiChatState = {
   loadingSince: null,
   status: 'gemma',
   promptsCollapsed: null,
+  typingTimer: null,
 };
 const cmdbAiInFlightActions = new Set();
 let importAiHeaderMappings = null;
@@ -2419,6 +2420,29 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    const tag = String(target?.tagName || '').toLowerCase();
+    const isTypingField = ['input', 'textarea', 'select'].includes(tag) || Boolean(target?.isContentEditable);
+    if (event.key === '/' && !isTypingField && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const search = document.getElementById('searchInput');
+      if (search) {
+        event.preventDefault();
+        search.focus();
+        search.select?.();
+      }
+    }
+    if (event.key === 'Escape') {
+      if ((inventoryAiChatState.messages || []).some((entry) => entry.typing)) {
+        finishInventoryAiTypingReveal();
+        renderInventoryAiChatMessages();
+        return;
+      }
+      if (inventoryAiChatState.open) {
+        window.toggleInventoryAiChat(false);
+      }
+    }
+  });
 
   const copilotPrefillFromSession = String(sessionStorage.getItem('inventory_copilot_prefill') || '').trim();
   const inventoryUrlParams = new URLSearchParams(window.location.search);
@@ -5240,72 +5264,104 @@ window.viewAssetDetails = (assetName) => {
       ? `Showing ${totalQty} unit(s) across ${batchCount} backend batch(es)`
       : `Showing ${totalQty} ${modeLabel} unit(s) in this group`;
   }
+  const detailCountPill = document.getElementById('detailModalCountPill');
+  if (detailCountPill) detailCountPill.textContent = `${totalQty.toLocaleString()} unit${totalQty === 1 ? '' : 's'}`;
   document.getElementById('innerSearchInput').value = '';
 
   const detailsBody = document.getElementById('detailsTableBody');
   const sampleAsset = groupAssets[0];
   const eolData = getEOLDetails(sampleAsset);
-  
-  const headerDiv = document.querySelector('.bulk-header');
-  if (headerDiv) {
-    const existingAiBanner = document.getElementById('aiSummaryBanner');
-    if (existingAiBanner) existingAiBanner.remove();
 
-    const aiBanner = document.createElement('div');
-    aiBanner.id = 'aiSummaryBanner';
-    aiBanner.className = 'w-100 mb-3 mt-2 inventory-ai-prediction-banner';
-    
-    const failingCount = groupAssets.reduce((count, asset) => {
-      const eol = getEOLDetails(asset);
-      return count + (!eol.isClosedLifecycle && eol.daysRemaining <= 180 ? getAssetQuantity(asset) : 0);
-    }, 0);
-    const lowConfidenceCount = groupAssets.reduce((count, asset) => {
-      const eol = getEOLDetails(asset);
-      return count + (eol.lowConfidence ? getAssetQuantity(asset) : 0);
-    }, 0);
-    const unknownCount = groupAssets.reduce((count, asset) => {
-      const eol = getEOLDetails(asset);
-      return count + (eol.eolStatus === 'unknown' || eol.eolStatus === 'insufficient_data' ? getAssetQuantity(asset) : 0);
-    }, 0);
+  const failingCount = groupAssets.reduce((count, asset) => {
+    const eol = getEOLDetails(asset);
+    return count + (!eol.isClosedLifecycle && eol.daysRemaining <= 180 ? getAssetQuantity(asset) : 0);
+  }, 0);
+  const lowConfidenceCount = groupAssets.reduce((count, asset) => {
+    const eol = getEOLDetails(asset);
+    return count + (eol.lowConfidence ? getAssetQuantity(asset) : 0);
+  }, 0);
+  const unknownCount = groupAssets.reduce((count, asset) => {
+    const eol = getEOLDetails(asset);
+    return count + (eol.eolStatus === 'unknown' || eol.eolStatus === 'insufficient_data' ? getAssetQuantity(asset) : 0);
+  }, 0);
+  const deployedCount = groupAssets.filter((asset) => !isCentralWarehouseLocation(asset.location)).length;
+  const locationCount = new Set(groupAssets.map((asset) => getAssetDisplayLocation(asset, { preferInstalledParent: context.mode !== 'parents' })).filter(Boolean)).size;
+  const departmentCount = new Set(groupAssets.map((asset) => getAssetDisplayDepartment(asset, { preferInstalledParent: context.mode !== 'parents' })).filter(Boolean)).size;
+  const parentLinks = new Set(groupAssets.map((asset) => {
+    const parent = getInstalledParentInfo(asset);
+    return parent.parentName || parent.parentId || parent.parentTag;
+  }).filter(Boolean));
+  const summaryEl = document.getElementById('assetGroupSummary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="inventory-group-summary-card">
+        <span>Total units</span>
+        <strong>${UI.escapeHTML(totalQty.toLocaleString())}</strong>
+      </div>
+      <div class="inventory-group-summary-card">
+        <span>Backend records</span>
+        <strong>${UI.escapeHTML(String(batchCount))}</strong>
+      </div>
+      <div class="inventory-group-summary-card">
+        <span>Locations</span>
+        <strong>${UI.escapeHTML(String(locationCount || 1))}</strong>
+      </div>
+      <div class="inventory-group-summary-card">
+        <span>Departments</span>
+        <strong>${UI.escapeHTML(String(departmentCount || 1))}</strong>
+      </div>
+      <div class="inventory-group-summary-card">
+        <span>Deployment</span>
+        <strong>${UI.escapeHTML(String(deployedCount))}</strong>
+      </div>
+    `;
+  }
 
+  const insightEl = document.getElementById('assetGroupInsight');
+  if (insightEl) {
     if (context.mode !== 'parents') {
-      const parentLinks = new Set(groupAssets.map((asset) => {
-        const parent = getInstalledParentInfo(asset);
-        return parent.parentName || parent.parentId || parent.parentTag;
-      }).filter(Boolean));
-      aiBanner.innerHTML = `
-        <div class="inventory-ai-prediction-label">${UI.escapeHTML(context.mode === 'components' ? 'Component Group' : `${context.mode.replace(/_/g, ' ')}`)}</div>
-        <div class="inventory-ai-prediction-copy">
-          <p class="inventory-ai-prediction-main">
-            ${UI.escapeHTML(titleLabel)} across <strong>${groupAssets.length}</strong> linked unit(s).
-          </p>
-          <div class="inventory-ai-prediction-note">${parentLinks.size ? `${parentLinks.size} related parent asset(s) linked.` : 'No parent relationship found.'}</div>
+      insightEl.innerHTML = `
+        <div class="inventory-ai-prediction-banner">
+          <div class="inventory-ai-prediction-label">${UI.escapeHTML(context.mode === 'components' ? 'Component Group' : `${context.mode.replace(/_/g, ' ')}`)}</div>
+          <div class="inventory-ai-prediction-copy">
+            <p class="inventory-ai-prediction-main">
+              ${UI.escapeHTML(titleLabel)} has <strong>${groupAssets.length}</strong> linked record(s) and ${parentLinks.size ? `${parentLinks.size} related parent asset(s).` : 'no parent relationship found.'}
+            </p>
+            <details class="inventory-group-evidence-drawer">
+              <summary>Why this matters</summary>
+              <div>Use Group CMDB to compare components, accessories, licenses, maintenance, custody, and lifecycle differences before bulk changes.</div>
+            </details>
+          </div>
         </div>
       `;
     } else {
       const predictionTargetLabel = getAssetPredictionLabel(sampleAsset);
-      let noteHtml = '';
-      if (unknownCount > 0) {
-        noteHtml = `${unknownCount} item${unknownCount === 1 ? '' : 's'} need more evidence before reliable EOL prediction. Next steps: verify specs, add purchase/warranty dates, and collect telemetry after deployment.`;
-      } else if (lowConfidenceCount > 0) {
-        noteHtml = 'Current EOL confidence is low. Recommended: run AI Spec Verification and complete missing lifecycle data.';
-      } else if (failingCount > 0) {
-        noteHtml = `${failingCount} item(s) in this group need replacement planning soon.`;
-      } else {
-        noteHtml = 'All items in this group currently have a healthy EOL status.';
-      }
-
-      aiBanner.innerHTML = `
-        <div class="inventory-ai-prediction-label">AI Prediction</div>
-        <div class="inventory-ai-prediction-copy">
-          <p class="inventory-ai-prediction-main">
-            Profile-based lifespan for <strong>${UI.escapeHTML(predictionTargetLabel)}</strong> is <strong>${UI.escapeHTML(String(eolData.metrics.years))} years</strong>.
-          </p>
-          <div class="inventory-ai-prediction-note">${UI.escapeHTML(noteHtml)}</div>
+      const recommendation = unknownCount > 0
+        ? `${unknownCount} item${unknownCount === 1 ? '' : 's'} need more evidence before reliable EOL prediction.`
+        : lowConfidenceCount > 0
+          ? 'Evidence confidence is low. Verify specs, purchase/warranty dates, and telemetry.'
+          : failingCount > 0
+            ? `${failingCount} item(s) need replacement planning soon.`
+            : 'No immediate EOL action is indicated for this group.';
+      insightEl.innerHTML = `
+        <div class="inventory-ai-prediction-banner">
+          <div class="inventory-ai-prediction-label">AI / EOL insight</div>
+          <div class="inventory-ai-prediction-copy">
+            <p class="inventory-ai-prediction-main">
+              Profile-based lifespan for <strong>${UI.escapeHTML(predictionTargetLabel)}</strong> is <strong>${UI.escapeHTML(String(eolData.metrics.years))} years</strong>.
+            </p>
+            <div class="inventory-ai-prediction-note">${UI.escapeHTML(recommendation)}</div>
+            <details class="inventory-group-evidence-drawer">
+              <summary>Why?</summary>
+              <div>
+                Source: deterministic EOL profile plus local asset evidence. Unknown evidence: ${UI.escapeHTML(String(unknownCount))};
+                low confidence: ${UI.escapeHTML(String(lowConfidenceCount))}; procurement recommended: ${UI.escapeHTML(String(failingCount))}.
+              </div>
+            </details>
+          </div>
         </div>
       `;
     }
-    headerDiv.insertBefore(aiBanner, headerDiv.firstChild);
   }
 
 	  detailsBody.innerHTML = unitRows.map(({ asset, unitIndex, unitCount, unitLabel, isVirtualUnit }) => {
@@ -5341,95 +5397,84 @@ window.viewAssetDetails = (assetName) => {
           : (telemetryConfigured && isCentralWarehouseLocation(asset?.location)
               ? 'Telemetry activates after deployment outside Central Warehouse'
               : 'Not monitored'));
+    const encodedAssetId = encodeURIComponent(asset.customId || '');
+    const safeAssetLabel = UI.escapeHTML(asset.customId || unitLabel || 'asset');
+    const locationLabel = getAssetDisplayLocation(asset, { preferInstalledParent: context.mode !== 'parents' });
+    const departmentLabel = getAssetDisplayDepartment(asset, { preferInstalledParent: context.mode !== 'parents' });
     return `
-	    <tr>
-		      <td class="ps-4">
-		        <span class="font-monospace fw-bold">${unitLabel}</span>
-		        <div class="text-muted pred-lifespan-text">Batch ID: ${asset.customId}</div>
-		        ${isVirtualUnit ? `<div class="text-muted pred-lifespan-text">Unit ${unitIndex} of ${unitCount}</div>` : ''}
-	        <div class="text-muted pred-lifespan-text">${profile.brand || 'Unknown brand'}${profile.version ? ` - ${profile.version}` : ''}</div>
-	        <div class="text-muted pred-lifespan-text">Detected quality: ${capitalize(profile.quality)}</div>
-          ${installedInLabel ? `<div class="text-muted pred-lifespan-text">Installed in: ${UI.escapeHTML(installedInLabel)}</div>` : ''}
-          ${context.mode !== 'parents' ? `<div class="text-muted pred-lifespan-text">Parent: ${UI.escapeHTML(parentDescriptor || 'No parent relationship found')}</div>` : ''}
-	        <div class="mt-1">${getSpecVerificationBadge(specStatus)}</div>
-	      </td>
-	      <td>
-	        <span class="font-monospace">${UI.escapeHTML(serialLabel || 'Missing')}</span>
-	        ${assetTagLabel ? `<div class="text-muted small">Tag: ${UI.escapeHTML(assetTagLabel)}</div>` : ''}
-	      </td>
-	      <td>
-	        <span class="badge ${getStatusBadgeClass(asset.status)}">
-	          ${displayStatus(asset.status)}
-	        </span>
-	        <div class="text-muted small mt-1">${UI.escapeHTML(displayLifecycleStatus(asset.lifecycleStatus || 'in_stock'))}</div>
-	      </td>
-      <td>${getAssetDisplayLocation(asset, { preferInstalledParent: context.mode !== 'parents' })}</td>
-      <td>${getAssetDisplayDepartment(asset, { preferInstalledParent: context.mode !== 'parents' })}</td>
-	      <td>
-	        ${eolApplicable ? `
-          <div class="mb-1">
-	          <span class="badge ${eol.statusClass}">${eol.remainingText}</span>
-	        </div>
-	        <div class="text-muted pred-lifespan-text">
-	          <i class="bi bi-bar-chart-line inventory-ai-inline-icon"></i> EOL confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'} (${capitalize(eol.evidenceLevel || 'low')})
-	        </div>
-	        <div class="text-muted pred-lifespan-text">
-	          <i class="bi bi-lightning-charge inventory-ai-inline-icon"></i> ${UI.escapeHTML(eol.shortAction)}
-	        </div>
-	        ${eol.lowConfidence ? `<div class="text-warning pred-lifespan-text"><i class="bi bi-exclamation-triangle-fill me-1"></i>Low confidence</div>` : ''}
-	        ${eol.procurementRecommended ? `<div class="text-danger pred-lifespan-text"><i class="bi bi-cart-check me-1"></i>Procurement recommended</div>` : ''}
-	        <div class="mt-1">
-	          <button class="btn btn-sm btn-outline-secondary" onclick="window.showEolWhy('${asset.customId}')" title="Why this EOL status">
-	            Why?
-	          </button>
-	        </div>` : `<span class="badge bg-light text-dark border">Not Applicable</span>`}
-	        <div class="text-muted pred-lifespan-text">
-	          <i class="bi bi-clock-history inventory-ai-inline-icon"></i> ${trackingLabel}
-	        </div>
-	      </td>
-	      <td class="text-end pe-4">
-	        <div class="d-inline-flex flex-column align-items-end gap-1 inventory-row-actions">
-	          <div class="btn-group btn-group-sm" role="group" aria-label="Primary row actions">
-	            ${telemetryVisible ? `
-	            <button class="btn btn-outline-dark" onclick="window.viewOperationalTelemetry('${asset.customId}')" title="Telemetry State" aria-label="View telemetry state for ${UI.escapeHTML(asset.customId)}">
-	              <i class="bi bi-activity"></i>
-	            </button>` : ''}
-	            <button class="btn btn-outline-info d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.viewQRCode('${asset.customId}')" title="View QR code" aria-label="View QR code for ${UI.escapeHTML(asset.customId)}">
-	              <i class="bi bi-qr-code"></i>
-	            </button>
-		            <button class="btn btn-outline-primary d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.viewTransferHistory('${asset.customId}')" title="View history" aria-label="View transfer history for ${UI.escapeHTML(asset.customId)}">
-		              <i class="bi bi-clock-history"></i>
-		            </button>
-		            <button class="btn btn-outline-success d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.openAssetCmdb('${asset.customId}')" title="CMDB Details" aria-label="Open CMDB details for ${UI.escapeHTML(asset.customId)}">
-		              <i class="bi bi-diagram-3"></i>
-		            </button>
-		            ${INVENTORY_ACCESS.canEditSpecs ? `
-		            <button class="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center p-0 inventory-row-icon-btn" onclick="window.editSpecs('${asset.customId}', false)" title="Edit specs/details" aria-label="Edit specs for ${UI.escapeHTML(asset.customId)}">
-		              <i class="bi bi-pencil"></i>
-	            </button>` : ''}
-	          </div>
-	          <div class="d-flex gap-1 justify-content-end flex-wrap">
-	            ${INVENTORY_ACCESS.canEditSpecs && shouldShowSpecReviewButton(specStatus) ? `
-	            <button class="btn btn-sm btn-warning text-dark" onclick="window.openSpecVerificationModal('${asset.customId}')" title="Review AI-detected specifications">
-	              <i class="bi bi-shield-exclamation me-1"></i>Review
-	            </button>` : ''}
-	            ${INVENTORY_ACCESS.canTransferAsset ? `
-	            <button class="btn btn-sm btn-info text-white" onclick="window.transferIndividual('${asset.customId}')" title="Transfer asset">
-	              <i class="bi bi-arrow-left-right me-1"></i>Transfer
-	            </button>` : ''}
-	            ${INVENTORY_ACCESS.canDeleteAsset ? `
-	            <button class="btn btn-sm btn-danger" onclick="window.deleteIndividual('${asset.customId}')" title="Delete asset">
-	              <i class="bi bi-trash me-1"></i>Remove
-	            </button>` : ''}
-	          </div>
-	        </div>
-	      </td>
-	    </tr>
-	  `}).join('');
+      <tr class="inventory-group-unit-row">
+        <td class="inventory-group-unit-cell">
+          <div class="inventory-group-unit-id">${UI.escapeHTML(unitLabel)}</div>
+          <div class="inventory-group-unit-meta">Batch ID: ${UI.escapeHTML(asset.customId || '-')}</div>
+          ${isVirtualUnit ? `<div class="inventory-group-unit-meta">Unit ${UI.escapeHTML(String(unitIndex))} of ${UI.escapeHTML(String(unitCount))}</div>` : ''}
+          <div class="inventory-group-unit-meta">${UI.escapeHTML(profile.brand || 'Unknown brand')}${profile.version ? ` - ${UI.escapeHTML(profile.version)}` : ''}</div>
+          <div class="inventory-group-unit-meta">Quality: ${UI.escapeHTML(capitalize(profile.quality))}</div>
+          ${installedInLabel ? `<div class="inventory-group-unit-meta">Installed in: ${UI.escapeHTML(installedInLabel)}</div>` : ''}
+          ${context.mode !== 'parents' ? `<div class="inventory-group-unit-meta">Parent: ${UI.escapeHTML(parentDescriptor || 'No parent relationship found')}</div>` : ''}
+          <div class="mt-2">${getSpecVerificationBadge(specStatus)}</div>
+        </td>
+        <td class="inventory-group-serial-cell">
+          <span class="font-monospace">${UI.escapeHTML(serialLabel || 'Missing')}</span>
+          ${assetTagLabel ? `<div class="inventory-group-unit-meta">Tag: ${UI.escapeHTML(assetTagLabel)}</div>` : ''}
+        </td>
+        <td>
+          <span class="badge ${getStatusBadgeClass(asset.status)}">${displayStatus(asset.status)}</span>
+          <div class="inventory-group-unit-meta mt-1">${UI.escapeHTML(displayLifecycleStatus(asset.lifecycleStatus || 'in_stock'))}</div>
+        </td>
+        <td><span class="inventory-group-clamped-text" title="${UI.escapeHTML(locationLabel)}">${UI.escapeHTML(locationLabel)}</span></td>
+        <td><span class="inventory-group-clamped-text" title="${UI.escapeHTML(departmentLabel)}">${UI.escapeHTML(departmentLabel)}</span></td>
+        <td class="inventory-group-eol-cell">
+          ${eolApplicable ? `
+            <div class="mb-1"><span class="badge ${eol.statusClass}">${UI.escapeHTML(eol.remainingText)}</span></div>
+            <div class="inventory-group-unit-meta">
+              <i class="bi bi-bar-chart-line inventory-ai-inline-icon"></i>
+              Evidence confidence: ${eol.confidence !== null ? `${Math.round(eol.confidence * 100)}%` : 'N/A'} (${UI.escapeHTML(capitalize(eol.evidenceLevel || 'low'))})
+            </div>
+            <div class="inventory-group-unit-meta">
+              <i class="bi bi-lightning-charge inventory-ai-inline-icon"></i>${UI.escapeHTML(eol.shortAction)}
+            </div>
+            ${eol.lowConfidence ? `<div class="inventory-group-warning-text"><i class="bi bi-exclamation-triangle-fill me-1"></i>Low evidence confidence</div>` : ''}
+            ${eol.procurementRecommended ? `<div class="inventory-group-danger-text"><i class="bi bi-cart-check me-1"></i>Procurement recommended</div>` : ''}
+            <button class="btn btn-sm btn-outline-secondary mt-1" onclick="window.showEolWhy(decodeURIComponent('${encodedAssetId}'))" title="Why this EOL status">Why?</button>
+          ` : `<span class="badge bg-light text-dark border">Not Applicable</span>`}
+          <div class="inventory-group-unit-meta mt-1">
+            <i class="bi bi-clock-history inventory-ai-inline-icon"></i>${UI.escapeHTML(trackingLabel)}
+          </div>
+        </td>
+        <td class="inventory-group-actions-cell">
+          <div class="inventory-group-row-actions">
+            <button class="btn btn-sm btn-primary" onclick="window.openAssetCmdb(decodeURIComponent('${encodedAssetId}'))" aria-label="Open Asset 360 for ${safeAssetLabel}">
+              <i class="bi bi-diagram-3 me-1"></i>Open 360
+            </button>
+            ${INVENTORY_ACCESS.canTransferAsset ? `
+              <button class="btn btn-sm btn-outline-primary" onclick="window.transferIndividual(decodeURIComponent('${encodedAssetId}'))" aria-label="Transfer ${safeAssetLabel}">
+                <i class="bi bi-arrow-left-right me-1"></i>Transfer
+              </button>
+            ` : ''}
+            <div class="dropdown inventory-group-more">
+              <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                More Actions
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end">
+                ${telemetryVisible ? `<li><button class="dropdown-item" type="button" onclick="window.viewOperationalTelemetry(decodeURIComponent('${encodedAssetId}'))"><i class="bi bi-activity me-2"></i>Telemetry State</button></li>` : ''}
+                <li><button class="dropdown-item" type="button" onclick="window.viewQRCode(decodeURIComponent('${encodedAssetId}'))"><i class="bi bi-qr-code me-2"></i>View QR</button></li>
+                <li><button class="dropdown-item" type="button" onclick="window.printQRLabels(decodeURIComponent('${encodedAssetId}'), false)"><i class="bi bi-printer me-2"></i>Print Label</button></li>
+                <li><button class="dropdown-item" type="button" onclick="window.viewTransferHistory(decodeURIComponent('${encodedAssetId}'))"><i class="bi bi-clock-history me-2"></i>View History</button></li>
+                ${INVENTORY_ACCESS.canEditSpecs ? `<li><button class="dropdown-item" type="button" onclick="window.editSpecs(decodeURIComponent('${encodedAssetId}'), false)"><i class="bi bi-pencil me-2"></i>Edit Specs</button></li>` : ''}
+                ${INVENTORY_ACCESS.canEditSpecs && shouldShowSpecReviewButton(specStatus) ? `<li><button class="dropdown-item" type="button" onclick="window.openSpecVerificationModal(decodeURIComponent('${encodedAssetId}'))"><i class="bi bi-shield-exclamation me-2"></i>Review AI Specs</button></li>` : ''}
+                ${INVENTORY_ACCESS.canDeleteAsset ? `<li><hr class="dropdown-divider"></li><li><button class="dropdown-item text-danger" type="button" onclick="window.deleteIndividual(decodeURIComponent('${encodedAssetId}'))"><i class="bi bi-trash me-2"></i>Remove</button></li>` : ''}
+              </ul>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `}).join('');
 
   const bulkTransferBtn = document.getElementById('bulkTransferBtn');
   const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
   const bulkSpecReviewBtn = document.getElementById('bulkSpecReviewBtn');
+  const bulkPrintLabelsBtn = document.getElementById('bulkPrintLabelsBtn');
+  const bulkEditSpecsBtn = document.getElementById('bulkEditSpecsBtn');
   const pendingAssetsForGroup = context.mode === 'parents' ? getPendingSpecReviewAssetsInGroup(groupAssets) : [];
   const pendingUnitsForGroup = pendingAssetsForGroup.reduce((sum, asset) => sum + getAssetQuantity(asset), 0);
 
@@ -5451,27 +5496,12 @@ window.viewAssetDetails = (assetName) => {
     bulkSpecReviewBtn.textContent = `Review Specs (${pendingUnitsForGroup})`;
     bulkSpecReviewBtn.onclick = () => window.openBulkSpecVerificationModal();
   }
-
-  if (headerDiv) {
-    const encodedDetailGroupName = encodeURIComponent(assetName);
-    const groupActionsDiv = document.createElement('div');
-    groupActionsDiv.className = 'd-flex gap-2 ms-auto';
-    groupActionsDiv.innerHTML = `
-      <button class="btn btn-sm btn-outline-info" onclick="window.printQRLabels(decodeURIComponent('${encodedDetailGroupName}'), true)" title="Print QR Labels">
-        <i class="bi bi-printer"></i> Print Labels
-      </button>
-      ${INVENTORY_ACCESS.canEditSpecs ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.editSpecs(decodeURIComponent('${encodedDetailGroupName}'), true)" title="Edit Group Specs">
-        <i class="bi bi-pencil"></i> Edit Specs
-      </button>` : ''}
-    `;
-    
-    let groupActionsContainer = headerDiv.querySelector('.group-actions');
-    if (!groupActionsContainer) {
-      groupActionsContainer = document.createElement('div');
-      groupActionsContainer.className = 'group-actions w-100 d-flex justify-content-end mt-2';
-      headerDiv.appendChild(groupActionsContainer);
-    }
-    groupActionsContainer.innerHTML = groupActionsDiv.innerHTML;
+  if (bulkPrintLabelsBtn) {
+    bulkPrintLabelsBtn.onclick = () => window.printQRLabels(assetName, true);
+  }
+  if (bulkEditSpecsBtn) {
+    bulkEditSpecsBtn.classList.toggle('d-none', !INVENTORY_ACCESS.canEditSpecs);
+    bulkEditSpecsBtn.onclick = () => window.editSpecs(assetName, true);
   }
 
   const detailsModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('detailsModal'));
@@ -5485,7 +5515,7 @@ window.filterDetailsTable = () => {
 
   const rows = detailsBody.querySelectorAll('tr');
   rows.forEach(row => {
-    row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? '' : 'none';
+    row.hidden = !row.textContent.toLowerCase().includes(searchTerm);
   });
 };
 
@@ -10414,6 +10444,67 @@ function updateInventoryAiPromptLayout(hasMessages = false) {
   }
 }
 
+function inventoryAiPrefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+}
+
+function finishInventoryAiTypingReveal() {
+  if (inventoryAiChatState.typingTimer) {
+    clearInterval(inventoryAiChatState.typingTimer);
+    inventoryAiChatState.typingTimer = null;
+  }
+  (inventoryAiChatState.messages || []).forEach((entry) => {
+    if (entry?.typing) {
+      entry.text = String(entry.fullText || entry.text || '');
+      entry.typing = false;
+    }
+  });
+}
+
+function startInventoryAiTypingReveal(index) {
+  const entry = inventoryAiChatState.messages[index];
+  if (!entry || entry.role !== 'assistant' || !entry.typing) return;
+  if (inventoryAiPrefersReducedMotion()) {
+    entry.text = String(entry.fullText || entry.text || '');
+    entry.typing = false;
+    renderInventoryAiChatMessages();
+    return;
+  }
+  const fullText = String(entry.fullText || '');
+  const duration = Math.min(2800, Math.max(650, fullText.length * 14));
+  const tickMs = 55;
+  const charsPerTick = Math.max(2, Math.ceil(fullText.length / Math.max(1, duration / tickMs)));
+  let cursor = 0;
+  if (inventoryAiChatState.typingTimer) clearInterval(inventoryAiChatState.typingTimer);
+  inventoryAiChatState.typingTimer = setInterval(() => {
+    cursor = Math.min(fullText.length, cursor + charsPerTick);
+    entry.text = fullText.slice(0, cursor);
+    if (cursor >= fullText.length) {
+      entry.typing = false;
+      clearInterval(inventoryAiChatState.typingTimer);
+      inventoryAiChatState.typingTimer = null;
+    }
+    renderInventoryAiChatMessages();
+  }, tickMs);
+}
+
+function addInventoryAiAssistantMessage(entry = {}) {
+  const fullText = String(entry.text || entry.answer || 'Completed.');
+  const shouldType = !inventoryAiPrefersReducedMotion() && fullText.length > 12;
+  const message = {
+    ...entry,
+    role: 'assistant',
+    fullText,
+    text: shouldType ? '' : fullText,
+    typing: shouldType,
+    createdAt: entry.createdAt || Date.now(),
+  };
+  inventoryAiChatState.messages.push(message);
+  const index = inventoryAiChatState.messages.length - 1;
+  renderInventoryAiChatMessages();
+  if (shouldType) startInventoryAiTypingReveal(index);
+}
+
 function getInventoryAiChatContext() {
   const searchValue = String(document.getElementById('searchInput')?.value || '').trim();
   const building = String(document.getElementById('filterBuilding')?.value || '').trim();
@@ -11394,11 +11485,12 @@ function renderInventoryAiChatMessages() {
         </div>
       `
       : '';
+    const answerText = `${UI.escapeHTML(String(entry.text || ''))}${entry.typing ? '<span class="inventory-ai-typing-caret" aria-hidden="true"></span>' : ''}`;
     return `
       <div class="inventory-ai-chat-msg ${role}">
         <div class="inventory-ai-msg-head"><i class="bi ${senderIcon}"></i><span>${senderLabel}</span>${timestampHtml}</div>
-        <div class="inventory-ai-chat-answer">${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${UI.escapeHTML(String(entry.text || ''))}</div>
-        ${(metaPills.length || suggestionPills || matchedItemsHtml || fallbackCardHtml) ? `
+        <div class="inventory-ai-chat-answer">${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${answerText}</div>
+        ${(!entry.typing && (metaPills.length || suggestionPills || matchedItemsHtml || fallbackCardHtml)) ? `
           <div class="inventory-ai-chat-meta">
             ${metaPills.length ? `<div>${metaPills.join('')}</div>` : ''}
             ${suggestionPills ? `<div class="mt-1"><strong>Suggested Actions:</strong><div class="mt-1">${suggestionPills}</div></div>` : ''}
@@ -11407,7 +11499,7 @@ function renderInventoryAiChatMessages() {
             ${matchedItemsHtml}
             ${actionCardHtml}
           </div>
-        ` : (actionCardHtml ? `<div class="inventory-ai-chat-meta">${actionCardHtml}</div>` : '')}
+        ` : (!entry.typing && actionCardHtml ? `<div class="inventory-ai-chat-meta">${actionCardHtml}</div>` : '')}
       </div>
     `;
   }).join('');
@@ -11552,6 +11644,7 @@ function inventoryAiEndpointForMode(mode, context = {}) {
 window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
   const actionMode = String(mode || '').trim();
   if (!actionMode || inventoryAiChatState.loading) return;
+  finishInventoryAiTypingReveal();
   window.toggleInventoryAiChat(true);
   inventoryAiChatState.loading = true;
   inventoryAiChatState.loadingSince = Date.now();
@@ -11560,7 +11653,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
   try {
     const context = getInventoryAiChatContext();
     if (actionMode === 'demo_guide') {
-      inventoryAiChatState.messages.push({
+      addInventoryAiAssistantMessage({
         role: 'assistant',
         text: 'Here is a safe thesis demo path: start in Inventory Command Center, show evidence-driven priorities, open Asset 360/CMDB, ask the Copilot for a daily briefing, review procurement recommendations, create a request only after review, compare vendor quotes, create a PO, receive stock with impact preview, then finish with ABC, EOQ/MOQ, FIFO, Finance, Suppliers, and reports.',
         confidence: 'high',
@@ -11635,7 +11728,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
       result = await postInventoryJson(endpoint, payload);
     }
     const response = buildChatResponseFromMode(actionMode, result || {});
-    inventoryAiChatState.messages.push({
+    addInventoryAiAssistantMessage({
       role: 'assistant',
       text: response.text,
       confidence: response.confidence,
@@ -11660,7 +11753,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
       || (response.fallbackUsed ? 'fallback' : 'gemma')
     );
   } catch (error) {
-    inventoryAiChatState.messages.push({
+    addInventoryAiAssistantMessage({
       role: 'assistant',
       text: 'I could not reach the Inventory AI service for that action. You can still use regular filters/search and try again in a moment.',
       confidence: 'low',
@@ -11716,6 +11809,7 @@ window.runInventoryAiMatchedAssetHealth = async (customId) => {
 
 window.sendInventoryAiChatMessage = async () => {
   if (inventoryAiChatState.loading) return;
+  finishInventoryAiTypingReveal();
   const input = document.getElementById('inventoryAiChatInput');
   const message = String(input?.value || '').trim();
   if (!message) return;
@@ -11755,7 +11849,7 @@ window.sendInventoryAiChatMessage = async () => {
     };
     const result = await postInventoryJson('/inventory/ai/assistant', payload);
     const answer = String(result?.answer || 'No assistant answer returned.');
-    inventoryAiChatState.messages.push({
+    addInventoryAiAssistantMessage({
       role: 'assistant',
       text: answer,
       confidence: String(result?.confidence || 'low'),
@@ -11789,7 +11883,7 @@ window.sendInventoryAiChatMessage = async () => {
       || (result?.fallbackUsed ? 'fallback' : 'gemma')
     );
   } catch (error) {
-    inventoryAiChatState.messages.push({
+    addInventoryAiAssistantMessage({
       role: 'assistant',
       text: 'I could not reach the Inventory AI service. You can still use filters/search, or try again.',
       confidence: 'low',

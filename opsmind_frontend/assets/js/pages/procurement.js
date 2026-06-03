@@ -1,5 +1,6 @@
 import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
+import { initInventoryAiCopilot } from '/assets/js/components/inventoryAiCopilot.js';
 
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
 const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
@@ -2371,8 +2372,35 @@ async function receiveRequest(requestId) {
 }
 
 function openProcurementCopilot(prompt = '') {
-  if (prompt) sessionStorage.setItem('inventory_copilot_prefill', prompt);
+  const value = String(prompt || 'What should we buy next?').trim();
+  if (typeof window.openInventoryAiChatWithPrompt === 'function') {
+    window.openInventoryAiChatWithPrompt(value);
+    return;
+  }
+  if (value) sessionStorage.setItem('inventory_copilot_prefill', value);
   window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
+}
+
+function procurementCopilotContext() {
+  const summary = buildProcurement360Summary();
+  return {
+    page: 'procurement',
+    procurement: {
+      openRequests: summary.openRequests,
+      pendingApprovals: summary.pendingApprovals,
+      orderedTransit: summary.orderedTransit,
+      approvedNoPo: summary.approvedNoPo,
+      missingQuotes: summary.missingQuotes,
+      quotesNeedReview: summary.quotesNeedReview,
+      moqConflicts: summary.moqConflicts,
+      estimatedSpend: summary.estimatedSpend,
+      actualSpend: summary.actualSpend,
+      recommendations: summary.recommendations.length,
+      receivingPending: summary.receivingPending,
+    },
+    freshness: state.loadedAt,
+    source: 'procurement_loaded_board',
+  };
 }
 
 function showProcurementTab(tabName = 'dashboard') {
@@ -2676,8 +2704,7 @@ function bindActions() {
   if (openInventoryBtn) openInventoryBtn.addEventListener('click', () => { window.location.href = '/pages/inventory.html'; });
   if (askCopilotBtn) {
     askCopilotBtn.addEventListener('click', () => {
-      sessionStorage.setItem('inventory_copilot_prefill', 'What should we buy next?');
-      window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
+      openProcurementCopilot('What should we buy next? Use this Procurement page evidence only.');
     });
   }
   window.addEventListener('hashchange', applyInitialProcurementHash);
@@ -2852,6 +2879,21 @@ function bindActions() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!ensureAccess()) return;
+  initInventoryAiCopilot({
+    pageKey: 'procurement',
+    pageLabel: 'Procurement',
+    contextProvider: procurementCopilotContext,
+    prompts: [
+      { label: 'What should we buy?', prompt: 'What should we buy next? Use this Procurement page evidence only.' },
+      { label: 'Urgent priorities', prompt: 'Show urgent procurement priorities and why they matter.' },
+      { label: 'Budget impact', prompt: 'What is the budget impact of current procurement requests?' },
+      { label: 'Vendor tradeoffs', prompt: 'Which vendor quote is best and what evidence supports it?' },
+    ],
+    quickActions: [
+      { label: 'Open Procurement 360', url: '/pages/procurement.html#procurement360' },
+      { label: 'Create Request', prompt: 'Help me prepare a procurement request. Do not create it without review.' },
+    ],
+  });
   bindActions();
   setupProcurementAutoRefresh();
   await loadBoard();

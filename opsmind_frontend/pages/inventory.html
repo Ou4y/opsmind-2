@@ -849,16 +849,18 @@
         </div>
     </div>
 
-    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher" title="Inventory AI" aria-label="Open Inventory AI assistant">
-        <i class="bi bi-stars fs-4"></i>
+    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher inventory-ai-chat-launcher--robot" title="Inventory AI" aria-label="Open Inventory AI assistant">
+        <span class="ai-floating-button__pulse" aria-hidden="true"></span>
+        <span class="ai-floating-button__icon"><i class="bi bi-robot"></i></span>
         <span class="inventory-ai-chat-launcher-label">Inventory AI</span>
     </button>
 
     <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel" aria-label="Inventory AI Chat">
         <div class="inventory-ai-chat-header">
             <div>
-                <div class="inventory-ai-chat-title"><i class="bi bi-stars"></i>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">Gemma</span></div>
+                <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">Gemma</span></div>
                 <div class="inventory-ai-chat-subtitle">Ask about CMDB health, missing data, maintenance, EOL risk, and procurement.</div>
+                <div class="inventory-ai-chat-context-chip">Assets page context</div>
                 <div class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
                     <span class="inventory-ai-chat-status-label">Status</span>
                     <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
@@ -1309,50 +1311,77 @@
         </div>
     </div>
 
-    <div class="modal fade" id="detailsModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header bg-light">
-                    <div>
-                        <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Details</h5>
-                        <small class="text-muted" id="detailModalSubtitle">Manage individual items</small>
+    <div class="modal fade inventory-group-360-modal" id="detailsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content inventory-group-360-shell">
+                <div class="modal-header inventory-group-360-header">
+                    <div class="inventory-group-360-title-wrap">
+                        <div class="inventory-group-360-eyebrow">Group 360 workspace</div>
+                        <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Group Details</h5>
+                        <small id="detailModalSubtitle">Manage individual items</small>
                     </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                
-                <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3">
-                    <div class="input-group input-group-sm inventory-inner-search-group">
-                        <span class="input-group-text bg-white"><i class="bi bi-filter"></i></span>
-                        <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter IDs in this group..." onkeyup="filterDetailsTable()">
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-outline-success" id="bulkGroupCmdbBtn"><i class="bi bi-diagram-3 me-1"></i> Open Group CMDB</button>
-                        <button class="btn btn-sm btn-warning text-dark d-none" id="bulkSpecReviewBtn" title="Review pending AI-detected specs in this group">
-                            <i class="bi bi-patch-check me-1"></i> Review Specs (0)
-                        </button>
-                        <button class="btn btn-sm btn-warning" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i> Bulk Transfer</button>
-                        <button class="btn btn-sm btn-danger" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i> Bulk Delete Group</button>
+                    <div class="inventory-group-360-header-actions">
+                        <span class="inventory-group-count-pill" id="detailModalCountPill">0 units</span>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                 </div>
 
-                <div class="modal-body p-0">
-                    <div class="table-responsive inventory-details-scroll">
-                        <table class="table table-striped table-hover mb-0">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th class="ps-4">Unique ID</th>
-                                    <th>Serial</th>
-                                    <th>Status</th>
-                                    <th>Location</th>
-                                    <th>Department</th>
-                                    <th>EOL Status</th> 
-                                    <th class="text-end pe-4">Individual Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="detailsTableBody"></tbody>
-                        </table>
+                <div class="modal-body inventory-group-360-body">
+                    <div id="assetGroupInsight" class="inventory-group-ai-card" aria-live="polite"></div>
+                    <div id="assetGroupSummary" class="inventory-group-summary-grid" aria-label="Asset group summary"></div>
+
+                    <div class="bulk-header inventory-group-toolbar">
+                        <div class="inventory-group-search-block">
+                            <label class="inventory-group-section-label" for="innerSearchInput">Search/filter units</label>
+                            <div class="input-group input-group-sm inventory-inner-search-group">
+                                <span class="input-group-text"><i class="bi bi-filter"></i></span>
+                                <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter ID, serial, location, department..." onkeyup="filterDetailsTable()">
+                            </div>
+                        </div>
+
+                        <div class="inventory-group-bulk-actions" aria-label="Group actions">
+                            <div class="inventory-group-action-label">Primary actions</div>
+                            <button class="btn btn-sm btn-outline-success" id="bulkGroupCmdbBtn"><i class="bi bi-diagram-3 me-1"></i>Open Group CMDB</button>
+                            <button class="btn btn-sm btn-warning text-dark d-none" id="bulkSpecReviewBtn" title="Review pending AI-detected specs in this group">
+                                <i class="bi bi-patch-check me-1"></i>Review Specs (0)
+                            </button>
+                            <button class="btn btn-sm btn-warning" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i>Bulk Transfer</button>
+                            <button class="btn btn-sm btn-outline-info" id="bulkPrintLabelsBtn"><i class="bi bi-printer me-1"></i>Print Labels</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="bulkEditSpecsBtn"><i class="bi bi-pencil me-1"></i>Edit Specs</button>
+                            <button class="btn btn-sm btn-danger inventory-group-danger-action" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i>Bulk Delete Group</button>
+                        </div>
                     </div>
+
+                    <section class="inventory-group-units-panel" aria-labelledby="inventoryGroupUnitsTitle">
+                        <div class="inventory-group-section-header">
+                            <div>
+                                <h6 id="inventoryGroupUnitsTitle">Units in this group</h6>
+                                <p>Open each unit in Asset 360, transfer it, or use More Actions for lower-frequency work.</p>
+                            </div>
+                            <span class="inventory-group-step-pill">1-click Open 360</span>
+                        </div>
+                        <div class="table-responsive inventory-details-scroll">
+                            <table class="table table-hover align-middle mb-0 inventory-group-table">
+                                <thead>
+                                    <tr>
+                                        <th>Unique ID</th>
+                                        <th>Serial</th>
+                                        <th>Status</th>
+                                        <th>Location</th>
+                                        <th>Department</th>
+                                        <th>EOL Status</th>
+                                        <th class="text-end">Individual Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="detailsTableBody"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="modal-footer inventory-group-360-footer">
+                    <div class="small text-muted">Destructive group actions require an in-app confirmation before anything changes.</div>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
