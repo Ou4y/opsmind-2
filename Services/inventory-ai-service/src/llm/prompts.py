@@ -132,22 +132,24 @@ Input:
 """
 
 
-ASSET_HEALTH_SUMMARY_PROMPT = """You summarize inventory asset health from provided facts only.
+ASSET_HEALTH_SUMMARY_PROMPT = """You summarize inventory asset health from compact evidence only.
 Never invent incidents, dates, or hardware details that are not in the input.
 
 Rules:
 - Return ONLY JSON.
-- Keep recommendations practical and tied to evidence.
-- If data is missing, list it in missing_data.
+- Keep output concise and practical.
+- Do not claim live/real-time state; phrase lifecycle wording as recorded status from provided data.
+- summary must stay <= 420 characters.
+- risks: max 6 bullet-style strings.
+- recommendations: max 6 action-oriented strings.
+- missing_data: max 12 items.
 - confidence must be one of: low, medium, high.
+- Prefer the deterministic_draft facts when unsure.
 
 Required output:
 {{
   "summary": "",
   "risks": [],
-  "recent_changes": [],
-  "component_issues": [],
-  "warranty_eol_concerns": [],
   "recommendations": [],
   "confidence": "low",
   "missing_data": []

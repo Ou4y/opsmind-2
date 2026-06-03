@@ -6,6 +6,7 @@ These helpers are deterministic-first and only use LLM for safe reasoning polish
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -88,6 +89,8 @@ from src.schemas import (
     SpecSanityCheckResponse,
 )
 
+
+logger = logging.getLogger(__name__)
 
 FURNITURE_TYPES = {
     "desk",
@@ -316,7 +319,87 @@ class InventoryReasoningService:
     def _llm_json(self, prompt: str, schema: dict[str, Any], temperature: float = 0.1) -> dict[str, Any] | None:
         if not self.llm.enabled:
             return None
+        schema_fields = len((schema or {}).get("properties", {}) or {})
+        logger.info(
+            "[InventoryAIReasoning] llm_json_call promptChars=%s schemaFields=%s temperature=%s",
+            len(str(prompt or "")),
+            schema_fields,
+            temperature,
+        )
         return self.llm.generate_json(prompt, schema, temperature)
+
+    @staticmethod
+    def _truncate_text(value: Any, max_chars: int = 220) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
+
+    def _build_asset_health_evidence(self, payload: AssetHealthSummaryRequest) -> dict[str, Any]:
+        asset = payload.asset or {}
+        eol = payload.eol_assessment or {}
+        events = list(payload.history_events or [])
+        components = list(payload.components or [])
+        specs = (asset.get("specifications") or {}) if isinstance(asset.get("specifications"), dict) else {}
+
+        component_names: list[str] = []
+        component_status_counts: dict[str, int] = {}
+        for row in components[:18]:
+            component_name = self._truncate_text(row.get("name") or row.get("componentName") or "Component", 90)
+            if component_name and component_name not in component_names:
+                component_names.append(component_name)
+            status_key = str(row.get("status") or "unknown").strip().lower() or "unknown"
+            component_status_counts[status_key] = component_status_counts.get(status_key, 0) + 1
+
+        recent_events: list[dict[str, Any]] = []
+        for row in events[:10]:
+            recent_events.append({
+                "event": self._truncate_text(row.get("event") or row.get("eventType") or "Event", 96),
+                "sourceType": self._truncate_text(row.get("sourceItemType") or "asset", 32),
+                "sourceName": self._truncate_text(row.get("sourceItemName") or row.get("sourceItemCustomId") or asset.get("name") or "Asset", 80),
+                "reason": self._truncate_text(row.get("reason") or "", 130),
+                "date": self._truncate_text(row.get("date") or "", 36),
+            })
+
+        telemetry_summary = {
+            "enabled": bool(specs.get("telemetryEnabled") or specs.get("telemetryApplicable") or specs.get("trackWorkingHours")),
+            "status": self._truncate_text(specs.get("telemetryStatus") or specs.get("operationalState") or "unknown", 36),
+            "lastTelemetryAt": self._truncate_text(specs.get("lastTelemetryAt") or "", 36),
+        }
+
+        return {
+            "assetIdentity": {
+                "name": self._truncate_text(asset.get("name") or "Asset", 110),
+                "assetTag": self._truncate_text(asset.get("assetTag") or asset.get("customId") or "", 72),
+                "type": self._truncate_text(asset.get("type") or "", 36),
+                "category": self._truncate_text(asset.get("category") or "", 36),
+                "status": self._truncate_text(asset.get("status") or "", 36),
+                "lifecycleStatus": self._truncate_text(asset.get("lifecycleStatus") or "", 36),
+                "location": self._truncate_text(asset.get("location") or "", 60),
+                "department": self._truncate_text(asset.get("department") or "", 60),
+            },
+            "componentSummary": {
+                "count": len(components),
+                "topNames": component_names[:8],
+                "statusCounts": component_status_counts,
+            },
+            "maintenanceSummary": {
+                "count": int(payload.maintenance_count or 0),
+            },
+            "telemetrySummary": telemetry_summary,
+            "eolSummary": {
+                "status": self._truncate_text(eol.get("status") or "unknown", 32),
+                "confidence": float(eol.get("confidence") or 0.0),
+                "monthsRemaining": eol.get("monthsRemaining"),
+                "reason": self._truncate_text(eol.get("reason") or "", 180),
+            },
+            "recentEvents": recent_events,
+            "missingDataHints": {
+                "serialNumberMissing": not bool(asset.get("serialNumber")),
+                "purchaseDateMissing": not bool(asset.get("purchaseDate")),
+                "warrantyEndMissing": not bool(asset.get("warrantyEndDate")),
+            },
+        }
 
     async def normalize_specs(self, payload: SpecNormalizationRequest) -> SpecNormalizationResponse:
         parsed_specs = self._parse_specs_text(payload.raw_specs_text)
@@ -708,20 +791,18 @@ class InventoryReasoningService:
             confidence = "medium"
 
         summary = (
-            f"{asset_name}{f' ({asset_id})' if asset_id else ''} is currently {lifecycle}. "
+            f"{asset_name}{f' ({asset_id})' if asset_id else ''} recorded lifecycle status is {lifecycle}. "
             f"EOL status is {eol_status} with {eol_confidence_pct}% confidence. "
             f"{'Recent component issues were detected.' if component_issues else 'No major component failure trend was detected.'}"
         )
 
         llm_used = False
+        fallback_reason: str | None = None
         schema = {
             "type": "object",
             "properties": {
                 "summary": {"type": "string"},
                 "risks": {"type": "array", "items": {"type": "string"}},
-                "recent_changes": {"type": "array", "items": {"type": "string"}},
-                "component_issues": {"type": "array", "items": {"type": "string"}},
-                "warranty_eol_concerns": {"type": "array", "items": {"type": "string"}},
                 "recommendations": {"type": "array", "items": {"type": "string"}},
                 "confidence": {"type": "string"},
                 "missing_data": {"type": "array", "items": {"type": "string"}},
@@ -729,21 +810,33 @@ class InventoryReasoningService:
             "required": [
                 "summary",
                 "risks",
-                "recent_changes",
-                "component_issues",
-                "warranty_eol_concerns",
                 "recommendations",
                 "confidence",
                 "missing_data",
             ],
         }
+        payload_extra = getattr(payload, "model_extra", {}) or {}
+        provided_evidence_packet = payload_extra.get("evidence_packet") or payload_extra.get("evidencePacket")
+        compact_evidence = (
+            provided_evidence_packet
+            if isinstance(provided_evidence_packet, dict)
+            else self._build_asset_health_evidence(payload)
+        )
         prompt_payload = {
-            "asset": asset,
-            "eol_assessment": eol,
-            "include_related": payload.include_related,
-            "history_events": events[:80],
-            "components": components[:80],
-            "maintenance_count": payload.maintenance_count,
+            "evidence_packet": compact_evidence,
+            "deterministic_draft": {
+                "summary": summary,
+                "risks": risks[:6],
+                "recommendations": recommendations[:6],
+                "confidence": confidence,
+                "missing_data": missing_data[:12],
+            },
+            "rules": {
+                "max_summary_chars": 420,
+                "max_risks": 6,
+                "max_recommendations": 6,
+                "max_missing_data": 12,
+            },
         }
         parsed = None
         if self.llm.enabled:
@@ -753,18 +846,19 @@ class InventoryReasoningService:
                 schema,
                 0.1,
             )
+        else:
+            fallback_reason = "llm_disabled"
         if isinstance(parsed, dict):
             llm_used = True
-            summary = str(parsed.get("summary") or summary).strip() or summary
+            summary = self._truncate_text(parsed.get("summary") or summary, 420) or summary
             risks = [str(item).strip() for item in (parsed.get("risks") or []) if str(item).strip()] or risks
-            recent_changes = [str(item).strip() for item in (parsed.get("recent_changes") or []) if str(item).strip()] or recent_changes
-            component_issues = [str(item).strip() for item in (parsed.get("component_issues") or []) if str(item).strip()] or component_issues
-            warranty_eol_concerns = [str(item).strip() for item in (parsed.get("warranty_eol_concerns") or []) if str(item).strip()] or warranty_eol_concerns
             recommendations = [str(item).strip() for item in (parsed.get("recommendations") or []) if str(item).strip()] or recommendations
             missing_data = [str(item).strip() for item in (parsed.get("missing_data") or []) if str(item).strip()] or missing_data
             confidence_candidate = str(parsed.get("confidence") or confidence).strip().lower()
             if confidence_candidate in {"low", "medium", "high"}:
                 confidence = confidence_candidate
+        elif self.llm.enabled:
+            fallback_reason = str(getattr(self.llm, "last_error", "") or "llm_unavailable").strip() or "llm_unavailable"
 
         return AssetHealthSummaryResponse(
             summary=summary,
@@ -776,6 +870,8 @@ class InventoryReasoningService:
             confidence=confidence,
             missing_data=missing_data[:24],
             llm_used=llm_used,
+            llm_status=self._llm_status(llm_used),
+            fallback_reason=fallback_reason,
         )
 
     @staticmethod

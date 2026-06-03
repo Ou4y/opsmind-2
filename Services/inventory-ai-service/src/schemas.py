@@ -284,6 +284,8 @@ class AssetHealthSummaryResponse(BaseModel):
     confidence: str = Field("low")
     missing_data: list[str] = Field(default_factory=list)
     llm_used: bool = False
+    llm_status: str = Field("disabled")
+    fallback_reason: Optional[str] = None
 
 
 class InventoryAssistantRequest(BaseModel):

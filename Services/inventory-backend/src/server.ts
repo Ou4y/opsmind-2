@@ -4,6 +4,8 @@ dotenv.config();
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
 import { prisma } from './lib/prisma';
 import AssetService from './models/Assets';
 import HistoryService from './models/History';
@@ -45,6 +47,19 @@ import {
     AssetCategory,
     AssetLifecycleStatus,
     AssetCustodyStatus,
+    ProcurementRequestStatus as PrismaProcurementRequestStatus,
+    ProcurementRequestPriority as PrismaProcurementRequestPriority,
+    ProcurementRequestSource as PrismaProcurementRequestSource,
+    ProcurementRequestType as PrismaProcurementRequestType,
+    ProcurementApprovalDecision as PrismaProcurementApprovalDecision,
+    ProcurementFinanceStatus as PrismaProcurementFinanceStatus,
+    VendorQuoteStatus as PrismaVendorQuoteStatus,
+    PurchaseOrderStatus as PrismaPurchaseOrderStatus,
+    ReceivingCondition as PrismaReceivingCondition,
+    ProcurementAssetRelationshipType as PrismaProcurementAssetRelationshipType,
+    ProcurementRecommendationReviewStatus as PrismaProcurementRecommendationReviewStatus,
+    ProcurementRfqStatus as PrismaProcurementRfqStatus,
+    InventoryAbcClass,
     Prisma,
 } from '@prisma/client';
 import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
@@ -52,6 +67,10 @@ import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middl
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const INVENTORY_AI_SERVICE_URL = process.env.INVENTORY_AI_SERVICE_URL || 'http://localhost:8002';
+const INVENTORY_AI_HELPER_TIMEOUT_MS = Math.max(15_000, Number(process.env.INVENTORY_AI_HELPER_TIMEOUT_MS || 120_000));
+const INVENTORY_AI_HELPER_RETRY_COUNT = Math.max(0, Math.min(2, Number(process.env.INVENTORY_AI_HELPER_RETRY_COUNT || 1)));
+const INVENTORY_AI_PROVIDER_LABEL = String(process.env.LLM_PROVIDER || 'ollama').trim().toLowerCase() || 'ollama';
+const INVENTORY_AI_MODEL_LABEL = String(process.env.OLLAMA_MODEL || process.env.INVENTORY_AI_MODEL || 'gemma3:4b').trim() || 'gemma3:4b';
 const SPEC_VERIFICATION_CONFIDENCE_THRESHOLD = Number(process.env.SPEC_VERIFICATION_CONFIDENCE_THRESHOLD || 0.85);
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://auth-service:3002';
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
@@ -74,6 +93,335 @@ const internalWorkerGuard: RequestHandler = (req, res, next) => {
         return res.status(403).json({ message: 'Forbidden' });
     }
     return next();
+};
+
+const PROCUREMENT_REQUEST_STATUSES = [
+    'Draft',
+    'Submitted',
+    'Under Review',
+    'Approved',
+    'Rejected',
+    'Ordered',
+    'Partially Received',
+    'Received',
+    'Closed',
+    'Cancelled',
+] as const;
+type ProcurementRequestStatus = typeof PROCUREMENT_REQUEST_STATUSES[number];
+type ProcurementRequestPriority = 'low' | 'medium' | 'high' | 'critical';
+type ProcurementRequestSource =
+    | 'manual_request'
+    | 'ai_recommendation'
+    | 'low_stock'
+    | 'eol_risk'
+    | 'maintenance_recommendation'
+    | 'audit_gap'
+    | 'risk_recommendation';
+type ProcurementFinanceStatusLabel =
+    | 'Not Submitted to Finance'
+    | 'Pending Budget Review'
+    | 'Budget Approved'
+    | 'Budget Rejected'
+    | 'Invoiced'
+    | 'Payment Pending'
+    | 'Paid'
+    | 'Cancelled';
+
+const PROCUREMENT_FINANCE_STATUS_LABELS: ProcurementFinanceStatusLabel[] = [
+    'Not Submitted to Finance',
+    'Pending Budget Review',
+    'Budget Approved',
+    'Budget Rejected',
+    'Invoiced',
+    'Payment Pending',
+    'Paid',
+    'Cancelled',
+];
+
+interface ProcurementRequestQuote {
+    quoteId: string;
+    vendorName: string;
+    quotedItem: string;
+    unitPrice: number | null;
+    totalPrice: number | null;
+    minimumOrderQuantity?: number | null;
+    minimumOrderValue?: number | null;
+    packSize?: number | null;
+    leadTimeDays?: number | null;
+    bulkDiscountAvailable?: boolean | null;
+    warrantyMonths: number | null;
+    deliveryDays: number | null;
+    reliabilityScore: number | null;
+    selected: boolean;
+    status?: string;
+    rejectedReason: string;
+    notes: string;
+    createdAt: string;
+    updatedAt?: string;
+}
+
+interface ProcurementApprovalEntry {
+    status: ProcurementRequestStatus;
+    decision: 'submit' | 'approve' | 'reject' | 'order' | 'receive' | 'close' | 'cancel' | 'update';
+    approver: string;
+    reason: string;
+    createdAt: string;
+}
+
+interface ProcurementReceiptEntry {
+    receiptId: string;
+    receivedQuantity: number;
+    receivedAt: string;
+    receivedBy: string;
+    notes: string;
+    applyTarget: 'none' | 'spare_stock';
+    spareStockItemId: string | null;
+    condition?: string;
+    items?: Array<{
+        id?: string;
+        itemName: string;
+        quantityReceived: number;
+        spareStockUpdated?: boolean;
+        spareStockId?: string | null;
+        consumableUpdated?: boolean;
+        consumableId?: string | null;
+        licenseCreatedOrUpdated?: boolean;
+        licenseId?: string | null;
+        createdAssetIds?: string[];
+        notes?: string;
+    }>;
+}
+
+interface ProcurementRequestRecord {
+    id?: string;
+    requestId: string;
+    title: string;
+    description?: string;
+    requestType?: string;
+    itemCategory: string;
+    itemType: string;
+    quantity: number;
+    priority: ProcurementRequestPriority;
+    reason: string;
+    linkedAssetIds: string[];
+    linkedDepartment: string | null;
+    linkedLocation: string | null;
+    room?: string | null;
+    requestedBy: string;
+    status: ProcurementRequestStatus;
+    notes: string;
+    requiredDate: string | null;
+    source: ProcurementRequestSource;
+    createdAt: string;
+    updatedAt: string;
+    estimatedBudget?: number | null;
+    actualCost?: number | null;
+    abcClass?: 'A' | 'B' | 'C' | 'Unclassified';
+    abcReason?: string | null;
+    controlLevel?: string | null;
+    financeStatus?: ProcurementFinanceStatusLabel;
+    costCenterId?: string | null;
+    budgetAllocationId?: string | null;
+    budgetAmountReserved?: number | null;
+    financeNotes?: string | null;
+    financeMetadata?: any;
+    aiRecommendationId?: string | null;
+    metadata?: any;
+    aiContext: {
+        llmUsed: boolean;
+        sourceLabel: string;
+        confidence: string;
+    } | null;
+    approvals: ProcurementApprovalEntry[];
+    vendorQuotes: ProcurementRequestQuote[];
+    purchaseOrder: {
+        id?: string;
+        poNumber: string;
+        vendorName: string;
+        expectedDelivery: string | null;
+        status: string;
+        notes: string;
+        createdAt: string;
+        items?: Array<{
+            id?: string;
+            itemName: string;
+            quantityOrdered: number;
+            quantityReceived: number;
+            unitPrice?: number | null;
+            totalPrice?: number | null;
+            requestItemId?: string | null;
+        }>;
+    } | null;
+    purchaseOrders?: Array<{
+        id: string;
+        poNumber: string;
+        vendorName: string;
+        status: string;
+        expectedDelivery: string | null;
+        issuedAt: string | null;
+        notes: string;
+        createdAt: string;
+        updatedAt: string;
+        items: Array<{
+            id: string;
+            itemName: string;
+            quantityOrdered: number;
+            quantityReceived: number;
+            unitPrice: number | null;
+            totalPrice: number | null;
+            requestItemId: string | null;
+        }>;
+    }>;
+    receipts: ProcurementReceiptEntry[];
+    receivingRecords?: ProcurementReceiptEntry[];
+    items?: Array<{
+        id: string;
+        itemName: string;
+        category: string | null;
+        assetType: string | null;
+        brand: string | null;
+        model: string | null;
+        specifications: any;
+        quantityRequested: number;
+        quantityApproved: number | null;
+        quantityOrdered: number | null;
+        quantityReceived: number;
+        unitEstimatedCost: number | null;
+        unitActualCost: number | null;
+        annualDemand?: number | null;
+        orderingCost?: number | null;
+        holdingCost?: number | null;
+        calculatedEoq?: number | null;
+        recommendedOrderQuantity?: number | null;
+        reorderPointValue?: number | null;
+        safetyStock?: number | null;
+        demandSource?: string | null;
+        dataQuality?: string | null;
+        minimumOrderQuantity?: number | null;
+        minimumOrderValue?: number | null;
+        packSize?: number | null;
+        leadTimeDays?: number | null;
+        abcClass?: 'A' | 'B' | 'C' | 'Unclassified';
+        abcReason?: string | null;
+        linkedAssetTag: string | null;
+        linkedSpareStockId: string | null;
+        linkedConsumableId: string | null;
+        linkedLicenseId: string | null;
+        notes: string;
+        createdAt: string;
+        updatedAt: string;
+    }>;
+    assetLinks?: Array<{
+        id: string;
+        assetId: string | null;
+        assetTag: string | null;
+        relationshipType: string;
+        createdAt: string;
+    }>;
+    selectedQuoteSummary?: {
+        vendorName: string;
+        totalPrice: number | null;
+    } | null;
+}
+
+const PROCUREMENT_DATA_DIR = path.resolve(process.cwd(), 'data');
+const PROCUREMENT_REQUESTS_FILE = path.resolve(PROCUREMENT_DATA_DIR, 'procurement_requests.json');
+let procurementRequestsCache: ProcurementRequestRecord[] | null = null;
+const PROCUREMENT_LEGACY_FILE_PATH = String(process.env.PROCUREMENT_LEGACY_FILE_PATH || '').trim() || null;
+const PROCUREMENT_LEGACY_IMPORT_ACTOR = String(process.env.PROCUREMENT_LEGACY_IMPORT_ACTOR || 'procurement-legacy-importer').trim() || 'procurement-legacy-importer';
+let procurementLegacyImportPromise: Promise<void> | null = null;
+
+const PROCUREMENT_STATUS_TO_DB: Record<string, PrismaProcurementRequestStatus> = {
+    draft: PrismaProcurementRequestStatus.DRAFT,
+    submitted: PrismaProcurementRequestStatus.SUBMITTED,
+    under_review: PrismaProcurementRequestStatus.UNDER_REVIEW,
+    approved: PrismaProcurementRequestStatus.APPROVED,
+    rejected: PrismaProcurementRequestStatus.REJECTED,
+    ordered: PrismaProcurementRequestStatus.ORDERED,
+    partially_received: PrismaProcurementRequestStatus.PARTIALLY_RECEIVED,
+    received: PrismaProcurementRequestStatus.RECEIVED,
+    closed: PrismaProcurementRequestStatus.CLOSED,
+    cancelled: PrismaProcurementRequestStatus.CANCELLED,
+};
+const PROCUREMENT_STATUS_FROM_DB: Record<PrismaProcurementRequestStatus, ProcurementRequestStatus> = {
+    [PrismaProcurementRequestStatus.DRAFT]: 'Draft',
+    [PrismaProcurementRequestStatus.SUBMITTED]: 'Submitted',
+    [PrismaProcurementRequestStatus.UNDER_REVIEW]: 'Under Review',
+    [PrismaProcurementRequestStatus.APPROVED]: 'Approved',
+    [PrismaProcurementRequestStatus.REJECTED]: 'Rejected',
+    [PrismaProcurementRequestStatus.ORDERED]: 'Ordered',
+    [PrismaProcurementRequestStatus.PARTIALLY_RECEIVED]: 'Partially Received',
+    [PrismaProcurementRequestStatus.RECEIVED]: 'Received',
+    [PrismaProcurementRequestStatus.CLOSED]: 'Closed',
+    [PrismaProcurementRequestStatus.CANCELLED]: 'Cancelled',
+};
+const PROCUREMENT_PRIORITY_TO_DB: Record<string, PrismaProcurementRequestPriority> = {
+    low: PrismaProcurementRequestPriority.LOW,
+    medium: PrismaProcurementRequestPriority.MEDIUM,
+    high: PrismaProcurementRequestPriority.HIGH,
+    critical: PrismaProcurementRequestPriority.CRITICAL,
+};
+const PROCUREMENT_PRIORITY_FROM_DB: Record<PrismaProcurementRequestPriority, ProcurementRequestPriority> = {
+    [PrismaProcurementRequestPriority.LOW]: 'low',
+    [PrismaProcurementRequestPriority.MEDIUM]: 'medium',
+    [PrismaProcurementRequestPriority.HIGH]: 'high',
+    [PrismaProcurementRequestPriority.CRITICAL]: 'critical',
+};
+const PROCUREMENT_SOURCE_TO_DB: Record<string, PrismaProcurementRequestSource> = {
+    manual: PrismaProcurementRequestSource.MANUAL,
+    manual_request: PrismaProcurementRequestSource.MANUAL,
+    ai_recommendation: PrismaProcurementRequestSource.AI_RECOMMENDATION,
+    low_stock: PrismaProcurementRequestSource.LOW_STOCK,
+    eol: PrismaProcurementRequestSource.EOL,
+    eol_risk: PrismaProcurementRequestSource.EOL,
+    audit: PrismaProcurementRequestSource.AUDIT,
+    audit_gap: PrismaProcurementRequestSource.AUDIT,
+    maintenance: PrismaProcurementRequestSource.MAINTENANCE,
+    maintenance_recommendation: PrismaProcurementRequestSource.MAINTENANCE,
+    import: PrismaProcurementRequestSource.IMPORT,
+    risk_recommendation: PrismaProcurementRequestSource.MAINTENANCE,
+};
+const PROCUREMENT_SOURCE_FROM_DB: Record<PrismaProcurementRequestSource, ProcurementRequestSource> = {
+    [PrismaProcurementRequestSource.MANUAL]: 'manual_request',
+    [PrismaProcurementRequestSource.AI_RECOMMENDATION]: 'ai_recommendation',
+    [PrismaProcurementRequestSource.LOW_STOCK]: 'low_stock',
+    [PrismaProcurementRequestSource.EOL]: 'eol_risk',
+    [PrismaProcurementRequestSource.AUDIT]: 'audit_gap',
+    [PrismaProcurementRequestSource.MAINTENANCE]: 'maintenance_recommendation',
+    [PrismaProcurementRequestSource.IMPORT]: 'manual_request',
+};
+const PROCUREMENT_FINANCE_STATUS_TO_DB: Record<string, PrismaProcurementFinanceStatus> = {
+    not_submitted: PrismaProcurementFinanceStatus.NOT_SUBMITTED,
+    not_submitted_to_finance: PrismaProcurementFinanceStatus.NOT_SUBMITTED,
+    pending_budget_review: PrismaProcurementFinanceStatus.PENDING_BUDGET_REVIEW,
+    budget_approved: PrismaProcurementFinanceStatus.BUDGET_APPROVED,
+    budget_rejected: PrismaProcurementFinanceStatus.BUDGET_REJECTED,
+    invoiced: PrismaProcurementFinanceStatus.INVOICED,
+    payment_pending: PrismaProcurementFinanceStatus.PAYMENT_PENDING,
+    paid: PrismaProcurementFinanceStatus.PAID,
+    cancelled: PrismaProcurementFinanceStatus.CANCELLED,
+};
+const PROCUREMENT_FINANCE_STATUS_FROM_DB: Record<PrismaProcurementFinanceStatus, ProcurementFinanceStatusLabel> = {
+    [PrismaProcurementFinanceStatus.NOT_SUBMITTED]: 'Not Submitted to Finance',
+    [PrismaProcurementFinanceStatus.PENDING_BUDGET_REVIEW]: 'Pending Budget Review',
+    [PrismaProcurementFinanceStatus.BUDGET_APPROVED]: 'Budget Approved',
+    [PrismaProcurementFinanceStatus.BUDGET_REJECTED]: 'Budget Rejected',
+    [PrismaProcurementFinanceStatus.INVOICED]: 'Invoiced',
+    [PrismaProcurementFinanceStatus.PAYMENT_PENDING]: 'Payment Pending',
+    [PrismaProcurementFinanceStatus.PAID]: 'Paid',
+    [PrismaProcurementFinanceStatus.CANCELLED]: 'Cancelled',
+};
+const PROCUREMENT_ABC_CLASS_TO_DB: Record<string, InventoryAbcClass> = {
+    a: 'A',
+    b: 'B',
+    c: 'C',
+    unclassified: 'UNCLASSIFIED',
+};
+const PROCUREMENT_ABC_CLASS_FROM_DB: Record<InventoryAbcClass, 'A' | 'B' | 'C' | 'Unclassified'> = {
+    A: 'A',
+    B: 'B',
+    C: 'C',
+    UNCLASSIFIED: 'Unclassified',
 };
 
 // ✅ FIXED: REMOVED HARDCODED OVERRIDE
@@ -379,19 +727,30 @@ function mapToAssetLocation(value: string): AssetLocation {
 }
 
 function mapToAssetDepartment(value: string): AssetDepartment {
+    const raw = String(value || '').trim();
+    const normalized = normalizeValue(raw);
+    if (!normalized || normalized === 'unknown' || normalized === 'none' || normalized === 'null' || normalized === 'na') {
+        return 'UNASSIGNED';
+    }
     const deptMap: Record<string, AssetDepartment> = {
-        'Computer Science': 'COMPUTER_SCIENCE',
-        'Engineering': 'ENGINEERING',
-        'Architecture': 'ARCHITECTURE',
-        'Business': 'BUSINESS',
-        'Mass Comm': 'MASS_COMM',
-        'Alsun': 'ALSUN',
-        'Pharmacy': 'PHARMACY',
-        'Dentistry': 'DENTISTRY',
-        'Unassigned': 'UNASSIGNED',
-        'General': 'GENERAL'
+        computerscience: 'COMPUTER_SCIENCE',
+        cs: 'COMPUTER_SCIENCE',
+        engineering: 'ENGINEERING',
+        architecture: 'ARCHITECTURE',
+        business: 'BUSINESS',
+        businessadmin: 'BUSINESS',
+        businessadministration: 'BUSINESS',
+        masscomm: 'MASS_COMM',
+        masscommunication: 'MASS_COMM',
+        alsun: 'ALSUN',
+        alalsun: 'ALSUN',
+        languages: 'ALSUN',
+        pharmacy: 'PHARMACY',
+        dentistry: 'DENTISTRY',
+        unassigned: 'UNASSIGNED',
+        general: 'GENERAL'
     };
-    return deptMap[value] || 'UNASSIGNED';
+    return deptMap[normalized] || 'UNASSIGNED';
 }
 
 function mapLocationToFriendly(value: AssetLocation | string): string {
@@ -421,8 +780,8 @@ function mapDepartmentToFriendly(value: AssetDepartment | string): string {
         ENGINEERING: 'Engineering',
         ARCHITECTURE: 'Architecture',
         BUSINESS: 'Business',
-        MASS_COMM: 'Mass Comm',
-        ALSUN: 'Alsun',
+        MASS_COMM: 'Mass Communication',
+        ALSUN: 'ALSUN',
         PHARMACY: 'Pharmacy',
         DENTISTRY: 'Dentistry',
         UNASSIGNED: 'Unassigned',
@@ -1092,7 +1451,7 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
         if (row.assetType && row.recordType === 'parent_asset') {
             const normalizedAssetType = normalizeImportRegistryToken(row.assetType);
             if (!IMPORT_PARENT_ASSET_TYPE_ALLOWED.has(normalizedAssetType)) {
-                row.warnings.push(`Unrecognized asset type in registry (${row.assetType}). It will map to nearest supported backend type.`);
+                row.warnings.push(`This asset type is accepted but not in the standard registry. It will still import using the nearest supported backend type. (Technical: unrecognized asset type "${row.assetType}")`);
             }
         }
         if (row.recordType === 'component_asset' || row.recordType === 'embedded_component') {
@@ -1104,32 +1463,32 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
                 row.componentType = normalizedComponentType;
             }
             if (normalizedComponentType && !IMPORT_COMPONENT_TYPE_ALLOWED.has(normalizedComponentType)) {
-                row.warnings.push(`Component type (${row.componentType}) is not in current registry; keeping as custom component type.`);
+                row.warnings.push(`This component type is not in the standard registry. It will still import as a custom component type. (Technical: component type "${row.componentType}")`);
             }
         }
         if (row.recordType === 'accessory') {
             const normalizedAccessoryType = resolveImportAliasToken(row.assetType || row.category || row.assetName, IMPORT_ACCESSORY_TYPE_ALIAS_MAP);
             if (normalizedAccessoryType && !IMPORT_ACCESSORY_TYPE_ALLOWED.has(normalizedAccessoryType)) {
-                row.warnings.push(`Accessory type (${row.assetType || row.category}) is outside the standard accessory registry.`);
+                row.warnings.push(`This accessory type is outside the standard registry. It will still import as a custom accessory type. (Technical: accessory type "${row.assetType || row.category}")`);
             }
         }
         if (row.recordType === 'consumable') {
             const normalizedConsumableType = normalizeImportRegistryToken(row.assetType || row.category || '');
             if (normalizedConsumableType && !IMPORT_CONSUMABLE_TYPE_ALLOWED.has(normalizedConsumableType)) {
-                row.warnings.push(`Consumable type (${row.assetType || row.category}) is outside the standard consumable registry.`);
+                row.warnings.push(`This consumable type is outside the standard registry. It will still import as a custom consumable type. (Technical: consumable type "${row.assetType || row.category}")`);
             }
         }
         if (row.recordType === 'spare_stock') {
             const normalizedSpareType = resolveImportAliasToken(row.componentType || row.assetType || row.assetName, IMPORT_SPARE_STOCK_TYPE_ALIAS_MAP);
             if (normalizedSpareType) row.componentType = normalizedSpareType;
             if (normalizedSpareType && !IMPORT_SPARE_STOCK_TYPE_ALLOWED.has(normalizedSpareType)) {
-                row.warnings.push(`Spare stock type (${row.componentType}) is outside the standard spare-stock registry.`);
+                row.warnings.push(`This spare stock type is outside the standard registry. It will still import as a custom spare-stock type. (Technical: spare-stock type "${row.componentType}")`);
             }
         }
         if (row.recordType === 'license') {
             const normalizedLicenseType = resolveImportAliasToken(row.assetType || row.assetName || '', IMPORT_LICENSE_TYPE_ALIAS_MAP);
             if (normalizedLicenseType && !IMPORT_LICENSE_TYPE_ALLOWED.has(normalizedLicenseType)) {
-                row.warnings.push(`License type (${row.assetType || row.assetName}) is outside the standard license registry.`);
+                row.warnings.push(`This license type is outside the standard registry. It will still import as a custom license type. (Technical: license type "${row.assetType || row.assetName}")`);
             }
         }
 
@@ -1164,9 +1523,9 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
                 row.errors.push('Parent Asset Tag is required for related item rows.');
             } else if (!existingParentTags.has(parentTagKey) && !parentTagsDefinedInFile.has(parentTagKey)) {
                 if (row.recordType === 'accessory' || row.recordType === 'license') {
-                    row.errors.push('Parent asset not found for related item row.');
+                    row.errors.push(`Parent Asset Tag was not found for this related item row. (Technical: "${row.parentAssetTag}")`);
                 } else {
-                    row.errors.push(`Unknown Parent Asset Tag (${row.parentAssetTag})`);
+                    row.errors.push(`Parent Asset Tag was not found. (Technical: "${row.parentAssetTag}")`);
                 }
             }
         }
@@ -1265,7 +1624,7 @@ function parseImportFileRows(
 ): Array<Record<string, any>> {
     const lower = String(filename || '').toLowerCase();
     if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
-        throw new RequestValidationError('XLSX import is not enabled yet. CSV is supported now. XLSX support is planned for Slice 2.1.');
+        throw new RequestValidationError('XLSX import is not enabled yet. CSV is supported now. XLSX support is planned for a later pass.');
     }
     const rows = parseCsvContent(fileContent);
     if (!rows.length) return [];
@@ -1575,6 +1934,10 @@ type EolExplanationHelperResponse = {
     shortUserExplanation: string;
     technicalExplanation: string;
     llmUsed: boolean;
+    llmStatus?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string | null;
+    sourceLabel?: string;
 };
 
 type AiHealthSummaryHelperResponse = {
@@ -1587,32 +1950,1090 @@ type AiHealthSummaryHelperResponse = {
     confidence: 'low' | 'medium' | 'high';
     missingData: string[];
     llmUsed: boolean;
+    llmStatus?: string;
+    fallbackUsed?: boolean;
+    fallbackReason?: string | null;
+    sourceLabel?: string;
 };
 
-async function callInventoryAiHelper(path: string, body: Record<string, unknown>, timeoutMs = 8_000): Promise<any | null> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetch(`${INVENTORY_AI_SERVICE_URL}${path}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-        });
-        if (!response.ok) {
-            const text = await response.text().catch(() => '');
-            console.warn(`[InventoryAIHelpers] ${path} failed status=${response.status} body=${text.slice(0, 240)}`);
-            return null;
-        }
-        return await response.json();
-    } catch (error: any) {
-        const message = String(error?.message || error || 'unknown_error');
-        const timeoutLike = message.toLowerCase().includes('aborted') || message.toLowerCase().includes('timeout');
-        console.warn(`[InventoryAIHelpers] ${path} request failed${timeoutLike ? ' (timeout_or_abort)' : ''}: ${message}`);
-        return null;
-    } finally {
-        clearTimeout(timer);
+type InventoryAiHelperRequestOptions = {
+    method?: 'GET' | 'POST';
+    timeoutMs?: number;
+    retryCount?: number;
+    feature?: string;
+    requestId?: string;
+};
+
+type InventoryAiHelperResult = {
+    ok: boolean;
+    status: number | null;
+    data: any | null;
+    requestId: string;
+    durationMs: number;
+    attempts: number;
+    timedOut: boolean;
+    errorReason: string | null;
+};
+
+type InventoryAiSourceMeta = {
+    fallbackUsed: boolean;
+    llmUsed: boolean;
+    llmStatus: string;
+    fallbackReason: string | null;
+    sourceLabel: 'gemma_generated' | 'inventory_ai_fallback' | 'deterministic_only';
+    source: 'gemma' | 'fallback' | 'deterministic';
+    model: string | null;
+    provider: string;
+    requestId: string | null;
+    durationMs: number | null;
+    attempts: number | null;
+    timedOut: boolean;
+    helperStatus: number | null;
+    helperErrorReason: string | null;
+};
+
+type InventoryAiRuntimeMeta = {
+    requestId: string;
+    durationMs: number;
+    attempts: number;
+    timedOut: boolean;
+    helperStatus: number | null;
+    helperErrorReason: string | null;
+};
+
+function sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isInventoryAiTimeoutLikeError(message: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return normalized.includes('abort')
+        || normalized.includes('timeout')
+        || normalized.includes('timed out')
+        || normalized.includes('etimedout');
+}
+
+function isInventoryAiNetworkLikeError(message: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return normalized.includes('econnrefused')
+        || normalized.includes('econnreset')
+        || normalized.includes('enotfound')
+        || normalized.includes('network')
+        || normalized.includes('socket')
+        || normalized.includes('fetch failed');
+}
+
+function extractInventoryAiRuntimeMeta(ai: any): InventoryAiRuntimeMeta | null {
+    if (!ai || typeof ai !== 'object') return null;
+    const raw = (ai.__inventoryAiMeta && typeof ai.__inventoryAiMeta === 'object')
+        ? ai.__inventoryAiMeta
+        : null;
+    if (!raw) return null;
+    const requestId = String(raw.requestId || '').trim();
+    if (!requestId) return null;
+    return {
+        requestId,
+        durationMs: Number(raw.durationMs || 0),
+        attempts: Number(raw.attempts || 0),
+        timedOut: Boolean(raw.timedOut),
+        helperStatus: Number.isFinite(Number(raw.helperStatus)) ? Number(raw.helperStatus) : null,
+        helperErrorReason: raw.helperErrorReason ? String(raw.helperErrorReason) : null,
+    };
+}
+
+function createInventoryAiSourceMeta(ai: any, deterministicOnly = false): InventoryAiSourceMeta {
+    if (deterministicOnly) {
+        return {
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+            sourceLabel: 'deterministic_only',
+            source: 'deterministic',
+            model: null,
+            provider: INVENTORY_AI_PROVIDER_LABEL,
+            requestId: null,
+            durationMs: null,
+            attempts: null,
+            timedOut: false,
+            helperStatus: null,
+            helperErrorReason: null,
+        };
     }
+    const runtimeMeta = extractInventoryAiRuntimeMeta(ai);
+    const hasResponse = Boolean(ai);
+    const llmUsed = Boolean(ai?.llm_used ?? ai?.llmUsed);
+    const fallbackUsed = !hasResponse || !llmUsed;
+    const llmStatus = hasResponse
+        ? String(ai?.llm_status || ai?.llmStatus || (llmUsed ? 'ready' : 'fallback'))
+        : 'offline';
+    const fallbackReason = hasResponse
+        ? String(ai?.fallback_reason || ai?.fallbackReason || (fallbackUsed ? 'llm_not_used' : '')).trim() || null
+        : 'llm_unavailable_or_timeout';
+    return {
+        fallbackUsed,
+        llmUsed,
+        llmStatus,
+        fallbackReason,
+        sourceLabel: llmUsed ? 'gemma_generated' : 'inventory_ai_fallback',
+        source: llmUsed ? 'gemma' : 'fallback',
+        model: String(ai?.llm_model || ai?.llmModel || INVENTORY_AI_MODEL_LABEL || '').trim() || null,
+        provider: String(ai?.llm_provider || ai?.llmProvider || INVENTORY_AI_PROVIDER_LABEL || 'ollama').trim() || 'ollama',
+        requestId: runtimeMeta?.requestId || null,
+        durationMs: Number.isFinite(Number(runtimeMeta?.durationMs)) ? Number(runtimeMeta?.durationMs) : null,
+        attempts: Number.isFinite(Number(runtimeMeta?.attempts)) ? Number(runtimeMeta?.attempts) : null,
+        timedOut: Boolean(runtimeMeta?.timedOut),
+        helperStatus: runtimeMeta?.helperStatus ?? null,
+        helperErrorReason: runtimeMeta?.helperErrorReason ?? null,
+    };
+}
+
+function nowIsoString(): string {
+    return new Date().toISOString();
+}
+
+function normalizeProcurementStatusValue(value: unknown, fallback: ProcurementRequestStatus = 'Draft'): ProcurementRequestStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const dbValue = PROCUREMENT_STATUS_TO_DB[normalized];
+    return dbValue ? PROCUREMENT_STATUS_FROM_DB[dbValue] : fallback;
+}
+
+function normalizeProcurementPriorityValue(value: unknown, fallback: ProcurementRequestPriority = 'medium'): ProcurementRequestPriority {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'critical') return normalized;
+    return fallback;
+}
+
+function normalizeProcurementSourceValue(value: unknown): ProcurementRequestSource {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const dbValue = PROCUREMENT_SOURCE_TO_DB[normalized];
+    return dbValue ? PROCUREMENT_SOURCE_FROM_DB[dbValue] : 'manual_request';
+}
+
+function sanitizeProcurementAssetIds(values: unknown): string[] {
+    if (!Array.isArray(values)) return [];
+    const unique = new Set<string>();
+    for (const value of values) {
+        const id = normalizeSerialValue(value);
+        if (id) unique.add(id);
+    }
+    return Array.from(unique).slice(0, 120);
+}
+
+function mapProcurementStatusToDb(value: unknown, fallback: PrismaProcurementRequestStatus = PrismaProcurementRequestStatus.DRAFT): PrismaProcurementRequestStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return PROCUREMENT_STATUS_TO_DB[normalized] || fallback;
+}
+
+function mapProcurementPriorityToDb(value: unknown, fallback: PrismaProcurementRequestPriority = PrismaProcurementRequestPriority.MEDIUM): PrismaProcurementRequestPriority {
+    const normalized = String(value || '').trim().toLowerCase();
+    return PROCUREMENT_PRIORITY_TO_DB[normalized] || fallback;
+}
+
+function mapProcurementSourceToDb(value: unknown): PrismaProcurementRequestSource {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return PROCUREMENT_SOURCE_TO_DB[normalized] || PrismaProcurementRequestSource.MANUAL;
+}
+
+function mapProcurementFinanceStatusToDb(
+    value: unknown,
+    fallback: PrismaProcurementFinanceStatus = PrismaProcurementFinanceStatus.NOT_SUBMITTED,
+): PrismaProcurementFinanceStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return PROCUREMENT_FINANCE_STATUS_TO_DB[normalized] || fallback;
+}
+
+function mapProcurementFinanceStatusFromDb(value: PrismaProcurementFinanceStatus): ProcurementFinanceStatusLabel {
+    return PROCUREMENT_FINANCE_STATUS_FROM_DB[value] || 'Not Submitted to Finance';
+}
+
+function mapProcurementAbcClassToDb(value: unknown, fallback: InventoryAbcClass = 'UNCLASSIFIED'): InventoryAbcClass {
+    const normalized = String(value || '').trim().toLowerCase();
+    return PROCUREMENT_ABC_CLASS_TO_DB[normalized] || fallback;
+}
+
+function mapProcurementAbcClassFromDb(value: InventoryAbcClass): 'A' | 'B' | 'C' | 'Unclassified' {
+    return PROCUREMENT_ABC_CLASS_FROM_DB[value] || 'Unclassified';
+}
+
+function mapProcurementRequestTypeToDb(value: unknown): PrismaProcurementRequestType {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'replacement') return PrismaProcurementRequestType.REPLACEMENT;
+    if (normalized === 'spare_stock') return PrismaProcurementRequestType.SPARE_STOCK;
+    if (normalized === 'consumable_restock' || normalized === 'consumable') return PrismaProcurementRequestType.CONSUMABLE_RESTOCK;
+    if (normalized === 'license_renewal' || normalized === 'license') return PrismaProcurementRequestType.LICENSE_RENEWAL;
+    if (normalized === 'new_purchase' || normalized === 'new_asset') return PrismaProcurementRequestType.NEW_PURCHASE;
+    if (normalized === 'maintenance_related') return PrismaProcurementRequestType.MAINTENANCE_RELATED;
+    if (normalized === 'audit_related') return PrismaProcurementRequestType.AUDIT_RELATED;
+    return PrismaProcurementRequestType.OTHER;
+}
+
+function mapProcurementRequestTypeFromDb(value: PrismaProcurementRequestType): string {
+    return String(value || '').trim().toLowerCase() || 'other';
+}
+
+function mapProcurementApprovalDecisionToDb(value: unknown): PrismaProcurementApprovalDecision {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'submit') return PrismaProcurementApprovalDecision.SUBMIT;
+    if (normalized === 'approve') return PrismaProcurementApprovalDecision.APPROVE;
+    if (normalized === 'reject') return PrismaProcurementApprovalDecision.REJECT;
+    if (normalized === 'cancel') return PrismaProcurementApprovalDecision.CANCEL;
+    if (normalized === 'reopen') return PrismaProcurementApprovalDecision.REOPEN;
+    if (normalized === 'order' || normalized === 'mark_ordered') return PrismaProcurementApprovalDecision.MARK_ORDERED;
+    if (normalized === 'receive' || normalized === 'mark_received') return PrismaProcurementApprovalDecision.MARK_RECEIVED;
+    if (normalized === 'close') return PrismaProcurementApprovalDecision.CLOSE;
+    return PrismaProcurementApprovalDecision.UPDATE;
+}
+
+function mapProcurementQuoteStatusToDb(value: unknown, fallback: PrismaVendorQuoteStatus = PrismaVendorQuoteStatus.PENDING): PrismaVendorQuoteStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'selected') return PrismaVendorQuoteStatus.SELECTED;
+    if (normalized === 'rejected') return PrismaVendorQuoteStatus.REJECTED;
+    if (normalized === 'pending') return PrismaVendorQuoteStatus.PENDING;
+    return fallback;
+}
+
+function mapProcurementPurchaseOrderStatusToDb(value: unknown): PrismaPurchaseOrderStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'issued' || normalized === 'ordered') return PrismaPurchaseOrderStatus.ISSUED;
+    if (normalized === 'partially_received' || normalized === 'partial_delivery') return PrismaPurchaseOrderStatus.PARTIALLY_RECEIVED;
+    if (normalized === 'received') return PrismaPurchaseOrderStatus.RECEIVED;
+    if (normalized === 'cancelled') return PrismaPurchaseOrderStatus.CANCELLED;
+    return PrismaPurchaseOrderStatus.DRAFT;
+}
+
+function mapProcurementPurchaseOrderStatusFromDb(value: PrismaPurchaseOrderStatus): string {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'issued') return 'ordered';
+    return normalized || 'draft';
+}
+
+function mapProcurementRfqStatusToDb(
+    value: unknown,
+    fallback: PrismaProcurementRfqStatus = PrismaProcurementRfqStatus.DRAFT,
+): PrismaProcurementRfqStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'sent') return PrismaProcurementRfqStatus.SENT;
+    if (normalized === 'closed') return PrismaProcurementRfqStatus.CLOSED;
+    if (normalized === 'cancelled') return PrismaProcurementRfqStatus.CANCELLED;
+    if (normalized === 'draft') return PrismaProcurementRfqStatus.DRAFT;
+    return fallback;
+}
+
+function mapProcurementRfqStatusFromDb(value: PrismaProcurementRfqStatus): string {
+    return String(value || '').trim().toLowerCase() || 'draft';
+}
+
+function mapReceivingConditionToDb(value: unknown): PrismaReceivingCondition {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'damaged') return PrismaReceivingCondition.DAMAGED;
+    if (normalized === 'partial') return PrismaReceivingCondition.PARTIAL;
+    if (normalized === 'needs_inspection') return PrismaReceivingCondition.NEEDS_INSPECTION;
+    return PrismaReceivingCondition.GOOD;
+}
+
+function mapReceivingConditionFromDb(value: PrismaReceivingCondition): string {
+    return String(value || '').trim().toLowerCase() || 'good';
+}
+
+function mapProcurementRelationshipTypeToDb(value: unknown): PrismaProcurementAssetRelationshipType {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'replaces') return PrismaProcurementAssetRelationshipType.REPLACES;
+    if (normalized === 'requested_for') return PrismaProcurementAssetRelationshipType.REQUESTED_FOR;
+    if (normalized === 'caused_by_audit') return PrismaProcurementAssetRelationshipType.CAUSED_BY_AUDIT;
+    if (normalized === 'caused_by_maintenance') return PrismaProcurementAssetRelationshipType.CAUSED_BY_MAINTENANCE;
+    if (normalized === 'eol_replacement') return PrismaProcurementAssetRelationshipType.EOL_REPLACEMENT;
+    if (normalized === 'low_stock_restock') return PrismaProcurementAssetRelationshipType.LOW_STOCK_RESTOCK;
+    if (normalized === 'license_renewal') return PrismaProcurementAssetRelationshipType.LICENSE_RENEWAL;
+    return PrismaProcurementAssetRelationshipType.RELATED_TO;
+}
+
+function mapProcurementRecommendationReviewStatusToDb(
+    value: unknown,
+    fallback: PrismaProcurementRecommendationReviewStatus = PrismaProcurementRecommendationReviewStatus.REVIEWED,
+): PrismaProcurementRecommendationReviewStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'new') return PrismaProcurementRecommendationReviewStatus.NEW;
+    if (normalized === 'reviewed') return PrismaProcurementRecommendationReviewStatus.REVIEWED;
+    if (normalized === 'converted') return PrismaProcurementRecommendationReviewStatus.CONVERTED;
+    if (normalized === 'ignored') return PrismaProcurementRecommendationReviewStatus.IGNORED;
+    return fallback;
+}
+
+function toIsoOrNull(value: unknown): string | null {
+    if (!value) return null;
+    const parsed = new Date(String(value));
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString();
+}
+
+function toDateOrNull(value: unknown): Date | null {
+    const iso = toIsoOrNull(value);
+    return iso ? new Date(iso) : null;
+}
+
+function parseMoneyOrNull(value: unknown): Prisma.Decimal | null {
+    if (value === null || typeof value === 'undefined' || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return new Prisma.Decimal(numeric);
+}
+
+function buildProcurementLegacyCandidatePaths(): string[] {
+    const candidates = [
+        PROCUREMENT_LEGACY_FILE_PATH,
+        PROCUREMENT_REQUESTS_FILE,
+        path.resolve(process.cwd(), 'procurement_requests.json'),
+        path.resolve(process.cwd(), '..', 'data', 'procurement_requests.json'),
+        path.resolve(process.cwd(), '..', '..', 'data', 'procurement_requests.json'),
+    ].filter(Boolean) as string[];
+    return Array.from(new Set(candidates.map((value) => path.normalize(value))));
+}
+
+async function findExistingLegacyProcurementPath(): Promise<string | null> {
+    const candidates = buildProcurementLegacyCandidatePaths();
+    for (const candidate of candidates) {
+        try {
+            await fs.access(candidate);
+            return candidate;
+        } catch {
+            // Continue scanning
+        }
+    }
+    return null;
+}
+
+type ProcurementRequestDbPayload = Prisma.ProcurementRequestGetPayload<{
+    include: {
+        items: true;
+        approvals: { orderBy: { createdAt: 'desc' } };
+        vendorQuotes: { include: { vendor: true }, orderBy: { createdAt: 'desc' } };
+        purchaseOrders: { include: { items: true }, orderBy: { createdAt: 'desc' } };
+        receivingRecords: { include: { items: true }, orderBy: { createdAt: 'desc' } };
+        assetLinks: { orderBy: { createdAt: 'desc' } };
+    };
+}>;
+
+function mapProcurementDbToRecord(row: ProcurementRequestDbPayload): ProcurementRequestRecord {
+    const primaryItem = row.items[0] || null;
+    const latestPo = row.purchaseOrders[0] || null;
+    const receipts: ProcurementReceiptEntry[] = row.receivingRecords.map((record) => {
+        const quantity = record.items.reduce((sum, item) => sum + Number(item.quantityReceived || 0), 0);
+        const firstItem = record.items[0] || null;
+        return {
+            receiptId: record.id,
+            receivedQuantity: quantity || 0,
+            receivedAt: record.receivedAt.toISOString(),
+            receivedBy: record.receivedBy,
+            notes: record.notes || '',
+            applyTarget: firstItem?.spareStockUpdated ? 'spare_stock' : 'none',
+            spareStockItemId: firstItem?.spareStockId || null,
+            condition: mapReceivingConditionFromDb(record.condition),
+            items: record.items.map((item) => ({
+                id: item.id,
+                itemName: item.itemName,
+                quantityReceived: item.quantityReceived,
+                spareStockUpdated: item.spareStockUpdated,
+                spareStockId: item.spareStockId,
+                consumableUpdated: item.consumableUpdated,
+                consumableId: item.consumableId,
+                licenseCreatedOrUpdated: item.licenseCreatedOrUpdated,
+                licenseId: item.licenseId,
+                createdAssetIds: Array.isArray(item.createdAssetIds)
+                    ? item.createdAssetIds.map((value) => String(value || '').trim()).filter(Boolean)
+                    : [],
+                notes: item.notes || '',
+            })),
+        };
+    });
+    return {
+        id: row.id,
+        requestId: row.requestNumber,
+        title: row.title,
+        description: row.description || '',
+        requestType: mapProcurementRequestTypeFromDb(row.requestType),
+        itemCategory: primaryItem?.category || mapProcurementRequestTypeFromDb(row.requestType),
+        itemType: primaryItem?.itemName || row.title,
+        quantity: Number(primaryItem?.quantityRequested || 1),
+        priority: PROCUREMENT_PRIORITY_FROM_DB[row.priority] || 'medium',
+        reason: row.reason,
+        linkedAssetIds: row.assetLinks
+            .map((link) => normalizeSerialValue(link.assetId) || normalizeSerialValue(link.assetTag))
+            .filter(Boolean) as string[],
+        linkedDepartment: row.department || null,
+        linkedLocation: row.building || null,
+        room: row.room || null,
+        requestedBy: row.requestedBy,
+        status: PROCUREMENT_STATUS_FROM_DB[row.status] || 'Draft',
+        notes: '',
+        requiredDate: row.neededByDate ? row.neededByDate.toISOString() : null,
+        source: PROCUREMENT_SOURCE_FROM_DB[row.source] || 'manual_request',
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+        estimatedBudget: row.estimatedBudget ? Number(row.estimatedBudget) : null,
+        actualCost: row.actualCost ? Number(row.actualCost) : null,
+        abcClass: mapProcurementAbcClassFromDb(row.abcClass),
+        abcReason: row.abcReason || null,
+        controlLevel: row.controlLevel || null,
+        financeStatus: mapProcurementFinanceStatusFromDb(row.financeStatus),
+        costCenterId: row.costCenterId || null,
+        budgetAllocationId: row.budgetAllocationId || null,
+        budgetAmountReserved: row.budgetAmountReserved ? Number(row.budgetAmountReserved) : null,
+        financeNotes: row.financeNotes || null,
+        financeMetadata: row.financeMetadata || null,
+        aiRecommendationId: row.aiRecommendationId || null,
+        metadata: row.metadata || null,
+        aiContext: (row.metadata && typeof row.metadata === 'object' && (row.metadata as any).aiContext)
+            ? {
+                llmUsed: Boolean((row.metadata as any).aiContext.llmUsed),
+                sourceLabel: String((row.metadata as any).aiContext.sourceLabel || '').trim(),
+                confidence: String((row.metadata as any).aiContext.confidence || '').trim(),
+            }
+            : null,
+        approvals: row.approvals.map((approval) => ({
+            status: PROCUREMENT_STATUS_FROM_DB[approval.toStatus] || 'Draft',
+            decision: String(approval.decision || '').trim().toLowerCase() as ProcurementApprovalEntry['decision'],
+            approver: approval.decidedBy,
+            reason: approval.decisionNote || '',
+            createdAt: approval.createdAt.toISOString(),
+        })),
+        vendorQuotes: row.vendorQuotes.map((quote) => ({
+            quoteId: quote.id,
+            vendorName: quote.vendorName,
+            quotedItem: quote.quotedItem,
+            unitPrice: quote.unitPrice ? Number(quote.unitPrice) : null,
+            totalPrice: quote.totalPrice ? Number(quote.totalPrice) : null,
+            minimumOrderQuantity: quote.minimumOrderQuantity ?? null,
+            minimumOrderValue: quote.minimumOrderValue ? Number(quote.minimumOrderValue) : null,
+            packSize: quote.packSize ?? null,
+            leadTimeDays: quote.leadTimeDays ?? null,
+            bulkDiscountAvailable: quote.bulkDiscountAvailable ?? null,
+            warrantyMonths: quote.warrantyMonths ?? null,
+            deliveryDays: quote.deliveryDays ?? null,
+            reliabilityScore: quote.vendor?.reliabilityScore ?? null,
+            selected: quote.status === PrismaVendorQuoteStatus.SELECTED,
+            status: String(quote.status || '').trim().toLowerCase(),
+            rejectedReason: quote.rejectionReason || '',
+            notes: quote.notes || '',
+            createdAt: quote.createdAt.toISOString(),
+            updatedAt: quote.updatedAt.toISOString(),
+        })),
+        purchaseOrder: latestPo
+            ? {
+                id: latestPo.id,
+                poNumber: latestPo.poNumber,
+                vendorName: latestPo.vendorName,
+                expectedDelivery: latestPo.expectedDeliveryDate ? latestPo.expectedDeliveryDate.toISOString() : null,
+                status: mapProcurementPurchaseOrderStatusFromDb(latestPo.status),
+                notes: latestPo.notes || '',
+                createdAt: latestPo.createdAt.toISOString(),
+                items: latestPo.items.map((item) => ({
+                    id: item.id,
+                    itemName: item.itemName,
+                    quantityOrdered: item.quantityOrdered,
+                    quantityReceived: item.quantityReceived,
+                    unitPrice: item.unitPrice ? Number(item.unitPrice) : null,
+                    totalPrice: item.totalPrice ? Number(item.totalPrice) : null,
+                    requestItemId: item.requestItemId || null,
+                })),
+            }
+            : null,
+        purchaseOrders: row.purchaseOrders.map((order) => ({
+            id: order.id,
+            poNumber: order.poNumber,
+            vendorName: order.vendorName,
+            status: mapProcurementPurchaseOrderStatusFromDb(order.status),
+            expectedDelivery: order.expectedDeliveryDate ? order.expectedDeliveryDate.toISOString() : null,
+            issuedAt: order.issuedAt ? order.issuedAt.toISOString() : null,
+            notes: order.notes || '',
+            createdAt: order.createdAt.toISOString(),
+            updatedAt: order.updatedAt.toISOString(),
+            items: order.items.map((item) => ({
+                id: item.id,
+                itemName: item.itemName,
+                quantityOrdered: item.quantityOrdered,
+                quantityReceived: item.quantityReceived,
+                unitPrice: item.unitPrice ? Number(item.unitPrice) : null,
+                totalPrice: item.totalPrice ? Number(item.totalPrice) : null,
+                requestItemId: item.requestItemId || null,
+            })),
+        })),
+        receipts,
+        receivingRecords: receipts,
+        items: row.items.map((item) => ({
+            id: item.id,
+            itemName: item.itemName,
+            category: item.category || null,
+            assetType: item.assetType || null,
+            brand: item.brand || null,
+            model: item.model || null,
+            specifications: item.specifications || null,
+            quantityRequested: item.quantityRequested,
+            quantityApproved: item.quantityApproved ?? null,
+            quantityOrdered: item.quantityOrdered ?? null,
+            quantityReceived: item.quantityReceived,
+            unitEstimatedCost: item.unitEstimatedCost ? Number(item.unitEstimatedCost) : null,
+            unitActualCost: item.unitActualCost ? Number(item.unitActualCost) : null,
+            annualDemand: item.annualDemand ?? null,
+            orderingCost: item.orderingCost ? Number(item.orderingCost) : null,
+            holdingCost: item.holdingCost ? Number(item.holdingCost) : null,
+            calculatedEoq: item.calculatedEoq ? Number(item.calculatedEoq) : null,
+            recommendedOrderQuantity: item.recommendedOrderQuantity ?? null,
+            reorderPointValue: item.reorderPointValue ?? null,
+            safetyStock: item.safetyStock ?? null,
+            demandSource: item.demandSource || null,
+            dataQuality: item.dataQuality || null,
+            minimumOrderQuantity: item.minimumOrderQuantity ?? null,
+            minimumOrderValue: item.minimumOrderValue ? Number(item.minimumOrderValue) : null,
+            packSize: item.packSize ?? null,
+            leadTimeDays: item.leadTimeDays ?? null,
+            abcClass: mapProcurementAbcClassFromDb(item.abcClass),
+            abcReason: item.abcReason || null,
+            linkedAssetTag: item.linkedAssetTag || null,
+            linkedSpareStockId: item.linkedSpareStockId || null,
+            linkedConsumableId: item.linkedConsumableId || null,
+            linkedLicenseId: item.linkedLicenseId || null,
+            notes: item.notes || '',
+            createdAt: item.createdAt.toISOString(),
+            updatedAt: item.updatedAt.toISOString(),
+        })),
+        assetLinks: row.assetLinks.map((link) => ({
+            id: link.id,
+            assetId: link.assetId || null,
+            assetTag: link.assetTag || null,
+            relationshipType: String(link.relationshipType || '').trim().toLowerCase(),
+            createdAt: link.createdAt.toISOString(),
+        })),
+    };
+}
+
+async function fetchProcurementRequestsFromDb(statusFilter: ProcurementRequestStatus | null = null): Promise<ProcurementRequestRecord[]> {
+    const where: Prisma.ProcurementRequestWhereInput = {};
+    if (statusFilter) where.status = mapProcurementStatusToDb(statusFilter);
+    const rows = await prisma.procurementRequest.findMany({
+        where,
+        orderBy: { updatedAt: 'desc' },
+        include: {
+            items: { orderBy: { createdAt: 'asc' } },
+            approvals: { orderBy: { createdAt: 'desc' } },
+            vendorQuotes: { include: { vendor: true }, orderBy: { createdAt: 'desc' } },
+            purchaseOrders: { include: { items: { orderBy: { createdAt: 'asc' } } }, orderBy: { createdAt: 'desc' } },
+            receivingRecords: { include: { items: { orderBy: { createdAt: 'asc' } } }, orderBy: { createdAt: 'desc' } },
+            assetLinks: { orderBy: { createdAt: 'desc' } },
+        },
+    });
+    return rows.map((row) => mapProcurementDbToRecord(row as ProcurementRequestDbPayload));
+}
+
+function calculateBudgetAvailability(row: {
+    allocatedAmount: Prisma.Decimal;
+    reservedAmount: Prisma.Decimal;
+    committedAmount: Prisma.Decimal;
+    spentAmount: Prisma.Decimal;
+}): number {
+    const allocated = Number(row.allocatedAmount || 0);
+    const reserved = Number(row.reservedAmount || 0);
+    const committed = Number(row.committedAmount || 0);
+    const spent = Number(row.spentAmount || 0);
+    return Number((allocated - reserved - committed - spent).toFixed(2));
+}
+
+function buildVendorQuoteScore(params: {
+    totalPrice: number | null;
+    warrantyMonths: number | null;
+    deliveryDays: number | null;
+    reliabilityScore: number | null;
+    moq: number | null;
+}): number {
+    const priceScore = params.totalPrice && params.totalPrice > 0 ? Math.max(0, 35 - Math.min(35, Math.log10(params.totalPrice + 1) * 7.5)) : 20;
+    const warrantyScore = params.warrantyMonths ? Math.min(20, params.warrantyMonths * 0.6) : 8;
+    const deliveryScore = params.deliveryDays !== null && params.deliveryDays >= 0 ? Math.max(0, 20 - params.deliveryDays * 0.75) : 10;
+    const reliabilityScore = params.reliabilityScore !== null ? Math.min(20, Math.max(0, params.reliabilityScore * 2)) : 10;
+    const moqPenalty = params.moq && params.moq > 1 ? Math.min(10, params.moq * 0.45) : 0;
+    return Number((priceScore + warrantyScore + deliveryScore + reliabilityScore - moqPenalty).toFixed(2));
+}
+
+async function ensureProcurementLegacyImported(): Promise<void> {
+    if (procurementLegacyImportPromise) return procurementLegacyImportPromise;
+    procurementLegacyImportPromise = (async () => {
+        const pathFound = await findExistingLegacyProcurementPath();
+        if (!pathFound) return;
+        let parsed: any[] = [];
+        try {
+            const raw = await fs.readFile(pathFound, 'utf8');
+            const json = JSON.parse(raw);
+            if (!Array.isArray(json)) return;
+            parsed = json;
+        } catch (error: any) {
+            console.warn(`[ProcurementMigration] Failed to parse legacy file: ${error?.message || error}`);
+            return;
+        }
+        for (const row of parsed) {
+            const requestNumber = String(row?.requestId || '').trim();
+            const title = String(row?.title || '').trim();
+            if (!requestNumber || !title) continue;
+            const exists = await prisma.procurementRequest.findUnique({ where: { requestNumber }, select: { id: true } });
+            if (exists) continue;
+            const created = await prisma.procurementRequest.create({
+                data: {
+                    requestNumber,
+                    title,
+                    description: String(row?.description || '').trim() || null,
+                    requestType: mapProcurementRequestTypeToDb(row?.itemCategory),
+                    priority: mapProcurementPriorityToDb(row?.priority),
+                    status: mapProcurementStatusToDb(row?.status),
+                    reason: String(row?.reason || 'Imported from legacy procurement').trim() || 'Imported from legacy procurement',
+                    requestedBy: String(row?.requestedBy || PROCUREMENT_LEGACY_IMPORT_ACTOR).trim() || PROCUREMENT_LEGACY_IMPORT_ACTOR,
+                    department: normalizeSerialValue(row?.linkedDepartment),
+                    building: normalizeSerialValue(row?.linkedLocation),
+                    room: normalizeSerialValue(row?.room),
+                    neededByDate: toDateOrNull(row?.requiredDate),
+                    source: mapProcurementSourceToDb(row?.source),
+                    metadata: {
+                        importedFrom: 'legacy_file',
+                        importedAt: nowIsoString(),
+                        legacyPath: pathFound,
+                        aiContext: row?.aiContext || null,
+                    },
+                    createdAt: toDateOrNull(row?.createdAt) || new Date(),
+                    updatedAt: toDateOrNull(row?.updatedAt) || new Date(),
+                },
+            });
+            const requestItem = await prisma.procurementRequestItem.create({
+                data: {
+                    requestId: created.id,
+                    itemName: String(row?.itemType || title).trim() || title,
+                    category: normalizeSerialValue(row?.itemCategory),
+                    assetType: normalizeSerialValue(row?.itemType),
+                    quantityRequested: Math.max(1, parseOptionalIntegerInput(row?.quantity) || 1),
+                    notes: String(row?.notes || '').trim() || null,
+                    createdAt: toDateOrNull(row?.createdAt) || new Date(),
+                    updatedAt: toDateOrNull(row?.updatedAt) || new Date(),
+                },
+            });
+            const linkedAssetIds = sanitizeProcurementAssetIds(row?.linkedAssetIds);
+            if (linkedAssetIds.length) {
+                await prisma.procurementAssetLink.createMany({
+                    data: linkedAssetIds.map((assetRef) => ({
+                        requestId: created.id,
+                        assetId: assetRef,
+                        assetTag: assetRef,
+                        relationshipType: PrismaProcurementAssetRelationshipType.RELATED_TO,
+                        createdAt: toDateOrNull(row?.createdAt) || new Date(),
+                    })),
+                });
+            }
+            if (Array.isArray(row?.approvals) && row.approvals.length) {
+                await prisma.procurementApproval.createMany({
+                    data: row.approvals.map((approval: any) => ({
+                        requestId: created.id,
+                        fromStatus: null,
+                        toStatus: mapProcurementStatusToDb(approval?.status || row?.status),
+                        decision: mapProcurementApprovalDecisionToDb(approval?.decision),
+                        decidedBy: String(approval?.approver || PROCUREMENT_LEGACY_IMPORT_ACTOR).trim() || PROCUREMENT_LEGACY_IMPORT_ACTOR,
+                        decisionNote: String(approval?.reason || '').trim() || null,
+                        createdAt: toDateOrNull(approval?.createdAt) || new Date(),
+                    })),
+                });
+            }
+            if (Array.isArray(row?.vendorQuotes)) {
+                for (const quote of row.vendorQuotes) {
+                    const vendorName = String(quote?.vendorName || '').trim();
+                    let vendorId: string | null = null;
+                    if (vendorName) {
+                        const vendor = await prisma.vendor.findFirst({
+                            where: { name: { equals: vendorName, mode: 'insensitive' } },
+                            select: { id: true },
+                        });
+                        if (vendor) vendorId = vendor.id;
+                        else {
+                            const createdVendor = await prisma.vendor.create({ data: { name: vendorName } });
+                            vendorId = createdVendor.id;
+                        }
+                    }
+                    const status = quote?.selected ? PrismaVendorQuoteStatus.SELECTED : mapProcurementQuoteStatusToDb(quote?.status);
+                    await prisma.vendorQuote.create({
+                        data: {
+                            requestId: created.id,
+                            vendorId,
+                            vendorName: vendorName || 'Unknown Vendor',
+                            quotedItem: String(quote?.quotedItem || requestItem.itemName).trim() || requestItem.itemName,
+                            quantity: Math.max(1, parseOptionalIntegerInput(quote?.quantity) || requestItem.quantityRequested),
+                            unitPrice: parseMoneyOrNull(quote?.unitPrice),
+                            totalPrice: parseMoneyOrNull(quote?.totalPrice),
+                            warrantyMonths: parseOptionalIntegerInput(quote?.warrantyMonths),
+                            deliveryDays: parseOptionalIntegerInput(quote?.deliveryDays),
+                            status,
+                            rejectionReason: String(quote?.rejectedReason || '').trim() || null,
+                            notes: String(quote?.notes || '').trim() || null,
+                            createdAt: toDateOrNull(quote?.createdAt) || new Date(),
+                            updatedAt: toDateOrNull(quote?.updatedAt) || new Date(),
+                        },
+                    });
+                }
+            }
+            if (row?.purchaseOrder && typeof row.purchaseOrder === 'object') {
+                const po = await prisma.purchaseOrder.create({
+                    data: {
+                        requestId: created.id,
+                        poNumber: String(row.purchaseOrder.poNumber || `PO-LEGACY-${requestNumber}`).trim() || `PO-LEGACY-${requestNumber}`,
+                        vendorName: String(row.purchaseOrder.vendorName || 'Unknown Vendor').trim() || 'Unknown Vendor',
+                        status: mapProcurementPurchaseOrderStatusToDb(row.purchaseOrder.status || 'issued'),
+                        expectedDeliveryDate: toDateOrNull(row.purchaseOrder.expectedDelivery),
+                        issuedAt: toDateOrNull(row.purchaseOrder.createdAt) || new Date(),
+                        notes: String(row.purchaseOrder.notes || '').trim() || null,
+                        createdAt: toDateOrNull(row.purchaseOrder.createdAt) || new Date(),
+                        updatedAt: toDateOrNull(row.purchaseOrder.createdAt) || new Date(),
+                    },
+                });
+                await prisma.purchaseOrderItem.create({
+                    data: {
+                        purchaseOrderId: po.id,
+                        requestItemId: requestItem.id,
+                        itemName: requestItem.itemName,
+                        quantityOrdered: requestItem.quantityRequested,
+                    },
+                });
+            }
+            if (Array.isArray(row?.receipts)) {
+                for (const receipt of row.receipts) {
+                    const receivedQuantity = Math.max(1, parseOptionalIntegerInput(receipt?.receivedQuantity) || 1);
+                    const receiving = await prisma.receivingRecord.create({
+                        data: {
+                            requestId: created.id,
+                            receivedBy: String(receipt?.receivedBy || PROCUREMENT_LEGACY_IMPORT_ACTOR).trim() || PROCUREMENT_LEGACY_IMPORT_ACTOR,
+                            receivedAt: toDateOrNull(receipt?.receivedAt) || new Date(),
+                            condition: mapReceivingConditionToDb(receipt?.condition || 'good'),
+                            notes: String(receipt?.notes || '').trim() || null,
+                        },
+                    });
+                    await prisma.receivingRecordItem.create({
+                        data: {
+                            receivingRecordId: receiving.id,
+                            requestItemId: requestItem.id,
+                            itemName: requestItem.itemName,
+                            quantityReceived: receivedQuantity,
+                            spareStockUpdated: String(receipt?.applyTarget || '').trim().toLowerCase() === 'spare_stock',
+                            spareStockId: normalizeSerialValue(receipt?.spareStockItemId),
+                            notes: String(receipt?.notes || '').trim() || null,
+                        },
+                    });
+                    await prisma.procurementRequestItem.update({
+                        where: { id: requestItem.id },
+                        data: { quantityReceived: { increment: receivedQuantity } },
+                    });
+                }
+            }
+        }
+        console.log(`[ProcurementMigration] Legacy procurement import completed from ${pathFound}.`);
+    })().catch((error) => {
+        console.warn(`[ProcurementMigration] Import failed: ${error?.message || error}`);
+    });
+    return procurementLegacyImportPromise;
+}
+
+async function readProcurementRequests(statusFilter: ProcurementRequestStatus | null = null): Promise<ProcurementRequestRecord[]> {
+    await ensureProcurementLegacyImported();
+    return fetchProcurementRequestsFromDb(statusFilter);
+}
+
+async function appendProcurementAssetHistory(assetIds: string[], event: string, details: string): Promise<void> {
+    const now = new Date();
+    const ids = sanitizeProcurementAssetIds(assetIds);
+    if (!ids.length) return;
+    for (const assetId of ids) {
+        await prisma.assetHistory.create({
+            data: {
+                assetId,
+                event: String(event || 'Procurement Event').trim(),
+                details: String(details || '').trim().slice(0, 700),
+                date: now,
+            },
+        }).catch(() => null);
+        await prisma.assetLifecycleEvent.create({
+            data: {
+                assetId,
+                eventType: 'procurement_event',
+                reason: String(event || 'procurement_event').trim(),
+                notes: String(details || '').trim().slice(0, 700),
+                actor: 'procurement-service',
+            },
+        }).catch(() => null);
+    }
+}
+
+function procurementStatusSortValue(status: ProcurementRequestStatus): number {
+    const index = PROCUREMENT_REQUEST_STATUSES.findIndex((value) => value === status);
+    return index === -1 ? 999 : index;
+}
+
+function buildProcurementRequestId(): string {
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(now.getUTCDate()).padStart(2, '0');
+    const suffix = crypto.randomUUID().slice(0, 6).toUpperCase();
+    return `PR-${y}${m}${d}-${suffix}`;
+}
+
+function buildProcurementRecommendationKey(input: Record<string, unknown>): string {
+    const digest = crypto.createHash('sha1').update(JSON.stringify(input || {})).digest('hex');
+    return `REC-${digest.slice(0, 16).toUpperCase()}`;
+}
+
+const PROCUREMENT_REQUEST_INCLUDE = {
+    items: { orderBy: { createdAt: 'asc' } },
+    approvals: { orderBy: { createdAt: 'desc' } },
+    vendorQuotes: { include: { vendor: true }, orderBy: { createdAt: 'desc' } },
+    purchaseOrders: { include: { items: { orderBy: { createdAt: 'asc' } } }, orderBy: { createdAt: 'desc' } },
+    receivingRecords: { include: { items: { orderBy: { createdAt: 'asc' } } }, orderBy: { createdAt: 'desc' } },
+    assetLinks: { orderBy: { createdAt: 'desc' } },
+} as const;
+
+async function getProcurementRequestByRouteKey(routeKey: string): Promise<ProcurementRequestDbPayload | null> {
+    const key = String(routeKey || '').trim();
+    if (!key) return null;
+    const row = await prisma.procurementRequest.findFirst({
+        where: {
+            OR: [
+                { requestNumber: key },
+                { id: key },
+            ],
+        },
+        include: PROCUREMENT_REQUEST_INCLUDE,
+    });
+    return row as ProcurementRequestDbPayload | null;
+}
+
+function normalizeProcurementRequestItemCategory(value: unknown): string {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (normalized === 'spare_part') return 'spare_stock';
+    if (normalized === 'consumable_restock') return 'consumable';
+    if (normalized === 'license_renewal') return 'license';
+    if (normalized === 'new_purchase') return 'new_asset';
+    if (normalized === 'maintenance_related') return 'maintenance_related';
+    if (normalized === 'audit_related') return 'audit_related';
+    if (normalized) return normalized;
+    return 'other';
+}
+
+function buildProcurementApprovalNote(parts: Array<string | null | undefined>): string | null {
+    const note = parts
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+    return note || null;
+}
+
+function mapStatusToApprovalDecision(status: PrismaProcurementRequestStatus): PrismaProcurementApprovalDecision {
+    if (status === PrismaProcurementRequestStatus.SUBMITTED) return PrismaProcurementApprovalDecision.SUBMIT;
+    if (status === PrismaProcurementRequestStatus.APPROVED) return PrismaProcurementApprovalDecision.APPROVE;
+    if (status === PrismaProcurementRequestStatus.REJECTED) return PrismaProcurementApprovalDecision.REJECT;
+    if (status === PrismaProcurementRequestStatus.ORDERED) return PrismaProcurementApprovalDecision.MARK_ORDERED;
+    if (status === PrismaProcurementRequestStatus.RECEIVED || status === PrismaProcurementRequestStatus.PARTIALLY_RECEIVED) {
+        return PrismaProcurementApprovalDecision.MARK_RECEIVED;
+    }
+    if (status === PrismaProcurementRequestStatus.CLOSED) return PrismaProcurementApprovalDecision.CLOSE;
+    if (status === PrismaProcurementRequestStatus.CANCELLED) return PrismaProcurementApprovalDecision.CANCEL;
+    return PrismaProcurementApprovalDecision.UPDATE;
+}
+
+async function getOrCreateVendorIdByName(
+    vendorNameRaw: unknown,
+    client: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<string | null> {
+    const vendorName = String(vendorNameRaw || '').trim();
+    if (!vendorName) return null;
+    const existing = await client.vendor.findFirst({
+        where: { name: { equals: vendorName, mode: 'insensitive' } },
+        select: { id: true },
+    });
+    if (existing?.id) return existing.id;
+    const created = await client.vendor.create({ data: { name: vendorName } });
+    return created.id;
+}
+
+async function callInventoryAiService(
+    path: string,
+    body: Record<string, unknown> | null = null,
+    options: InventoryAiHelperRequestOptions = {},
+): Promise<InventoryAiHelperResult> {
+    const method = options.method || 'POST';
+    const requestId = options.requestId || crypto.randomUUID();
+    const feature = String(options.feature || path).trim().replace(/[^\w]+/g, '_') || 'inventory_ai_feature';
+    const configuredTimeout = Number(options.timeoutMs || INVENTORY_AI_HELPER_TIMEOUT_MS);
+    const timeoutMs = Math.max(
+        10_000,
+        Math.min(
+            240_000,
+            Number.isFinite(configuredTimeout) ? Math.trunc(configuredTimeout) : INVENTORY_AI_HELPER_TIMEOUT_MS,
+        ),
+    );
+    const retryCount = Math.max(0, Math.min(2, Number.isFinite(Number(options.retryCount))
+        ? Math.trunc(Number(options.retryCount))
+        : INVENTORY_AI_HELPER_RETRY_COUNT));
+    const attemptsLimit = 1 + retryCount;
+    const startedAt = Date.now();
+    let attempts = 0;
+    let lastStatus: number | null = null;
+    let lastReason: string | null = null;
+    let timedOut = false;
+
+    for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
+        attempts = attempt;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const attemptStartedAt = Date.now();
+        try {
+            const response = await fetch(`${INVENTORY_AI_SERVICE_URL}${path}`, {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-request-id': requestId,
+                    'x-inventory-ai-feature': feature,
+                },
+                body: method === 'POST' ? JSON.stringify(body || {}) : undefined,
+                signal: controller.signal,
+            });
+            clearTimeout(timer);
+            lastStatus = response.status;
+            if (!response.ok) {
+                const text = await response.text().catch(() => '');
+                lastReason = `http_${response.status}`;
+                const retryable = response.status >= 500 && attempt < attemptsLimit;
+                console.warn(
+                    `[InventoryAIHelpers] requestId=${requestId} feature=${feature} path=${path} `
+                    + `attempt=${attempt}/${attemptsLimit} status=${response.status} retryable=${retryable} `
+                    + `durationMs=${Date.now() - attemptStartedAt} body=${text.slice(0, 240)}`
+                );
+                if (retryable) {
+                    await sleepMs(Math.min(1500, 250 * attempt));
+                    continue;
+                }
+                return {
+                    ok: false,
+                    status: response.status,
+                    data: null,
+                    requestId,
+                    durationMs: Date.now() - startedAt,
+                    attempts,
+                    timedOut: false,
+                    errorReason: lastReason,
+                };
+            }
+            const data = await response.json().catch(() => null);
+            if (data === null) {
+                lastReason = 'invalid_json';
+                const retryable = attempt < attemptsLimit;
+                console.warn(
+                    `[InventoryAIHelpers] requestId=${requestId} feature=${feature} path=${path} `
+                    + `attempt=${attempt}/${attemptsLimit} status=${response.status} reason=invalid_json retryable=${retryable}`
+                );
+                if (retryable) {
+                    await sleepMs(Math.min(1500, 250 * attempt));
+                    continue;
+                }
+                return {
+                    ok: false,
+                    status: response.status,
+                    data: null,
+                    requestId,
+                    durationMs: Date.now() - startedAt,
+                    attempts,
+                    timedOut: false,
+                    errorReason: lastReason,
+                };
+            }
+            console.info(
+                `[InventoryAIHelpers] requestId=${requestId} feature=${feature} path=${path} `
+                + `attempt=${attempt}/${attemptsLimit} status=${response.status} durationMs=${Date.now() - attemptStartedAt}`
+            );
+            return {
+                ok: true,
+                status: response.status,
+                data,
+                requestId,
+                durationMs: Date.now() - startedAt,
+                attempts,
+                timedOut: false,
+                errorReason: null,
+            };
+        } catch (error: any) {
+            clearTimeout(timer);
+            const message = String(error?.message || error || 'unknown_error');
+            const timeoutLike = isInventoryAiTimeoutLikeError(message);
+            const networkLike = isInventoryAiNetworkLikeError(message);
+            timedOut = timedOut || timeoutLike;
+            lastReason = timeoutLike
+                ? 'timeout'
+                : (networkLike ? 'network_error' : 'request_error');
+            const retryable = (timeoutLike || networkLike) && attempt < attemptsLimit;
+            console.warn(
+                `[InventoryAIHelpers] requestId=${requestId} feature=${feature} path=${path} `
+                + `attempt=${attempt}/${attemptsLimit} error=${message} reason=${lastReason} `
+                + `retryable=${retryable} durationMs=${Date.now() - attemptStartedAt}`
+            );
+            if (retryable) {
+                await sleepMs(Math.min(1500, 250 * attempt));
+                continue;
+            }
+            return {
+                ok: false,
+                status: lastStatus,
+                data: null,
+                requestId,
+                durationMs: Date.now() - startedAt,
+                attempts,
+                timedOut,
+                errorReason: lastReason,
+            };
+        }
+    }
+
+    return {
+        ok: false,
+        status: lastStatus,
+        data: null,
+        requestId,
+        durationMs: Date.now() - startedAt,
+        attempts,
+        timedOut,
+        errorReason: lastReason || 'unknown_error',
+    };
+}
+
+async function callInventoryAiHelper(
+    path: string,
+    body: Record<string, unknown>,
+    timeoutOrOptions: number | InventoryAiHelperRequestOptions = INVENTORY_AI_HELPER_TIMEOUT_MS,
+): Promise<any | null> {
+    const options: InventoryAiHelperRequestOptions = {
+        method: 'POST',
+        ...(typeof timeoutOrOptions === 'number'
+            ? { timeoutMs: timeoutOrOptions }
+            : (timeoutOrOptions || {})),
+    };
+    const result = await callInventoryAiService(path, body, options);
+    if (!result.ok) return null;
+    const runtimeMeta: InventoryAiRuntimeMeta = {
+        requestId: result.requestId,
+        durationMs: result.durationMs,
+        attempts: result.attempts,
+        timedOut: result.timedOut,
+        helperStatus: result.status,
+        helperErrorReason: result.errorReason,
+    };
+    if (result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
+        return {
+            ...result.data,
+            __inventoryAiMeta: runtimeMeta,
+        };
+    }
+    return {
+        value: result.data,
+        __inventoryAiMeta: runtimeMeta,
+    };
 }
 
 function buildSpecNormalizationFallback(params: {
@@ -1776,7 +3197,7 @@ function buildAiHealthSummaryFallback(params: {
             : 'high';
 
     const summary = [
-        `${params.asset.name} (${params.asset.customId}) is currently ${String(params.asset.lifecycleStatus || '').toLowerCase().replace(/_/g, ' ')}.`,
+        `${params.asset.name} (${params.asset.customId}) recorded lifecycle status: ${String(params.asset.lifecycleStatus || '').toLowerCase().replace(/_/g, ' ')}.`,
         `EOL status is ${params.assessment.status.replace(/_/g, ' ')} with ${Math.round(Number(params.assessment.confidence || 0) * 100)}% confidence.`,
         componentIssues.length
             ? `Recent component concerns were detected (${componentIssues.length}).`
@@ -1794,6 +3215,19 @@ function buildAiHealthSummaryFallback(params: {
         missingData,
         llmUsed: false,
     };
+}
+
+function normalizeAiHealthSummaryNarrative(summary: string, asset: Asset): string {
+    const raw = String(summary || '').trim();
+    if (!raw) return raw;
+    const assetPrefix = `${String(asset?.name || '').trim()} (${String(asset?.customId || '').trim()})`;
+    if (assetPrefix.trim() && raw.toLowerCase().startsWith(`${assetPrefix.toLowerCase()} is `)) {
+        return `${assetPrefix} recorded lifecycle status is ${raw.slice(assetPrefix.length + 4)}`;
+    }
+    if (/\bis currently\b/i.test(raw)) {
+        return raw.replace(/\bis currently\b/i, 'recorded lifecycle status is');
+    }
+    return raw;
 }
 
 const INVENTORY_AI_SUPPORTED_HINT = 'I can help with inventory status, maintenance, warranty, EOL, stock, duplicates, and procurement questions.';
@@ -1857,6 +3291,15 @@ type InventoryAiSnapshot = {
         quantityAvailable: number;
         minimumStockLevel: number;
         reorderPoint: number | null;
+        safetyStock: number | null;
+        annualDemand: number | null;
+        orderingCost: Prisma.Decimal | null;
+        holdingCost: Prisma.Decimal | null;
+        minimumOrderQuantity: number | null;
+        minimumOrderValue: Prisma.Decimal | null;
+        packSize: number | null;
+        leadTimeDays: number | null;
+        abcClass: InventoryAbcClass;
         unitCost: Prisma.Decimal | null;
         vendor: string | null;
         location: string | null;
@@ -1929,6 +3372,15 @@ async function buildInventoryAiSnapshot(): Promise<InventoryAiSnapshot> {
                 quantityAvailable: true,
                 minimumStockLevel: true,
                 reorderPoint: true,
+                safetyStock: true,
+                annualDemand: true,
+                orderingCost: true,
+                holdingCost: true,
+                minimumOrderQuantity: true,
+                minimumOrderValue: true,
+                packSize: true,
+                leadTimeDays: true,
+                abcClass: true,
                 unitCost: true,
                 vendor: true,
                 location: true,
@@ -1956,6 +3408,320 @@ function buildAiMatchedItem(asset: Asset, reason: string, parentAssetId: string 
         assetTag: normalizeSerialValue(asset.assetTag),
         reason,
         parentAssetId,
+    };
+}
+
+type AssistantAssetMatchMethod =
+    | 'asset_tag_exact'
+    | 'custom_id_exact'
+    | 'asset_name_exact'
+    | 'asset_name_normalized'
+    | 'asset_name_fuzzy';
+
+type AssistantAssetResolution = {
+    extractedAssetQuery: string | null;
+    matchedAsset: Asset | null;
+    matchMethod: AssistantAssetMatchMethod | null;
+    ambiguousAssets: Asset[];
+    scannedCount: number;
+    explicitAssetSignal: boolean;
+    searchedBy: string[];
+};
+
+function normalizeAssistantAssetLookupToken(value: unknown): string {
+    return normalizeValue(String(value || '').replace(/[^a-z0-9_-]+/gi, ''));
+}
+
+function normalizeAssistantAssetLookupText(value: unknown): string {
+    return normalizeValue(String(value || '').replace(/[^a-z0-9]+/gi, ' ')).replace(/\s+/g, ' ').trim();
+}
+
+function tokenizeAssistantAssetLookupQuery(query: string): string[] {
+    const base = String(query || '');
+    const directTokens = base
+        .split(/[^a-z0-9_-]+/gi)
+        .map((token) => normalizeAssistantAssetLookupToken(token))
+        .filter((token) => token.length >= 3);
+    const hyphenTokens = (base.match(/[a-z0-9]+(?:[-_][a-z0-9]+){2,}/gi) || [])
+        .map((token) => normalizeAssistantAssetLookupToken(token))
+        .filter(Boolean);
+    return Array.from(new Set([...hyphenTokens, ...directTokens]));
+}
+
+function extractAssistantAssetQuery(query: string): string | null {
+    const raw = String(query || '').trim();
+    if (!raw) return null;
+    const quoted = raw.match(/["'`“”]([^"'`“”]{3,160})["'`“”]/);
+    if (quoted && quoted[1]) return quoted[1].trim();
+
+    const phraseMatch = raw.match(/\b(?:of|for|about)\s+(.{3,180})$/i);
+    if (phraseMatch && phraseMatch[1]) {
+        return phraseMatch[1].replace(/[?.!]+$/g, '').trim();
+    }
+
+    const stripped = raw
+        .replace(/^(please\s+)?(?:can you|could you|would you|show|summari[sz]e|tell me|give me|find|lookup|search|open|check|review|analy[sz]e)\s+/i, '')
+        .replace(/\b(?:the|asset|cmdb|health|summary|status|details|for|of|about)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .replace(/[?.!]+$/g, '')
+        .trim();
+    return stripped.length >= 3 ? stripped : null;
+}
+
+function resolveAssistantAssetMatch(assets: Asset[], query: string): AssistantAssetResolution {
+    const scannedCount = Array.isArray(assets) ? assets.length : 0;
+    const safeAssets = Array.isArray(assets) ? assets : [];
+    const queryRaw = String(query || '').trim();
+    const queryLower = queryRaw.toLowerCase();
+    const normalizedQuery = normalizeAssistantAssetLookupText(queryRaw);
+    const extractedAssetQuery = extractAssistantAssetQuery(queryRaw);
+    const normalizedExtractedQuery = normalizeAssistantAssetLookupText(extractedAssetQuery || '');
+    const queryTokens = tokenizeAssistantAssetLookupQuery(queryRaw);
+    const searchedBy: string[] = [];
+    const explicitAssetSignal = Boolean(
+        extractedAssetQuery
+        || /\b(asset|tag|serial|cmdb|health|component|license|accessory|lifecycle)\b/i.test(queryRaw)
+        || queryTokens.some((token) => /[0-9]/.test(token) && token.length >= 6)
+    );
+
+    const pushMap = (map: Map<string, Asset[]>, key: string, asset: Asset) => {
+        if (!key) return;
+        map.set(key, [...(map.get(key) || []), asset]);
+    };
+
+    const tagMap = new Map<string, Asset[]>();
+    const customIdMap = new Map<string, Asset[]>();
+    safeAssets.forEach((asset) => {
+        pushMap(tagMap, normalizeAssistantAssetLookupToken(asset.assetTag), asset);
+        pushMap(customIdMap, normalizeAssistantAssetLookupToken(asset.customId), asset);
+    });
+
+    const resolveFromMap = (map: Map<string, Asset[]>, method: AssistantAssetMatchMethod): AssistantAssetResolution | null => {
+        for (const token of queryTokens) {
+            const hits = map.get(token) || [];
+            if (!hits.length) continue;
+            searchedBy.push(method);
+            if (hits.length === 1) {
+                return {
+                    extractedAssetQuery,
+                    matchedAsset: hits[0],
+                    matchMethod: method,
+                    ambiguousAssets: [],
+                    scannedCount,
+                    explicitAssetSignal,
+                    searchedBy,
+                };
+            }
+            return {
+                extractedAssetQuery,
+                matchedAsset: null,
+                matchMethod: null,
+                ambiguousAssets: hits.slice(0, 8),
+                scannedCount,
+                explicitAssetSignal: true,
+                searchedBy,
+            };
+        }
+        return null;
+    };
+
+    const byAssetTag = resolveFromMap(tagMap, 'asset_tag_exact');
+    if (byAssetTag) return byAssetTag;
+
+    const byCustomId = resolveFromMap(customIdMap, 'custom_id_exact');
+    if (byCustomId) return byCustomId;
+
+    const exactNameMatches = safeAssets.filter((asset) => {
+        const name = String(asset.name || '').trim();
+        if (!name) return false;
+        const nameLower = name.toLowerCase();
+        const nameNorm = normalizeAssistantAssetLookupText(name);
+        if (queryLower.includes(nameLower)) return true;
+        if (normalizedQuery && normalizedQuery === nameNorm) return true;
+        if (normalizedExtractedQuery && normalizedExtractedQuery === nameNorm) return true;
+        return false;
+    });
+    if (exactNameMatches.length) {
+        searchedBy.push('asset_name_exact');
+        if (exactNameMatches.length === 1) {
+            return {
+                extractedAssetQuery,
+                matchedAsset: exactNameMatches[0],
+                matchMethod: 'asset_name_exact',
+                ambiguousAssets: [],
+                scannedCount,
+                explicitAssetSignal: true,
+                searchedBy,
+            };
+        }
+        const exactSorted = exactNameMatches
+            .slice()
+            .sort((a, b) => String(b.name || '').length - String(a.name || '').length);
+        return {
+            extractedAssetQuery,
+            matchedAsset: null,
+            matchMethod: null,
+            ambiguousAssets: exactSorted.slice(0, 8),
+            scannedCount,
+            explicitAssetSignal: true,
+            searchedBy,
+        };
+    }
+
+    const normalizedNeedle = normalizedExtractedQuery || normalizedQuery;
+    if (normalizedNeedle) {
+        const normalizedMatches = safeAssets.filter((asset) => {
+            const nameNorm = normalizeAssistantAssetLookupText(asset.name);
+            if (!nameNorm) return false;
+            return nameNorm === normalizedNeedle
+                || nameNorm.includes(normalizedNeedle)
+                || normalizedNeedle.includes(nameNorm);
+        });
+        if (normalizedMatches.length) {
+            searchedBy.push('asset_name_normalized');
+            const ranked = normalizedMatches
+                .slice()
+                .sort((a, b) => String(a.name || '').length - String(b.name || '').length);
+            if (ranked.length === 1) {
+                return {
+                    extractedAssetQuery,
+                    matchedAsset: ranked[0],
+                    matchMethod: 'asset_name_normalized',
+                    ambiguousAssets: [],
+                    scannedCount,
+                    explicitAssetSignal: true,
+                    searchedBy,
+                };
+            }
+            return {
+                extractedAssetQuery,
+                matchedAsset: null,
+                matchMethod: null,
+                ambiguousAssets: ranked.slice(0, 8),
+                scannedCount,
+                explicitAssetSignal: true,
+                searchedBy,
+            };
+        }
+    }
+
+    const fuzzyTokens = (normalizedNeedle || normalizedQuery)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2)
+        .filter((token) => !['the', 'asset', 'health', 'summary', 'status', 'cmdb', 'for', 'of', 'about'].includes(token));
+    if (fuzzyTokens.length) {
+        const fuzzyMatches = safeAssets
+            .map((asset) => {
+                const nameNorm = normalizeAssistantAssetLookupText(asset.name);
+                if (!nameNorm) return { asset, score: 0 };
+                const matched = fuzzyTokens.filter((token) => nameNorm.includes(token)).length;
+                const score = matched / fuzzyTokens.length;
+                return { asset, score };
+            })
+            .filter((row) => row.score >= 0.72)
+            .sort((a, b) => b.score - a.score || String(a.asset.name || '').length - String(b.asset.name || '').length);
+        if (fuzzyMatches.length) {
+            searchedBy.push('asset_name_fuzzy');
+            const topScore = fuzzyMatches[0].score;
+            const topMatches = fuzzyMatches.filter((row) => row.score >= topScore - 0.02).slice(0, 8).map((row) => row.asset);
+            if (topMatches.length === 1) {
+                return {
+                    extractedAssetQuery,
+                    matchedAsset: topMatches[0],
+                    matchMethod: 'asset_name_fuzzy',
+                    ambiguousAssets: [],
+                    scannedCount,
+                    explicitAssetSignal: true,
+                    searchedBy,
+                };
+            }
+            return {
+                extractedAssetQuery,
+                matchedAsset: null,
+                matchMethod: null,
+                ambiguousAssets: topMatches,
+                scannedCount,
+                explicitAssetSignal: true,
+                searchedBy,
+            };
+        }
+    }
+
+    return {
+        extractedAssetQuery,
+        matchedAsset: null,
+        matchMethod: null,
+        ambiguousAssets: [],
+        scannedCount,
+        explicitAssetSignal,
+        searchedBy,
+    };
+}
+
+function buildAssistantAssetFocusedDeterministicResult(
+    snapshot: InventoryAiSnapshot,
+    query: string,
+    matchedAsset: Asset,
+): InventoryAssistantDeterministicResult {
+    const q = normalizeValue(query);
+    const linkedComponents = snapshot.components.filter((row) => (
+        row.parentAssetId === matchedAsset.customId
+        || (row.childAssetId ? row.childAssetId === matchedAsset.customId : false)
+    ));
+    const maintenanceRows = snapshot.maintenance.filter((row) => row.assetId === matchedAsset.customId);
+    const lifecycleRows = snapshot.lifecycleEvents.filter((row) => row.assetId === matchedAsset.customId).slice(0, 8);
+
+    const componentNames = Array.from(new Set(
+        linkedComponents
+            .map((row) => String(row.componentName || '').trim())
+            .filter(Boolean)
+    ));
+    const recentEvents = lifecycleRows
+        .slice(0, 5)
+        .map((row) => String(row.eventType || '').trim().replace(/_/g, ' '))
+        .filter(Boolean);
+
+    let answer = `Matched asset "${matchedAsset.name}" (${matchedAsset.customId}).`;
+    if (q.includes('component')) {
+        answer += componentNames.length
+            ? ` Linked components (${componentNames.length}): ${componentNames.slice(0, 8).join(', ')}.`
+            : ' No linked components were found in current CMDB component records.';
+    } else if (q.includes('health') || q.includes('risk') || q.includes('summary') || q.includes('status') || q.includes('cmdb')) {
+        const lifecycle = String(matchedAsset.lifecycleStatus || matchedAsset.status || 'unknown').replace(/_/g, ' ').toLowerCase();
+        answer += ` Recorded lifecycle status: ${lifecycle}.`;
+        answer += componentNames.length
+            ? ` Linked components: ${componentNames.slice(0, 5).join(', ')}.`
+            : ' No linked component records found.';
+        answer += maintenanceRows.length
+            ? ` Maintenance records: ${maintenanceRows.length}.`
+            : ' Maintenance records: none recorded yet.';
+        if (recentEvents.length) {
+            answer += ` Recent lifecycle events: ${recentEvents.join(' | ')}.`;
+        }
+    }
+
+    return {
+        answer,
+        matchedItems: [buildAiMatchedItem(matchedAsset, 'Matched by assistant asset resolver')],
+        filtersUsed: {
+            intent: 'asset_lookup',
+            matchedAsset: matchedAsset.customId,
+            assetTag: normalizeSerialValue(matchedAsset.assetTag) || null,
+        },
+        confidence: 'high',
+        missingData: [],
+        suggestedActions: [
+            'Open CMDB for full identity, relationships, and lifecycle details.',
+            'Run AI Health Summary for risk and next-step recommendations.',
+            'Review components/accessories/licenses linked to this asset.',
+        ],
+        supported: true,
+        intent: q.includes('component') ? 'component_history' : 'asset_lookup',
+        scannedCount: snapshot.assets.length || 1,
+        missingCount: null,
+        excludedCategories: [],
+        partialFailure: false,
     };
 }
 
@@ -1992,6 +3758,13 @@ function classifyAiQueryIntent(query: string): string {
     if (has('component') && has('fail', 'replace', 'repair', 'damag')) return 'component_failures';
     if (has('low stock', 'reorder', 'spare stock', 'stock forecast')) return 'low_stock';
     if (has('buy next', 'what should we buy', 'procurement', 'purchase next', 'what to buy')) return 'procurement';
+    if (has('abc analysis', 'classify inventory by abc', 'abc class', 'a items', 'b items', 'c items')) return 'abc_analysis';
+    if (has('eoq', 'economic order quantity', 'moq', 'minimum order quantity')) return 'eoq_moq';
+    if (has('fifo', 'issue first', 'oldest batch', 'stock should be issued first')) return 'fifo_issue_priority';
+    if (has('budget impact', 'exceed budget', 'finance status', 'budget review')) return 'budget_impact';
+    if (has('vendor quote', 'best quote', 'quote comparison', 'best supplier')) return 'vendor_quote_comparison';
+    if (has('dead stock', 'obsolete stock')) return 'dead_stock';
+    if (has('risk of shortage', 'shortage risk')) return 'shortage_risk';
     if (has('reallocation', 're-allocate', 'tech exchange', 'internal transfer suggestion', 'reuse before buy')) return 'reallocation';
     if (has('eol', 'end of life', 'near eol', 'expired lifecycle')) return 'eol';
     if (has('license') && has('expire', 'expir', 'renew')) return 'license_expiry';
@@ -2052,6 +3825,43 @@ const FACTUAL_ASSISTANT_INTENTS = new Set([
     'warranty_expiry',
 ]);
 
+const ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION = new Set([
+    'procurement',
+    'abc_analysis',
+    'eoq_moq',
+    'fifo_issue_priority',
+    'budget_impact',
+    'vendor_quote_comparison',
+    'dead_stock',
+    'shortage_risk',
+    'low_stock',
+    'reallocation',
+    'daily_brief',
+    'monthly_report',
+    'executive_dashboard',
+    'maintenance',
+    'risk_score',
+    'replacement_priority',
+    'warranty_expiry',
+    'license_expiry',
+    'missing_data',
+    'missing_serial',
+    'missing_serials',
+    'duplicate_serials',
+    'duplicate_asset_tags',
+    'duplicates',
+]);
+
+const ASSISTANT_INTENTS_DETERMINISTIC_ONLY = new Set([
+    'abc_analysis',
+    'eoq_moq',
+    'fifo_issue_priority',
+    'budget_impact',
+    'vendor_quote_comparison',
+    'dead_stock',
+    'shortage_risk',
+]);
+
 const ASSISTANT_ROUTED_ACTION_BY_INTENT: Record<string, { action: string; endpoint: string }> = {
     daily_brief: { action: 'daily_brief', endpoint: '/api/inventory/ai/daily-brief' },
     monthly_report: { action: 'monthly_report', endpoint: '/api/inventory/ai/monthly-report' },
@@ -2059,6 +3869,13 @@ const ASSISTANT_ROUTED_ACTION_BY_INTENT: Record<string, { action: string; endpoi
     digital_twin: { action: 'digital_twin', endpoint: '/api/assets/:id/digital-twin' },
     black_box_timeline: { action: 'black_box_timeline', endpoint: '/api/assets/:id/black-box-timeline' },
     procurement: { action: 'procurement', endpoint: '/api/inventory/ai/procurement-recommendations' },
+    abc_analysis: { action: 'abc_analysis', endpoint: '/api/inventory/procurement/abc-analysis' },
+    eoq_moq: { action: 'eoq_moq', endpoint: '/api/inventory/procurement/eoq-moq' },
+    fifo_issue_priority: { action: 'fifo_batches', endpoint: '/api/inventory/procurement/fifo/batches' },
+    budget_impact: { action: 'finance_summary', endpoint: '/api/inventory/procurement/finance/summary' },
+    vendor_quote_comparison: { action: 'quote_comparison', endpoint: '/api/inventory/procurement/requests/:id/quote-comparison' },
+    dead_stock: { action: 'fifo_batches', endpoint: '/api/inventory/procurement/fifo/batches' },
+    shortage_risk: { action: 'spare_stock_forecast', endpoint: '/api/inventory/ai/spare-stock-forecast' },
     reallocation: { action: 'reallocation', endpoint: '/api/inventory/ai/reallocation-suggestions' },
     low_stock: { action: 'spare_stock_forecast', endpoint: '/api/inventory/ai/spare-stock-forecast' },
     maintenance: { action: 'maintenance', endpoint: '/api/inventory/ai/maintenance-recommendations' },
@@ -2105,6 +3922,13 @@ function deriveAssistantConfidence(params: {
         'replacement_priority',
         'maintenance',
         'procurement',
+        'abc_analysis',
+        'eoq_moq',
+        'fifo_issue_priority',
+        'budget_impact',
+        'vendor_quote_comparison',
+        'dead_stock',
+        'shortage_risk',
         'reallocation',
         'low_stock',
         'relationship_suggestions',
@@ -2387,6 +4211,128 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             }
         });
         suggestedActions.push('Prioritize procurement by stock criticality and failure trends.');
+    } else if (intent === 'abc_analysis') {
+        const abc = buildInventoryAbcAnalysis(snapshot, []);
+        scannedCount = abc.items.length;
+        abc.items.slice(0, 80).forEach((row) => {
+            if (row.sourceType === 'asset') {
+                const asset = snapshot.assets.find((entry) => entry.customId === row.itemId);
+                if (asset) {
+                    matchedItems.push(buildAiMatchedItem(asset, `ABC ${row.abcClass} (${row.score})`));
+                    return;
+                }
+            }
+            matchedItems.push({
+                assetId: row.itemId,
+                name: row.itemName,
+                type: row.assetType || row.category,
+                category: row.category,
+                status: row.abcClass,
+                lifecycleStatus: row.lifecycleSignal,
+                location: row.location,
+                department: row.department,
+                serialNumber: null,
+                assetTag: null,
+                reason: `ABC ${row.abcClass}: ${row.reason}`,
+            });
+        });
+        suggestedActions.push('Review A-class items first for strict control and procurement prioritization.');
+    } else if (intent === 'eoq_moq') {
+        const eoq = buildEoqMoqInsights(snapshot);
+        scannedCount = eoq.rows.length;
+        eoq.rows.slice(0, 120).forEach((row) => {
+            matchedItems.push({
+                assetId: row.stockItemId,
+                name: row.itemName,
+                type: row.componentType,
+                category: 'spare_part',
+                status: row.eoq !== null ? 'eoq_ready' : 'eoq_missing_data',
+                lifecycleStatus: 'stock_control',
+                location: '-',
+                department: 'Unassigned',
+                serialNumber: null,
+                assetTag: null,
+                reason: row.eoq !== null
+                    ? `EOQ ${row.eoq} | MOQ ${row.moq ?? '-'} | recommended ${row.recommendedOrderQuantity ?? '-'}`
+                    : (row.warning || 'EOQ inputs missing'),
+            });
+        });
+        suggestedActions.push('Capture annual demand, ordering cost, and holding cost for items still missing EOQ inputs.');
+    } else if (intent === 'fifo_issue_priority') {
+        scannedCount = snapshot.spareStock.length;
+        snapshot.spareStock
+            .slice()
+            .sort((a, b) => {
+                const aGap = Number(a.quantityAvailable || 0) - Number(a.reorderPoint ?? a.minimumStockLevel ?? 0);
+                const bGap = Number(b.quantityAvailable || 0) - Number(b.reorderPoint ?? b.minimumStockLevel ?? 0);
+                return aGap - bGap;
+            })
+            .slice(0, 120)
+            .forEach((item) => {
+                matchedItems.push({
+                    assetId: item.id,
+                    name: item.partName,
+                    type: item.componentType || 'component',
+                    category: 'spare_part',
+                    status: 'fifo_priority',
+                    lifecycleStatus: 'stock_control',
+                    location: String(item.location || '-'),
+                    department: 'Unassigned',
+                    serialNumber: null,
+                    assetTag: null,
+                    reason: `Stock ${item.quantityAvailable}/${item.reorderPoint ?? item.minimumStockLevel}. Issue oldest batch first.`,
+                });
+            });
+        suggestedActions.push('Use FIFO issue to consume oldest batches first. Override only with a documented reason.');
+    } else if (intent === 'dead_stock') {
+        scannedCount = snapshot.spareStock.length;
+        snapshot.spareStock.forEach((item) => {
+            const reorder = Number(item.reorderPoint ?? item.minimumStockLevel ?? 0);
+            const qty = Number(item.quantityAvailable || 0);
+            if (reorder <= 0) return;
+            if (qty < reorder * 3) return;
+            matchedItems.push({
+                assetId: item.id,
+                name: item.partName,
+                type: item.componentType || 'component',
+                category: 'spare_part',
+                status: 'possible_dead_stock',
+                lifecycleStatus: 'stock_control',
+                location: String(item.location || '-'),
+                department: 'Unassigned',
+                serialNumber: null,
+                assetTag: null,
+                reason: `Quantity ${qty} is high relative to reorder point ${reorder}.`,
+            });
+        });
+        suggestedActions.push('Review possible dead stock and consider redistribution or procurement threshold tuning.');
+    } else if (intent === 'shortage_risk') {
+        scannedCount = snapshot.spareStock.length;
+        snapshot.spareStock.forEach((item) => {
+            const reorder = Number(item.reorderPoint ?? item.minimumStockLevel ?? 0);
+            const qty = Number(item.quantityAvailable || 0);
+            if (qty > reorder) return;
+            matchedItems.push({
+                assetId: item.id,
+                name: item.partName,
+                type: item.componentType || 'component',
+                category: 'spare_part',
+                status: 'shortage_risk',
+                lifecycleStatus: 'stock_control',
+                location: String(item.location || '-'),
+                department: 'Unassigned',
+                serialNumber: null,
+                assetTag: null,
+                reason: `At/under reorder threshold (${qty}/${reorder}).`,
+            });
+        });
+        suggestedActions.push('Prioritize shortage-risk items with EOQ/MOQ checks before creating purchase requests.');
+    } else if (intent === 'budget_impact') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Open procurement finance summary to review budget availability, reserves, and over-budget requests.');
+    } else if (intent === 'vendor_quote_comparison') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push('Open the request quote comparison to rank vendors by price, MOQ, lead time, warranty, and reliability.');
     } else if (intent === 'eol') {
         scannedCount = snapshot.assets.length;
         snapshot.assets.forEach((asset) => {
@@ -2613,6 +4559,13 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         duplicate_asset_tags: 'No duplicate asset tags were found in the scanned inventory set.',
         low_stock: 'No low-stock spare/consumable items were found in the scanned inventory set.',
         procurement: 'No urgent procurement gaps were detected from current stock and usage signals.',
+        abc_analysis: 'ABC analysis completed. No rows matched the applied filters.',
+        eoq_moq: 'EOQ/MOQ analysis completed. Missing-demand items need annual demand / ordering cost / holding cost inputs.',
+        fifo_issue_priority: 'FIFO priority scan completed. No stock rows matched the requested filter.',
+        budget_impact: 'Budget impact request recognized. Open procurement finance summary for allocation and over-budget checks.',
+        vendor_quote_comparison: 'Vendor quote comparison request recognized. Open a request with quotes to compute best-value ranking.',
+        dead_stock: 'No clear dead-stock candidates were detected from current reorder thresholds.',
+        shortage_risk: 'No shortage-risk items were detected under current reorder thresholds.',
         reallocation: 'No confident internal reallocation opportunities were detected from current stock and availability.',
         maintenance: 'No assets were flagged as needing immediate maintenance in the scanned set.',
         warranty_expiry: 'No soon-expiring warranty assets were found in the scanned set.',
@@ -2645,6 +4598,13 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         'duplicate_asset_tags',
         'low_stock',
         'procurement',
+        'abc_analysis',
+        'eoq_moq',
+        'fifo_issue_priority',
+        'budget_impact',
+        'vendor_quote_comparison',
+        'dead_stock',
+        'shortage_risk',
         'reallocation',
         'license_expiry',
         'warranty_expiry',
@@ -2683,6 +4643,19 @@ function applyAssistantQueryFilters(
     query: string,
     dataScope: InventoryInsightDataScope,
 ): InventoryAssistantDeterministicResult {
+    if (result?.filtersUsed && result.filtersUsed.matchedAsset) {
+        return {
+            ...result,
+            confidence: deriveAssistantConfidence({
+                intent: result.intent,
+                dataScope,
+                scannedCount: result.scannedCount,
+                matchedCount: result.matchedItems.length,
+                supported: result.supported,
+                partialFailure: result.partialFailure,
+            }),
+        };
+    }
     const q = String(query || '').toLowerCase();
     let filtered = [...result.matchedItems];
     const filtersUsed: Record<string, any> = { ...(result.filtersUsed || {}) };
@@ -3028,26 +5001,460 @@ function buildProcurementRecommendations(snapshot: InventoryAiSnapshot): Array<R
         const failurePressure = failureByComponentType.get(typeKey) || 0;
         const recommendedQuantity = Math.max(1, (reorder + 1) - item.quantityAvailable + Math.min(5, failurePressure));
         const estimatedCost = item.unitCost ? Number(item.unitCost) * recommendedQuantity : null;
+        const eoq = (item.annualDemand && item.orderingCost && item.holdingCost && Number(item.holdingCost) > 0)
+            ? Math.sqrt((2 * Number(item.annualDemand) * Number(item.orderingCost)) / Number(item.holdingCost))
+            : null;
+        const moq = item.minimumOrderQuantity ?? null;
+        const packSize = item.packSize ?? null;
+        const suggestedByEoq = eoq ? Math.max(1, Math.round(eoq)) : null;
+        let recommendedByPolicy = suggestedByEoq ?? recommendedQuantity;
+        if (moq && recommendedByPolicy < moq) recommendedByPolicy = moq;
+        if (packSize && packSize > 1) recommendedByPolicy = Math.ceil(recommendedByPolicy / packSize) * packSize;
         recommendations.push({
             itemName: item.partName,
             type: item.componentType,
-            recommendedQuantity,
+            recommendedQuantity: recommendedByPolicy,
             priority: failurePressure >= 3 || item.quantityAvailable === 0 ? 'high' : 'medium',
             reason: failurePressure > 0
                 ? `Low stock and ${failurePressure} related failure/replacement event(s).`
                 : 'Low stock reached reorder/minimum threshold.',
             estimatedCost,
+            abcClass: mapProcurementAbcClassFromDb(item.abcClass),
             relatedAssets: [],
             evidence: {
                 quantityAvailable: item.quantityAvailable,
                 reorderPoint: reorder,
                 failurePressure,
+                eoq: eoq ? Number(eoq.toFixed(2)) : null,
+                moq,
+                packSize,
                 vendor: item.vendor,
                 unitCost: item.unitCost ? Number(item.unitCost) : null,
             },
         });
     });
     return recommendations.slice(0, 150);
+}
+
+type AbcAnalysisItem = {
+    itemId: string;
+    itemName: string;
+    category: string;
+    sourceType: 'asset' | 'spare_stock';
+    assetType: string | null;
+    location: string;
+    department: string;
+    estimatedValue: number | null;
+    riskScore: number;
+    lifecycleSignal: string;
+    maintenanceFrequency: number;
+    shortageImpact: number;
+    usageSignal: number;
+    procurementHistoryWeight: number;
+    score: number;
+    abcClass: 'A' | 'B' | 'C';
+    reason: string;
+    recommendedControlLevel: string;
+};
+
+const ABC_CONTROL_GUIDANCE: Record<'A' | 'B' | 'C', string> = {
+    A: 'Strict control: frequent review, risk/EOL watch, prioritized procurement approvals.',
+    B: 'Balanced control: periodic review, monitor demand and lead-time risk.',
+    C: 'Simple control: lean oversight, batch reorders, keep minimum stock discipline.',
+};
+
+function classifyAbcByScore(score: number): 'A' | 'B' | 'C' {
+    if (score >= 70) return 'A';
+    if (score >= 40) return 'B';
+    return 'C';
+}
+
+function normalizeDeptCriticality(department: string): number {
+    const normalized = normalizeValue(department);
+    if (normalized.includes('engineering') || normalized.includes('computerscience')) return 10;
+    if (normalized.includes('pharmacy') || normalized.includes('dentistry')) return 9;
+    if (normalized.includes('architecture') || normalized.includes('masscommunication') || normalized.includes('alsun')) return 8;
+    if (normalized.includes('business')) return 6;
+    if (normalized.includes('unassigned')) return 4;
+    return 5;
+}
+
+function buildInventoryAbcAnalysis(
+    snapshot: InventoryAiSnapshot,
+    requests: ProcurementRequestRecord[] = [],
+): { items: AbcAnalysisItem[]; counts: Record<'A' | 'B' | 'C', number>; summary: string } {
+    const maintenanceCountByAsset = new Map<string, number>();
+    snapshot.maintenance.forEach((row) => {
+        maintenanceCountByAsset.set(row.assetId, (maintenanceCountByAsset.get(row.assetId) || 0) + 1);
+    });
+    const riskByAsset = new Map<string, number>();
+    buildAssetRiskScores(snapshot).rows.forEach((row) => riskByAsset.set(row.assetId, Number(row.riskScore || 0)));
+    const procurementCounts = new Map<string, number>();
+    requests.forEach((row) => {
+        const key = normalizeValue(row.itemType || row.title);
+        if (!key) return;
+        procurementCounts.set(key, (procurementCounts.get(key) || 0) + 1);
+    });
+    const shortageByType = new Map<string, number>();
+    snapshot.spareStock.forEach((item) => {
+        const reorder = item.reorderPoint ?? item.minimumStockLevel;
+        if (item.quantityAvailable <= reorder) {
+            shortageByType.set(normalizeValue(item.componentType || item.partName), Math.max(1, reorder - item.quantityAvailable + 1));
+        }
+    });
+
+    const items: AbcAnalysisItem[] = [];
+
+    snapshot.assets.forEach((asset) => {
+        const category = String(asset.category || '').toLowerCase();
+        if (!['asset', 'component', 'accessory', 'consumable', 'license', 'spare_part'].includes(category)) return;
+        const value = Number(asset.replacementCost ?? asset.purchaseCost ?? asset.value ?? 0);
+        const riskScore = Number(riskByAsset.get(asset.customId) || 0);
+        const maintenanceFrequency = Number(maintenanceCountByAsset.get(asset.customId) || 0);
+        const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+        const lifecycleSignal = lifecycle || normalizeLifecycleKey(asset.status);
+        const dept = mapDepartmentToFriendly(asset.department);
+        const location = mapLocationToFriendly(asset.location);
+        const assetTypeKey = normalizeValue(canonicalAssetType(asset.type));
+        const shortageImpact = Number(shortageByType.get(assetTypeKey) || 0);
+        const procurementHistoryWeight = Number(procurementCounts.get(normalizeValue(asset.name)) || 0);
+        const usageSignal = category === 'consumable' ? Math.max(0, Number(asset.quantity || 0) <= 5 ? 8 : 3) : 4;
+
+        const valueScore = value > 0 ? Math.min(35, Math.log10(value + 1) * 11.5) : 0;
+        const riskComponent = Math.min(25, riskScore * 0.25);
+        const lifecycleScore = ['eol_expired', 'retired', 'lost_stolen'].includes(lifecycleSignal) ? 15
+            : (lifecycleSignal === 'in_transit' || lifecycleSignal === 'pending_repair' || lifecycleSignal === 'under_maintenance' ? 9 : 4);
+        const maintenanceScore = Math.min(10, maintenanceFrequency * 2);
+        const shortageScore = Math.min(10, shortageImpact * 2);
+        const departmentScore = normalizeDeptCriticality(dept);
+        const procurementScore = Math.min(8, procurementHistoryWeight * 1.3);
+        const score = Number((valueScore + riskComponent + lifecycleScore + maintenanceScore + shortageScore + departmentScore + usageSignal + procurementScore).toFixed(2));
+        const abcClass = classifyAbcByScore(score);
+        const reasonParts = [
+            value > 0 ? `value ${value.toLocaleString()}` : 'value unavailable',
+            `risk ${riskScore.toFixed(1)}`,
+            `lifecycle ${lifecycleSignal || 'unknown'}`,
+            `maintenance ${maintenanceFrequency}`,
+            shortageImpact ? `shortage pressure ${shortageImpact}` : '',
+        ].filter(Boolean);
+
+        items.push({
+            itemId: asset.customId,
+            itemName: asset.name,
+            category,
+            sourceType: 'asset',
+            assetType: canonicalAssetType(asset.type) || null,
+            location,
+            department: dept,
+            estimatedValue: Number.isFinite(value) ? value : null,
+            riskScore,
+            lifecycleSignal,
+            maintenanceFrequency,
+            shortageImpact,
+            usageSignal,
+            procurementHistoryWeight,
+            score,
+            abcClass,
+            reason: reasonParts.join(' | '),
+            recommendedControlLevel: ABC_CONTROL_GUIDANCE[abcClass],
+        });
+    });
+
+    snapshot.spareStock.forEach((item) => {
+        const reorder = item.reorderPoint ?? item.minimumStockLevel;
+        const shortageImpact = item.quantityAvailable <= reorder ? Math.max(1, reorder - item.quantityAvailable + 1) : 0;
+        const estimatedValue = item.unitCost ? Number(item.unitCost) * Number(item.quantityAvailable || 0) : null;
+        const valueScore = estimatedValue && estimatedValue > 0 ? Math.min(30, Math.log10(estimatedValue + 1) * 10.5) : 0;
+        const shortageScore = Math.min(30, shortageImpact * 3.4);
+        const usageSignal = shortageImpact > 0 ? 8 : 4;
+        const procurementWeight = Number(procurementCounts.get(normalizeValue(item.partName)) || 0);
+        const procurementScore = Math.min(10, procurementWeight * 1.8);
+        const departmentScore = 6;
+        const score = Number((valueScore + shortageScore + usageSignal + procurementScore + departmentScore).toFixed(2));
+        const abcClass = classifyAbcByScore(score);
+        items.push({
+            itemId: item.id,
+            itemName: item.partName,
+            category: 'spare_part',
+            sourceType: 'spare_stock',
+            assetType: String(item.componentType || '').trim() || null,
+            location: String(item.location || 'Central Warehouse'),
+            department: 'Unassigned',
+            estimatedValue,
+            riskScore: shortageImpact > 0 ? 65 : 25,
+            lifecycleSignal: 'stock_control',
+            maintenanceFrequency: 0,
+            shortageImpact,
+            usageSignal,
+            procurementHistoryWeight: procurementWeight,
+            score,
+            abcClass,
+            reason: `stock ${item.quantityAvailable}/${reorder} | vendor ${item.vendor || 'n/a'} | unit cost ${item.unitCost ? Number(item.unitCost).toFixed(2) : 'n/a'}`,
+            recommendedControlLevel: ABC_CONTROL_GUIDANCE[abcClass],
+        });
+    });
+
+    const sorted = items.sort((a, b) => b.score - a.score).slice(0, 600);
+    const counts = sorted.reduce((acc, row) => {
+        acc[row.abcClass] += 1;
+        return acc;
+    }, { A: 0, B: 0, C: 0 } as Record<'A' | 'B' | 'C', number>);
+    return {
+        items: sorted,
+        counts,
+        summary: `ABC analysis classified ${sorted.length} items (A=${counts.A}, B=${counts.B}, C=${counts.C}).`,
+    };
+}
+
+type EoqMoqInsightItem = {
+    stockItemId: string;
+    itemName: string;
+    componentType: string;
+    annualDemand: number | null;
+    orderingCost: number | null;
+    holdingCost: number | null;
+    eoq: number | null;
+    moq: number | null;
+    packSize: number | null;
+    leadTimeDays: number | null;
+    reorderPoint: number;
+    safetyStock: number;
+    recommendedOrderQuantity: number | null;
+    dataQuality: 'high' | 'medium' | 'low';
+    warning: string | null;
+    reason: string;
+};
+
+function buildEoqMoqInsights(snapshot: InventoryAiSnapshot): { rows: EoqMoqInsightItem[]; summary: string } {
+    const rows: EoqMoqInsightItem[] = snapshot.spareStock.map((item) => {
+        const annualDemand = item.annualDemand ?? null;
+        const orderingCost = item.orderingCost ? Number(item.orderingCost) : null;
+        const holdingCost = item.holdingCost ? Number(item.holdingCost) : null;
+        const moq = item.minimumOrderQuantity ?? null;
+        const packSize = item.packSize ?? null;
+        const leadTimeDays = item.leadTimeDays ?? null;
+        const reorderPoint = Number(item.reorderPoint ?? item.minimumStockLevel ?? 0);
+        const safetyStock = Number(item.safetyStock ?? 0);
+        let eoq: number | null = null;
+        let recommendedOrderQuantity: number | null = null;
+        let warning: string | null = null;
+        let dataQuality: 'high' | 'medium' | 'low' = 'high';
+        let reason = 'EOQ unavailable due to missing demand/order/holding inputs.';
+
+        if (annualDemand && annualDemand > 0 && orderingCost && orderingCost > 0 && holdingCost && holdingCost > 0) {
+            eoq = Math.sqrt((2 * annualDemand * orderingCost) / holdingCost);
+            let suggested = Math.max(1, Math.round(eoq));
+            if (moq && moq > 0 && suggested < moq) {
+                warning = `MOQ (${moq}) exceeds EOQ (${Math.round(eoq)}); risk of overstock/holding cost increase.`;
+                suggested = moq;
+            }
+            if (packSize && packSize > 1) {
+                suggested = Math.ceil(suggested / packSize) * packSize;
+            }
+            recommendedOrderQuantity = suggested;
+            reason = `EOQ computed from D=${annualDemand}, S=${orderingCost}, H=${holdingCost}.`;
+            dataQuality = 'high';
+        } else {
+            const available = [annualDemand, orderingCost, holdingCost].filter((entry) => Number(entry || 0) > 0).length;
+            dataQuality = available >= 2 ? 'medium' : 'low';
+            warning = 'EOQ cannot be calculated accurately because annual demand / ordering cost / holding cost is missing.';
+            if (moq && moq > 0) {
+                recommendedOrderQuantity = packSize && packSize > 1
+                    ? Math.ceil(moq / packSize) * packSize
+                    : moq;
+                reason = 'Fallback recommendation is MOQ/pack-size based due to missing EOQ inputs.';
+            }
+        }
+
+        return {
+            stockItemId: item.id,
+            itemName: item.partName,
+            componentType: item.componentType,
+            annualDemand,
+            orderingCost,
+            holdingCost,
+            eoq: eoq ? Number(eoq.toFixed(2)) : null,
+            moq,
+            packSize,
+            leadTimeDays,
+            reorderPoint,
+            safetyStock,
+            recommendedOrderQuantity,
+            dataQuality,
+            warning,
+            reason,
+        };
+    });
+
+    const readyCount = rows.filter((row) => row.eoq !== null).length;
+    return {
+        rows,
+        summary: readyCount
+            ? `EOQ calculated for ${readyCount} spare-stock item(s).`
+            : 'EOQ not available yet. Capture annual demand, ordering cost, and holding cost to enable accurate calculations.',
+    };
+}
+
+type FifoConsumptionDetail = {
+    batchId: string;
+    batchCode: string | null;
+    receivedAt: string;
+    quantityIssued: number;
+    remainingInBatch: number;
+};
+
+async function createSpareStockBatchReceipt(params: {
+    tx: Prisma.TransactionClient;
+    spareStockItemId: string;
+    itemName: string;
+    quantity: number;
+    unitCost: number | null;
+    vendor: string | null;
+    location: string | null;
+    sourceRequestId: string | null;
+    sourcePurchaseOrderId: string | null;
+    notes?: string | null;
+    actor?: string | null;
+}): Promise<{ batchId: string; batchCode: string | null }> {
+    const batchCode = `BATCH-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(params.spareStockItemId).slice(-6).toUpperCase()}`;
+    const batch = await params.tx.inventoryStockBatch.create({
+        data: {
+            itemKind: 'spare_stock',
+            spareStockItemId: params.spareStockItemId,
+            consumableAssetId: null,
+            itemName: params.itemName,
+            batchCode,
+            quantityReceived: params.quantity,
+            quantityAvailable: params.quantity,
+            unitCost: params.unitCost === null ? null : new Prisma.Decimal(params.unitCost),
+            vendor: params.vendor || null,
+            location: params.location || null,
+            sourceRequestId: params.sourceRequestId,
+            sourcePurchaseOrderId: params.sourcePurchaseOrderId,
+            notes: params.notes || null,
+        },
+    });
+    await params.tx.inventoryStockMovement.create({
+        data: {
+            batchId: batch.id,
+            movementType: 'receive',
+            quantity: params.quantity,
+            reason: params.notes || 'Received from procurement',
+            referenceType: 'procurement_receiving',
+            referenceId: params.sourceRequestId,
+            actor: params.actor || null,
+        },
+    });
+    return { batchId: batch.id, batchCode: batch.batchCode || null };
+}
+
+async function consumeSpareStockByFifo(params: {
+    tx: Prisma.TransactionClient;
+    spareStockItemId: string;
+    quantity: number;
+    actor?: string | null;
+    reason?: string | null;
+    referenceType?: string | null;
+    referenceId?: string | null;
+    overrideBatchId?: string | null;
+}): Promise<{
+    stockBefore: number;
+    stockAfter: number;
+    fifoUsed: boolean;
+    overrideUsed: boolean;
+    batches: FifoConsumptionDetail[];
+}> {
+    const requestedQty = Math.max(1, Number(params.quantity || 1));
+    const stock = await params.tx.spareStockItem.findUnique({ where: { id: params.spareStockItemId } });
+    if (!stock) throw new RequestValidationError('Spare stock item not found');
+    if (stock.quantityAvailable < requestedQty) {
+        throw new RequestValidationError(`Insufficient spare stock quantity (${stock.quantityAvailable}) for requested issue (${requestedQty}).`);
+    }
+
+    const fifoBatches = await params.tx.inventoryStockBatch.findMany({
+        where: {
+            spareStockItemId: params.spareStockItemId,
+            quantityAvailable: { gt: 0 },
+        },
+        orderBy: [
+            { receivedAt: 'asc' },
+            { createdAt: 'asc' },
+        ],
+    });
+
+    if (!fifoBatches.length) {
+        const updated = await params.tx.spareStockItem.update({
+            where: { id: stock.id },
+            data: { quantityAvailable: stock.quantityAvailable - requestedQty },
+        });
+        return {
+            stockBefore: stock.quantityAvailable,
+            stockAfter: updated.quantityAvailable,
+            fifoUsed: false,
+            overrideUsed: false,
+            batches: [],
+        };
+    }
+
+    const batchMap = new Map(fifoBatches.map((batch) => [batch.id, batch]));
+    const orderedBatches: typeof fifoBatches = [];
+    const normalizedOverride = normalizeSerialValue(params.overrideBatchId);
+    if (normalizedOverride && batchMap.has(normalizedOverride)) {
+        orderedBatches.push(batchMap.get(normalizedOverride)!);
+    }
+    fifoBatches.forEach((batch) => {
+        if (!orderedBatches.find((entry) => entry.id === batch.id)) orderedBatches.push(batch);
+    });
+
+    const totalBatchAvailable = orderedBatches.reduce((sum, batch) => sum + Number(batch.quantityAvailable || 0), 0);
+    if (totalBatchAvailable < requestedQty) {
+        throw new RequestValidationError(`FIFO batches only track ${totalBatchAvailable} units, less than requested ${requestedQty}.`);
+    }
+
+    let remaining = requestedQty;
+    const batchesUsed: FifoConsumptionDetail[] = [];
+    for (const batch of orderedBatches) {
+        if (remaining <= 0) break;
+        const available = Number(batch.quantityAvailable || 0);
+        if (available <= 0) continue;
+        const issueQty = Math.min(available, remaining);
+        const updatedBatch = await params.tx.inventoryStockBatch.update({
+            where: { id: batch.id },
+            data: { quantityAvailable: available - issueQty },
+        });
+        await params.tx.inventoryStockMovement.create({
+            data: {
+                batchId: batch.id,
+                movementType: 'issue',
+                quantity: issueQty,
+                reason: params.reason || 'Stock issued',
+                referenceType: params.referenceType || null,
+                referenceId: params.referenceId || null,
+                actor: params.actor || null,
+            },
+        });
+        batchesUsed.push({
+            batchId: batch.id,
+            batchCode: batch.batchCode || null,
+            receivedAt: batch.receivedAt.toISOString(),
+            quantityIssued: issueQty,
+            remainingInBatch: updatedBatch.quantityAvailable,
+        });
+        remaining -= issueQty;
+    }
+
+    const updatedStock = await params.tx.spareStockItem.update({
+        where: { id: stock.id },
+        data: { quantityAvailable: stock.quantityAvailable - requestedQty },
+    });
+
+    return {
+        stockBefore: stock.quantityAvailable,
+        stockAfter: updatedStock.quantityAvailable,
+        fifoUsed: true,
+        overrideUsed: Boolean(normalizedOverride),
+        batches: batchesUsed,
+    };
 }
 
 function buildDuplicateDetectionReport(snapshot: InventoryAiSnapshot): {
@@ -6549,6 +8956,16 @@ app.post('/api/inventory/spare-stock', inventoryAdminGuard, async (req: Request,
                 quantityAvailable: normalizeNonNegativeInteger(req.body?.quantityAvailable, 0),
                 minimumStockLevel: normalizeNonNegativeInteger(req.body?.minimumStockLevel, 0),
                 reorderPoint: parseOptionalIntegerInput(req.body?.reorderPoint),
+                safetyStock: parseOptionalIntegerInput(req.body?.safetyStock),
+                annualDemand: parseOptionalIntegerInput(req.body?.annualDemand),
+                orderingCost: parseOptionalNumberInput(req.body?.orderingCost),
+                holdingCost: parseOptionalNumberInput(req.body?.holdingCost),
+                minimumOrderQuantity: parseOptionalIntegerInput(req.body?.minimumOrderQuantity),
+                minimumOrderValue: parseOptionalNumberInput(req.body?.minimumOrderValue),
+                packSize: parseOptionalIntegerInput(req.body?.packSize),
+                leadTimeDays: parseOptionalIntegerInput(req.body?.leadTimeDays),
+                abcClass: mapProcurementAbcClassToDb(req.body?.abcClass),
+                abcReason: normalizeSerialValue(req.body?.abcReason),
                 location: normalizeSerialValue(req.body?.location),
                 vendor: normalizeSerialValue(req.body?.vendor),
                 unitCost: parseOptionalNumberInput(req.body?.unitCost),
@@ -6582,6 +8999,16 @@ app.patch('/api/inventory/spare-stock/:id', inventoryAdminGuard, async (req: Req
         if (typeof payload.quantityAvailable !== 'undefined') updateData.quantityAvailable = normalizeNonNegativeInteger(payload.quantityAvailable, existing.quantityAvailable);
         if (typeof payload.minimumStockLevel !== 'undefined') updateData.minimumStockLevel = normalizeNonNegativeInteger(payload.minimumStockLevel, existing.minimumStockLevel);
         if (typeof payload.reorderPoint !== 'undefined') updateData.reorderPoint = parseOptionalIntegerInput(payload.reorderPoint);
+        if (typeof payload.safetyStock !== 'undefined') updateData.safetyStock = parseOptionalIntegerInput(payload.safetyStock);
+        if (typeof payload.annualDemand !== 'undefined') updateData.annualDemand = parseOptionalIntegerInput(payload.annualDemand);
+        if (typeof payload.orderingCost !== 'undefined') updateData.orderingCost = parseOptionalNumberInput(payload.orderingCost);
+        if (typeof payload.holdingCost !== 'undefined') updateData.holdingCost = parseOptionalNumberInput(payload.holdingCost);
+        if (typeof payload.minimumOrderQuantity !== 'undefined') updateData.minimumOrderQuantity = parseOptionalIntegerInput(payload.minimumOrderQuantity);
+        if (typeof payload.minimumOrderValue !== 'undefined') updateData.minimumOrderValue = parseOptionalNumberInput(payload.minimumOrderValue);
+        if (typeof payload.packSize !== 'undefined') updateData.packSize = parseOptionalIntegerInput(payload.packSize);
+        if (typeof payload.leadTimeDays !== 'undefined') updateData.leadTimeDays = parseOptionalIntegerInput(payload.leadTimeDays);
+        if (typeof payload.abcClass !== 'undefined') updateData.abcClass = mapProcurementAbcClassToDb(payload.abcClass);
+        if (typeof payload.abcReason !== 'undefined') updateData.abcReason = normalizeSerialValue(payload.abcReason);
         if (typeof payload.location !== 'undefined') updateData.location = normalizeSerialValue(payload.location);
         if (typeof payload.vendor !== 'undefined') updateData.vendor = normalizeSerialValue(payload.vendor);
         if (typeof payload.unitCost !== 'undefined') updateData.unitCost = parseOptionalNumberInput(payload.unitCost);
@@ -6613,17 +9040,48 @@ app.post('/api/inventory/spare-stock/:id/adjust', inventoryAdminGuard, async (re
             if (!existing) throw new RequestValidationError('Spare stock item not found');
             const nextQty = existing.quantityAvailable + delta;
             if (nextQty < 0) throw new RequestValidationError('Adjustment would make quantity negative');
-            return tx.spareStockItem.update({
+            let fifoAdjustment: any = null;
+            if (delta > 0) {
+                await createSpareStockBatchReceipt({
+                    tx,
+                    spareStockItemId: existing.id,
+                    itemName: existing.partName,
+                    quantity: delta,
+                    unitCost: existing.unitCost ? Number(existing.unitCost) : null,
+                    vendor: existing.vendor || null,
+                    location: existing.location || null,
+                    sourceRequestId: null,
+                    sourcePurchaseOrderId: null,
+                    notes: normalizeSerialValue(req.body?.note) || 'manual_stock_adjustment',
+                    actor: String(req.body?.actor || '').trim() || null,
+                });
+                fifoAdjustment = { mode: 'batch_receive', quantity: delta };
+            } else {
+                const consume = await consumeSpareStockByFifo({
+                    tx,
+                    spareStockItemId: existing.id,
+                    quantity: Math.abs(delta),
+                    actor: String(req.body?.actor || '').trim() || null,
+                    reason: normalizeSerialValue(req.body?.note) || 'manual_stock_adjustment',
+                    referenceType: 'manual_adjustment',
+                    referenceId: req.params.id,
+                    overrideBatchId: normalizeSerialValue(req.body?.overrideBatchId),
+                });
+                fifoAdjustment = { mode: 'batch_issue', ...consume };
+            }
+            const row = await tx.spareStockItem.update({
                 where: { id: req.params.id },
                 data: {
                     quantityAvailable: nextQty,
                     notes: normalizeSerialValue(req.body?.note) || existing.notes,
                 }
             });
+            return { row, fifoAdjustment };
         });
         res.json({
-            ...updated,
-            lowStock: isLowStock(updated),
+            ...updated.row,
+            fifoAdjustment: updated.fifoAdjustment,
+            lowStock: isLowStock(updated.row),
         });
     } catch (error: any) {
         if (error instanceof RequestValidationError) {
@@ -6714,6 +9172,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             let createdParentAssets = 0;
             let createdAccessoryAssets = 0;
             let createdLicenseAssets = 0;
+            let createdConsumableAssets = 0;
             const parentTagToCustomId = new Map<string, string>();
             const parentRows = revalidated.normalizedRows.filter((row) => row.recordType === 'parent_asset');
 
@@ -7232,6 +9691,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             createdAssets.push(created.customId);
                             if (row.recordType === 'accessory') createdAccessoryAssets += 1;
                             if (row.recordType === 'license') createdLicenseAssets += 1;
+                            if (row.recordType === 'consumable') createdConsumableAssets += 1;
                             await tx.assetHistory.create({
                                 data: {
                                     assetId: created.customId,
@@ -7318,6 +9778,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 createdParentAssets,
                 createdAccessoryAssets,
                 createdLicenseAssets,
+                createdConsumableAssets,
             };
         });
 
@@ -7325,6 +9786,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
         res.json({
             success,
             importBatchId,
+            importTimestamp,
             createdAssets: result.createdAssets.length,
             createdComponents: result.createdComponents.length,
             createdSpareStockItems: result.createdSpareStockItems.length,
@@ -7333,7 +9795,9 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             createdParentAssets: result.createdParentAssets,
             createdAccessoryAssets: result.createdAccessoryAssets,
             createdLicenseAssets: result.createdLicenseAssets,
+            createdConsumableAssets: result.createdConsumableAssets,
             skippedRows,
+            failedRows: skippedRows.length + errors.length,
             errors,
             warnings,
         });
@@ -7342,6 +9806,101 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             return res.status(400).json({ message: error.message });
         }
         res.status(500).json({ message: 'Failed to commit import', error: error.message });
+    }
+});
+
+app.get('/api/inventory/ai/diagnostics', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const startedAt = Date.now();
+        const requestId = crypto.randomUUID();
+        const [health, diagnostics, test] = await Promise.all([
+            callInventoryAiService('/health', null, {
+                method: 'GET',
+                timeoutMs: 20_000,
+                retryCount: 0,
+                feature: 'diagnostics_health',
+                requestId,
+            }),
+            callInventoryAiService('/ai/diagnostics', null, {
+                method: 'GET',
+                timeoutMs: 25_000,
+                retryCount: 0,
+                feature: 'diagnostics_ai',
+                requestId,
+            }),
+            callInventoryAiService('/ai/test-gemma', {
+                prompt: 'Say OK only.',
+            }, {
+                method: 'POST',
+                timeoutMs: INVENTORY_AI_HELPER_TIMEOUT_MS,
+                retryCount: 0,
+                feature: 'diagnostics_test_gemma',
+                requestId,
+            }),
+        ]);
+
+        const issues = [
+            health.ok ? null : `health:${health.errorReason || 'unreachable'}`,
+            diagnostics.ok ? null : `ai_diagnostics:${diagnostics.errorReason || 'unreachable'}`,
+            test.ok ? null : `ai_test_gemma:${test.errorReason || 'unreachable'}`,
+        ].filter(Boolean);
+
+        return res.json({
+            status: issues.length ? 'degraded' : 'ok',
+            requestId,
+            generatedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt,
+            backend: {
+                inventoryAiServiceUrl: INVENTORY_AI_SERVICE_URL,
+                helperTimeoutMs: INVENTORY_AI_HELPER_TIMEOUT_MS,
+                helperRetryCount: INVENTORY_AI_HELPER_RETRY_COUNT,
+            },
+            reachability: {
+                health: health.ok,
+                diagnostics: diagnostics.ok,
+                gemmaTest: test.ok,
+            },
+            inventoryAiHealth: health.data || null,
+            inventoryAiDiagnostics: diagnostics.data || null,
+            gemmaTest: test.data || null,
+            issues,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load inventory AI diagnostics', error: error.message });
+    }
+});
+
+app.post('/api/inventory/ai/test-gemma', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const prompt = String(req.body?.prompt || 'Say OK only.').trim().slice(0, 240) || 'Say OK only.';
+        const result = await callInventoryAiService('/ai/test-gemma', { prompt }, {
+            method: 'POST',
+            timeoutMs: INVENTORY_AI_HELPER_TIMEOUT_MS,
+            retryCount: 0,
+            feature: 'backend_test_gemma',
+        });
+        if (!result.ok) {
+            return res.status(502).json({
+                ok: false,
+                requestId: result.requestId,
+                durationMs: result.durationMs,
+                attempts: result.attempts,
+                errorReason: result.errorReason || 'inventory_ai_unreachable',
+                timedOut: result.timedOut,
+                message: 'Inventory backend could not complete Gemma test through inventory-ai-service.',
+            });
+        }
+        return res.json({
+            ok: true,
+            requestId: result.requestId,
+            durationMs: result.durationMs,
+            attempts: result.attempts,
+            backendTimeoutMs: INVENTORY_AI_HELPER_TIMEOUT_MS,
+            backendRetryCount: INVENTORY_AI_HELPER_RETRY_COUNT,
+            test: result.data || null,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to run backend Gemma test', error: error.message });
     }
 });
 
@@ -7378,7 +9937,11 @@ app.post('/api/assets/import/ai-map-columns', inventoryAdminGuard, async (req: R
             sampleRows,
             expectedFields,
             deterministicMappings: deterministic.mappings,
-        }, 9_000);
+        }, {
+            timeoutMs: 30_000,
+            retryCount: 1,
+            feature: 'ai_map_columns',
+        });
         const aiMappings = Array.isArray(ai?.mappings)
             ? ai.mappings.map((row: any) => ({
                 sourceColumn: String(row?.sourceColumn || '').trim(),
@@ -7409,7 +9972,7 @@ app.post('/api/assets/import/ai-map-columns', inventoryAdminGuard, async (req: R
                 ...(deterministic.warnings || []),
                 ...(Array.isArray(ai?.warnings) ? ai.warnings.map((entry: unknown) => String(entry || '').trim()).filter(Boolean) : []),
             ])),
-            fallbackUsed: !ai,
+            ...createInventoryAiSourceMeta(ai),
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to map import columns', error: error.message });
@@ -7484,7 +10047,7 @@ app.post('/api/assets/import/pdf-preview', inventoryAdminGuard, async (req: Requ
             invalidRows: preview.invalidRows,
             errors: preview.errors,
             canImport: Boolean(preview.canImport),
-            fallbackUsed: !ai,
+            ...createInventoryAiSourceMeta(ai),
             limitations: 'PDF/OCR extraction is limited in this pass. Review all rows before commit.',
         });
     } catch (error: any) {
@@ -7498,11 +10061,75 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
         if (!query) return res.status(400).json({ message: 'query is required' });
         const context = (req.body?.context && typeof req.body.context === 'object') ? req.body.context : {};
         const fullSnapshot = await buildInventoryAiSnapshot();
-        const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, context as Record<string, any>, query);
+        const requestedIntent = classifyAiQueryIntent(query);
+        const skipAssetDisambiguation = ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION.has(requestedIntent);
+        const assetResolution = resolveAssistantAssetMatch(fullSnapshot.assets, query);
+        if (!skipAssetDisambiguation && !assetResolution.matchedAsset && assetResolution.ambiguousAssets.length) {
+            const deterministicMeta = createInventoryAiSourceMeta(null, true);
+            const candidates = assetResolution.ambiguousAssets.slice(0, 8);
+            return res.json({
+                answer: `I found multiple possible assets for "${assetResolution.extractedAssetQuery || query}". Please choose one by asset tag.`,
+                matchedItems: candidates.map((asset) => buildAiMatchedItem(asset, 'Possible asset match')),
+                filtersUsed: {
+                    intent: 'asset_lookup',
+                    matchMethod: 'ambiguous',
+                    searchedBy: assetResolution.searchedBy,
+                },
+                confidence: 'medium',
+                missingData: [],
+                suggestedActions: [
+                    'Reply with the exact Asset Tag / Unique ID.',
+                    'Or open the matching asset from the list below.',
+                ],
+                dataScope: 'full_inventory',
+                intent: 'asset_lookup',
+                scannedCount: Number(assetResolution.scannedCount || fullSnapshot.assets.length || 0),
+                matchedCount: candidates.length,
+                missingCount: null,
+                excludedCategories: [],
+                supported: true,
+                routedAction: null,
+                routedEndpoint: null,
+                extractedAssetQuery: assetResolution.extractedAssetQuery,
+                matchedAssetId: null,
+                matchedAssetTag: null,
+                matchMethod: 'ambiguous',
+                searchedBy: assetResolution.searchedBy,
+                ...deterministicMeta,
+            });
+        }
+
+        const resolvedContext = assetResolution.matchedAsset
+            ? {
+                ...(context as Record<string, any>),
+                selectedAssetCustomId: assetResolution.matchedAsset.customId,
+            }
+            : (context as Record<string, any>);
+        const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, resolvedContext, query);
         const scopedSnapshot = scoped.snapshot;
         const dataScope = scoped.dataScope;
-        const deterministicRaw = deterministicAssistantAnswer(scopedSnapshot, query);
-        const deterministic = applyAssistantQueryFilters(deterministicRaw, scopedSnapshot, query, dataScope);
+        const deterministicRaw = assetResolution.matchedAsset
+            ? buildAssistantAssetFocusedDeterministicResult(scopedSnapshot, query, assetResolution.matchedAsset)
+            : deterministicAssistantAnswer(scopedSnapshot, query);
+        let deterministic = applyAssistantQueryFilters(deterministicRaw, scopedSnapshot, query, dataScope);
+        if (
+            !skipAssetDisambiguation
+            && !assetResolution.matchedAsset
+            && assetResolution.explicitAssetSignal
+            && !deterministic.matchedItems.length
+        ) {
+            deterministic = {
+                ...deterministic,
+                answer: `I did not find an exact asset match for "${assetResolution.extractedAssetQuery || query}" in ${assetResolution.scannedCount} scanned records. Try the Asset Tag / Unique ID (example: UX260531-MAIN-PC-001).`,
+                suggestedActions: [
+                    'Search by Asset Tag / Unique ID.',
+                    'Open Parent Assets and copy the exact asset name.',
+                    'Ask: "What components are linked to <Asset Tag>?".',
+                ],
+                supported: true,
+                intent: deterministic.intent === 'unknown' ? 'asset_lookup' : deterministic.intent,
+            };
+        }
         const deterministicConfidence = deriveAssistantConfidence({
             intent: deterministic.intent,
             dataScope,
@@ -7512,28 +10139,50 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
             partialFailure: deterministic.partialFailure,
         });
         const llmPayload = buildAssistantLlmInput(deterministic, query);
-        const routedMeta = ASSISTANT_ROUTED_ACTION_BY_INTENT[String(deterministic.intent || '').toLowerCase()] || null;
+        if (assetResolution.matchedAsset) {
+            llmPayload.matchedAsset = {
+                customId: assetResolution.matchedAsset.customId,
+                assetTag: normalizeSerialValue(assetResolution.matchedAsset.assetTag),
+                name: assetResolution.matchedAsset.name,
+                type: canonicalAssetType(assetResolution.matchedAsset.type),
+                category: String(assetResolution.matchedAsset.category || '').toLowerCase(),
+                location: mapLocationToFriendly(assetResolution.matchedAsset.location),
+                department: mapDepartmentToFriendly(assetResolution.matchedAsset.department),
+                lifecycleStatus: String(assetResolution.matchedAsset.lifecycleStatus || '').toLowerCase(),
+            };
+            llmPayload.matchMethod = assetResolution.matchMethod;
+            llmPayload.extractedAssetQuery = assetResolution.extractedAssetQuery;
+        }
+        const intentKey = String(deterministic.intent || '').toLowerCase();
+        const routedMeta = ASSISTANT_ROUTED_ACTION_BY_INTENT[intentKey] || null;
+        const deterministicOnlyIntent = ASSISTANT_INTENTS_DETERMINISTIC_ONLY.has(intentKey);
 
-        console.info(`[InventoryAI][assistant] query="${query.slice(0, 100)}" scope=${dataScope} llmAttempt=true`);
-        const ai = await callInventoryAiHelper('/inventory-assistant', {
-            query,
-            deterministicResult: llmPayload,
-            contextSummary: {
-                assets: scopedSnapshot.assets.length,
-                components: scopedSnapshot.components.length,
-                maintenance: scopedSnapshot.maintenance.length,
-                lifecycleEvents: scopedSnapshot.lifecycleEvents.length,
-                spareStock: scopedSnapshot.spareStock.length,
-                scope: dataScope,
-            },
-            recentMessages: Array.isArray(req.body?.recentMessages) ? req.body.recentMessages.slice(-8) : [],
-        }, 20_000);
-        const llmUsed = Boolean(ai?.llm_used);
-        const fallbackUsed = !ai || !llmUsed;
-        const llmStatus = ai
-            ? String(ai?.llm_status || (llmUsed ? 'ready' : 'fallback'))
-            : 'offline';
-        const fallbackReason = String(ai?.fallback_reason || (fallbackUsed ? 'llm_unavailable_or_timeout' : '')).trim();
+        console.info(
+            `[InventoryAI][assistant] query="${query.slice(0, 100)}" scope=${dataScope} llmAttempt=${!deterministicOnlyIntent} `
+            + `matchedAssetId=${assetResolution.matchedAsset?.customId || 'none'} `
+            + `matchMethod=${assetResolution.matchMethod || 'none'} searchedBy=${assetResolution.searchedBy.join('|') || 'none'}`
+        );
+        let ai: any = null;
+        if (!deterministicOnlyIntent) {
+            ai = await callInventoryAiHelper('/inventory-assistant', {
+                query,
+                deterministicResult: llmPayload,
+                contextSummary: {
+                    assets: scopedSnapshot.assets.length,
+                    components: scopedSnapshot.components.length,
+                    maintenance: scopedSnapshot.maintenance.length,
+                    lifecycleEvents: scopedSnapshot.lifecycleEvents.length,
+                    spareStock: scopedSnapshot.spareStock.length,
+                    scope: dataScope,
+                },
+                recentMessages: Array.isArray(req.body?.recentMessages) ? req.body.recentMessages.slice(-8) : [],
+            }, {
+                timeoutMs: 45_000,
+                retryCount: 1,
+                feature: 'assistant',
+            });
+        }
+        const sourceMeta = createInventoryAiSourceMeta(ai, deterministicOnlyIntent);
         const answer = String(ai?.answer || deterministic.answer || INVENTORY_AI_SUPPORTED_HINT);
         const suggestedActions = Array.isArray(ai?.suggested_actions)
             ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 12)
@@ -7546,8 +10195,11 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
                 : 'low';
         const confidence: 'low' | 'medium' | 'high' = FACTUAL_ASSISTANT_INTENTS.has(String(deterministic.intent || '').toLowerCase())
             ? deterministicConfidence
-            : (ai ? llmConfidenceLabel : deterministicConfidence);
-        console.info(`[InventoryAI][assistant] llmUsed=${llmUsed} fallbackUsed=${fallbackUsed} llmStatus=${llmStatus}${fallbackReason ? ` reason=${fallbackReason}` : ''}`);
+            : (sourceMeta.llmUsed ? llmConfidenceLabel : deterministicConfidence);
+        console.info(
+            `[InventoryAI][assistant] llmUsed=${sourceMeta.llmUsed} fallbackUsed=${sourceMeta.fallbackUsed} `
+            + `llmStatus=${sourceMeta.llmStatus}${sourceMeta.fallbackReason ? ` reason=${sourceMeta.fallbackReason}` : ''}`
+        );
         return res.json({
             answer,
             matchedItems: deterministic.matchedItems,
@@ -7563,13 +10215,16 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
             matchedCount: deterministic.matchedItems.length,
             missingCount: typeof deterministic.missingCount === 'number' ? deterministic.missingCount : null,
             excludedCategories: Array.isArray(deterministic.excludedCategories) ? deterministic.excludedCategories : [],
-            llmUsed,
-            llmStatus,
-            fallbackReason: fallbackReason || null,
-            fallbackUsed,
             supported: deterministic.supported,
             routedAction: routedMeta?.action || null,
             routedEndpoint: routedMeta?.endpoint || null,
+            extractedAssetQuery: assetResolution.extractedAssetQuery,
+            matchedAssetId: assetResolution.matchedAsset?.customId || null,
+            matchedAssetTag: normalizeSerialValue(assetResolution.matchedAsset?.assetTag) || null,
+            matchedAssetName: assetResolution.matchedAsset?.name || null,
+            matchMethod: assetResolution.matchMethod || null,
+            searchedBy: assetResolution.searchedBy,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run inventory AI assistant', error: error.message });
@@ -7580,9 +10235,21 @@ app.post('/api/inventory/ai/missing-data', inventoryReadGuard, async (_req: Requ
     try {
         const snapshot = await buildInventoryAiSnapshot();
         const deterministic = computeMissingDataReport(snapshot);
+        const compactReport = {
+            totalIssues: deterministic.totalIssues,
+            criticalIssues: deterministic.criticalIssues,
+            assetsWithIssues: deterministic.assetsWithIssues,
+            warnings: Array.isArray(deterministic.warnings) ? deterministic.warnings.slice(0, 80) : [],
+            recommendations: Array.isArray(deterministic.recommendations) ? deterministic.recommendations.slice(0, 20) : [],
+        };
         const ai = await callInventoryAiHelper('/detect-missing-inventory-data', {
-            report: deterministic,
-        }, 11_000);
+            report: compactReport,
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'missing_data',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             totalIssues: deterministic.totalIssues,
             criticalIssues: deterministic.criticalIssues,
@@ -7593,7 +10260,7 @@ app.post('/api/inventory/ai/missing-data', inventoryReadGuard, async (_req: Requ
                 : deterministic.recommendations,
             confidence: String(ai?.confidence || deterministic.confidence),
             summary: String(ai?.summary || `Detected ${deterministic.totalIssues} data quality issue(s).`),
-            fallbackUsed: !ai,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run missing-data detector', error: error.message });
@@ -7604,16 +10271,29 @@ app.post('/api/inventory/ai/maintenance-recommendations', inventoryReadGuard, as
     try {
         const snapshot = await buildInventoryAiSnapshot();
         const recommendations = buildMaintenanceRecommendations(snapshot);
+        const llmRecommendationContext = recommendations.slice(0, 24).map((item: Record<string, any>) => ({
+            assetId: item.assetId || item.customId || '',
+            assetName: item.assetName || item.name || '',
+            priority: item.priority || item.severity || '',
+            reason: item.reason || item.summary || '',
+            recommendation: item.recommendation || item.action || '',
+            dueDate: item.dueDate || item.nextMaintenanceDate || null,
+        }));
         const ai = await callInventoryAiHelper('/maintenance-recommendations', {
-            recommendations,
-        }, 11_000);
+            recommendations: llmRecommendationContext,
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'maintenance_recommendations',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             recommendations,
             summary: String(ai?.summary || (recommendations.length
                 ? `Prepared ${recommendations.length} maintenance recommendation(s).`
                 : 'Not enough maintenance/failure data to suggest actions.')),
             confidence: String(ai?.confidence || (recommendations.length ? 'medium' : 'low')),
-            fallbackUsed: !ai,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate maintenance recommendations', error: error.message });
@@ -7624,9 +10304,22 @@ app.post('/api/inventory/ai/procurement-recommendations', inventoryReadGuard, as
     try {
         const snapshot = await buildInventoryAiSnapshot();
         const recommendedPurchases = buildProcurementRecommendations(snapshot);
+        const llmProcurementContext = recommendedPurchases.slice(0, 24).map((item: Record<string, any>) => ({
+            itemName: item.itemName || item.assetName || item.name || '',
+            category: item.category || item.itemType || '',
+            quantity: item.quantity || item.recommendedQuantity || 1,
+            priority: item.priority || item.severity || '',
+            reason: item.reason || item.summary || '',
+            estimatedCost: item.estimatedCost || item.cost || null,
+        }));
         const ai = await callInventoryAiHelper('/procurement-recommendations', {
-            recommendedPurchases,
-        }, 11_000);
+            recommendedPurchases: llmProcurementContext,
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'procurement_recommendations',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || (recommendedPurchases.length
                 ? `Prepared ${recommendedPurchases.length} procurement recommendation(s).`
@@ -7636,10 +10329,1922 @@ app.post('/api/inventory/ai/procurement-recommendations', inventoryReadGuard, as
                 ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : [],
             confidence: String(ai?.confidence || (recommendedPurchases.length ? 'medium' : 'low')),
-            fallbackUsed: !ai,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate procurement recommendations', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/abc-analysis', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const requests = await fetchProcurementRequestsFromDb(null);
+        const analysis = buildInventoryAbcAnalysis(snapshot, requests);
+        const classFilter = String(req.query.class || '').trim().toUpperCase();
+        const limit = Math.max(10, Math.min(400, parseOptionalIntegerInput(req.query.limit) || 120));
+        const filtered = ['A', 'B', 'C'].includes(classFilter)
+            ? analysis.items.filter((row) => row.abcClass === classFilter)
+            : analysis.items;
+        return res.json({
+            generatedAt: nowIsoString(),
+            summary: analysis.summary,
+            counts: analysis.counts,
+            classFilter: ['A', 'B', 'C'].includes(classFilter) ? classFilter : 'ALL',
+            rows: filtered.slice(0, limit),
+            controlGuidance: ABC_CONTROL_GUIDANCE,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to build ABC analysis', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/eoq-moq', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const snapshot = await buildInventoryAiSnapshot();
+        const insights = buildEoqMoqInsights(snapshot);
+        return res.json({
+            generatedAt: nowIsoString(),
+            summary: insights.summary,
+            rows: insights.rows,
+            formula: 'EOQ = sqrt((2 * D * S) / H)',
+            note: 'EOQ is applied to repeatable spare-stock/consumable purchasing. One-time strategic assets should use risk/lifecycle review instead.',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to build EOQ/MOQ analysis', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/fifo/batches', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const spareStockItemId = normalizeSerialValue(req.query.spareStockItemId);
+        const itemKind = normalizeSerialValue(req.query.itemKind) || null;
+        const where: Prisma.InventoryStockBatchWhereInput = {};
+        if (spareStockItemId) where.spareStockItemId = spareStockItemId;
+        if (itemKind) where.itemKind = itemKind;
+        const rows = await prisma.inventoryStockBatch.findMany({
+            where,
+            include: {
+                spareStockItem: {
+                    select: {
+                        id: true,
+                        partName: true,
+                        componentType: true,
+                    },
+                },
+            },
+            orderBy: [
+                { receivedAt: 'asc' },
+                { createdAt: 'asc' },
+            ],
+            take: 600,
+        });
+        return res.json({
+            generatedAt: nowIsoString(),
+            count: rows.length,
+            rows: rows.map((row) => ({
+                id: row.id,
+                itemKind: row.itemKind,
+                spareStockItemId: row.spareStockItemId || null,
+                consumableAssetId: row.consumableAssetId || null,
+                itemName: row.itemName,
+                batchCode: row.batchCode || null,
+                receivedAt: row.receivedAt,
+                quantityReceived: row.quantityReceived,
+                quantityAvailable: row.quantityAvailable,
+                unitCost: row.unitCost ? Number(row.unitCost) : null,
+                vendor: row.vendor || null,
+                location: row.location || null,
+                sourceRequestId: row.sourceRequestId || null,
+                sourcePurchaseOrderId: row.sourcePurchaseOrderId || null,
+                notes: row.notes || null,
+                spareStock: row.spareStockItem || null,
+            })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load FIFO batches', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/fifo/issue', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const spareStockItemId = normalizeSerialValue(req.body?.spareStockItemId);
+        const quantity = Math.max(1, parseOptionalIntegerInput(req.body?.quantity) || 1);
+        if (!spareStockItemId) return res.status(400).json({ message: 'spareStockItemId is required' });
+
+        const oldestBatch = await prisma.inventoryStockBatch.findFirst({
+            where: { spareStockItemId, quantityAvailable: { gt: 0 } },
+            orderBy: [
+                { receivedAt: 'asc' },
+                { createdAt: 'asc' },
+            ],
+        });
+        const overrideBatchId = normalizeSerialValue(req.body?.overrideBatchId);
+        const overrideReason = String(req.body?.overrideReason || '').trim();
+        if (overrideBatchId && oldestBatch && overrideBatchId !== oldestBatch.id && !overrideReason) {
+            return res.status(400).json({
+                message: 'FIFO override requires overrideReason when issuing from a newer batch.',
+                oldestBatchId: oldestBatch.id,
+                oldestReceivedAt: oldestBatch.receivedAt,
+            });
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            const issued = await consumeSpareStockByFifo({
+                tx,
+                spareStockItemId,
+                quantity,
+                actor: String(req.body?.actor || '').trim() || null,
+                reason: overrideReason || String(req.body?.reason || 'procurement_fifo_issue').trim(),
+                referenceType: 'manual_fifo_issue',
+                referenceId: normalizeSerialValue(req.body?.referenceId) || null,
+                overrideBatchId,
+            });
+            const stock = await tx.spareStockItem.findUnique({ where: { id: spareStockItemId } });
+            return { issued, stock };
+        });
+
+        return res.json({
+            summary: result.issued.overrideUsed
+                ? 'FIFO issue completed with explicit override reason.'
+                : 'FIFO issue completed from oldest available batch first.',
+            issued: result.issued,
+            stock: result.stock,
+        });
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
+        return res.status(500).json({ message: 'Failed to issue FIFO stock', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/finance/summary', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const [costCenters, periods, allocations, requests, invoices] = await Promise.all([
+            prisma.costCenter.findMany({ orderBy: [{ active: 'desc' }, { code: 'asc' }] }),
+            prisma.budgetPeriod.findMany({ orderBy: [{ startDate: 'desc' }] }),
+            prisma.budgetAllocation.findMany({
+                include: {
+                    costCenter: { select: { id: true, code: true, name: true, department: true } },
+                    period: { select: { id: true, label: true, startDate: true, endDate: true } },
+                },
+                orderBy: [{ createdAt: 'desc' }],
+            }),
+            prisma.procurementRequest.findMany({
+                orderBy: { updatedAt: 'desc' },
+                select: {
+                    id: true,
+                    requestNumber: true,
+                    title: true,
+                    estimatedBudget: true,
+                    actualCost: true,
+                    financeStatus: true,
+                    costCenterId: true,
+                    budgetAllocationId: true,
+                },
+                take: 600,
+            }),
+            prisma.procurementInvoice.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 300,
+                select: {
+                    id: true,
+                    invoiceNumber: true,
+                    paymentStatus: true,
+                    totalAmount: true,
+                },
+            }),
+        ]);
+
+        const allocationRows = allocations.map((row) => ({
+            id: row.id,
+            period: row.period.label,
+            costCenter: row.costCenter.code,
+            department: row.department || row.costCenter.department || null,
+            building: row.building || null,
+            allocatedAmount: Number(row.allocatedAmount || 0),
+            reservedAmount: Number(row.reservedAmount || 0),
+            committedAmount: Number(row.committedAmount || 0),
+            spentAmount: Number(row.spentAmount || 0),
+            availableAmount: calculateBudgetAvailability(row),
+            currency: row.currency || 'USD',
+        }));
+        const overBudgetRequests = requests
+            .filter((row) => row.estimatedBudget && row.budgetAllocationId)
+            .map((row) => {
+                const allocation = allocationRows.find((entry) => entry.id === row.budgetAllocationId);
+                return {
+                    requestNumber: row.requestNumber,
+                    title: row.title,
+                    estimatedBudget: Number(row.estimatedBudget || 0),
+                    allocationAvailable: allocation?.availableAmount ?? null,
+                    exceedsBudget: allocation ? Number(row.estimatedBudget || 0) > allocation.availableAmount : false,
+                    financeStatus: mapProcurementFinanceStatusFromDb(row.financeStatus),
+                };
+            })
+            .filter((row) => row.exceedsBudget);
+
+        const totals = allocationRows.reduce((acc, row) => {
+            acc.allocated += row.allocatedAmount;
+            acc.reserved += row.reservedAmount;
+            acc.committed += row.committedAmount;
+            acc.spent += row.spentAmount;
+            acc.available += row.availableAmount;
+            return acc;
+        }, { allocated: 0, reserved: 0, committed: 0, spent: 0, available: 0 });
+
+        return res.json({
+            generatedAt: nowIsoString(),
+            summary: `Finance foundation ready: ${costCenters.length} cost center(s), ${allocations.length} allocation(s), ${invoices.length} invoice(s).`,
+            totals,
+            costCenters,
+            periods,
+            allocations: allocationRows,
+            overBudgetRequests,
+            invoices: invoices.map((row) => ({
+                id: row.id,
+                invoiceNumber: row.invoiceNumber,
+                paymentStatus: row.paymentStatus,
+                totalAmount: row.totalAmount ? Number(row.totalAmount) : null,
+            })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load finance summary', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/diagnostics', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const [requestCount, batchCount, supplierCount, allocationCount] = await Promise.all([
+            prisma.procurementRequest.count(),
+            prisma.inventoryStockBatch.count(),
+            prisma.vendor.count(),
+            prisma.budgetAllocation.count(),
+        ]);
+        return res.json({
+            generatedAt: nowIsoString(),
+            databaseReady: true,
+            procurementRequestCount: requestCount,
+            fifoBatchCount: batchCount,
+            supplierCount,
+            budgetAllocationCount: allocationCount,
+            adapters: {
+                financeProvider: String(process.env.FINANCE_PROVIDER || 'manual').trim() || 'manual',
+                supplierProvider: String(process.env.SUPPLIER_PROVIDER || 'manual').trim() || 'manual',
+                aiProvider: INVENTORY_AI_PROVIDER_LABEL,
+                aiModel: INVENTORY_AI_MODEL_LABEL,
+            },
+            capabilities: {
+                abcAnalysis: true,
+                eoqMoq: true,
+                fifoBatchTracking: true,
+                financeFoundation: true,
+                supplierFoundation: true,
+            },
+            note: 'Finance and supplier integrations are foundation/manual mode unless external providers are configured via environment variables.',
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load procurement diagnostics', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/finance/cost-centers', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const code = String(req.body?.code || '').trim().toUpperCase();
+        const name = String(req.body?.name || '').trim();
+        if (!code) return res.status(400).json({ message: 'code is required' });
+        if (!name) return res.status(400).json({ message: 'name is required' });
+        const created = await prisma.costCenter.create({
+            data: {
+                code,
+                name,
+                department: normalizeSerialValue(req.body?.department),
+                owner: normalizeSerialValue(req.body?.owner),
+                annualBudget: parseMoneyOrNull(req.body?.annualBudget),
+                notes: normalizeSerialValue(req.body?.notes),
+                active: typeof req.body?.active === 'undefined' ? true : parseBooleanFlag(req.body?.active),
+            },
+        });
+        return res.status(201).json({ costCenter: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create cost center', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/finance/cost-centers', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.costCenter.findMany({ orderBy: [{ active: 'desc' }, { code: 'asc' }] });
+        return res.json({ count: rows.length, costCenters: rows });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load cost centers', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/finance/budget-periods', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const label = String(req.body?.label || '').trim();
+        const startDate = toDateOrNull(req.body?.startDate);
+        const endDate = toDateOrNull(req.body?.endDate);
+        if (!label) return res.status(400).json({ message: 'label is required' });
+        if (!startDate || !endDate) return res.status(400).json({ message: 'startDate and endDate are required' });
+        const created = await prisma.budgetPeriod.create({
+            data: {
+                label,
+                startDate,
+                endDate,
+                status: normalizeSerialValue(req.body?.status) || 'open',
+                notes: normalizeSerialValue(req.body?.notes),
+            },
+        });
+        return res.status(201).json({ period: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create budget period', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/finance/budget-periods', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.budgetPeriod.findMany({ orderBy: [{ startDate: 'desc' }] });
+        return res.json({ count: rows.length, periods: rows });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load budget periods', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/finance/budget-allocations', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const periodId = normalizeSerialValue(req.body?.periodId);
+        const costCenterId = normalizeSerialValue(req.body?.costCenterId);
+        const allocatedAmount = parseMoneyOrNull(req.body?.allocatedAmount);
+        const allocatedAmountNumeric = allocatedAmount === null ? null : Number(allocatedAmount);
+        if (!periodId) return res.status(400).json({ message: 'periodId is required' });
+        if (!costCenterId) return res.status(400).json({ message: 'costCenterId is required' });
+        if (allocatedAmountNumeric === null || allocatedAmountNumeric <= 0) return res.status(400).json({ message: 'allocatedAmount must be > 0' });
+        const created = await prisma.budgetAllocation.create({
+            data: {
+                periodId,
+                costCenterId,
+                department: normalizeSerialValue(req.body?.department),
+                building: normalizeSerialValue(req.body?.building),
+                allocatedAmount: allocatedAmount!,
+                reservedAmount: parseMoneyOrNull(req.body?.reservedAmount) || 0,
+                committedAmount: parseMoneyOrNull(req.body?.committedAmount) || 0,
+                spentAmount: parseMoneyOrNull(req.body?.spentAmount) || 0,
+                currency: String(req.body?.currency || 'USD').trim() || 'USD',
+                notes: normalizeSerialValue(req.body?.notes),
+            },
+            include: {
+                costCenter: true,
+                period: true,
+            },
+        });
+        return res.status(201).json({ allocation: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create budget allocation', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/finance/budget-allocations', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.budgetAllocation.findMany({
+            include: {
+                costCenter: true,
+                period: true,
+            },
+            orderBy: [{ createdAt: 'desc' }],
+        });
+        return res.json({
+            count: rows.length,
+            allocations: rows.map((row) => ({
+                ...row,
+                allocatedAmount: Number(row.allocatedAmount || 0),
+                reservedAmount: Number(row.reservedAmount || 0),
+                committedAmount: Number(row.committedAmount || 0),
+                spentAmount: Number(row.spentAmount || 0),
+                availableAmount: calculateBudgetAvailability(row),
+            })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load budget allocations', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/procurement/requests/:requestId/finance', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+
+        const financeStatus = mapProcurementFinanceStatusToDb(req.body?.financeStatus, existing.financeStatus);
+        const costCenterId = typeof req.body?.costCenterId === 'undefined'
+            ? existing.costCenterId
+            : normalizeSerialValue(req.body?.costCenterId);
+        const budgetAllocationId = typeof req.body?.budgetAllocationId === 'undefined'
+            ? existing.budgetAllocationId
+            : normalizeSerialValue(req.body?.budgetAllocationId);
+        const budgetAmountReserved = typeof req.body?.budgetAmountReserved === 'undefined'
+            ? existing.budgetAmountReserved
+            : parseMoneyOrNull(req.body?.budgetAmountReserved);
+
+        const updated = await prisma.procurementRequest.update({
+            where: { id: existing.id },
+            data: {
+                financeStatus,
+                costCenterId,
+                budgetAllocationId,
+                budgetAmountReserved,
+                financeNotes: normalizeSerialValue(req.body?.financeNotes) || existing.financeNotes || null,
+                financeMetadata: req.body?.financeMetadata && typeof req.body.financeMetadata === 'object'
+                    ? req.body.financeMetadata
+                    : existing.financeMetadata,
+                updatedAt: new Date(),
+            },
+            include: PROCUREMENT_REQUEST_INCLUDE,
+        });
+        return res.json({ request: mapProcurementDbToRecord(updated as ProcurementRequestDbPayload) });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update procurement finance status', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/suppliers', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.vendor.findMany({
+            orderBy: [{ active: 'desc' }, { name: 'asc' }],
+        });
+        return res.json({
+            count: rows.length,
+            suppliers: rows,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load suppliers', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/suppliers', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const name = String(req.body?.name || '').trim();
+        if (!name) return res.status(400).json({ message: 'name is required' });
+        const created = await prisma.vendor.create({
+            data: {
+                name,
+                contactName: normalizeSerialValue(req.body?.contactName),
+                email: normalizeSerialValue(req.body?.email),
+                phone: normalizeSerialValue(req.body?.phone),
+                address: normalizeSerialValue(req.body?.address),
+                categoriesSupplied: parseJsonArrayInput(req.body?.categoriesSupplied),
+                leadTimeAverageDays: parseOptionalIntegerInput(req.body?.leadTimeAverageDays),
+                warrantyQualityScore: parseOptionalNumberInput(req.body?.warrantyQualityScore),
+                reliabilityScore: parseOptionalNumberInput(req.body?.reliabilityScore),
+                notes: normalizeSerialValue(req.body?.notes),
+                active: typeof req.body?.active === 'undefined' ? true : parseBooleanFlag(req.body?.active),
+            },
+        });
+        return res.status(201).json({ supplier: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create supplier', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/suppliers/catalog', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const vendorId = normalizeSerialValue(req.query.vendorId);
+        const where: Prisma.SupplierCatalogItemWhereInput = {};
+        if (vendorId) where.vendorId = vendorId;
+        const rows = await prisma.supplierCatalogItem.findMany({
+            where,
+            include: { vendor: { select: { id: true, name: true, reliabilityScore: true, leadTimeAverageDays: true } } },
+            orderBy: [{ active: 'desc' }, { itemName: 'asc' }],
+        });
+        return res.json({
+            count: rows.length,
+            items: rows,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load supplier catalog', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/suppliers/catalog', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const vendorId = normalizeSerialValue(req.body?.vendorId);
+        const itemName = String(req.body?.itemName || '').trim();
+        if (!vendorId) return res.status(400).json({ message: 'vendorId is required' });
+        if (!itemName) return res.status(400).json({ message: 'itemName is required' });
+        const created = await prisma.supplierCatalogItem.create({
+            data: {
+                vendorId,
+                itemName,
+                category: normalizeSerialValue(req.body?.category),
+                assetType: normalizeSerialValue(req.body?.assetType),
+                brand: normalizeSerialValue(req.body?.brand),
+                model: normalizeSerialValue(req.body?.model),
+                specifications: req.body?.specifications && typeof req.body.specifications === 'object' ? req.body.specifications : null,
+                unitPrice: parseMoneyOrNull(req.body?.unitPrice),
+                currency: String(req.body?.currency || 'USD').trim() || 'USD',
+                minimumOrderQuantity: parseOptionalIntegerInput(req.body?.minimumOrderQuantity),
+                minimumOrderValue: parseMoneyOrNull(req.body?.minimumOrderValue),
+                packSize: parseOptionalIntegerInput(req.body?.packSize),
+                leadTimeDays: parseOptionalIntegerInput(req.body?.leadTimeDays),
+                warrantyMonths: parseOptionalIntegerInput(req.body?.warrantyMonths),
+                active: typeof req.body?.active === 'undefined' ? true : parseBooleanFlag(req.body?.active),
+                notes: normalizeSerialValue(req.body?.notes),
+                lastUpdatedAt: new Date(),
+            },
+        });
+        return res.status(201).json({ item: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create supplier catalog item', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/rfqs', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.procurementRfq.findMany({
+            include: {
+                request: { select: { requestNumber: true, title: true, status: true } },
+                invitations: { include: { vendor: { select: { id: true, name: true, reliabilityScore: true } } } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 400,
+        });
+        return res.json({
+            count: rows.length,
+            rfqs: rows.map((row) => ({
+                id: row.id,
+                rfqNumber: row.rfqNumber,
+                requestId: row.request.requestNumber,
+                title: row.title,
+                quoteDueDate: row.quoteDueDate,
+                status: mapProcurementRfqStatusFromDb(row.status),
+                createdBy: row.createdBy,
+                notes: row.notes,
+                invitations: row.invitations.map((invite) => ({
+                    id: invite.id,
+                    vendorId: invite.vendorId,
+                    vendorName: invite.vendorName,
+                    responseStatus: invite.responseStatus,
+                    submittedQuoteId: invite.submittedQuoteId,
+                    reliabilityScore: invite.vendor?.reliabilityScore ?? null,
+                })),
+            })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load RFQs', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/requests/:requestId/rfqs', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+        const rfqNumber = String(req.body?.rfqNumber || '').trim() || `RFQ-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(existing.requestNumber).slice(-6)}`;
+        const title = String(req.body?.title || '').trim() || `RFQ for ${existing.title}`;
+        const created = await prisma.procurementRfq.create({
+            data: {
+                rfqNumber,
+                requestId: existing.id,
+                title,
+                description: normalizeSerialValue(req.body?.description),
+                quoteDueDate: toDateOrNull(req.body?.quoteDueDate),
+                status: mapProcurementRfqStatusToDb(req.body?.status || 'draft'),
+                createdBy: String(req.body?.createdBy || req.body?.actor || 'Inventory Team').trim() || 'Inventory Team',
+                notes: normalizeSerialValue(req.body?.notes),
+            },
+        });
+        return res.status(201).json({ rfq: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create RFQ', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/rfqs/:rfqId/invitations', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const rfqId = normalizeSerialValue(req.params.rfqId);
+        if (!rfqId) return res.status(400).json({ message: 'rfqId is required' });
+        const vendorName = String(req.body?.vendorName || '').trim();
+        let vendorId = normalizeSerialValue(req.body?.vendorId);
+        if (!vendorName && !vendorId) return res.status(400).json({ message: 'vendorName or vendorId is required' });
+        if (vendorId) {
+            const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
+            if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+            if (!vendorName) {
+                const created = await prisma.procurementRfqInvitation.create({
+                    data: {
+                        rfqId,
+                        vendorId,
+                        vendorName: vendor.name,
+                        responseStatus: normalizeSerialValue(req.body?.responseStatus) || 'pending',
+                        submittedQuoteId: normalizeSerialValue(req.body?.submittedQuoteId),
+                        notes: normalizeSerialValue(req.body?.notes),
+                    },
+                });
+                return res.status(201).json({ invitation: created });
+            }
+        }
+        if (!vendorId && vendorName) {
+            const vendor = await prisma.vendor.findFirst({
+                where: { name: { equals: vendorName, mode: 'insensitive' } },
+            });
+            if (vendor) vendorId = vendor.id;
+        }
+        const created = await prisma.procurementRfqInvitation.create({
+            data: {
+                rfqId,
+                vendorId: vendorId || null,
+                vendorName,
+                responseStatus: normalizeSerialValue(req.body?.responseStatus) || 'pending',
+                submittedQuoteId: normalizeSerialValue(req.body?.submittedQuoteId),
+                notes: normalizeSerialValue(req.body?.notes),
+            },
+        });
+        return res.status(201).json({ invitation: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create RFQ invitation', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/invoices', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        const rows = await prisma.procurementInvoice.findMany({
+            include: {
+                lines: true,
+                request: { select: { requestNumber: true, title: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+        });
+        return res.json({
+            count: rows.length,
+            invoices: rows.map((row) => ({
+                id: row.id,
+                invoiceNumber: row.invoiceNumber,
+                requestId: row.request.requestNumber,
+                requestTitle: row.request.title,
+                vendorName: row.vendorName,
+                invoiceDate: row.invoiceDate,
+                dueDate: row.dueDate,
+                status: row.status,
+                paymentStatus: row.paymentStatus,
+                totalAmount: row.totalAmount ? Number(row.totalAmount) : null,
+                currency: row.currency,
+                notes: row.notes || '',
+                lines: row.lines.map((line) => ({
+                    id: line.id,
+                    itemName: line.itemName,
+                    quantity: line.quantity,
+                    unitPrice: line.unitPrice ? Number(line.unitPrice) : null,
+                    totalPrice: line.totalPrice ? Number(line.totalPrice) : null,
+                })),
+            })),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load procurement invoices', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/invoices', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const requestRouteKey = String(req.body?.requestId || '').trim();
+        if (!requestRouteKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(requestRouteKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+        const invoiceNumber = String(req.body?.invoiceNumber || '').trim();
+        if (!invoiceNumber) return res.status(400).json({ message: 'invoiceNumber is required' });
+        const vendorName = String(req.body?.vendorName || existing.vendorQuotes[0]?.vendorName || 'Unknown Vendor').trim() || 'Unknown Vendor';
+        const lines = Array.isArray(req.body?.lines) ? req.body.lines.filter((row: any) => row && typeof row === 'object') : [];
+        const created = await prisma.$transaction(async (tx) => {
+            const vendorId = await getOrCreateVendorIdByName(vendorName, tx);
+            const invoice = await tx.procurementInvoice.create({
+                data: {
+                    invoiceNumber,
+                    requestId: existing.id,
+                    purchaseOrderId: normalizeSerialValue(req.body?.purchaseOrderId),
+                    vendorId,
+                    vendorName,
+                    invoiceDate: toDateOrNull(req.body?.invoiceDate),
+                    dueDate: toDateOrNull(req.body?.dueDate),
+                    status: normalizeSerialValue(req.body?.status) || 'draft',
+                    totalAmount: parseMoneyOrNull(req.body?.totalAmount),
+                    currency: String(req.body?.currency || 'USD').trim() || 'USD',
+                    paymentStatus: normalizeSerialValue(req.body?.paymentStatus) || 'not_submitted',
+                    notes: normalizeSerialValue(req.body?.notes),
+                    metadata: req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null,
+                },
+            });
+            if (lines.length) {
+                await tx.procurementInvoiceLine.createMany({
+                    data: lines.map((line: any) => ({
+                        invoiceId: invoice.id,
+                        requestItemId: normalizeSerialValue(line.requestItemId),
+                        purchaseOrderItemId: normalizeSerialValue(line.purchaseOrderItemId),
+                        itemName: String(line.itemName || existing.items[0]?.itemName || existing.title).trim() || existing.title,
+                        quantity: Math.max(1, parseOptionalIntegerInput(line.quantity) || 1),
+                        unitPrice: parseMoneyOrNull(line.unitPrice),
+                        totalPrice: parseMoneyOrNull(line.totalPrice),
+                        notes: normalizeSerialValue(line.notes),
+                    })),
+                });
+            }
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: {
+                    financeStatus: PrismaProcurementFinanceStatus.INVOICED,
+                    updatedAt: new Date(),
+                },
+            });
+            return invoice;
+        });
+        return res.status(201).json({ invoice: created });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create procurement invoice', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/board', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const rawStatusFilter = String(req.query.status || '').trim();
+        const statusFilter = normalizeProcurementStatusValue(rawStatusFilter, 'Draft');
+        const includeAllStatuses = !rawStatusFilter || rawStatusFilter.toLowerCase() === 'all';
+        const snapshot = await buildInventoryAiSnapshot();
+        const [storedRequests, eolRowsRaw, fifoBatches, budgetAllocations, supplierCount, catalogCount, openRfqCount] = await Promise.all([
+            readProcurementRequests(),
+            prisma.assetEolAssessment.findMany({
+                where: { procurementRecommended: true },
+                orderBy: { generatedAt: 'desc' },
+                take: 400,
+            }),
+            prisma.inventoryStockBatch.findMany({
+                where: { itemKind: 'spare_stock', quantityAvailable: { gt: 0 } },
+                orderBy: [{ receivedAt: 'asc' }],
+                take: 300,
+                select: {
+                    id: true,
+                    itemName: true,
+                    receivedAt: true,
+                    quantityAvailable: true,
+                    spareStockItemId: true,
+                    sourcePurchaseOrderId: true,
+                },
+            }),
+            prisma.budgetAllocation.findMany({
+                select: {
+                    id: true,
+                    allocatedAmount: true,
+                    reservedAmount: true,
+                    committedAmount: true,
+                    spentAmount: true,
+                    currency: true,
+                },
+                take: 400,
+            }),
+            prisma.vendor.count({ where: { active: true } }),
+            prisma.supplierCatalogItem.count({ where: { active: true } }),
+            prisma.procurementRfq.count({ where: { status: { in: [PrismaProcurementRfqStatus.DRAFT, PrismaProcurementRfqStatus.SENT] } } }),
+        ]);
+        const assetById = new Map(snapshot.assets.map((asset) => [asset.customId, asset]));
+        const requestsSorted = [...storedRequests].sort((a, b) => (
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        ));
+        const requests = includeAllStatuses
+            ? requestsSorted
+            : requestsSorted.filter((row) => row.status === statusFilter);
+        const statusCounts = PROCUREMENT_REQUEST_STATUSES.reduce((acc, status) => {
+            acc[status] = requestsSorted.filter((row) => row.status === status).length;
+            return acc;
+        }, {} as Record<ProcurementRequestStatus, number>);
+
+        const rawAiRecommendations = buildProcurementRecommendations(snapshot).slice(0, 60);
+        const recommendationRows = rawAiRecommendations.map((row, index) => {
+            const key = buildProcurementRecommendationKey({
+                index,
+                itemName: row.itemName || '',
+                type: row.type || '',
+                quantity: row.recommendedQuantity || 1,
+                priority: row.priority || '',
+                reason: row.reason || '',
+                source: row.source || '',
+                category: row.category || '',
+            });
+            return {
+                ...row,
+                recommendationKey: key,
+            };
+        });
+        const recommendationKeys = recommendationRows.map((entry) => entry.recommendationKey);
+        const recommendationReviews = recommendationKeys.length
+            ? await prisma.procurementRecommendationReview.findMany({
+                where: { recommendationKey: { in: recommendationKeys } },
+            })
+            : [];
+        const reviewByKey = new Map(recommendationReviews.map((row) => [row.recommendationKey, row]));
+        const aiRecommendations = recommendationRows.map((row) => {
+            const review = reviewByKey.get(row.recommendationKey);
+            return {
+                ...row,
+                reviewStatus: review ? String(review.status || '').toLowerCase() : 'new',
+                reviewedBy: review?.reviewedBy || null,
+                reviewNote: review?.reviewNote || null,
+                convertedRequestId: review?.convertedRequestId || null,
+            };
+        });
+        const lowStock = buildSpareStockForecast(snapshot).forecasts.slice(0, 50);
+        const highRisk = buildAssetRiskScores(snapshot).rows
+            .filter((row) => row.riskLevel === 'critical' || row.riskLevel === 'high')
+            .slice(0, 50)
+            .map((row) => ({
+                assetId: row.assetId,
+                assetName: row.assetName,
+                riskLevel: row.riskLevel,
+                riskScore: row.riskScore,
+                reason: row.reasons[0] || 'High lifecycle risk',
+                department: mapDepartmentToFriendly(assetById.get(row.assetId)?.department || ''),
+                location: mapLocationToFriendly(assetById.get(row.assetId)?.location || ''),
+            }));
+        const recurringMaintenance = buildMaintenanceRecommendations(snapshot)
+            .filter((row) => String(row.priority || '').toLowerCase() === 'high')
+            .slice(0, 50);
+
+        const auditNeeds = snapshot.lifecycleEvents
+            .filter((row) => {
+                const key = normalizeValue(row.eventType);
+                return key.includes('audit') && (
+                    key.includes('missing')
+                    || key.includes('damaged')
+                    || key.includes('wrong_location')
+                    || key.includes('needs_review')
+                );
+            })
+            .slice(0, 50)
+            .map((row) => ({
+                assetId: row.assetId,
+                assetName: assetById.get(row.assetId)?.name || row.assetId,
+                eventType: row.eventType,
+                reason: row.reason || '',
+                createdAt: row.createdAt,
+            }));
+
+        const latestEolByAsset = new Map<string, typeof eolRowsRaw[number]>();
+        eolRowsRaw.forEach((row) => {
+            if (!latestEolByAsset.has(row.assetId)) latestEolByAsset.set(row.assetId, row);
+        });
+        const urgentReplacements = Array.from(latestEolByAsset.values())
+            .filter((row) => Number(row.confidence || 0) >= 0.4)
+            .map((row) => ({
+                assetId: row.assetId,
+                assetName: assetById.get(row.assetId)?.name || row.assetId,
+                status: row.status,
+                confidence: Number(row.confidence || 0),
+                monthsRemaining: row.monthsRemaining,
+                procurementWindowMonths: row.procurementWindowMonths,
+                reason: row.reason,
+                department: mapDepartmentToFriendly(assetById.get(row.assetId)?.department || ''),
+                location: mapLocationToFriendly(assetById.get(row.assetId)?.location || ''),
+            }))
+            .sort((a, b) => Number(a.monthsRemaining ?? 999) - Number(b.monthsRemaining ?? 999))
+            .slice(0, 60);
+
+        const now = new Date();
+        const abcAnalysis = buildInventoryAbcAnalysis(snapshot, requestsSorted);
+        const eoqMoq = buildEoqMoqInsights(snapshot);
+        const fifoSignals = fifoBatches.slice(0, 80).map((row) => {
+            const ageDays = Math.max(0, Math.floor((now.getTime() - row.receivedAt.getTime()) / (1000 * 60 * 60 * 24)));
+            return {
+                batchId: row.id,
+                itemName: row.itemName,
+                spareStockItemId: row.spareStockItemId || null,
+                quantityAvailable: row.quantityAvailable,
+                ageDays,
+                receivedAt: row.receivedAt.toISOString(),
+                sourcePurchaseOrderId: row.sourcePurchaseOrderId || null,
+                stale: ageDays >= 120,
+            };
+        });
+        const fifoStaleCount = fifoSignals.filter((row) => row.stale).length;
+        const financeTotals = budgetAllocations.reduce((acc, row) => {
+            const allocated = Number(row.allocatedAmount || 0);
+            const reserved = Number(row.reservedAmount || 0);
+            const committed = Number(row.committedAmount || 0);
+            const spent = Number(row.spentAmount || 0);
+            acc.allocated += allocated;
+            acc.reserved += reserved;
+            acc.committed += committed;
+            acc.spent += spent;
+            acc.available += (allocated - reserved - committed - spent);
+            return acc;
+        }, { allocated: 0, reserved: 0, committed: 0, spent: 0, available: 0 });
+        const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+        const monthlySpend = requestsSorted
+            .filter((row) => new Date(row.createdAt) >= monthStart)
+            .reduce((sum, row) => {
+                const selectedQuote = row.vendorQuotes.find((quote) => quote.selected && quote.totalPrice !== null);
+                return sum + Number(selectedQuote?.totalPrice || 0);
+            }, 0);
+        const topRequestedItems = Object.entries(requestsSorted.reduce((acc, row) => {
+            const key = normalizeSerialValue(row.itemType) || normalizeSerialValue(row.title) || 'Unknown Item';
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {} as Record<string, number>))
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 12)
+            .map(([item, count]) => ({ item, count }));
+        const agingApprovedRequests = requestsSorted.filter((row) => (
+            row.status === 'Approved' || row.status === 'Ordered'
+        )).filter((row) => (
+            (Date.now() - new Date(row.updatedAt).getTime()) > 1000 * 60 * 60 * 24 * 14
+        )).length;
+        const openPurchaseOrders = requestsSorted.filter((row) => row.purchaseOrder && (
+            row.status === 'Ordered' || row.status === 'Partially Received'
+        )).length;
+        const receivedVsPending = {
+            received: requestsSorted.filter((row) => row.status === 'Received' || row.status === 'Closed').length,
+            pending: requestsSorted.filter((row) => !['Received', 'Closed', 'Cancelled', 'Rejected'].includes(row.status)).length,
+        };
+
+        return res.json({
+            generatedAt: nowIsoString(),
+            summary: `Prepared procurement board with ${aiRecommendations.length} recommendation(s) and ${requestsSorted.length} request(s).`,
+            requests,
+            statusCounts,
+            priorities: {
+                urgentReplacements,
+                highRiskAssets: highRisk,
+                lowStockItems: lowStock,
+                recurringMaintenance,
+                auditNeeds,
+                departmentDemand: topRequestedItems,
+            },
+            aiRecommendations,
+            analytics: {
+                monthlySpendingEstimate: Number(monthlySpend.toFixed(2)),
+                topRequestedItems,
+                agingApprovedRequests,
+                openPurchaseOrders,
+                receivedVsPending,
+                eolDrivenCandidates: urgentReplacements.length,
+                recurringShortages: lowStock.length,
+                abc: {
+                    counts: abcAnalysis.counts,
+                    topAItems: abcAnalysis.items.filter((row) => row.abcClass === 'A').slice(0, 12),
+                    summary: abcAnalysis.summary,
+                },
+                eoqMoq: {
+                    summary: eoqMoq.summary,
+                    rows: eoqMoq.rows.slice(0, 60),
+                    missingDataItems: eoqMoq.rows.filter((row) => row.eoq === null).length,
+                },
+                fifo: {
+                    oldestBatches: fifoSignals.slice(0, 40),
+                    staleBatchCount: fifoStaleCount,
+                    summary: fifoSignals.length
+                        ? `Tracked ${fifoSignals.length} active FIFO batch(es); ${fifoStaleCount} stale batch(es) older than 120 days.`
+                        : 'No FIFO batches recorded yet. Receiving will start building batch history.',
+                },
+                finance: {
+                    totals: {
+                        allocated: Number(financeTotals.allocated.toFixed(2)),
+                        reserved: Number(financeTotals.reserved.toFixed(2)),
+                        committed: Number(financeTotals.committed.toFixed(2)),
+                        spent: Number(financeTotals.spent.toFixed(2)),
+                        available: Number(financeTotals.available.toFixed(2)),
+                    },
+                    budgetAllocationCount: budgetAllocations.length,
+                },
+                supplier: {
+                    activeSupplierCount: supplierCount,
+                    activeCatalogItemCount: catalogCount,
+                    openRfqCount,
+                },
+            },
+            source: {
+                aiRecommendationMode: 'inventory_ai_service_plus_deterministic',
+                dataScope: 'full_inventory',
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load procurement board', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/requests', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const rawStatus = String(req.query.status || '').trim();
+        const includeAllStatuses = !rawStatus || rawStatus.toLowerCase() === 'all';
+        const where: Prisma.ProcurementRequestWhereInput = {};
+        if (!includeAllStatuses) {
+            where.status = mapProcurementStatusToDb(rawStatus);
+        }
+        const rows = await prisma.procurementRequest.findMany({
+            where,
+            orderBy: { updatedAt: 'desc' },
+            include: PROCUREMENT_REQUEST_INCLUDE,
+        });
+        const requests = rows.map((row) => mapProcurementDbToRecord(row as ProcurementRequestDbPayload));
+        return res.json({
+            generatedAt: nowIsoString(),
+            status: includeAllStatuses ? 'all' : rawStatus,
+            total: requests.length,
+            requests,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load procurement requests', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/requests/:requestId', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const row = await getProcurementRequestByRouteKey(routeKey);
+        if (!row) return res.status(404).json({ message: 'Procurement request not found' });
+        return res.json({ request: mapProcurementDbToRecord(row) });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load procurement request', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/requests', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const title = String(req.body?.title || '').trim();
+        const itemType = String(req.body?.itemType || req.body?.item || '').trim();
+        const quantity = Math.max(1, parseOptionalIntegerInput(req.body?.quantity) || 1);
+        const reason = String(req.body?.reason || '').trim();
+        if (!title) return res.status(400).json({ message: 'title is required' });
+        if (!itemType) return res.status(400).json({ message: 'itemType is required' });
+        if (!reason) return res.status(400).json({ message: 'reason is required' });
+
+        let requestNumber = buildProcurementRequestId();
+        for (let i = 0; i < 6; i += 1) {
+            const exists = await prisma.procurementRequest.findUnique({
+                where: { requestNumber },
+                select: { id: true },
+            });
+            if (!exists) break;
+            requestNumber = buildProcurementRequestId();
+        }
+
+        const linkedAssetIds = sanitizeProcurementAssetIds(req.body?.linkedAssetIds);
+        const source = mapProcurementSourceToDb(req.body?.source);
+        const status = mapProcurementStatusToDb(req.body?.status || 'Draft');
+        const priority = mapProcurementPriorityToDb(req.body?.priority || 'medium');
+        const requestType = mapProcurementRequestTypeToDb(req.body?.requestType || req.body?.itemCategory);
+        const abcClass = mapProcurementAbcClassToDb(req.body?.abcClass);
+        const financeStatus = mapProcurementFinanceStatusToDb(req.body?.financeStatus);
+        const costCenterId = normalizeSerialValue(req.body?.costCenterId);
+        const budgetAllocationId = normalizeSerialValue(req.body?.budgetAllocationId);
+        const createdAt = new Date();
+        const requestedBy = String(req.body?.requestedBy || 'Inventory Team').trim() || 'Inventory Team';
+        const aiContext = (req.body?.aiContext && typeof req.body.aiContext === 'object')
+            ? {
+                llmUsed: Boolean(req.body.aiContext.llmUsed),
+                sourceLabel: String(req.body.aiContext.sourceLabel || '').trim(),
+                confidence: String(req.body.aiContext.confidence || '').trim(),
+            }
+            : null;
+        const requestItemsInput = Array.isArray(req.body?.items)
+            ? req.body.items.filter((row: any) => row && typeof row === 'object')
+            : [];
+        const requestItems = requestItemsInput.length
+            ? requestItemsInput
+            : [{
+                itemName: itemType,
+                category: normalizeProcurementRequestItemCategory(req.body?.itemCategory || req.body?.requestType || 'replacement'),
+                assetType: itemType,
+                quantityRequested: quantity,
+                quantityApproved: parseOptionalIntegerInput(req.body?.quantityApproved),
+                quantityOrdered: parseOptionalIntegerInput(req.body?.quantityOrdered),
+                quantityReceived: parseOptionalIntegerInput(req.body?.quantityReceived) || 0,
+                unitEstimatedCost: req.body?.unitEstimatedCost,
+                unitActualCost: req.body?.unitActualCost,
+                annualDemand: req.body?.annualDemand,
+                orderingCost: req.body?.orderingCost,
+                holdingCost: req.body?.holdingCost,
+                calculatedEoq: req.body?.calculatedEoq,
+                recommendedOrderQuantity: req.body?.recommendedOrderQuantity,
+                reorderPointValue: req.body?.reorderPointValue,
+                safetyStock: req.body?.safetyStock,
+                demandSource: req.body?.demandSource,
+                dataQuality: req.body?.dataQuality,
+                minimumOrderQuantity: req.body?.minimumOrderQuantity,
+                minimumOrderValue: req.body?.minimumOrderValue,
+                packSize: req.body?.packSize,
+                leadTimeDays: req.body?.leadTimeDays,
+                abcClass: req.body?.abcClass,
+                abcReason: req.body?.abcReason,
+                linkedAssetTag: req.body?.linkedAssetTag,
+                linkedSpareStockId: req.body?.linkedSpareStockId,
+                linkedConsumableId: req.body?.linkedConsumableId,
+                linkedLicenseId: req.body?.linkedLicenseId,
+                notes: req.body?.notes,
+            }];
+        const createdRequest = await prisma.$transaction(async (tx) => {
+            const created = await tx.procurementRequest.create({
+                data: {
+                    requestNumber,
+                    title,
+                    description: String(req.body?.description || '').trim() || null,
+                    requestType,
+                    priority,
+                    status,
+                    reason,
+                    requestedBy,
+                    department: normalizeSerialValue(req.body?.linkedDepartment),
+                    building: normalizeSerialValue(req.body?.linkedLocation),
+                    room: normalizeSerialValue(req.body?.room),
+                    neededByDate: toDateOrNull(req.body?.requiredDate),
+                    estimatedBudget: parseMoneyOrNull(req.body?.estimatedBudget),
+                    actualCost: parseMoneyOrNull(req.body?.actualCost),
+                    abcClass,
+                    abcReason: normalizeSerialValue(req.body?.abcReason),
+                    controlLevel: normalizeSerialValue(req.body?.controlLevel),
+                    financeStatus,
+                    costCenterId,
+                    budgetAllocationId,
+                    budgetAmountReserved: parseMoneyOrNull(req.body?.budgetAmountReserved),
+                    financeNotes: normalizeSerialValue(req.body?.financeNotes),
+                    financeMetadata: req.body?.financeMetadata && typeof req.body.financeMetadata === 'object'
+                        ? req.body.financeMetadata
+                        : null,
+                    source,
+                    aiRecommendationId: normalizeSerialValue(req.body?.aiRecommendationId),
+                    metadata: {
+                        ...(req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : {}),
+                        aiContext,
+                    },
+                    createdAt,
+                    updatedAt: createdAt,
+                },
+            });
+
+            await tx.procurementRequestItem.createMany({
+                data: requestItems.map((entry: any) => ({
+                    requestId: created.id,
+                    itemName: String(entry.itemName || entry.itemType || itemType).trim() || itemType,
+                    category: normalizeSerialValue(entry.category || req.body?.itemCategory || req.body?.requestType || 'other'),
+                    assetType: normalizeSerialValue(entry.assetType || itemType),
+                    brand: normalizeSerialValue(entry.brand),
+                    model: normalizeSerialValue(entry.model),
+                    specifications: entry.specifications && typeof entry.specifications === 'object' ? entry.specifications : null,
+                    quantityRequested: Math.max(1, parseOptionalIntegerInput(entry.quantityRequested) || quantity),
+                    quantityApproved: parseOptionalIntegerInput(entry.quantityApproved),
+                    quantityOrdered: parseOptionalIntegerInput(entry.quantityOrdered),
+                    quantityReceived: Math.max(0, parseOptionalIntegerInput(entry.quantityReceived) || 0),
+                    unitEstimatedCost: parseMoneyOrNull(entry.unitEstimatedCost),
+                    unitActualCost: parseMoneyOrNull(entry.unitActualCost),
+                    annualDemand: parseOptionalIntegerInput(entry.annualDemand),
+                    orderingCost: parseMoneyOrNull(entry.orderingCost),
+                    holdingCost: parseMoneyOrNull(entry.holdingCost),
+                    calculatedEoq: parseMoneyOrNull(entry.calculatedEoq),
+                    recommendedOrderQuantity: parseOptionalIntegerInput(entry.recommendedOrderQuantity),
+                    reorderPointValue: parseOptionalIntegerInput(entry.reorderPointValue),
+                    safetyStock: parseOptionalIntegerInput(entry.safetyStock),
+                    demandSource: normalizeSerialValue(entry.demandSource),
+                    dataQuality: normalizeSerialValue(entry.dataQuality),
+                    minimumOrderQuantity: parseOptionalIntegerInput(entry.minimumOrderQuantity),
+                    minimumOrderValue: parseMoneyOrNull(entry.minimumOrderValue),
+                    packSize: parseOptionalIntegerInput(entry.packSize),
+                    leadTimeDays: parseOptionalIntegerInput(entry.leadTimeDays),
+                    abcClass: mapProcurementAbcClassToDb(entry.abcClass, abcClass),
+                    abcReason: normalizeSerialValue(entry.abcReason),
+                    linkedAssetTag: normalizeSerialValue(entry.linkedAssetTag),
+                    linkedSpareStockId: normalizeSerialValue(entry.linkedSpareStockId),
+                    linkedConsumableId: normalizeSerialValue(entry.linkedConsumableId),
+                    linkedLicenseId: normalizeSerialValue(entry.linkedLicenseId),
+                    notes: String(entry.notes || '').trim() || null,
+                    createdAt,
+                    updatedAt: createdAt,
+                })),
+            });
+
+            if (linkedAssetIds.length) {
+                await tx.procurementAssetLink.createMany({
+                    data: linkedAssetIds.map((assetRef) => ({
+                        requestId: created.id,
+                        assetId: assetRef,
+                        assetTag: assetRef,
+                        relationshipType: mapProcurementRelationshipTypeToDb(req.body?.relationshipType || 'related_to'),
+                        createdAt,
+                    })),
+                });
+            }
+
+            if (status !== PrismaProcurementRequestStatus.DRAFT || String(req.body?.decision || '').trim()) {
+                await tx.procurementApproval.create({
+                    data: {
+                        requestId: created.id,
+                        fromStatus: null,
+                        toStatus: status,
+                        decision: mapProcurementApprovalDecisionToDb(req.body?.decision || mapStatusToApprovalDecision(status)),
+                        decidedBy: String(req.body?.approver || req.body?.actor || requestedBy).trim() || requestedBy,
+                        decisionNote: buildProcurementApprovalNote([
+                            String(req.body?.reason || '').trim(),
+                            String(req.body?.notes || '').trim(),
+                        ]),
+                        createdAt,
+                    },
+                });
+            }
+
+            const recommendationKey = normalizeSerialValue(req.body?.aiRecommendationId);
+            if (recommendationKey) {
+                await tx.procurementRecommendationReview.upsert({
+                    where: { recommendationKey },
+                    update: {
+                        itemName: String(req.body?.itemType || req.body?.title || title).trim() || title,
+                        source: String(req.body?.source || 'ai_recommendation').trim() || 'ai_recommendation',
+                        priority: String(req.body?.priority || 'medium').trim() || 'medium',
+                        evidence: (req.body?.metadata && typeof req.body.metadata === 'object') ? req.body.metadata : null,
+                        status: PrismaProcurementRecommendationReviewStatus.CONVERTED,
+                        convertedRequestId: created.id,
+                        reviewedBy: requestedBy,
+                        reviewNote: buildProcurementApprovalNote([
+                            'Converted to procurement request.',
+                            String(req.body?.notes || '').trim(),
+                        ]),
+                        updatedAt: createdAt,
+                    },
+                    create: {
+                        recommendationKey,
+                        itemName: String(req.body?.itemType || req.body?.title || title).trim() || title,
+                        source: String(req.body?.source || 'ai_recommendation').trim() || 'ai_recommendation',
+                        priority: String(req.body?.priority || 'medium').trim() || 'medium',
+                        evidence: (req.body?.metadata && typeof req.body.metadata === 'object') ? req.body.metadata : null,
+                        status: PrismaProcurementRecommendationReviewStatus.CONVERTED,
+                        convertedRequestId: created.id,
+                        reviewedBy: requestedBy,
+                        reviewNote: 'Converted to procurement request.',
+                        createdAt,
+                        updatedAt: createdAt,
+                    },
+                });
+            }
+
+            const populated = await tx.procurementRequest.findUnique({
+                where: { id: created.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return populated as ProcurementRequestDbPayload | null;
+        });
+
+        if (!createdRequest) return res.status(500).json({ message: 'Failed to create procurement request' });
+        const mapped = mapProcurementDbToRecord(createdRequest);
+        let budgetWarning: string | null = null;
+        if (mapped.budgetAllocationId && mapped.estimatedBudget) {
+            const allocation = await prisma.budgetAllocation.findUnique({ where: { id: mapped.budgetAllocationId } });
+            if (allocation) {
+                const available = calculateBudgetAvailability(allocation);
+                if (Number(mapped.estimatedBudget) > available) {
+                    budgetWarning = `Estimated budget (${Number(mapped.estimatedBudget).toFixed(2)}) exceeds available allocation (${available.toFixed(2)}).`;
+                }
+            }
+        }
+        await appendProcurementAssetHistory(
+            mapped.linkedAssetIds,
+            'Procurement Request Created',
+            `${mapped.requestId}: ${mapped.title} (${mapped.quantity} x ${mapped.itemType})`,
+        );
+        return res.json({ request: mapped, budgetWarning });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create procurement request', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/procurement/requests/:requestId/status', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+
+        const nextStatus = mapProcurementStatusToDb(req.body?.status || existing.status);
+        const approver = String(req.body?.approver || req.body?.actor || 'Inventory Team').trim() || 'Inventory Team';
+        const notes = String(req.body?.notes || '').trim();
+        const reason = String(req.body?.reason || '').trim();
+
+        const updated = await prisma.$transaction(async (tx) => {
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: {
+                    status: nextStatus,
+                    updatedAt: new Date(),
+                },
+            });
+            await tx.procurementApproval.create({
+                data: {
+                    requestId: existing.id,
+                    fromStatus: existing.status,
+                    toStatus: nextStatus,
+                    decision: mapProcurementApprovalDecisionToDb(req.body?.decision || mapStatusToApprovalDecision(nextStatus)),
+                    decidedBy: approver,
+                    decisionNote: buildProcurementApprovalNote([reason, notes]),
+                },
+            });
+            const row = await tx.procurementRequest.findUnique({
+                where: { id: existing.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return row as ProcurementRequestDbPayload | null;
+        });
+        if (!updated) return res.status(500).json({ message: 'Failed to update procurement request status' });
+        const mapped = mapProcurementDbToRecord(updated);
+        await appendProcurementAssetHistory(
+            mapped.linkedAssetIds,
+            'Procurement Request Status Updated',
+            `${mapped.requestId}: status changed to ${mapped.status}`,
+        );
+        return res.json({ request: mapped });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update procurement request status', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/requests/:requestId/vendor-quotes', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+        const vendorName = String(req.body?.vendorName || '').trim();
+        if (!vendorName) return res.status(400).json({ message: 'vendorName is required' });
+
+        const primaryItem = existing.items[0] || null;
+        const quantity = Math.max(1, parseOptionalIntegerInput(req.body?.quantity) || primaryItem?.quantityRequested || 1);
+        const unitPrice = Number.isFinite(Number(req.body?.unitPrice)) ? Number(req.body.unitPrice) : null;
+        const totalPrice = Number.isFinite(Number(req.body?.totalPrice))
+            ? Number(req.body.totalPrice)
+            : (unitPrice !== null ? Number((unitPrice * quantity).toFixed(2)) : null);
+        const selected = Boolean(req.body?.selected);
+        const requestedStatus = selected
+            ? PrismaVendorQuoteStatus.SELECTED
+            : mapProcurementQuoteStatusToDb(req.body?.status, PrismaVendorQuoteStatus.PENDING);
+
+        let quoteRowId = '';
+        const updated = await prisma.$transaction(async (tx) => {
+            if (requestedStatus === PrismaVendorQuoteStatus.SELECTED) {
+                await tx.vendorQuote.updateMany({
+                    where: {
+                        requestId: existing.id,
+                        status: { not: PrismaVendorQuoteStatus.REJECTED },
+                    },
+                    data: { status: PrismaVendorQuoteStatus.PENDING },
+                });
+            }
+            const vendorId = await getOrCreateVendorIdByName(vendorName, tx);
+            const quote = await tx.vendorQuote.create({
+                data: {
+                    requestId: existing.id,
+                    vendorId,
+                    vendorName,
+                    quotedItem: String(req.body?.quotedItem || primaryItem?.itemName || existing.title).trim() || existing.title,
+                    quantity,
+                    unitPrice: unitPrice === null ? null : new Prisma.Decimal(unitPrice),
+                    totalPrice: totalPrice === null ? null : new Prisma.Decimal(totalPrice),
+                    minimumOrderQuantity: parseOptionalIntegerInput(req.body?.minimumOrderQuantity),
+                    minimumOrderValue: parseMoneyOrNull(req.body?.minimumOrderValue),
+                    packSize: parseOptionalIntegerInput(req.body?.packSize),
+                    leadTimeDays: parseOptionalIntegerInput(req.body?.leadTimeDays),
+                    bulkDiscountAvailable: typeof req.body?.bulkDiscountAvailable === 'undefined'
+                        ? null
+                        : parseBooleanFlag(req.body?.bulkDiscountAvailable),
+                    warrantyMonths: parseOptionalIntegerInput(req.body?.warrantyMonths),
+                    deliveryDays: parseOptionalIntegerInput(req.body?.deliveryDays),
+                    validUntil: toDateOrNull(req.body?.validUntil),
+                    status: requestedStatus,
+                    rejectionReason: String(req.body?.rejectedReason || '').trim() || null,
+                    notes: String(req.body?.notes || '').trim() || null,
+                },
+            });
+            quoteRowId = quote.id;
+            if (requestedStatus === PrismaVendorQuoteStatus.SELECTED) {
+                await tx.procurementApproval.create({
+                    data: {
+                        requestId: existing.id,
+                        fromStatus: null,
+                        toStatus: existing.status,
+                        decision: PrismaProcurementApprovalDecision.UPDATE,
+                        decidedBy: String(req.body?.actor || 'Inventory Team').trim() || 'Inventory Team',
+                        decisionNote: `Selected quote from ${vendorName}.`,
+                    },
+                });
+            }
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: { updatedAt: new Date() },
+            });
+            const row = await tx.procurementRequest.findUnique({
+                where: { id: existing.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return row as ProcurementRequestDbPayload | null;
+        });
+        if (!updated) return res.status(500).json({ message: 'Failed to add vendor quote' });
+        const mapped = mapProcurementDbToRecord(updated);
+        const quote = mapped.vendorQuotes.find((entry) => entry.quoteId === quoteRowId) || null;
+        return res.json({ request: mapped, quote });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to add vendor quote', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/procurement/requests/:requestId/vendor-quotes/:quoteId', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        const quoteId = String(req.params.quoteId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        if (!quoteId) return res.status(400).json({ message: 'quoteId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+        const targetQuote = existing.vendorQuotes.find((entry) => entry.id === quoteId);
+        if (!targetQuote) return res.status(404).json({ message: 'Vendor quote not found for this request' });
+
+        const action = String(req.body?.action || '').trim().toLowerCase();
+        const selected = Boolean(req.body?.selected);
+        const requestedStatus = String(req.body?.status || '').trim().toLowerCase();
+        let nextStatus = targetQuote.status;
+        if (selected || action === 'select' || requestedStatus === 'selected') nextStatus = PrismaVendorQuoteStatus.SELECTED;
+        else if (action === 'reject' || requestedStatus === 'rejected') nextStatus = PrismaVendorQuoteStatus.REJECTED;
+        else if (action === 'pending' || requestedStatus === 'pending') nextStatus = PrismaVendorQuoteStatus.PENDING;
+
+        const updated = await prisma.$transaction(async (tx) => {
+            if (nextStatus === PrismaVendorQuoteStatus.SELECTED) {
+                await tx.vendorQuote.updateMany({
+                    where: {
+                        requestId: existing.id,
+                        id: { not: quoteId },
+                        status: { not: PrismaVendorQuoteStatus.REJECTED },
+                    },
+                    data: { status: PrismaVendorQuoteStatus.PENDING },
+                });
+            }
+            await tx.vendorQuote.update({
+                where: { id: quoteId },
+                data: {
+                    status: nextStatus,
+                    rejectionReason: nextStatus === PrismaVendorQuoteStatus.REJECTED
+                        ? (String(req.body?.rejectionReason || req.body?.reason || '').trim() || 'Rejected')
+                        : null,
+                    minimumOrderQuantity: typeof req.body?.minimumOrderQuantity === 'undefined'
+                        ? targetQuote.minimumOrderQuantity
+                        : parseOptionalIntegerInput(req.body?.minimumOrderQuantity),
+                    minimumOrderValue: typeof req.body?.minimumOrderValue === 'undefined'
+                        ? targetQuote.minimumOrderValue
+                        : parseMoneyOrNull(req.body?.minimumOrderValue),
+                    packSize: typeof req.body?.packSize === 'undefined'
+                        ? targetQuote.packSize
+                        : parseOptionalIntegerInput(req.body?.packSize),
+                    leadTimeDays: typeof req.body?.leadTimeDays === 'undefined'
+                        ? targetQuote.leadTimeDays
+                        : parseOptionalIntegerInput(req.body?.leadTimeDays),
+                    bulkDiscountAvailable: typeof req.body?.bulkDiscountAvailable === 'undefined'
+                        ? targetQuote.bulkDiscountAvailable
+                        : parseBooleanFlag(req.body?.bulkDiscountAvailable),
+                    notes: String(req.body?.notes || '').trim() || targetQuote.notes || null,
+                    updatedAt: new Date(),
+                },
+            });
+            await tx.procurementApproval.create({
+                data: {
+                    requestId: existing.id,
+                    fromStatus: null,
+                    toStatus: existing.status,
+                    decision: PrismaProcurementApprovalDecision.UPDATE,
+                    decidedBy: String(req.body?.actor || req.body?.approver || 'Inventory Team').trim() || 'Inventory Team',
+                    decisionNote: nextStatus === PrismaVendorQuoteStatus.SELECTED
+                        ? `Selected vendor quote ${quoteId}.`
+                        : (nextStatus === PrismaVendorQuoteStatus.REJECTED
+                            ? `Rejected vendor quote ${quoteId}.`
+                            : `Updated vendor quote ${quoteId} status to ${String(nextStatus).toLowerCase()}.`),
+                },
+            });
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: { updatedAt: new Date() },
+            });
+            const row = await tx.procurementRequest.findUnique({
+                where: { id: existing.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return row as ProcurementRequestDbPayload | null;
+        });
+        if (!updated) return res.status(500).json({ message: 'Failed to update vendor quote' });
+        return res.json({
+            request: mapProcurementDbToRecord(updated),
+            quoteId,
+            status: String(nextStatus).toLowerCase(),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update vendor quote', error: error.message });
+    }
+});
+
+app.get('/api/inventory/procurement/requests/:requestId/quote-comparison', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+        const quotes = existing.vendorQuotes || [];
+        const ranked = quotes.map((quote) => {
+            const score = buildVendorQuoteScore({
+                totalPrice: quote.totalPrice ? Number(quote.totalPrice) : null,
+                warrantyMonths: quote.warrantyMonths ?? null,
+                deliveryDays: quote.leadTimeDays ?? quote.deliveryDays ?? null,
+                reliabilityScore: quote.vendor?.reliabilityScore ?? null,
+                moq: quote.minimumOrderQuantity ?? null,
+            });
+            return {
+                quoteId: quote.id,
+                vendorName: quote.vendorName,
+                status: String(quote.status || '').toLowerCase(),
+                quotedItem: quote.quotedItem,
+                totalPrice: quote.totalPrice ? Number(quote.totalPrice) : null,
+                unitPrice: quote.unitPrice ? Number(quote.unitPrice) : null,
+                minimumOrderQuantity: quote.minimumOrderQuantity ?? null,
+                packSize: quote.packSize ?? null,
+                leadTimeDays: quote.leadTimeDays ?? quote.deliveryDays ?? null,
+                warrantyMonths: quote.warrantyMonths ?? null,
+                reliabilityScore: quote.vendor?.reliabilityScore ?? null,
+                score,
+            };
+        }).sort((a, b) => b.score - a.score);
+        return res.json({
+            requestId: existing.requestNumber,
+            title: existing.title,
+            summary: ranked.length
+                ? `Compared ${ranked.length} quote(s). Top value quote: ${ranked[0].vendorName} (score ${ranked[0].score}).`
+                : 'No vendor quotes available for comparison yet.',
+            rankedQuotes: ranked,
+            bestQuote: ranked[0] || null,
+            source: 'deterministic_quote_scoring',
+            scoringDimensions: ['price', 'MOQ', 'lead time', 'warranty', 'vendor reliability'],
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to compare vendor quotes', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/requests/:requestId/purchase-order', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+
+        const poNumber = String(req.body?.poNumber || '').trim();
+        const selectedQuote = existing.vendorQuotes.find((quote) => quote.status === PrismaVendorQuoteStatus.SELECTED) || null;
+        const vendorName = String(req.body?.vendorName || selectedQuote?.vendorName || '').trim();
+        if (!poNumber) return res.status(400).json({ message: 'poNumber is required' });
+        if (!vendorName) return res.status(400).json({ message: 'vendorName is required' });
+
+        const poExists = await prisma.purchaseOrder.findUnique({
+            where: { poNumber },
+            select: { id: true },
+        });
+        if (poExists) return res.status(409).json({ message: 'poNumber already exists' });
+
+        const updated = await prisma.$transaction(async (tx) => {
+            const vendorId = await getOrCreateVendorIdByName(vendorName, tx);
+            const po = await tx.purchaseOrder.create({
+                data: {
+                    requestId: existing.id,
+                    poNumber,
+                    vendorId,
+                    vendorName,
+                    status: mapProcurementPurchaseOrderStatusToDb(req.body?.status || 'ordered'),
+                    expectedDeliveryDate: toDateOrNull(req.body?.expectedDelivery),
+                    issuedAt: toDateOrNull(req.body?.issuedAt) || new Date(),
+                    notes: String(req.body?.notes || '').trim() || null,
+                },
+            });
+
+            const itemRows = existing.items.length ? existing.items : [];
+            if (itemRows.length) {
+                await tx.purchaseOrderItem.createMany({
+                    data: itemRows.map((item) => ({
+                        purchaseOrderId: po.id,
+                        requestItemId: item.id,
+                        itemName: item.itemName,
+                        quantityOrdered: Math.max(1, item.quantityApproved || item.quantityRequested),
+                        quantityReceived: item.quantityReceived || 0,
+                        unitPrice: selectedQuote?.unitPrice || null,
+                        totalPrice: selectedQuote?.totalPrice || null,
+                        notes: String(req.body?.notes || '').trim() || null,
+                    })),
+                });
+                await Promise.all(itemRows.map((item) => tx.procurementRequestItem.update({
+                    where: { id: item.id },
+                    data: {
+                        quantityOrdered: Math.max(1, item.quantityApproved || item.quantityRequested),
+                        updatedAt: new Date(),
+                    },
+                })));
+            }
+
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: {
+                    status: PrismaProcurementRequestStatus.ORDERED,
+                    updatedAt: new Date(),
+                },
+            });
+            await tx.procurementApproval.create({
+                data: {
+                    requestId: existing.id,
+                    fromStatus: existing.status,
+                    toStatus: PrismaProcurementRequestStatus.ORDERED,
+                    decision: PrismaProcurementApprovalDecision.MARK_ORDERED,
+                    decidedBy: String(req.body?.actor || 'Inventory Team').trim() || 'Inventory Team',
+                    decisionNote: `Purchase order ${poNumber} created.`,
+                },
+            });
+            const row = await tx.procurementRequest.findUnique({
+                where: { id: existing.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return row as ProcurementRequestDbPayload | null;
+        });
+
+        if (!updated) return res.status(500).json({ message: 'Failed to create purchase order' });
+        const mapped = mapProcurementDbToRecord(updated);
+        await appendProcurementAssetHistory(
+            mapped.linkedAssetIds,
+            'Procurement Ordered',
+            `${mapped.requestId}: PO ${poNumber} created with ${vendorName}`,
+        );
+        return res.json({ request: mapped });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create purchase order', error: error.message });
+    }
+});
+
+app.post('/api/inventory/procurement/requests/:requestId/receive', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const routeKey = String(req.params.requestId || '').trim();
+        if (!routeKey) return res.status(400).json({ message: 'requestId is required' });
+        const existing = await getProcurementRequestByRouteKey(routeKey);
+        if (!existing) return res.status(404).json({ message: 'Procurement request not found' });
+
+        const receivedQuantity = Math.max(1, parseOptionalIntegerInput(req.body?.receivedQuantity) || 1);
+        const receivedBy = String(req.body?.receivedBy || req.body?.actor || 'Inventory Team').trim() || 'Inventory Team';
+        const notes = String(req.body?.notes || '').trim();
+        const applyTarget = String(req.body?.applyTarget || '').trim().toLowerCase() === 'spare_stock' ? 'spare_stock' : 'none';
+        const spareStockItemId = normalizeSerialValue(req.body?.spareStockItemId);
+        const previewOnly = Boolean(req.body?.previewOnly);
+        const confirmInventoryImpact = Boolean(req.body?.confirmInventoryImpact);
+        const requestItem = existing.items.find((row) => row.id === String(req.body?.requestItemId || '').trim()) || existing.items[0] || null;
+        if (!requestItem) return res.status(400).json({ message: 'Procurement request has no request items' });
+
+        let stockBefore: number | null = null;
+        let stockAfter: number | null = null;
+        let stockPartName: string | null = null;
+        if (applyTarget === 'spare_stock') {
+            if (!spareStockItemId) {
+                return res.status(400).json({ message: 'spareStockItemId is required when applyTarget is spare_stock' });
+            }
+            const stock = await prisma.spareStockItem.findUnique({ where: { id: spareStockItemId } });
+            if (!stock) return res.status(404).json({ message: 'Spare stock item not found' });
+            stockBefore = stock.quantityAvailable;
+            stockAfter = stock.quantityAvailable + receivedQuantity;
+            stockPartName = stock.partName;
+        }
+
+        const category = normalizeProcurementRequestItemCategory(requestItem.category || existing.requestType || '');
+        const assetImpactExpected = category === 'replacement' || category === 'new_asset';
+        const hasInventoryImpact = applyTarget === 'spare_stock' || assetImpactExpected;
+        const impactPreview = {
+            requestId: existing.requestNumber,
+            itemName: requestItem.itemName,
+            category,
+            receivedQuantity,
+            applyTarget,
+            spareStockItemId: applyTarget === 'spare_stock' ? spareStockItemId : null,
+            spareStockBefore: stockBefore,
+            spareStockAfter: stockAfter,
+            spareStockPartName: stockPartName,
+            assetDraftRecommended: assetImpactExpected,
+            summary: applyTarget === 'spare_stock'
+                ? `Spare stock will increase by ${receivedQuantity} and a FIFO batch receipt record will be created.`
+                : (assetImpactExpected
+                    ? 'Asset-type receiving will be recorded. Create/approve asset rows before deployment.'
+                    : 'Receiving will be recorded without direct stock mutation.'),
+        };
+
+        if (previewOnly) {
+            return res.json({
+                previewOnly: true,
+                requiresConfirmation: hasInventoryImpact,
+                impactPreview,
+                request: mapProcurementDbToRecord(existing),
+            });
+        }
+
+        if (hasInventoryImpact && !confirmInventoryImpact) {
+            return res.status(400).json({
+                message: 'Inventory impact confirmation is required before applying receiving updates.',
+                requiresConfirmation: true,
+                impactPreview,
+                request: mapProcurementDbToRecord(existing),
+            });
+        }
+
+        const updated = await prisma.$transaction(async (tx) => {
+            const latestPo = existing.purchaseOrders[0] || null;
+            const poId = normalizeSerialValue(req.body?.purchaseOrderId) || latestPo?.id || null;
+            const poItemCandidate = latestPo?.items.find((item) => item.requestItemId === requestItem.id) || latestPo?.items[0] || null;
+            const poItemId = normalizeSerialValue(req.body?.purchaseOrderItemId) || poItemCandidate?.id || null;
+            let fifoReceiptBatch: { batchId: string; batchCode: string | null } | null = null;
+
+            if (applyTarget === 'spare_stock' && spareStockItemId) {
+                const updatedStock = await tx.spareStockItem.update({
+                    where: { id: spareStockItemId },
+                    data: { quantityAvailable: { increment: receivedQuantity } },
+                });
+                fifoReceiptBatch = await createSpareStockBatchReceipt({
+                    tx,
+                    spareStockItemId,
+                    itemName: stockPartName || requestItem.itemName,
+                    quantity: receivedQuantity,
+                    unitCost: updatedStock.unitCost ? Number(updatedStock.unitCost) : null,
+                    vendor: updatedStock.vendor || null,
+                    location: updatedStock.location || null,
+                    sourceRequestId: existing.id,
+                    sourcePurchaseOrderId: poId,
+                    notes: notes || null,
+                    actor: receivedBy,
+                });
+            }
+
+            const receivingRecord = await tx.receivingRecord.create({
+                data: {
+                    requestId: existing.id,
+                    purchaseOrderId: poId,
+                    receivedBy,
+                    receivedAt: toDateOrNull(req.body?.receivedAt) || new Date(),
+                    condition: mapReceivingConditionToDb(req.body?.condition || 'good'),
+                    notes: notes || null,
+                },
+            });
+
+            await tx.receivingRecordItem.create({
+                data: {
+                    receivingRecordId: receivingRecord.id,
+                    purchaseOrderItemId: poItemId,
+                    requestItemId: requestItem.id,
+                    itemName: requestItem.itemName,
+                    quantityReceived: receivedQuantity,
+                    createdAssetIds: [],
+                    spareStockUpdated: applyTarget === 'spare_stock',
+                    spareStockId: applyTarget === 'spare_stock' ? spareStockItemId : null,
+                    consumableUpdated: false,
+                    consumableId: null,
+                    licenseCreatedOrUpdated: false,
+                    licenseId: null,
+                    notes: [
+                        notes || '',
+                        fifoReceiptBatch?.batchCode ? `Batch: ${fifoReceiptBatch.batchCode}` : '',
+                    ].filter(Boolean).join(' | ') || null,
+                },
+            });
+
+            await tx.procurementRequestItem.update({
+                where: { id: requestItem.id },
+                data: {
+                    quantityReceived: { increment: receivedQuantity },
+                    updatedAt: new Date(),
+                },
+            });
+
+            if (poItemId) {
+                await tx.purchaseOrderItem.update({
+                    where: { id: poItemId },
+                    data: {
+                        quantityReceived: { increment: receivedQuantity },
+                        updatedAt: new Date(),
+                    },
+                });
+            }
+
+            const itemTotals = await tx.procurementRequestItem.findMany({
+                where: { requestId: existing.id },
+                select: { quantityRequested: true, quantityReceived: true },
+            });
+            const totalRequested = itemTotals.reduce((sum, row) => sum + Number(row.quantityRequested || 0), 0);
+            const totalReceived = itemTotals.reduce((sum, row) => sum + Number(row.quantityReceived || 0), 0);
+            const nextStatus = totalReceived >= totalRequested
+                ? PrismaProcurementRequestStatus.RECEIVED
+                : PrismaProcurementRequestStatus.PARTIALLY_RECEIVED;
+
+            await tx.procurementRequest.update({
+                where: { id: existing.id },
+                data: {
+                    status: nextStatus,
+                    updatedAt: new Date(),
+                },
+            });
+
+            if (poId) {
+                await tx.purchaseOrder.update({
+                    where: { id: poId },
+                    data: {
+                        status: nextStatus === PrismaProcurementRequestStatus.RECEIVED
+                            ? PrismaPurchaseOrderStatus.RECEIVED
+                            : PrismaPurchaseOrderStatus.PARTIALLY_RECEIVED,
+                        updatedAt: new Date(),
+                    },
+                });
+            }
+
+            await tx.procurementApproval.create({
+                data: {
+                    requestId: existing.id,
+                    fromStatus: existing.status,
+                    toStatus: nextStatus,
+                    decision: PrismaProcurementApprovalDecision.MARK_RECEIVED,
+                    decidedBy: receivedBy,
+                    decisionNote: `Received ${receivedQuantity} unit(s).`,
+                },
+            });
+
+            const row = await tx.procurementRequest.findUnique({
+                where: { id: existing.id },
+                include: PROCUREMENT_REQUEST_INCLUDE,
+            });
+            return row as ProcurementRequestDbPayload | null;
+        });
+        if (!updated) return res.status(500).json({ message: 'Failed to receive procurement request' });
+
+        const mapped = mapProcurementDbToRecord(updated);
+        await appendProcurementAssetHistory(
+            mapped.linkedAssetIds,
+            'Procurement Received',
+            `${mapped.requestId}: received ${receivedQuantity} item(s) (${mapped.status}).`,
+        );
+        return res.json({
+            request: mapped,
+            impactPreview,
+            followUp: impactPreview.assetDraftRecommended
+                ? 'Asset-type receiving recorded. Review and create individual assets from received units before deployment.'
+                : null,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to receive procurement request', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/procurement/recommendations/:recommendationKey/status', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const recommendationKey = String(req.params.recommendationKey || '').trim();
+        if (!recommendationKey) return res.status(400).json({ message: 'recommendationKey is required' });
+        const status = mapProcurementRecommendationReviewStatusToDb(req.body?.status, PrismaProcurementRecommendationReviewStatus.REVIEWED);
+        const reviewedBy = String(req.body?.reviewedBy || req.body?.actor || 'Inventory Team').trim() || 'Inventory Team';
+        const itemName = String(req.body?.itemName || '').trim() || 'Procurement Recommendation';
+        const source = String(req.body?.source || 'ai_recommendation').trim() || 'ai_recommendation';
+        const priority = String(req.body?.priority || 'medium').trim() || 'medium';
+        const reviewNote = String(req.body?.reviewNote || req.body?.note || '').trim() || null;
+        const evidence = (req.body?.evidence && typeof req.body.evidence === 'object') ? req.body.evidence : null;
+        const convertedRequestId = normalizeSerialValue(req.body?.convertedRequestId);
+        const now = new Date();
+        const review = await prisma.procurementRecommendationReview.upsert({
+            where: { recommendationKey },
+            update: {
+                itemName,
+                source,
+                priority,
+                evidence,
+                status,
+                convertedRequestId: status === PrismaProcurementRecommendationReviewStatus.CONVERTED ? convertedRequestId : null,
+                reviewedBy,
+                reviewNote,
+                updatedAt: now,
+            },
+            create: {
+                recommendationKey,
+                itemName,
+                source,
+                priority,
+                evidence,
+                status,
+                convertedRequestId: status === PrismaProcurementRecommendationReviewStatus.CONVERTED ? convertedRequestId : null,
+                reviewedBy,
+                reviewNote,
+                createdAt: now,
+                updatedAt: now,
+            },
+        });
+        return res.json({
+            recommendationKey: review.recommendationKey,
+            status: String(review.status || '').toLowerCase(),
+            reviewedBy: review.reviewedBy,
+            reviewNote: review.reviewNote,
+            convertedRequestId: review.convertedRequestId,
+            updatedAt: review.updatedAt,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update recommendation review status', error: error.message });
     }
 });
 
@@ -7648,9 +12253,14 @@ app.post('/api/inventory/ai/duplicate-detection', inventoryReadGuard, async (_re
         const snapshot = await buildInventoryAiSnapshot();
         const deterministic = buildDuplicateDetectionReport(snapshot);
         const ai = await callInventoryAiHelper('/explain-duplicate-assets', {
-            duplicateGroups: deterministic.duplicateGroups.slice(0, 120),
+            duplicateGroups: deterministic.duplicateGroups.slice(0, 60),
             summary: deterministic.summary,
-        }, 11_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'duplicate_detection',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         const embeddingProvider = String(process.env.EMBEDDING_PROVIDER || '').trim() || 'none';
         const embeddingModel = String(process.env.EMBEDDING_MODEL || '').trim() || 'n/a';
         return res.json({
@@ -7663,7 +12273,7 @@ app.post('/api/inventory/ai/duplicate-detection', inventoryReadGuard, async (_re
                 used: false,
                 note: 'Deterministic duplicate detection is active. Embedding similarity is optional and currently fallback-only.',
             },
-            fallbackUsed: !ai,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run duplicate detection', error: error.message });
@@ -7676,19 +12286,34 @@ app.post('/api/inventory/ai/search', inventoryReadGuard, async (req: Request, re
         if (!query) return res.status(400).json({ message: 'query is required' });
         const snapshot = await buildInventoryAiSnapshot();
         const deterministic = deterministicNaturalLanguageSearch(snapshot, query);
+        const compactSearchCandidates = deterministic.results.slice(0, 24).map((entry: Record<string, any>) => ({
+            assetId: entry.assetId || entry.customId || entry.id || '',
+            assetName: entry.assetName || entry.name || '',
+            category: entry.category || '',
+            type: entry.type || '',
+            status: entry.status || entry.lifecycleStatus || '',
+            location: entry.location || '',
+            department: entry.department || '',
+        }));
         const ai = await callInventoryAiHelper('/natural-language-inventory-search', {
             query,
             interpretedFilters: deterministic.interpretedFilters,
-            candidateResults: deterministic.results.slice(0, 80),
+            candidateResults: compactSearchCandidates,
             fallbackAnswer: deterministic.answer,
-        }, 11_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'inventory_search',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             query,
             interpretedFilters: deterministic.interpretedFilters,
             results: deterministic.results,
             answer: String(ai?.answer || deterministic.answer),
             confidence: String(ai?.confidence || deterministic.confidence),
-            fallbackUsed: !ai || deterministic.fallbackUsed,
+            ...sourceMeta,
+            ruleBasedFilterFallbackUsed: Boolean(deterministic.fallbackUsed),
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run natural language inventory search', error: error.message });
@@ -7711,10 +12336,15 @@ app.post('/api/inventory/ai/data-corrections', inventoryReadGuard, async (req: R
         }));
         const ai = await callInventoryAiHelper('/data-correction-suggestions', {
             summary: deterministic.summary,
-            suggestions: llmSuggestionContext,
+            suggestions: llmSuggestionContext.slice(0, 24),
             countsBySeverity: deterministic.countsBySeverity,
             dataScope: scoped.dataScope,
-        }, 22_000);
+        }, {
+            timeoutMs: 60_000,
+            retryCount: 1,
+            feature: 'data_corrections',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             suggestions: deterministic.suggestions,
@@ -7735,10 +12365,7 @@ app.post('/api/inventory/ai/data-corrections', inventoryReadGuard, async (req: R
             suggestedActions: Array.isArray(ai?.suggested_actions)
                 ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : ['Review critical suggestions first, then apply safe corrections with confirmation.'],
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate AI data correction suggestions', error: error.message });
@@ -7751,7 +12378,7 @@ app.post('/api/inventory/ai/risk-score', inventoryReadGuard, async (req: Request
         const fullSnapshot = await buildInventoryAiSnapshot();
         const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, context, String(req.body?.query || 'risk score'));
         const deterministic = buildAssetRiskScores(scoped.snapshot);
-        const llmRiskContext = deterministic.rows.slice(0, 40).map((row) => ({
+        const llmRiskContext = deterministic.rows.slice(0, 24).map((row) => ({
             assetId: row.assetId,
             assetName: row.assetName,
             riskLevel: row.riskLevel,
@@ -7760,10 +12387,15 @@ app.post('/api/inventory/ai/risk-score', inventoryReadGuard, async (req: Request
         }));
         const ai = await callInventoryAiHelper('/risk-score-explanation', {
             summary: deterministic.summary,
-            riskScores: llmRiskContext,
+            riskScores: llmRiskContext.slice(0, 16),
             dataScope: scoped.dataScope,
             missingData: deterministic.missingData,
-        }, 22_000);
+        }, {
+            timeoutMs: 90_000,
+            retryCount: 1,
+            feature: 'risk_score_global',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             riskScores: deterministic.rows,
@@ -7777,10 +12409,7 @@ app.post('/api/inventory/ai/risk-score', inventoryReadGuard, async (req: Request
             suggestedActions: Array.isArray(ai?.suggested_actions)
                 ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : ['Prioritize critical/high-risk assets for maintenance or replacement planning.'],
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate AI risk scores', error: error.message });
@@ -7799,7 +12428,12 @@ app.post('/api/assets/:id/ai-risk-score', inventoryReadGuard, async (req: Reques
             riskScores: deterministic.rows.slice(0, 1),
             dataScope: 'selected_asset',
             missingData: deterministic.missingData,
-        }, 20_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'risk_score_asset',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             riskScores: deterministic.rows,
@@ -7811,10 +12445,7 @@ app.post('/api/assets/:id/ai-risk-score', inventoryReadGuard, async (req: Reques
             suggestedActions: Array.isArray(ai?.suggested_actions)
                 ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : deterministic.rows[0].recommendedActions,
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate asset AI risk score', error: error.message });
@@ -7834,9 +12465,14 @@ app.post('/api/inventory/ai/replacement-priority', inventoryReadGuard, async (_r
         }));
         const ai = await callInventoryAiHelper('/replacement-priority', {
             summary: deterministic.summary,
-            rankedItems: llmRankedContext,
+            rankedItems: llmRankedContext.slice(0, 24),
             missingData: deterministic.missingData,
-        }, 22_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'replacement_priority',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             rankedItems: deterministic.rankedItems,
@@ -7848,10 +12484,7 @@ app.post('/api/inventory/ai/replacement-priority', inventoryReadGuard, async (_r
                 ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : ['Review top-ranked assets for replacement planning and budgeting.'],
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate replacement priority ranking', error: error.message });
@@ -7864,7 +12497,7 @@ app.post('/api/inventory/ai/spare-stock-forecast', inventoryReadGuard, async (_r
         const deterministic = buildSpareStockForecast(snapshot);
         const ai = await callInventoryAiHelper('/spare-stock-forecast', {
             summary: deterministic.summary,
-            forecasts: deterministic.forecasts.slice(0, 40).map((item) => ({
+            forecasts: deterministic.forecasts.slice(0, 24).map((item) => ({
                 itemName: item.itemName,
                 componentType: item.componentType,
                 currentQuantity: item.currentQuantity,
@@ -7873,7 +12506,12 @@ app.post('/api/inventory/ai/spare-stock-forecast', inventoryReadGuard, async (_r
                 reason: item.reason,
             })),
             missingData: deterministic.missingData,
-        }, 20_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'spare_stock_forecast',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             forecasts: deterministic.forecasts,
@@ -7885,10 +12523,7 @@ app.post('/api/inventory/ai/spare-stock-forecast', inventoryReadGuard, async (_r
                 ? ai.suggested_actions.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 20)
                 : ['Review forecasted stock gaps and raise procurement requests for critical items.'],
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate spare stock forecast', error: error.message });
@@ -7899,23 +12534,17 @@ app.post('/api/inventory/ai/reallocation-suggestions', inventoryReadGuard, async
     try {
         const snapshot = await buildInventoryAiSnapshot();
         const deterministic = buildReallocationSuggestions(snapshot);
-        const ai = await callInventoryAiHelper('/reallocation-suggestions', {
-            summary: deterministic.summary,
-            suggestions: deterministic.suggestions.slice(0, 60),
-            missingData: deterministic.missingData,
-        }, 24_000);
         return res.json({
-            summary: String(ai?.summary || deterministic.summary),
+            summary: deterministic.summary,
             suggestions: deterministic.suggestions,
-            confidence: String(ai?.confidence || deterministic.confidence),
-            missingData: Array.isArray(ai?.missing_data)
-                ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
-                : deterministic.missingData,
+            confidence: deterministic.confidence,
+            missingData: deterministic.missingData,
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+            sourceLabel: 'deterministic_only',
             suggestedActions: [
                 'Validate suggested destination/ownership, then run transfer with explicit confirmation.',
                 'Prioritize internal reallocation before creating new purchase requests.',
@@ -7959,7 +12588,12 @@ app.post('/api/assets/import/ai-repair-errors', inventoryAdminGuard, async (req:
                 safeToApply: fix.safeToApply,
             })),
             warnings: deterministic.warnings,
-        }, 20_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'import_repair_errors',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             fixes: deterministic.fixes,
@@ -7975,10 +12609,7 @@ app.post('/api/assets/import/ai-repair-errors', inventoryAdminGuard, async (req:
             warnings: deterministic.warnings,
             confidence: String(ai?.confidence || deterministic.confidence),
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         if (error instanceof RequestValidationError) {
@@ -8004,9 +12635,14 @@ app.post('/api/inventory/ai/relationship-suggestions', inventoryReadGuard, async
         }));
         const ai = await callInventoryAiHelper('/relationship-suggestions', {
             summary: deterministic.summary,
-            suggestions: llmRelationshipContext,
+            suggestions: llmRelationshipContext.slice(0, 16),
             missingData: deterministic.missingData,
-        }, 30_000);
+        }, {
+            timeoutMs: 60_000,
+            retryCount: 1,
+            feature: 'relationship_suggestions',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             suggestions: deterministic.suggestions,
@@ -8015,10 +12651,7 @@ app.post('/api/inventory/ai/relationship-suggestions', inventoryReadGuard, async
             confidence: String(ai?.confidence || deterministic.confidence),
             missingData: deterministic.missingData,
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate relationship suggestions', error: error.message });
@@ -8117,9 +12750,14 @@ app.post('/api/assets/import/ai-match-invoice', inventoryAdminGuard, async (req:
         });
         const ai = await callInventoryAiHelper('/match-invoice-assets', {
             summary: deterministic.summary,
-            matches: deterministic.matches.slice(0, 60),
-            unmatchedItems: deterministic.unmatchedItems.slice(0, 60),
-        }, 20_000);
+            matches: deterministic.matches.slice(0, 30),
+            unmatchedItems: deterministic.unmatchedItems.slice(0, 30),
+        }, {
+            timeoutMs: 60_000,
+            retryCount: 1,
+            feature: 'match_invoice_assets',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             summary: String(ai?.summary || deterministic.summary),
             matches: deterministic.matches,
@@ -8127,10 +12765,7 @@ app.post('/api/assets/import/ai-match-invoice', inventoryAdminGuard, async (req:
             warnings: deterministic.warnings,
             confidence: String(ai?.confidence || deterministic.confidence),
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to match invoice/document rows to assets', error: error.message });
@@ -8153,17 +12788,19 @@ app.post('/api/inventory/ai/ticket-draft', inventoryReadGuard, async (req: Reque
             ticketDraft: draft.ticketDraft,
             confidence: draft.confidence,
             missingData: draft.missingData,
-        }, 20_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'ticket_draft',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             ticketDraft: ai?.ticket_draft || draft.ticketDraft,
             confidence: String(ai?.confidence || draft.confidence),
             missingData: draft.missingData,
             dataScope: assetId ? 'selected_asset' : 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
             suggestedActions: ['Review draft details, then create a ticket in draft mode only.'],
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate inventory ticket draft', error: error.message });
@@ -8420,6 +13057,7 @@ app.post('/api/inventory/ai/daily-brief', inventoryReadGuard, async (req: Reques
             llmUsed: false,
             llmStatus: 'deterministic_only',
             fallbackReason: null,
+            sourceLabel: 'deterministic_only',
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate inventory daily brief', error: error.message });
@@ -8608,6 +13246,7 @@ const inventoryExecutiveDashboardHandler = async (req: Request, res: Response) =
             llmUsed: false,
             llmStatus: 'deterministic_only',
             fallbackReason: null,
+            sourceLabel: 'deterministic_only',
             estimatedAssetValueIsPartial: Boolean(hasCostValues && missingCostDataCount > 0),
         });
     } catch (error: any) {
@@ -8666,7 +13305,12 @@ app.post('/api/inventory/ai/monthly-report', inventoryReadGuard, async (req: Req
             recommendations: deterministic.recommendations.slice(0, 12),
             confidence: deterministic.confidence,
             missingData: deterministic.missingData,
-        }, 60_000);
+        }, {
+            timeoutMs: 180_000,
+            retryCount: 0,
+            feature: 'monthly_report',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             reportTitle: String(ai?.report_title || deterministic.reportTitle),
             dateRange: deterministic.dateRange,
@@ -8681,11 +13325,8 @@ app.post('/api/inventory/ai/monthly-report', inventoryReadGuard, async (req: Req
                 ? ai.missing_data.map((entry: unknown) => String(entry || '').trim()).filter(Boolean).slice(0, 24)
                 : deterministic.missingData,
             dataScope: 'full_inventory',
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
             suggestedActions: deterministic.recommendations,
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate monthly inventory report', error: error.message });
@@ -8723,6 +13364,7 @@ app.post('/api/inventory/eol-budget-report', inventoryReadGuard, async (req: Req
             llmUsed: false,
             llmStatus: 'deterministic_only',
             fallbackReason: null,
+            sourceLabel: 'deterministic_only',
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to build EOL budget report', error: error.message });
@@ -8744,7 +13386,12 @@ app.post('/api/inventory/ai/plan-action', inventoryReadGuard, async (req: Reques
         const ai = await callInventoryAiHelper('/plan-inventory-action', {
             query,
             actionPlan: compactPlan,
-        }, 30_000);
+        }, {
+            timeoutMs: 45_000,
+            retryCount: 1,
+            feature: 'plan_action',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         return res.json({
             actionType: String(ai?.action_type || plan.actionType),
             summary: String(ai?.summary || plan.summary),
@@ -8761,11 +13408,8 @@ app.post('/api/inventory/ai/plan-action', inventoryReadGuard, async (req: Reques
             })),
             dataScope: 'full_inventory',
             missingData: [],
-            fallbackUsed: !ai || !Boolean(ai?.llm_used),
-            llmUsed: Boolean(ai?.llm_used),
-            llmStatus: ai ? String(ai?.llm_status || (ai?.llm_used ? 'ready' : 'fallback')) : 'offline',
-            fallbackReason: ai ? (ai?.fallback_reason || null) : 'llm_unavailable_or_timeout',
             suggestedActions: ['Review action plan and run approved operations manually or through dedicated safe workflows.'],
+            ...sourceMeta,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to build natural-language inventory action plan', error: error.message });
@@ -9133,8 +13777,8 @@ app.get('/api/assets', async (req: Request, res: Response) => {
             pageSize,
             totalPages,
         });
-    } catch (err) { 
-        res.status(500).json({ error: 'Failed to fetch assets' }); 
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch assets' });
     }
 });
 
@@ -9234,7 +13878,12 @@ app.post('/api/assets/spec-normalize', inventoryAdminGuard, async (req: Request,
             notApplicableFields,
         };
 
-        const ai = await callInventoryAiHelper('/normalize-asset-specs', helperPayload, 9_000);
+        const ai = await callInventoryAiHelper('/normalize-asset-specs', helperPayload, {
+            timeoutMs: 30_000,
+            retryCount: 1,
+            feature: 'spec_normalize',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         if (!ai) {
             const fallback = buildSpecNormalizationFallback({
                 rawSpecsText,
@@ -9245,7 +13894,10 @@ app.post('/api/assets/spec-normalize', inventoryAdminGuard, async (req: Request,
                 model,
                 assetType,
             });
-            return res.json(fallback);
+            return res.json({
+                ...fallback,
+                ...sourceMeta,
+            });
         }
 
         return res.json({
@@ -9255,7 +13907,7 @@ app.post('/api/assets/spec-normalize', inventoryAdminGuard, async (req: Request,
             missingImportantFields: Array.isArray(ai.missing_important_fields) ? ai.missing_important_fields : [],
             warnings: Array.isArray(ai.warnings) ? ai.warnings : [],
             confidence: clampNumber(Number(ai.confidence || 0.5), 0.3, 0.95),
-            llmUsed: Boolean(ai.llm_used),
+            ...sourceMeta,
         } as SpecNormalizationHelperResponse);
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to normalize specs', error: error.message });
@@ -9291,9 +13943,15 @@ app.post('/api/assets/spec-sanity-check', inventoryAdminGuard, async (req: Reque
             notApplicableFields,
         };
 
-        const ai = await callInventoryAiHelper('/check-asset-spec-sanity', helperPayload, 8_000);
+        const ai = await callInventoryAiHelper('/check-asset-spec-sanity', helperPayload, {
+            timeoutMs: 25_000,
+            retryCount: 1,
+            feature: 'spec_sanity',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         if (!ai) {
-            return res.json(buildSpecSanityFallback({
+            return res.json({
+                ...buildSpecSanityFallback({
                 normalizedSpecs,
                 assetType,
                 brand,
@@ -9302,7 +13960,9 @@ app.post('/api/assets/spec-sanity-check', inventoryAdminGuard, async (req: Reque
                 notApplicableFields,
                 sourceType,
                 evidenceStatus,
-            }));
+                }),
+                ...sourceMeta,
+            });
         }
 
         return res.json({
@@ -9310,7 +13970,7 @@ app.post('/api/assets/spec-sanity-check', inventoryAdminGuard, async (req: Reque
             suspiciousFields: Array.isArray(ai.suspicious_fields) ? ai.suspicious_fields : [],
             suggestedFixes: Array.isArray(ai.suggested_fixes) ? ai.suggested_fixes : [],
             requiresReview: Boolean(ai.requires_review),
-            llmUsed: Boolean(ai.llm_used),
+            ...sourceMeta,
         } as SpecSanityHelperResponse);
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run spec sanity check', error: error.message });
@@ -10316,6 +14976,11 @@ app.get('/api/assets/:id/black-box-timeline', inventoryReadGuard, async (req: Re
             returnedEvents: events.length,
             filtersAvailable: ['all', 'transfer', 'maintenance', 'components', 'audit', 'ai_risk_eol', 'loaner', 'telemetry'],
             events,
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+            sourceLabel: 'deterministic_only',
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to load black-box timeline', error: error.message });
@@ -10567,6 +15232,11 @@ app.get('/api/assets/:id/digital-twin', inventoryReadGuard, async (req: Request,
                 }),
             },
             confidence,
+            fallbackUsed: false,
+            llmUsed: false,
+            llmStatus: 'deterministic_only',
+            fallbackReason: null,
+            sourceLabel: 'deterministic_only',
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to load asset digital twin', error: error.message });
@@ -10988,10 +15658,18 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
             if (!stock) throw new RequestValidationError('Spare stock item not found');
             if (stock.quantityAvailable <= 0) throw new RequestValidationError('Spare stock quantity is 0');
 
-            const updatedStock = await tx.spareStockItem.update({
-                where: { id: stock.id },
-                data: { quantityAvailable: stock.quantityAvailable - 1 },
+            const fifoIssue = await consumeSpareStockByFifo({
+                tx,
+                spareStockItemId: stock.id,
+                quantity: 1,
+                actor: String(req.body?.actor || '').trim() || null,
+                reason: reason || 'installed_from_stock',
+                referenceType: 'component_install_from_stock',
+                referenceId: req.params.id,
+                overrideBatchId: normalizeSerialValue(req.body?.overrideBatchId),
             });
+            const updatedStock = await tx.spareStockItem.findUnique({ where: { id: stock.id } });
+            if (!updatedStock) throw new RequestValidationError('Spare stock item not found after FIFO issue');
 
             const componentName = normalizeSerialValue(req.body?.componentName) || stock.partName;
             const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType;
@@ -11079,6 +15757,7 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
                 stockBefore: stock,
                 stockAfter: updatedStock,
                 installed,
+                fifoIssue,
             };
         });
 
@@ -11105,6 +15784,7 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
         res.status(201).json({
             installed: result.installed,
             stock: result.stockAfter,
+            fifoIssue: result.fifoIssue,
             lowStockWarning: isLowStock(result.stockAfter),
         });
     } catch (error: any) {
@@ -11153,12 +15833,18 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
                 });
             }
 
-            const updatedStock = await tx.spareStockItem.update({
-                where: { id: stock.id },
-                data: {
-                    quantityAvailable: stock.quantityAvailable - 1,
-                }
+            const fifoIssue = await consumeSpareStockByFifo({
+                tx,
+                spareStockItemId: stock.id,
+                quantity: 1,
+                actor: String(req.body?.actor || '').trim() || null,
+                reason,
+                referenceType: 'component_replace_from_stock',
+                referenceId: req.params.id,
+                overrideBatchId: normalizeSerialValue(req.body?.overrideBatchId),
             });
+            const updatedStock = await tx.spareStockItem.findUnique({ where: { id: stock.id } });
+            if (!updatedStock) throw new RequestValidationError('Spare stock item not found after FIFO issue');
 
             const componentName = normalizeSerialValue(req.body?.componentName) || stock.partName || oldComponent.componentName;
             const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType || oldComponent.componentType;
@@ -11263,6 +15949,7 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
                 installed,
                 stockAfter: updatedStock,
                 maintenance,
+                fifoIssue,
             };
         });
 
@@ -11303,6 +15990,7 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
             installed: result.installed,
             maintenance: result.maintenance,
             stock: result.stockAfter,
+            fifoIssue: result.fifoIssue,
             lowStockWarning: isLowStock(result.stockAfter),
         });
     } catch (error: any) {
@@ -12194,14 +16882,23 @@ app.post('/api/assets/:id/eol-explanation', async (req: Request, res: Response) 
             confidence: assessment.confidence,
             procurementSuitable: assessment.suitableForProcurementPlanning,
         };
-        const ai = await callInventoryAiHelper('/explain-eol-assessment', payload, 7_000);
+        const ai = await callInventoryAiHelper('/explain-eol-assessment', payload, {
+            timeoutMs: 25_000,
+            retryCount: 1,
+            feature: 'eol_explanation',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
+        const fallback = buildEolExplanationFallback(assessment);
         if (!ai) {
-            return res.json(buildEolExplanationFallback(assessment));
+            return res.json({
+                ...fallback,
+                ...sourceMeta,
+            });
         }
         return res.json({
-            shortUserExplanation: String(ai.short_user_explanation || buildEolExplanationFallback(assessment).shortUserExplanation),
-            technicalExplanation: String(ai.technical_explanation || buildEolExplanationFallback(assessment).technicalExplanation),
-            llmUsed: Boolean(ai.llm_used),
+            shortUserExplanation: String(ai.short_user_explanation || fallback.shortUserExplanation),
+            technicalExplanation: String(ai.technical_explanation || fallback.technicalExplanation),
+            ...sourceMeta,
         } as EolExplanationHelperResponse);
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate EOL explanation', error: error.message });
@@ -12230,6 +16927,32 @@ app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response
             }),
         ]);
 
+        const compactHistoryEvents = timeline.slice(0, 12).map((entry) => ({
+            date: entry.date,
+            event: entry.event,
+            eventType: entry.eventType,
+            sourceItemType: entry.sourceItemType,
+            sourceItemName: entry.sourceItemName,
+            sourceItemCustomId: entry.sourceItemCustomId,
+            reason: entry.reason,
+        }));
+        const compactComponents = components.slice(0, 20).map((component) => ({
+            id: component.id,
+            name: component.componentName,
+            type: component.componentType,
+            status: component.status,
+            condition: component.condition,
+            serialNumber: component.serialNumber,
+            partNumber: component.partNumber,
+            installedAt: component.installedAt ? component.installedAt.toISOString() : null,
+            removedAt: component.removedAt ? component.removedAt.toISOString() : null,
+        }));
+        const relatedCounts = timeline.reduce((acc, entry) => {
+            const key = String(entry.sourceItemType || 'asset').trim().toLowerCase();
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, {} as Record<string, number>);
+        const specs = ((asset.specifications as Record<string, any>) || {});
         const helperPayload = {
             asset: {
                 customId: asset.customId,
@@ -12244,48 +16967,68 @@ app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response
                 warrantyEndDate: asset.warrantyEndDate ? asset.warrantyEndDate.toISOString() : null,
                 location: asset.location,
                 department: asset.department,
-                specifications: asset.specifications || {},
+                specifications: {
+                    telemetryEnabled: specs.telemetryEnabled ?? specs.telemetryApplicable ?? specs.trackWorkingHours ?? null,
+                    telemetryStatus: specs.telemetryStatus || specs.operationalState || null,
+                    lastTelemetryAt: specs.lastTelemetryAt || null,
+                },
             },
             eolAssessment: assessment,
             includeRelated,
-            historyEvents: timeline.slice(0, 120).map((entry) => ({
-                date: entry.date,
-                event: entry.event,
-                eventType: entry.eventType,
-                sourceItemType: entry.sourceItemType,
-                sourceItemName: entry.sourceItemName,
-                sourceItemCustomId: entry.sourceItemCustomId,
-                details: entry.details,
-                reason: entry.reason,
-            })),
-            components: components.slice(0, 120).map((component) => ({
-                id: component.id,
-                name: component.componentName,
-                type: component.componentType,
-                status: component.status,
-                condition: component.condition,
-                serialNumber: component.serialNumber,
-                partNumber: component.partNumber,
-                installedAt: component.installedAt ? component.installedAt.toISOString() : null,
-                removedAt: component.removedAt ? component.removedAt.toISOString() : null,
-            })),
+            historyEvents: compactHistoryEvents,
+            components: compactComponents,
             maintenanceCount,
+            evidencePacket: {
+                assetIdentity: {
+                    name: asset.name,
+                    assetTag: asset.assetTag || asset.customId,
+                    type: asset.type,
+                    category: asset.category,
+                    status: asset.status,
+                    lifecycleStatus: asset.lifecycleStatus,
+                    location: asset.location,
+                    department: asset.department,
+                },
+                relationshipCounts: relatedCounts,
+                componentSummary: {
+                    count: components.length,
+                    topComponentNames: compactComponents.slice(0, 8).map((row) => row.name),
+                },
+                maintenanceSummary: {
+                    count: maintenanceCount,
+                },
+                telemetrySummary: {
+                    enabled: Boolean(specs.telemetryEnabled ?? specs.telemetryApplicable ?? specs.trackWorkingHours),
+                    status: specs.telemetryStatus || specs.operationalState || 'unknown',
+                    lastTelemetryAt: specs.lastTelemetryAt || null,
+                },
+                eolSummary: {
+                    status: assessment.status,
+                    confidence: assessment.confidence,
+                    reason: assessment.reason,
+                    monthsRemaining: assessment.monthsRemaining,
+                },
+                recentEvents: compactHistoryEvents,
+            },
         };
 
-        const ai = await callInventoryAiHelper('/summarize-asset-health', helperPayload, 12_000);
-        if (!ai) {
-            return res.json(buildAiHealthSummaryFallback({
-                asset,
-                timeline,
-                assessment,
-            }));
-        }
-
+        const ai = await callInventoryAiHelper('/summarize-asset-health', helperPayload, {
+            timeoutMs: 180_000,
+            retryCount: 0,
+            feature: 'ai_health_summary',
+        });
+        const sourceMeta = createInventoryAiSourceMeta(ai);
         const fallback = buildAiHealthSummaryFallback({
             asset,
             timeline,
             assessment,
         });
+        if (!ai) {
+            return res.json({
+                ...fallback,
+                ...sourceMeta,
+            });
+        }
         const confidenceRaw = normalizeValue(ai.confidence || fallback.confidence);
         const confidence: 'low' | 'medium' | 'high' = confidenceRaw === 'high'
             ? 'high'
@@ -12293,7 +17036,7 @@ app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response
                 ? 'medium'
                 : 'low';
         return res.json({
-            summary: String(ai.summary || fallback.summary),
+            summary: normalizeAiHealthSummaryNarrative(String(ai.summary || fallback.summary), asset),
             risks: Array.isArray(ai.risks) ? ai.risks.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12) : fallback.risks,
             recentChanges: Array.isArray(ai.recent_changes)
                 ? ai.recent_changes.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
@@ -12311,7 +17054,7 @@ app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response
             missingData: Array.isArray(ai.missing_data)
                 ? ai.missing_data.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 24)
                 : fallback.missingData,
-            llmUsed: Boolean(ai.llm_used),
+            ...sourceMeta,
         } as AiHealthSummaryHelperResponse);
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to generate AI health summary', error: error.message });
@@ -13783,8 +18526,8 @@ app.delete('/api/assets/:id', inventoryAdminGuard, async (req: Request, res: Res
             return res.json({ success: true });
         }
         res.status(404).json({ message: 'Asset not found' });
-    } catch (error) { 
-        res.status(500).json({ message: 'Server error' }); 
+    } catch (error) {
+        res.status(500).json({ message: 'Server error' });
     }
 });
 

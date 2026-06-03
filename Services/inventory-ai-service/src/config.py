@@ -19,7 +19,7 @@ def _parse_ollama_timeout_seconds() -> int:
     Ticket service uses OLLAMA_TIMEOUT_MS while inventory-ai historically used
     OLLAMA_TIMEOUT_SECONDS; support both so deployments stay compatible.
     """
-    minimum_timeout_seconds = 20
+    minimum_timeout_seconds = 60
 
     raw_seconds = os.getenv("OLLAMA_TIMEOUT_SECONDS")
     if raw_seconds is not None and str(raw_seconds).strip():
@@ -31,7 +31,21 @@ def _parse_ollama_timeout_seconds() -> int:
         # Round up to avoid unintentionally shortening configured timeout.
         return max(minimum_timeout_seconds, (timeout_ms + 999) // 1000)
 
-    return 45
+    return 120
+
+
+def _parse_ollama_keep_alive() -> str:
+    raw = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
+    value = str(raw or "").strip()
+    return value or "10m"
+
+
+def _parse_ollama_retry_attempts() -> int:
+    raw = os.getenv("OLLAMA_RETRY_ATTEMPTS", "1")
+    try:
+        return max(0, min(3, int(str(raw).strip())))
+    except Exception:
+        return 1
 
 
 @dataclass(slots=True)
@@ -43,7 +57,11 @@ class AppSettings:
     gemini_model: str = "gemini-2.0-flash"
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "gemma3:4b"
-    ollama_timeout_seconds: int = 45
+    ollama_timeout_seconds: int = 120
+    ollama_keep_alive: str = "10m"
+    ollama_retry_attempts: int = 1
+    ollama_warmup_enabled: bool = True
+    ollama_warmup_prompt: str = "Say OK only."
 
     data_dir: Path = Path("/app/data")
     model_dir: Path = Path("/app/models")
@@ -186,6 +204,10 @@ class AppSettings:
             ),
             ollama_model=os.getenv("OLLAMA_MODEL", "gemma3:4b").strip() or "gemma3:4b",
             ollama_timeout_seconds=_parse_ollama_timeout_seconds(),
+            ollama_keep_alive=_parse_ollama_keep_alive(),
+            ollama_retry_attempts=_parse_ollama_retry_attempts(),
+            ollama_warmup_enabled=_to_bool(os.getenv("OLLAMA_WARMUP_ENABLED"), True),
+            ollama_warmup_prompt=os.getenv("OLLAMA_WARMUP_PROMPT", "Say OK only.").strip() or "Say OK only.",
             data_dir=data_dir,
             model_dir=model_dir,
             spec_feedback_path=data_dir / "spec_feedback.jsonl",
