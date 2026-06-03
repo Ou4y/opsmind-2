@@ -6844,6 +6844,12 @@ body.app-body::after {
     color: #1d4ed8;
 }
 
+.ops-attention-pill.is-neutral {
+    background: #f8fafc;
+    border-color: rgba(100, 116, 139, 0.26);
+    color: #475569;
+}
+
 .ops-empty-state-card {
     align-items: center;
     background: linear-gradient(135deg, rgba(248, 250, 252, 0.96) 0%, rgba(239, 246, 255, 0.78) 100%);
@@ -6853,6 +6859,29 @@ body.app-body::after {
     gap: 0.75rem;
     justify-content: space-between;
     padding: 0.85rem 0.95rem;
+}
+
+.ops-empty-state-card-danger {
+    background: linear-gradient(135deg, rgba(255, 241, 242, 0.98) 0%, rgba(254, 226, 226, 0.84) 100%);
+    border-color: rgba(225, 29, 72, 0.34);
+}
+
+.ops-empty-state-icon {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 0.8rem;
+    color: #2563eb;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-size: 1.2rem;
+    height: 2.4rem;
+    justify-content: center;
+    width: 2.4rem;
+}
+
+.ops-empty-state-card-danger .ops-empty-state-icon {
+    color: #be123c;
 }
 
 .ops-empty-state-title {
@@ -6868,6 +6897,258 @@ body.app-body::after {
 
 .ops-empty-state-actions {
     flex: 0 0 auto;
+}
+
+/* ====================================
+   Premium Severity Cards
+   ==================================== */
+
+.ops-premium-card,
+.ops-severity-card,
+.ops-analytics-card,
+.ops-kpi-card,
+.ops-cost-card,
+.ops-ai-card,
+.ops-next-action-card,
+.ops-360-card,
+.icc-mission-card,
+.icc-priority-card,
+.icc-kpi-card,
+.icc-decision-card,
+.icc-briefing-priority,
+.icc-ai-rec-card,
+.icc-alert-item,
+.icc-risk-card,
+.proc-ai-rec-card,
+.proc-kanban-card,
+.proc-priority-request-card,
+.proc-vendor-mini-card,
+.proc-fifo-queue-card {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.ops-severity-high,
+.ops-severity-critical,
+.ops-severity-card.is-urgent,
+.ops-360-card.is-urgent,
+.icc-mission-card.is-urgent,
+.icc-priority-card.is-urgent,
+.icc-kpi-card.is-urgent,
+.icc-decision-card.is-urgent,
+.icc-briefing-priority.is-urgent,
+.icc-ai-rec-card.is-urgent,
+.icc-alert-item.is-urgent,
+.icc-risk-card.is-urgent,
+.proc-ai-rec-card.is-urgent,
+.proc-kanban-card.is-urgent,
+.proc-priority-request-card.is-urgent,
+.proc-vendor-mini-card.is-urgent,
+.proc-fifo-queue-card.is-urgent {
+    animation: opsUrgentGlow 2.8s ease-in-out infinite;
+    background:
+        radial-gradient(circle at 12% 10%, rgba(255, 255, 255, 0.22), transparent 16rem),
+        linear-gradient(135deg, #be123c 0%, #e11d48 48%, #fb7185 100%) !important;
+    border-color: rgba(159, 18, 57, 0.64) !important;
+    box-shadow: 0 18px 38px rgba(190, 18, 60, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    color: #fff !important;
+}
+
+.ops-severity-high *,
+.ops-severity-critical *,
+.ops-severity-card.is-urgent *,
+.ops-360-card.is-urgent *,
+.icc-mission-card.is-urgent *,
+.icc-priority-card.is-urgent *,
+.icc-kpi-card.is-urgent *,
+.icc-decision-card.is-urgent *,
+.icc-briefing-priority.is-urgent *,
+.icc-ai-rec-card.is-urgent *,
+.icc-alert-item.is-urgent *,
+.icc-risk-card.is-urgent *,
+.proc-ai-rec-card.is-urgent *,
+.proc-kanban-card.is-urgent *,
+.proc-priority-request-card.is-urgent *,
+.proc-vendor-mini-card.is-urgent *,
+.proc-fifo-queue-card.is-urgent * {
+    color: #fff !important;
+}
+
+.ops-severity-card.is-urgent .btn,
+.ops-360-card.is-urgent .btn,
+.icc-mission-card.is-urgent .btn,
+.icc-priority-card.is-urgent .btn,
+.icc-ai-rec-card.is-urgent .btn,
+.proc-ai-rec-card.is-urgent .btn,
+.proc-kanban-card.is-urgent .btn,
+.proc-priority-request-card.is-urgent .btn {
+    background: rgba(255, 255, 255, 0.96);
+    border-color: rgba(255, 255, 255, 0.88);
+    color: #be123c !important;
+    font-weight: 850;
+}
+
+.ops-severity-card.is-urgent .ops-attention-pill,
+.ops-360-card.is-urgent .ops-attention-pill,
+.icc-mission-card.is-urgent .ops-attention-pill,
+.icc-priority-card.is-urgent .ops-attention-pill,
+.icc-briefing-priority.is-urgent .ops-attention-pill,
+.icc-ai-rec-card.is-urgent .ops-attention-pill,
+.icc-alert-item.is-urgent .ops-attention-pill,
+.proc-ai-rec-card.is-urgent .ops-attention-pill,
+.proc-kanban-card.is-urgent .ops-attention-pill,
+.proc-priority-request-card.is-urgent .ops-attention-pill {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.42);
+    color: #fff !important;
+}
+
+.ops-severity-card.is-urgent .icc-mission-icon,
+.icc-mission-card.is-urgent .icc-mission-icon,
+.icc-priority-card.is-urgent .icc-priority-icon,
+.ops-360-card.is-urgent .ops-360-card-icon {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.34);
+    color: #fff;
+}
+
+.ops-severity-medium,
+.ops-severity-card.is-review,
+.ops-360-card.is-review,
+.icc-mission-card.is-review,
+.icc-priority-card.is-review,
+.icc-kpi-card.is-review,
+.icc-decision-card.is-review,
+.icc-briefing-priority.is-review,
+.icc-ai-rec-card.is-review,
+.icc-alert-item.is-review,
+.icc-risk-card.is-review,
+.proc-ai-rec-card.is-review,
+.proc-kanban-card.is-review,
+.proc-priority-request-card.is-review,
+.proc-vendor-mini-card.is-review,
+.proc-fifo-queue-card.is-review {
+    background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 55%, #fde68a 100%) !important;
+    border-color: rgba(217, 119, 6, 0.42) !important;
+    box-shadow: 0 14px 28px rgba(217, 119, 6, 0.12);
+    color: #78350f;
+}
+
+.ops-severity-low,
+.ops-severity-info,
+.ops-severity-card.is-info,
+.ops-360-card.is-info,
+.icc-mission-card.is-info,
+.icc-priority-card.is-info,
+.icc-kpi-card.is-info,
+.icc-decision-card.is-info,
+.icc-briefing-priority.is-info,
+.icc-ai-rec-card.is-info,
+.icc-alert-item.is-info,
+.icc-risk-card.is-info,
+.proc-ai-rec-card.is-info,
+.proc-kanban-card.is-info,
+.proc-priority-request-card.is-info,
+.proc-vendor-mini-card.is-info,
+.proc-fifo-queue-card.is-info {
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 58%, #e0e7ff 100%) !important;
+    border-color: rgba(37, 99, 235, 0.28) !important;
+    box-shadow: 0 14px 28px rgba(37, 99, 235, 0.1);
+}
+
+.ops-severity-success,
+.ops-severity-healthy,
+.ops-severity-card.is-healthy,
+.ops-360-card.is-healthy,
+.icc-mission-card.is-healthy,
+.icc-priority-card.is-healthy,
+.icc-kpi-card.is-healthy,
+.icc-decision-card.is-healthy,
+.icc-briefing-priority.is-healthy,
+.icc-ai-rec-card.is-healthy,
+.icc-alert-item.is-healthy,
+.icc-risk-card.is-healthy,
+.proc-ai-rec-card.is-healthy,
+.proc-kanban-card.is-healthy,
+.proc-priority-request-card.is-healthy,
+.proc-vendor-mini-card.is-healthy,
+.proc-fifo-queue-card.is-healthy {
+    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 60%, #bbf7d0 100%) !important;
+    border-color: rgba(5, 150, 105, 0.28) !important;
+    box-shadow: 0 14px 28px rgba(5, 150, 105, 0.1);
+}
+
+.ops-severity-neutral,
+.ops-severity-missing,
+.ops-severity-unknown,
+.ops-severity-card.is-neutral,
+.ops-360-card.is-neutral,
+.icc-mission-card.is-neutral,
+.icc-priority-card.is-neutral,
+.icc-kpi-card.is-neutral,
+.icc-decision-card.is-neutral,
+.icc-briefing-priority.is-neutral,
+.icc-ai-rec-card.is-neutral,
+.icc-alert-item.is-neutral,
+.icc-risk-card.is-neutral,
+.proc-ai-rec-card.is-neutral,
+.proc-kanban-card.is-neutral,
+.proc-priority-request-card.is-neutral,
+.proc-vendor-mini-card.is-neutral,
+.proc-fifo-queue-card.is-neutral {
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border-color: rgba(100, 116, 139, 0.26);
+    color: #334155;
+}
+
+.ops-evidence-drawer,
+.ops-360-evidence,
+.icc-evidence-panel,
+.proc-ai-rec-evidence {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.ops-evidence-drawer[open],
+.ops-360-evidence[open],
+.icc-evidence-panel[open],
+.proc-ai-rec-evidence[open] {
+    animation: opsEvidenceReveal 0.18s ease;
+    box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.ops-360-card.is-urgent .ops-360-evidence,
+.icc-mission-card.is-urgent .icc-evidence-panel,
+.icc-briefing-priority.is-urgent .icc-evidence-panel,
+.proc-ai-rec-card.is-urgent .proc-ai-rec-evidence {
+    border-color: rgba(255, 255, 255, 0.32);
+}
+
+.ops-360-card.is-urgent .ops-360-evidence-body,
+.icc-mission-card.is-urgent .icc-evidence-body,
+.icc-briefing-priority.is-urgent .icc-evidence-body,
+.proc-ai-rec-card.is-urgent .proc-ai-rec-evidence div {
+    background: rgba(127, 29, 29, 0.16);
+    border-color: rgba(255, 255, 255, 0.18);
+    color: #fff !important;
+}
+
+@keyframes opsUrgentGlow {
+    0%, 100% {
+        box-shadow: 0 18px 38px rgba(190, 18, 60, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    }
+    50% {
+        box-shadow: 0 22px 46px rgba(190, 18, 60, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    }
+}
+
+@keyframes opsEvidenceReveal {
+    from {
+        opacity: 0.72;
+        transform: translateY(-2px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .proc-lifecycle-stepper {
@@ -9285,6 +9566,11 @@ body.app-body::after {
     .inventory-command-center-page.icc-focus-mode .icc-section,
     .icc-mission-card,
     .ops-360-card,
+    .ops-severity-card,
+    .ops-evidence-drawer,
+    .ops-360-evidence,
+    .icc-evidence-panel,
+    .proc-ai-rec-evidence,
     .inventory-filter-chip,
     .proc-priority-request-card {
         animation: none !important;

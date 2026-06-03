@@ -2525,10 +2525,109 @@ function showInventoryTableLoadingState() {
   `;
 }
 
+function normalizeAssetListResponse(payload, fallbackPage = 1, fallbackPageSize = 50) {
+  if (Array.isArray(payload)) {
+    return {
+      assets: payload,
+      total: payload.length,
+      totalPages: 1,
+      page: fallbackPage,
+      pageSize: fallbackPageSize,
+    };
+  }
+
+  const assets = Array.isArray(payload?.items)
+    ? payload.items
+    : (Array.isArray(payload?.assets)
+        ? payload.assets
+        : (Array.isArray(payload?.data)
+            ? payload.data
+            : (Array.isArray(payload?.rows) ? payload.rows : [])));
+  const meta = payload?.pagination || payload?.meta || {};
+  const total = Number(
+    payload?.total
+    ?? payload?.totalItems
+    ?? payload?.count
+    ?? meta?.total
+    ?? meta?.totalItems
+    ?? assets.length
+  );
+  const page = Number(payload?.page ?? meta?.page ?? fallbackPage);
+  const pageSize = Number(payload?.pageSize ?? payload?.limit ?? meta?.pageSize ?? meta?.limit ?? fallbackPageSize);
+  const totalPages = Number(
+    payload?.totalPages
+    ?? meta?.totalPages
+    ?? (pageSize > 0 ? Math.ceil((Number.isFinite(total) ? total : assets.length) / pageSize) : 1)
+  );
+
+  return {
+    assets,
+    total: Number.isFinite(total) ? total : assets.length,
+    totalPages: Math.max(1, Number.isFinite(totalPages) ? totalPages : 1),
+    page: Math.max(1, Number.isFinite(page) ? page : fallbackPage),
+    pageSize: Math.max(10, Math.min(500, Number.isFinite(pageSize) ? pageSize : fallbackPageSize)),
+  };
+}
+
+async function buildInventoryHttpError(response, endpoint) {
+  const payload = await response.json().catch(() => ({}));
+  const detail = payload?.message || payload?.error || response.statusText || 'Request failed';
+  const error = new Error(`${detail} (${response.status} ${response.statusText || 'HTTP error'})`);
+  error.endpoint = endpoint;
+  error.status = response.status;
+  return error;
+}
+
+function renderInventoryLoadError(error, endpoint) {
+  const tableBody = document.getElementById('inventoryTableBody');
+  if (!tableBody) return;
+  const headerColumns = document.querySelectorAll('#groupTable thead tr th').length;
+  const colspan = Math.max(1, headerColumns || 5);
+  const endpointLabel = endpoint || error?.endpoint || '/assets';
+  const statusLabel = error?.status ? `HTTP ${error.status}` : 'Network/render error';
+  tableBody.innerHTML = `
+    <tr>
+      <td colspan="${colspan}">
+        <div class="ops-empty-state-card ops-empty-state-card-danger">
+          <div class="ops-empty-state-icon"><i class="bi bi-database-x"></i></div>
+          <div>
+            <div class="ops-empty-state-title">Could not load inventory assets</div>
+            <div class="ops-empty-state-copy">
+              The Assets page could not read real database-backed inventory data.
+              <span class="d-block mt-1">Endpoint: <code>${UI.escapeHTML(endpointLabel)}</code> · ${UI.escapeHTML(statusLabel)}</span>
+              <span class="d-block mt-1">${UI.escapeHTML(error?.message || 'Check the inventory backend logs for details.')}</span>
+            </div>
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+  renderInventoryGroupPager();
+  updateInventoryAiFloatingOffset();
+}
+
+function refreshInventorySecondaryEvidence() {
+  Promise.allSettled([
+    loadAssetAiJobStatuses(),
+    loadAssetLifespanPredictions(),
+    loadAssetEolAssessments(),
+  ]).then(() => {
+    renderTable();
+    renderInventory360Analytics();
+    checkGlobalEOLAlerts();
+  }).catch((error) => {
+    console.warn('[Inventory] Secondary evidence refresh failed:', error?.message || error);
+  });
+  refreshSpecVerificationSnapshot().catch((error) => {
+    console.warn('[Inventory] Spec verification snapshot failed:', error?.message || error);
+  });
+}
+
 async function loadAssets() {
   if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
 
   loadAssetsInFlightPromise = (async () => {
+    let endpoint = '/assets';
     try {
       showInventoryTableLoadingState();
       const searchTerm = String(document.getElementById('searchInput')?.value || '').trim();
@@ -2550,37 +2649,31 @@ async function loadAssets() {
       if (lifecycleFilter && lifecycleFilter !== 'all') params.set('lifecycleStatus', lifecycleFilter);
       if (typeFilter && typeFilter !== 'all') params.set('type', typeFilter);
 
-      const response = await inventoryRequest(`/assets?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to fetch assets');
+      endpoint = `/assets?${params.toString()}`;
+      const response = await inventoryRequest(endpoint);
+      if (!response.ok) throw await buildInventoryHttpError(response, endpoint);
 
       const payload = await response.json();
-      const assets = Array.isArray(payload)
-        ? payload
-        : (Array.isArray(payload?.items) ? payload.items : []);
+      const normalized = normalizeAssetListResponse(payload, page, pageSize);
+      const assets = normalized.assets;
       console.debug('[AssetCreateDebug] /api/assets response length:', Array.isArray(assets) ? assets.length : 0);
       currentAssets = assets;
-      inventoryPageState.total = Number(payload?.total || assets.length || 0);
-      inventoryPageState.totalPages = Math.max(1, Number(payload?.totalPages || 1));
-      inventoryPageState.page = Math.max(1, Number(payload?.page || page));
-      inventoryPageState.pageSize = Math.max(10, Math.min(500, Number(payload?.pageSize || pageSize)));
-      await loadAssetAiJobStatuses();
-      await loadAssetLifespanPredictions();
-      await loadAssetEolAssessments();
-
-      await refreshInventoryFilterSnapshot();
+      inventoryPageState.total = normalized.total;
+      inventoryPageState.totalPages = normalized.totalPages;
+      inventoryPageState.page = normalized.page;
+      inventoryPageState.pageSize = normalized.pageSize;
+      await refreshInventoryFilterSnapshot().catch((error) => {
+        console.warn('[Inventory] Full filter snapshot failed; using current page data:', error?.message || error);
+      });
       populateFilters();
       renderTable();
       renderInventory360Analytics();
       refreshInventory360ProcurementBoard().catch(() => {});
       updateDeleteAllAssetsButton();
-      checkGlobalEOLAlerts();
-      await refreshSpecVerificationSnapshot();
+      refreshInventorySecondaryEvidence();
     } catch (error) {
       console.error('Error:', error);
-      const tableBody = document.getElementById('inventoryTableBody');
-      if (tableBody) {
-        tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-4">Error loading assets. Check port 5000.</td></tr>`;
-      }
+      renderInventoryLoadError(error, endpoint);
     }
   })();
 
@@ -3765,6 +3858,15 @@ function getKnownLifecycleOptions() {
     if (value) known.add(value);
   });
   return Array.from(known);
+}
+
+function severityClass(severity) {
+  const key = normalizeValue(severity);
+  if (['critical', 'urgent', 'high', 'danger', 'red'].includes(key)) return 'is-urgent';
+  if (['medium', 'warning', 'review', 'yellow'].includes(key)) return 'is-review';
+  if (['success', 'healthy', 'good', 'green'].includes(key)) return 'is-healthy';
+  if (['neutral', 'unknown', 'missing', 'gray', 'grey'].includes(key)) return 'is-neutral';
+  return 'is-info';
 }
 
 function inventory360Number(value, fallback = 0) {

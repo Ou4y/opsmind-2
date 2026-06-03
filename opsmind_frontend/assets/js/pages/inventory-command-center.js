@@ -249,7 +249,8 @@ function severityClass(severity) {
   const key = normalize(severity);
   if (['critical', 'urgent', 'high', 'danger', 'red'].includes(key)) return 'is-urgent';
   if (['medium', 'warning', 'review', 'yellow'].includes(key)) return 'is-review';
-  if (['low', 'healthy', 'good', 'green'].includes(key)) return 'is-healthy';
+  if (['success', 'healthy', 'good', 'green'].includes(key)) return 'is-healthy';
+  if (['neutral', 'unknown', 'missing', 'gray', 'grey'].includes(key)) return 'is-neutral';
   return 'is-info';
 }
 

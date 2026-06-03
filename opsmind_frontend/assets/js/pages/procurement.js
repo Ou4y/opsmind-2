@@ -163,7 +163,8 @@ function urgencyClass(value) {
   const normalized = normalizeValue(value);
   if (['critical', 'urgent', 'high', 'overdue', 'a'].includes(normalized)) return 'is-urgent';
   if (['medium', 'warning', 'review', 'b'].includes(normalized)) return 'is-review';
-  if (['low', 'healthy', 'good', 'c'].includes(normalized)) return 'is-healthy';
+  if (['success', 'healthy', 'good', 'green'].includes(normalized)) return 'is-healthy';
+  if (['neutral', 'unknown', 'missing', 'gray', 'grey'].includes(normalized)) return 'is-neutral';
   return 'is-info';
 }
 
