@@ -9,11 +9,27 @@ const PAGE_SIZE = 500;
 const MAX_ASSET_PAGES = 12;
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const AUTO_REFRESH_PREF_KEY = 'opsmind_auto_refresh_enabled';
+const PRIORITY_STATE_KEY = 'opsmind_icc_priority_state_v1';
+const PRIORITY_REASONS = ['fixed', 'escalated', 'false alarm', 'duplicate'];
+const QUALITY_FIELD_CONFIG = {
+  serial: { label: 'Serial Number', assetField: 'serialNumber', inputType: 'text', missingKey: 'serial' },
+  department: { label: 'Department', assetField: 'department', inputType: 'text', missingKey: 'department' },
+  location: { label: 'Location', assetField: 'location', inputType: 'text', missingKey: 'location' },
+  purchaseDate: { label: 'Purchase Date', assetField: 'purchaseDate', inputType: 'date', missingKey: 'purchase date' },
+  warranty: { label: 'Warranty End', assetField: 'warrantyEndDate', inputType: 'date', missingKey: 'warranty' },
+  purchaseCost: { label: 'Purchase Cost', assetField: 'purchaseCost', inputType: 'number', missingKey: 'purchase cost' },
+};
 
 const state = {
   assets: [],
   board: null,
   audit: null,
+  smartAlerts: null,
+  alertRules: null,
+  eolBudgetTimeline: null,
+  eolBudgetHorizon: 12,
+  eolBudgetFilters: { department: 'all', building: 'all', category: 'all' },
+  eolBudgetSelectedQuarter: '',
   executive: null,
   loadedAt: null,
   errors: [],
@@ -22,6 +38,7 @@ const state = {
   refreshing: false,
   walkthroughStep: -1,
   focusMode: String(localStorage.getItem('opsmind_inventory_focus_mode') || '').toLowerCase() === 'true',
+  priorityState: null,
 };
 
 function ensureAccess() {
@@ -70,6 +87,17 @@ async function readJson(path) {
 async function postJson(path, body = {}) {
   const response = await request(path, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
+  return payload;
+}
+
+async function sendJson(path, body = {}, method = 'POST') {
+  const response = await request(path, {
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
@@ -137,6 +165,7 @@ function autoRefreshEnabled() {
 function shouldPauseAutoRefresh() {
   if (document.visibilityState === 'hidden') return true;
   if (document.querySelector('.modal.show')) return true;
+  if (document.getElementById('inventoryAiChatPanel')?.classList.contains('is-open')) return true;
   const active = document.activeElement;
   if (!active) return false;
   const tag = String(active.tagName || '').toLowerCase();
@@ -152,7 +181,7 @@ function updateFreshnessStatus(status = 'ready', message = '') {
   }
   if (!text) return;
   if (status === 'refreshing') {
-    text.textContent = message || 'Refreshing Command Center evidence...';
+    text.textContent = message || 'Refreshing...';
     return;
   }
   if (status === 'error') {
@@ -236,6 +265,51 @@ function hasValue(value) {
   return String(value ?? '').trim() !== '';
 }
 
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function readPriorityState() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(PRIORITY_STATE_KEY) || '{}');
+    if (parsed?.date === todayKey() && parsed.handled && typeof parsed.handled === 'object') return parsed;
+  } catch (_) {
+    // Ignore malformed session storage and start a clean daily state.
+  }
+  return { date: todayKey(), handled: {} };
+}
+
+function writePriorityState(nextState) {
+  state.priorityState = nextState || { date: todayKey(), handled: {} };
+  sessionStorage.setItem(PRIORITY_STATE_KEY, JSON.stringify(state.priorityState));
+}
+
+function ensurePriorityState() {
+  if (!state.priorityState || state.priorityState.date !== todayKey()) writePriorityState(readPriorityState());
+  return state.priorityState;
+}
+
+function priorityId(row = {}) {
+  return String(row.id || normalize(row.title || '') || 'priority').trim();
+}
+
+function priorityHandledRecord(row = {}) {
+  const store = ensurePriorityState();
+  return store.handled?.[priorityId(row)] || null;
+}
+
+function isPriorityHandled(row = {}) {
+  return Boolean(priorityHandledRecord(row));
+}
+
+function isPriorityIssue(row = {}) {
+  return numberValue(row.count) > 0 || ['critical', 'urgent', 'high', 'medium', 'review'].includes(normalize(row.severity));
+}
+
+function readablePriorityReason(reason = '') {
+  return toTitle(String(reason || '').replace(/_/g, ' '));
+}
+
 function getWarrantyEnd(asset = {}) {
   const specs = readSpecs(asset);
   return asset.warrantyEndDate || specs.warrantyEndDate || specs.warrantyEnd || null;
@@ -244,6 +318,11 @@ function getWarrantyEnd(asset = {}) {
 function getPurchaseDate(asset = {}) {
   const specs = readSpecs(asset);
   return asset.purchaseDate || specs.purchaseDate || specs.acquiredAt || null;
+}
+
+function getPurchaseCost(asset = {}) {
+  const specs = readSpecs(asset);
+  return asset.purchaseCost ?? specs.purchaseCost ?? specs.purchase_cost ?? specs.replacementCost ?? null;
 }
 
 function getTelemetryInfo(asset = {}) {
@@ -292,6 +371,15 @@ function isNearEol(asset = {}) {
   return days <= 180;
 }
 
+function isLowStockAsset(asset = {}) {
+  const specs = readSpecs(asset);
+  const category = assetCategory(asset);
+  if (!['spare_stock', 'spare_part', 'consumable', 'accessory', 'component'].includes(category)) return false;
+  const quantity = Number(asset.quantityAvailable ?? asset.quantity ?? specs.quantityAvailable ?? specs.quantity ?? specs.availableQuantity);
+  const threshold = Number(asset.reorderPoint ?? asset.minimumStockLevel ?? specs.reorderPoint ?? specs.minimumStockLevel ?? specs.minStock);
+  return Number.isFinite(quantity) && Number.isFinite(threshold) && threshold > 0 && quantity <= threshold;
+}
+
 function missingDataForAsset(asset = {}) {
   const missing = [];
   if (!hasValue(asset.serialNumber) && !hasValue(readSpecs(asset).serialNumber)) missing.push('serial');
@@ -299,6 +387,7 @@ function missingDataForAsset(asset = {}) {
   if (!hasValue(asset.location) || displayLocation(asset.location) === 'Unassigned') missing.push('location');
   if (!hasValue(getPurchaseDate(asset))) missing.push('purchase date');
   if (!hasValue(getWarrantyEnd(asset))) missing.push('warranty');
+  if (!hasValue(getPurchaseCost(asset))) missing.push('purchase cost');
   return missing;
 }
 
@@ -311,7 +400,7 @@ function severityClass(severity) {
   return 'is-info';
 }
 
-function sourceLabel(row = {}) {
+function technicalSourceLabel(row = {}) {
   const raw = row.sourceLabel || row.source || row.aiSource || row.recommendationSource || '';
   const key = normalize(raw);
   if (key.includes('gemma')) return 'Gemma';
@@ -320,6 +409,18 @@ function sourceLabel(row = {}) {
   if ((key.includes('ai') || key.includes('plus')) && key.includes('deterministic')) return 'Hybrid';
   if (key.includes('deterministic') || key.includes('rule')) return 'Deterministic';
   return raw ? toTitle(raw) : 'Deterministic';
+}
+
+function sourceLabel(row = {}) {
+  const technical = technicalSourceLabel(row);
+  if (technical === 'Gemma') return 'AI insight';
+  if (technical === 'Hybrid') return 'Estimated';
+  return 'System data';
+}
+
+function sourceInfoIcon(row = {}) {
+  const technical = technicalSourceLabel(row);
+  return `<span class="ops-source-info" title="Internal source: ${escapeHtml(technical)}" aria-label="Internal source: ${escapeHtml(technical)}"><i class="bi bi-info-circle"></i></span>`;
 }
 
 async function fetchAllAssets() {
@@ -357,6 +458,8 @@ function buildSummary() {
   const board = state.board || {};
   const audit = state.audit || {};
   const executive = state.executive || {};
+  const smartAlerts = state.smartAlerts || {};
+  const alertRows = asArray(smartAlerts.alerts);
   const requests = asArray(board.requests);
   const recommendations = asArray(board.aiRecommendations);
   const priorities = board.priorities || {};
@@ -384,7 +487,7 @@ function buildSummary() {
   }).length;
   const financeTotals = analytics.finance?.totals || {};
   const budgetWarnings = numberValue(financeTotals.available) < 0 ? 1 : 0;
-  const totalQualityChecks = Math.max(1, assets.length * 5);
+  const totalQualityChecks = Math.max(1, assets.length * 6);
   const missingQualityChecks = missingDataRows.reduce((sum, row) => sum + row.missing.length, 0) + duplicateTags + unlinkedRelated;
   const dataQualityScore = Math.max(0, Math.min(100, Math.round(100 - ((missingQualityChecks / totalQualityChecks) * 100))));
 
@@ -409,6 +512,9 @@ function buildSummary() {
     priorities,
     analytics,
     auditRows: asArray(audit.assetsNeedingAttention),
+    smartAlerts: alertRows,
+    openSmartAlertCount: alertRows.filter((row) => normalize(row.status || 'open') === 'open').length,
+    smartAlertRules: asArray(state.alertRules?.rules),
     missingDataRows,
     staleTelemetryRows,
     nearEolRows,
@@ -452,17 +558,18 @@ function emptyState(title, copy) {
 function evidencePanel({ title = 'Evidence used', source = 'Deterministic', confidence = 'Medium', evidence = [], missingData = [], action = '' } = {}) {
   const evidenceRows = asArray(evidence).filter(Boolean);
   const missingRows = asArray(missingData).filter(Boolean);
+  const publicSource = sourceLabel({ source });
   return `
     <details class="icc-evidence-panel">
       <summary>
         <span>${escapeHtml(title)}</span>
-        <span class="ops-attention-pill is-info">${escapeHtml(source)}</span>
+        <span class="ops-attention-pill is-info">${escapeHtml(publicSource)}${sourceInfoIcon({ source })}</span>
       </summary>
       <div class="icc-evidence-body">
         <div class="icc-evidence-grid">
           <div>
             <strong>Source</strong>
-            <span>${escapeHtml(source)}</span>
+            <span>${escapeHtml(publicSource)}${sourceInfoIcon({ source })}</span>
           </div>
           <div>
             <strong>Evidence confidence</strong>
@@ -510,6 +617,7 @@ function renderSkeletons() {
 function buildPriorityEvidence(summary) {
   const rows = [
     {
+      id: 'low-stock',
       title: 'Low stock items',
       count: summary.lowStockCount,
       severity: summary.lowStockCount ? 'High' : 'Healthy',
@@ -521,6 +629,7 @@ function buildPriorityEvidence(summary) {
       icon: 'bi-box-seam',
     },
     {
+      id: 'eol-risk',
       title: 'EOL / high-risk assets',
       count: summary.eolSoonCount + summary.highRiskCount,
       severity: summary.eolSoonCount + summary.highRiskCount ? 'High' : 'Healthy',
@@ -532,6 +641,7 @@ function buildPriorityEvidence(summary) {
       icon: 'bi-shield-exclamation',
     },
     {
+      id: 'pending-approvals',
       title: 'Pending approvals',
       count: summary.pendingApprovals,
       severity: summary.pendingApprovals ? 'Medium' : 'Healthy',
@@ -542,6 +652,7 @@ function buildPriorityEvidence(summary) {
       icon: 'bi-person-check',
     },
     {
+      id: 'open-orders',
       title: 'Open POs / in transit',
       count: summary.openPurchaseOrders + summary.orderedOrTransit,
       severity: summary.openPurchaseOrders + summary.orderedOrTransit ? 'Medium' : 'Info',
@@ -552,17 +663,19 @@ function buildPriorityEvidence(summary) {
       icon: 'bi-truck',
     },
     {
+      id: 'missing-data',
       title: 'Missing data',
       count: summary.missingDataCount,
       severity: summary.missingDataCount ? 'Medium' : 'Healthy',
       explanation: 'Records missing serial, department, location, purchase date, or warranty.',
       evidence: [`${summary.missingDataCount} asset record(s) missing key fields`, `Data quality score ${summary.dataQualityScore}%`],
       missingData: ['Serials', 'department/location', 'purchase date', 'warranty when absent'],
-      action: 'Ask AI',
-      actionAttr: 'data-icc-ai-prompt="Show missing data and suggest fixes."',
+      action: 'Fix now',
+      actionAttr: 'data-icc-quality-fix="all"',
       icon: 'bi-database-exclamation',
     },
     {
+      id: 'stale-telemetry',
       title: 'Stale telemetry',
       count: summary.staleTelemetryCount,
       severity: summary.staleTelemetryCount ? 'Medium' : 'Healthy',
@@ -574,6 +687,7 @@ function buildPriorityEvidence(summary) {
       icon: 'bi-wifi-off',
     },
     {
+      id: 'ai-recommendations',
       title: 'Unreviewed AI recommendations',
       count: summary.unreviewedRecommendationCount,
       severity: summary.unreviewedRecommendationCount ? 'Medium' : 'Healthy',
@@ -587,7 +701,50 @@ function buildPriorityEvidence(summary) {
   return rows;
 }
 
-function priorityCard({ title, count, severity, explanation, actionAttr, action, evidence = [], missingData = [], icon = 'bi-exclamation-circle' }) {
+function priorityControls(row = {}) {
+  if (!isPriorityIssue(row)) return '';
+  const id = priorityId(row);
+  return `
+    <div class="icc-priority-controls" aria-label="Priority handling controls">
+      <button type="button" class="btn btn-sm btn-outline-success" data-icc-priority-done="${escapeHtml(id)}">
+        <i class="bi bi-check2-circle me-1"></i>Done
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-priority-dismiss="${escapeHtml(id)}">
+        <i class="bi bi-x-circle me-1"></i>Dismiss
+      </button>
+    </div>
+  `;
+}
+
+function handledPriorityList(rows = []) {
+  const handled = rows.filter((row) => isPriorityHandled(row));
+  if (!handled.length) return '';
+  return `
+    <details class="icc-handled-priorities">
+      <summary>
+        <span>Handled today</span>
+        <strong>${escapeHtml(String(handled.length))}</strong>
+      </summary>
+      <div class="icc-handled-list">
+        ${handled.map((row) => {
+          const record = priorityHandledRecord(row) || {};
+          return `
+            <article class="icc-handled-item">
+              <div>
+                <strong>${escapeHtml(row.title)}</strong>
+                <span>${escapeHtml(readablePriorityReason(record.reason || record.status || 'handled'))}${record.note ? ` - ${escapeHtml(record.note)}` : ''}</span>
+              </div>
+              <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-priority-restore="${escapeHtml(priorityId(row))}">Restore</button>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function priorityCard({ id = '', title, count, severity, explanation, actionAttr, action, evidence = [], missingData = [], icon = 'bi-exclamation-circle' }) {
+  const row = { id, title, count, severity, explanation, actionAttr, action, evidence, missingData, icon };
   return `
     <article class="icc-priority-card ${severityClass(severity)}">
       <div class="icc-card-icon"><i class="bi ${escapeHtml(icon)}"></i></div>
@@ -605,6 +762,7 @@ function priorityCard({ title, count, severity, explanation, actionAttr, action,
         action: explanation,
       })}
       ${actionAttr ? `<button type="button" class="btn btn-sm btn-outline-primary" ${actionAttr}>${escapeHtml(action || 'Open')}</button>` : ''}
+      ${priorityControls(row)}
     </article>
   `;
 }
@@ -621,7 +779,11 @@ function kpiCard(label, value, sub, severity = 'info', help = '') {
 
 function renderPriorities(summary) {
   const rows = buildPriorityEvidence(summary);
-  document.getElementById('iccPrioritiesGrid').innerHTML = rows.map(priorityCard).join('');
+  const activeRows = rows.filter((row) => !isPriorityHandled(row));
+  document.getElementById('iccPrioritiesGrid').innerHTML = `
+    ${activeRows.map(priorityCard).join('')}
+    ${handledPriorityList(rows)}
+  `;
 }
 
 function missionCard(row = {}) {
@@ -639,6 +801,7 @@ function missionCard(row = {}) {
       <div class="icc-mission-action">
         <strong>${escapeHtml(formatCount(row.count))}</strong>
         ${row.actionAttr ? `<button type="button" class="btn btn-sm btn-outline-primary" ${row.actionAttr}>${escapeHtml(row.action || 'Open')}</button>` : ''}
+        ${priorityControls(row)}
       </div>
     </article>
   `;
@@ -648,6 +811,7 @@ function renderTodaysMission(summary) {
   const el = document.getElementById('iccTodaysMission');
   if (!el) return;
   const rows = buildPriorityEvidence(summary)
+    .filter((row) => !isPriorityHandled(row))
     .filter((row) => numberValue(row.count) > 0 || ['high', 'medium'].includes(normalize(row.severity)))
     .sort((a, b) => {
       const weight = { high: 40, critical: 40, medium: 25, review: 20, info: 10, healthy: 0 };
@@ -732,9 +896,9 @@ function renderDailyBriefingCard({ text, packet, source = 'Deterministic', fallb
   const sourceEl = document.getElementById('iccDailyBriefingSource');
   if (!el) return;
   const topPriorities = asArray(packet?.topPriorities).slice(0, 5);
-  const sourceText = llmUsed ? 'Gemma-generated' : source;
+  const sourceText = sourceLabel({ source: llmUsed ? 'Gemma' : source, llmUsed });
   if (sourceEl) {
-    sourceEl.textContent = sourceText;
+    sourceEl.innerHTML = `${escapeHtml(sourceText)}${sourceInfoIcon({ source: llmUsed ? 'Gemma' : source, llmUsed })}`;
     sourceEl.className = `ops-attention-pill ${llmUsed ? 'is-healthy' : (source === 'Fallback' ? 'is-review' : 'is-info')}`;
   }
   el.innerHTML = `
@@ -742,7 +906,7 @@ function renderDailyBriefingCard({ text, packet, source = 'Deterministic', fallb
       <div class="icc-briefing-mark" aria-hidden="true"><i class="bi bi-stars"></i></div>
       <div>
         <div class="icc-briefing-kicker">Daily operations briefing</div>
-        <h3>${escapeHtml(llmUsed ? 'Gemma summarized today\'s inventory evidence' : 'Deterministic briefing from loaded evidence')}</h3>
+        <h3>${escapeHtml(llmUsed ? 'AI insight summarized today\'s inventory evidence' : 'System briefing from loaded evidence')}</h3>
       </div>
     </div>
     <p class="icc-briefing-copy">${escapeHtml(text || deterministicBriefingText(packet || {}))}</p>
@@ -783,7 +947,7 @@ function renderDailyBriefingLoading() {
   const el = document.getElementById('iccDailyBriefing');
   const sourceEl = document.getElementById('iccDailyBriefingSource');
   if (sourceEl) {
-    sourceEl.textContent = 'Gemma thinking';
+    sourceEl.textContent = 'Checking evidence';
     sourceEl.className = 'ops-attention-pill is-info';
   }
   if (el) {
@@ -791,7 +955,7 @@ function renderDailyBriefingLoading() {
       <div class="icc-briefing-thinking">
         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
         <div>
-          <strong>Gemma is preparing your briefing...</strong>
+          <strong>AI insight is preparing your briefing...</strong>
           <span>First local-model response can take a little longer. Facts are already gathered from Inventory and Procurement data.</span>
         </div>
       </div>
@@ -817,8 +981,8 @@ async function renderDailyBriefing(summary) {
     renderDailyBriefingCard({
       text: text || deterministicBriefingText(packet),
       packet,
-      source: result?.fallbackUsed ? 'Fallback' : (llmUsed ? 'Gemma-generated' : 'Deterministic'),
-      fallbackReason: result?.fallbackUsed ? `Fallback used: ${String(result?.fallbackReason || 'Gemma was unavailable for this request.').replace(/_/g, ' ')}` : '',
+      source: result?.fallbackUsed ? 'Fallback' : (llmUsed ? 'Gemma' : 'Deterministic'),
+      fallbackReason: result?.fallbackUsed ? `System data used: ${String(result?.fallbackReason || 'AI insight was unavailable for this request.').replace(/_/g, ' ')}` : '',
       llmUsed,
     });
   } catch (error) {
@@ -827,7 +991,7 @@ async function renderDailyBriefing(summary) {
       text: deterministicBriefingText(packet),
       packet,
       source: 'Fallback',
-      fallbackReason: `Fallback used: ${error.message || 'Inventory AI briefing endpoint was unavailable.'}`,
+      fallbackReason: `System data used: ${error.message || 'Inventory AI briefing endpoint was unavailable.'}`,
       llmUsed: false,
     });
   }
@@ -843,19 +1007,27 @@ function renderHealth(summary) {
     kpiCard('Audit issues', formatCount(summary.auditIssueCount), 'Missing, stale, or mismatch audit signals', summary.auditIssueCount ? 'high' : 'healthy'),
   ].join('');
 
-  const warrantyExpiring = state.assets.filter((asset) => {
+  const warrantyBuckets = { 30: 0, 60: 0, 90: 0 };
+  state.assets.forEach((asset) => {
     const end = getWarrantyEnd(asset);
-    if (!end) return false;
+    if (!end) return;
     const parsed = new Date(end);
-    if (Number.isNaN(parsed.getTime())) return false;
+    if (Number.isNaN(parsed.getTime())) return;
     const days = (parsed.getTime() - Date.now()) / 86400000;
-    return days >= 0 && days <= 90;
-  }).length;
+    if (days >= 0 && days <= 30) warrantyBuckets[30] += 1;
+    if (days >= 0 && days <= 60) warrantyBuckets[60] += 1;
+    if (days >= 0 && days <= 90) warrantyBuckets[90] += 1;
+  });
   const warrantySummary = document.getElementById('iccWarrantySummary');
   if (warrantySummary) {
-    warrantySummary.textContent = warrantyExpiring
-      ? `${warrantyExpiring} asset(s) have warranty dates expiring within 90 days. Contract workflow remains Phase 2 unless stored contract data exists.`
-      : 'Warranty coverage appears when asset fields are present. Contract renewal workflow is Phase 2 unless backed by stored contract data.';
+    warrantySummary.innerHTML = `
+      <span>Warranty expiry view from stored asset warranty dates. Contract renewal workflow remains Phase 2 unless stored contract data exists.</span>
+      <span class="icc-warranty-buckets" aria-label="Warranty expiry windows">
+        <strong>30d: ${escapeHtml(String(warrantyBuckets[30]))}</strong>
+        <strong>60d: ${escapeHtml(String(warrantyBuckets[60]))}</strong>
+        <strong>90d: ${escapeHtml(String(warrantyBuckets[90]))}</strong>
+      </span>
+    `;
   }
 }
 
@@ -970,6 +1142,13 @@ function alertItem(severity, reason, evidence, actionLabel, actionAttr) {
 
 function renderAttention(summary) {
   const alerts = [];
+  const durableAlerts = asArray(summary.smartAlerts).slice(0, 8).map((alert) => alertItem(
+      alert.severity || 'Medium',
+      alert.title || 'Smart alert',
+      `${alert.message || 'Generated by durable alert rule.'} Rule: ${alert.ruleKey || '-'}`,
+      alert.entityType === 'procurement_request' ? 'Open Procurement' : (alert.entityType === 'asset' ? 'Open Assets' : 'View'),
+      alert.entityType === 'procurement_request' ? 'data-icc-action="procurement"' : 'data-icc-action="assets"'
+  ));
   if (summary.eolSoonCount) alerts.push(alertItem('High', `${summary.eolSoonCount} asset(s) near EOL`, 'Lifecycle/warranty evidence', 'Open Asset Review', 'data-icc-ai-prompt="Which assets are near EOL?"'));
   if (summary.pendingApprovals) alerts.push(alertItem('Medium', `${summary.pendingApprovals} procurement approval(s) pending`, 'Procurement status counts', 'Open Procurement', 'data-icc-action="procurement"'));
   if (summary.lowStockCount) alerts.push(alertItem('High', `${summary.lowStockCount} item(s) below reorder point`, 'Spare stock / consumable forecast', 'Create Request', 'data-icc-action="procurement"'));
@@ -979,8 +1158,62 @@ function renderAttention(summary) {
   if (summary.budgetWarnings) alerts.push(alertItem('High', 'Budget availability is below zero', 'Finance foundation totals', 'Open Finance', 'data-icc-action="procurement"'));
   if (numberValue(summary.analytics?.fifo?.staleBatchCount)) alerts.push(alertItem('Medium', 'FIFO stale batch review needed', 'FIFO batch age evidence', 'Open Procurement', 'data-icc-action="procurement"'));
   if (numberValue(summary.analytics?.eoqMoq?.missingDataItems)) alerts.push(alertItem('Medium', 'EOQ/MOQ inputs missing', 'EOQ decision-support data quality', 'Open Procurement', 'data-icc-action="procurement"'));
-  document.getElementById('iccAttentionCenter').innerHTML = alerts.length
-    ? alerts.join('')
+  const rules = asArray(summary.smartAlertRules);
+  const ruleCards = rules.slice(0, 8).map((rule) => {
+    const enabled = Boolean(rule.enabled);
+    return `
+      <article class="icc-alert-rule-card ${enabled ? 'is-enabled' : 'is-disabled'}">
+        <div>
+          <span class="ops-attention-pill ${enabled ? 'is-healthy' : 'is-muted'}">${enabled ? 'Enabled' : 'Disabled'}</span>
+          <h3>${escapeHtml(rule.name || rule.ruleKey || 'Alert rule')}</h3>
+          <p>${escapeHtml(rule.description || rule.alertType || 'Configured alert rule')}</p>
+        </div>
+        <small>Threshold: ${escapeHtml(typeof rule.threshold === 'object' ? JSON.stringify(rule.threshold) : String(rule.threshold || '-'))}</small>
+      </article>
+    `;
+  }).join('');
+  const derivedPanel = alerts.length ? `
+    <div class="icc-alert-section">
+      <div class="icc-alert-section-head">
+        <strong>System-generated page signals</strong>
+        <span>Derived from loaded inventory/procurement evidence; not custom user rules.</span>
+      </div>
+      ${alerts.join('')}
+    </div>
+  ` : '';
+  const durablePanel = durableAlerts.length ? `
+    <div class="icc-alert-section">
+      <div class="icc-alert-section-head">
+        <strong>Durable alert history</strong>
+        <span>${escapeHtml(String(summary.openSmartAlertCount || 0))} open event(s) generated by alert rules.</span>
+      </div>
+      ${durableAlerts.join('')}
+    </div>
+  ` : '';
+  const rulesPanel = ruleCards ? `
+    <div class="icc-alert-section">
+      <div class="icc-alert-section-head">
+        <strong>User-configured rules</strong>
+        <span>${escapeHtml(String(rules.length))} rule(s). Rule editing stays controlled by admin routes.</span>
+      </div>
+      <div class="icc-alert-rule-grid">${ruleCards}</div>
+    </div>
+  ` : '';
+  document.getElementById('iccAttentionCenter').innerHTML = durableAlerts.length || alerts.length || ruleCards
+    ? `
+      <div class="icc-alert-toolbar">
+        <div>
+          <strong>Alerts and rules</strong>
+          <span>System events, page-derived signals, and configured rule definitions are shown separately.</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-icc-action="evaluate-alerts">
+          <i class="bi bi-bell me-1"></i>Evaluate Rules
+        </button>
+      </div>
+      ${durablePanel}
+      ${derivedPanel}
+      ${rulesPanel}
+    `
     : emptyState('No critical attention items', 'Inventory and procurement have no high-priority alerts from the currently loaded data.');
 }
 
@@ -997,28 +1230,55 @@ function renderRiskHeatmap(summary) {
     const department = displayDepartment(asset.department);
     const key = `${location} / ${department}`;
     if (!groups.has(key)) {
-      groups.set(key, { label: key, total: 0, eol: 0, risk: 0, missing: 0, audit: 0, stale: 0 });
+      groups.set(key, { label: key, total: 0, eol: 0, risk: 0, missing: 0, audit: 0, stale: 0, lowStock: 0, telemetryScoped: 0 });
     }
     const group = groups.get(key);
     const id = getAssetId(asset);
+    const telemetry = getTelemetryInfo(asset);
     group.total += 1;
     if (isNearEol(asset)) group.eol += 1;
     if (riskAssetIds.has(id)) group.risk += 1;
     if (missingDataForAsset(asset).length) group.missing += 1;
     if (auditAssetIds.has(id)) group.audit += 1;
-    if (getTelemetryInfo(asset).stale) group.stale += 1;
+    if (isLowStockAsset(asset)) group.lowStock += 1;
+    if (telemetry.configured) group.telemetryScoped += 1;
+    if (telemetry.stale) group.stale += 1;
   });
 
   const rows = Array.from(groups.values())
-    .map((group) => ({ ...group, score: group.eol * 3 + group.risk * 4 + group.audit * 3 + group.stale * 2 + group.missing }))
+    .map((group) => {
+      const total = Math.max(1, group.total);
+      const missingRate = group.missing / total;
+      const eolRate = Math.max(group.eol, group.risk) / total;
+      const lowStockRate = group.lowStock / total;
+      const staleTelemetryRate = group.telemetryScoped ? group.stale / group.telemetryScoped : 0;
+      const auditRate = group.audit / total;
+      const score = Math.max(0, Math.min(100, Math.round(
+        (missingRate * 25)
+        + (eolRate * 25)
+        + (lowStockRate * 20)
+        + (staleTelemetryRate * 15)
+        + (auditRate * 15)
+      )));
+      const missingInputs = [];
+      if (!group.telemetryScoped) missingInputs.push('telemetry scope');
+      if (!group.lowStock) missingInputs.push('low-stock thresholds');
+      return {
+        ...group,
+        score,
+        rates: { missingRate, eolRate, lowStockRate, staleTelemetryRate, auditRate },
+        missingInputs,
+      };
+    })
     .sort((a, b) => b.score - a.score || b.total - a.total)
     .slice(0, 8);
 
   document.getElementById('iccRiskHeatmap').innerHTML = rows.length ? rows.map((row) => {
-    const severity = row.score >= 8 ? 'high' : (row.score >= 3 ? 'medium' : 'healthy');
+    const severity = row.score >= 70 ? 'high' : (row.score >= 35 ? 'medium' : 'healthy');
     const reasons = [
       row.eol ? `${row.eol} EOL signal(s)` : '',
       row.risk ? `${row.risk} high-risk asset(s)` : '',
+      row.lowStock ? `${row.lowStock} low-stock item(s)` : '',
       row.missing ? `${row.missing} missing-data record(s)` : '',
       row.audit ? `${row.audit} audit issue(s)` : '',
       row.stale ? `${row.stale} stale telemetry signal(s)` : '',
@@ -1032,11 +1292,19 @@ function renderRiskHeatmap(summary) {
           </div>
           <div class="icc-risk-radar" aria-hidden="true"><span></span></div>
         </div>
-        <div class="icc-risk-score">${escapeHtml(String(row.score))}</div>
+        <div class="icc-risk-score">${escapeHtml(String(row.score))}<span>/100</span></div>
         <div class="icc-risk-level">Risk level: ${escapeHtml(toTitle(severity))}</div>
+        <div class="icc-risk-reasons">
+          <span>Missing ${escapeHtml(String(Math.round(row.rates.missingRate * 100)))}%</span>
+          <span>EOL ${escapeHtml(String(Math.round(row.rates.eolRate * 100)))}%</span>
+          <span>Low stock ${escapeHtml(String(Math.round(row.rates.lowStockRate * 100)))}%</span>
+          <span>Telemetry ${escapeHtml(String(Math.round(row.rates.staleTelemetryRate * 100)))}%</span>
+          <span>Audit ${escapeHtml(String(Math.round(row.rates.auditRate * 100)))}%</span>
+        </div>
         <div class="icc-risk-reasons">
           <span>EOL ${escapeHtml(String(row.eol))}</span>
           <span>Risk ${escapeHtml(String(row.risk))}</span>
+          <span>Low stock ${escapeHtml(String(row.lowStock))}</span>
           <span>Missing ${escapeHtml(String(row.missing))}</span>
           <span>Audit ${escapeHtml(String(row.audit))}</span>
           <span>Telemetry ${escapeHtml(String(row.stale))}</span>
@@ -1044,9 +1312,15 @@ function renderRiskHeatmap(summary) {
         ${evidencePanel({
           title: 'Risk evidence',
           source: 'Deterministic risk radar',
-          confidence: row.missing || row.stale ? 'Medium' : 'High',
-          evidence: reasons.length ? reasons : ['No major risk signals in this building/department group'],
-          missingData: row.missing ? ['Complete missing asset fields to improve radar confidence'] : [],
+          confidence: row.missingInputs.length || row.missing || row.stale ? 'Medium' : 'High',
+          evidence: [
+            'Formula: missing data 25%, EOL/high risk 25%, low stock 20%, stale telemetry 15%, open audit issues 15%.',
+            ...(reasons.length ? reasons : ['No major risk signals in this building/department group']),
+          ],
+          missingData: [
+            ...(row.missing ? ['Complete missing asset fields to improve radar confidence'] : []),
+            ...row.missingInputs,
+          ],
           action: 'Use Asset Map or Inventory filters to inspect the affected location before procurement action.',
         })}
         <div class="icc-chip-row mt-2">
@@ -1058,11 +1332,12 @@ function renderRiskHeatmap(summary) {
   }).join('') : emptyState('No risk heatmap data', 'Load assets with building and department data to build risk cards.');
 }
 
-function qualityRow(label, count) {
+function qualityRow(label, count, fixField = '') {
   return `
     <div class="icc-quality-row">
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(formatCount(count))}</strong>
+      ${count && fixField ? `<button type="button" class="btn btn-sm btn-outline-primary" data-icc-quality-fix="${escapeHtml(fixField)}">Fix now</button>` : ''}
     </div>
   `;
 }
@@ -1073,6 +1348,7 @@ function renderDataQuality(summary) {
   const missingLocations = state.assets.filter((asset) => missingDataForAsset(asset).includes('location')).length;
   const missingPurchaseDates = state.assets.filter((asset) => missingDataForAsset(asset).includes('purchase date')).length;
   const missingWarranty = state.assets.filter((asset) => missingDataForAsset(asset).includes('warranty')).length;
+  const missingPurchaseCost = state.assets.filter((asset) => missingDataForAsset(asset).includes('purchase cost')).length;
   document.getElementById('iccDataQuality').innerHTML = `
     <div class="icc-score-card ${summary.dataQualityScore < 70 ? 'is-review' : 'is-healthy'}">
       <div class="icc-score-ring" aria-label="Data quality score ${escapeHtml(String(summary.dataQualityScore))} percent">
@@ -1085,21 +1361,276 @@ function renderDataQuality(summary) {
       </div>
     </div>
     <div class="icc-quality-list">
-      ${qualityRow('Missing serials', missingSerials)}
-      ${qualityRow('Missing departments', missingDepartments)}
-      ${qualityRow('Missing locations', missingLocations)}
-      ${qualityRow('Missing purchase dates', missingPurchaseDates)}
-      ${qualityRow('Missing warranty', missingWarranty)}
+      ${qualityRow('Missing serials', missingSerials, 'serial')}
+      ${qualityRow('Missing departments', missingDepartments, 'department')}
+      ${qualityRow('Missing locations', missingLocations, 'location')}
+      ${qualityRow('Missing purchase dates', missingPurchaseDates, 'purchaseDate')}
+      ${qualityRow('Missing warranty', missingWarranty, 'warranty')}
+      ${qualityRow('Missing purchase cost', missingPurchaseCost, 'purchaseCost')}
       ${qualityRow('Duplicate tags/IDs', summary.duplicateTags)}
       ${qualityRow('Unlinked related items', summary.unlinkedRelated)}
     </div>
     <div class="icc-chip-row mt-3">
       <button type="button" class="btn btn-sm btn-outline-primary" data-icc-action="assets">Open Assets</button>
-      <button type="button" class="btn btn-sm btn-outline-primary" data-icc-ai-prompt="Show missing inventory data and list the highest priority cleanup actions.">View Missing Data</button>
+      <button type="button" class="btn btn-sm btn-outline-primary" data-icc-quality-fix="all">View Missing Data</button>
       <button type="button" class="btn btn-sm btn-outline-primary" data-icc-ai-prompt="Show missing data and suggest fixes.">Ask AI to suggest fixes</button>
       <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-action="import">Open import/match tools</button>
     </div>
   `;
+}
+
+function qualityFieldKeys(field = 'all') {
+  const key = String(field || 'all').trim();
+  if (key === 'all') return Object.keys(QUALITY_FIELD_CONFIG);
+  return QUALITY_FIELD_CONFIG[key] ? [key] : [];
+}
+
+function assetQualityFieldValue(asset = {}, fieldKey = '') {
+  const specs = readSpecs(asset);
+  if (fieldKey === 'serial') return asset.serialNumber || specs.serialNumber || '';
+  if (fieldKey === 'department') return displayDepartment(asset.department);
+  if (fieldKey === 'location') return displayLocation(asset.location || specs.mapLocationHint);
+  if (fieldKey === 'purchaseDate') return getPurchaseDate(asset) ? String(getPurchaseDate(asset)).slice(0, 10) : '';
+  if (fieldKey === 'warranty') return getWarrantyEnd(asset) ? String(getWarrantyEnd(asset)).slice(0, 10) : '';
+  if (fieldKey === 'purchaseCost') return hasValue(getPurchaseCost(asset)) ? String(getPurchaseCost(asset)) : '';
+  return '';
+}
+
+function assetsForQualityFix(field = 'all') {
+  const keys = qualityFieldKeys(field);
+  return state.assets
+    .map((asset) => ({ asset, missing: missingDataForAsset(asset) }))
+    .filter((row) => row.missing.length && keys.some((key) => row.missing.includes(QUALITY_FIELD_CONFIG[key]?.missingKey)))
+    .slice(0, 40);
+}
+
+function qualityInputHtml(asset = {}, fieldKey = '') {
+  const config = QUALITY_FIELD_CONFIG[fieldKey];
+  if (!config) return '';
+  const value = assetQualityFieldValue(asset, fieldKey);
+  const inputClass = config.inputType === 'number' ? 'form-control form-control-sm icc-quality-input is-numeric' : 'form-control form-control-sm icc-quality-input';
+  return `
+    <label class="icc-quality-input-label">
+      <span>${escapeHtml(config.label)}</span>
+      <input
+        class="${inputClass}"
+        type="${escapeHtml(config.inputType)}"
+        data-quality-field="${escapeHtml(fieldKey)}"
+        data-original-value="${escapeHtml(value)}"
+        value="${escapeHtml(value)}"
+        ${config.inputType === 'number' ? 'min="0" step="0.01"' : ''}
+      >
+    </label>
+  `;
+}
+
+function showIccToast(message, type = 'info') {
+  const fn = type === 'success' ? UI.success : (type === 'warning' ? UI.warning : (type === 'error' ? UI.error : UI.info));
+  if (typeof fn === 'function') fn(message);
+}
+
+function openPriorityDismissModal(row = {}) {
+  const modalId = 'iccPriorityDismissModal';
+  const title = row.title || 'priority';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content icc-action-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">Dismiss priority</h5>
+                <div class="modal-subtitle">This only marks the Command Center card as handled for your current session today.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close dismiss priority modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="icc-action-summary" id="${modalId}Summary"></div>
+              <div class="mb-3">
+                <label class="form-label" for="${modalId}Reason">Reason</label>
+                <select class="form-select" id="${modalId}Reason">
+                  ${PRIORITY_REASONS.map((reason) => `<option value="${escapeHtml(reason)}">${escapeHtml(readablePriorityReason(reason))}</option>`).join('')}
+                </select>
+                <div class="form-text">High/critical priorities require a clear reason before they leave the active list.</div>
+              </div>
+              <div>
+                <label class="form-label" for="${modalId}Note">Optional note</label>
+                <textarea class="form-control" id="${modalId}Note" rows="2" placeholder="Add a short note for your own session..."></textarea>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-primary" id="${modalId}SaveBtn">Dismiss for today</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+  }
+  document.getElementById(`${modalId}Summary`).innerHTML = `
+    <strong>${escapeHtml(title)}</strong>
+    <span>${escapeHtml(row.explanation || 'Review priority evidence before dismissing.')}</span>
+  `;
+  const reasonEl = document.getElementById(`${modalId}Reason`);
+  const noteEl = document.getElementById(`${modalId}Note`);
+  if (reasonEl) reasonEl.value = 'fixed';
+  if (noteEl) noteEl.value = '';
+  const saveBtn = document.getElementById(`${modalId}SaveBtn`);
+  saveBtn.onclick = () => {
+    const reason = String(reasonEl?.value || '').trim();
+    const store = ensurePriorityState();
+    store.handled[priorityId(row)] = {
+      status: 'dismissed',
+      reason,
+      note: String(noteEl?.value || '').trim(),
+      handledAt: new Date().toISOString(),
+    };
+    writePriorityState(store);
+    bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+    renderAll();
+    showIccToast('Priority dismissed for today.', 'success');
+  };
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+function markPriorityDone(row = {}) {
+  const store = ensurePriorityState();
+  store.handled[priorityId(row)] = {
+    status: 'done',
+    reason: 'fixed',
+    note: '',
+    handledAt: new Date().toISOString(),
+  };
+  writePriorityState(store);
+  renderAll();
+  showIccToast('Priority marked handled for today.', 'success');
+}
+
+function restorePriority(id = '') {
+  const store = ensurePriorityState();
+  delete store.handled[String(id || '')];
+  writePriorityState(store);
+  renderAll();
+}
+
+function openDataQualityFixModal(field = 'all') {
+  const rows = assetsForQualityFix(field);
+  const keys = qualityFieldKeys(field);
+  const modalId = 'iccDataQualityFixModal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content icc-action-modal icc-quality-fix-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">Fix inventory data quality</h5>
+                <div class="modal-subtitle">Edit missing CMDB fields. Saving writes through the normal asset details API and records history.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close data quality fix modal"></button>
+            </div>
+            <div class="modal-body" id="${modalId}Body"></div>
+            <div class="modal-footer">
+              <span class="icc-quality-save-status" id="${modalId}Status" aria-live="polite"></span>
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button type="button" class="btn btn-primary" id="${modalId}SaveBtn">Save changed rows</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+  }
+  const body = document.getElementById(`${modalId}Body`);
+  const title = field === 'all' ? 'Missing data' : QUALITY_FIELD_CONFIG[field]?.label || 'Missing data';
+  body.innerHTML = rows.length ? `
+    <div class="icc-quality-fix-intro">
+      <span class="ops-attention-pill is-info">${escapeHtml(title)}</span>
+      <p>Showing up to 40 affected assets. Leave fields unchanged if you are not ready to update them.</p>
+    </div>
+    <div class="icc-quality-fix-table" role="table" aria-label="Editable missing inventory data">
+      ${rows.map(({ asset, missing }) => `
+        <article class="icc-quality-fix-row" data-quality-asset-id="${escapeHtml(getAssetId(asset))}">
+          <div class="icc-quality-asset">
+            <strong>${escapeHtml(assetName(asset))}</strong>
+            <span>${escapeHtml(getAssetId(asset) || asset.assetTag || '-')}</span>
+            <small>Missing: ${escapeHtml(missing.join(', '))}</small>
+          </div>
+          <div class="icc-quality-fields">
+            ${keys.map((key) => qualityInputHtml(asset, key)).join('')}
+          </div>
+        </article>
+      `).join('')}
+    </div>
+  ` : emptyState('No missing fields in this view', 'The selected data quality category has no matching assets in the loaded snapshot.');
+  const saveBtn = document.getElementById(`${modalId}SaveBtn`);
+  const statusEl = document.getElementById(`${modalId}Status`);
+  saveBtn.disabled = !rows.length;
+  saveBtn.onclick = async () => {
+    const updates = [];
+    const errors = [];
+    Array.from(body.querySelectorAll('[data-quality-asset-id]')).forEach((rowEl) => {
+      const assetId = String(rowEl.getAttribute('data-quality-asset-id') || '').trim();
+      const payload = {};
+      Array.from(rowEl.querySelectorAll('[data-quality-field]')).forEach((input) => {
+        const fieldKey = String(input.getAttribute('data-quality-field') || '').trim();
+        const config = QUALITY_FIELD_CONFIG[fieldKey];
+        if (!config) return;
+        const original = String(input.getAttribute('data-original-value') || '').trim();
+        const value = String(input.value || '').trim();
+        input.classList.remove('is-invalid');
+        if (!value || value === original) return;
+        if (config.inputType === 'date' && Number.isNaN(new Date(value).getTime())) {
+          input.classList.add('is-invalid');
+          errors.push(`${assetId}: ${config.label} is not a valid date.`);
+          return;
+        }
+        if (config.inputType === 'number') {
+          const numeric = Number(value);
+          if (!Number.isFinite(numeric) || numeric < 0) {
+            input.classList.add('is-invalid');
+            errors.push(`${assetId}: ${config.label} must be a positive number.`);
+            return;
+          }
+          payload[config.assetField] = numeric;
+        } else {
+          payload[config.assetField] = value;
+        }
+      });
+      if (assetId && Object.keys(payload).length) {
+        payload.admin = AuthService.getCurrentUser() || {};
+        updates.push({ assetId, payload });
+      }
+    });
+    if (errors.length) {
+      if (statusEl) statusEl.textContent = errors[0];
+      showIccToast(errors[0], 'warning');
+      return;
+    }
+    if (!updates.length) {
+      if (statusEl) statusEl.textContent = 'No changed rows to save.';
+      showIccToast('No changed rows to save.', 'warning');
+      return;
+    }
+    saveBtn.disabled = true;
+    if (statusEl) statusEl.textContent = `Saving ${updates.length} row(s)...`;
+    try {
+      await Promise.all(updates.map(({ assetId, payload }) => sendJson(`/assets/${encodeURIComponent(assetId)}/details`, payload, 'PATCH')));
+      if (statusEl) statusEl.textContent = `Saved ${updates.length} row(s). Refreshing evidence...`;
+      showIccToast(`Saved ${updates.length} data quality update(s).`, 'success');
+      bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+      await loadCommandCenter({ background: true });
+    } catch (error) {
+      saveBtn.disabled = false;
+      if (statusEl) statusEl.textContent = error.message || 'Save failed.';
+      showIccToast(error.message || 'Failed to save data quality updates.', 'error');
+    }
+  };
+  if (statusEl) statusEl.textContent = '';
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
 }
 
 function renderActivity(summary) {
@@ -1130,6 +1661,166 @@ function renderActivity(summary) {
       </article>
     `).join('')
     : emptyState('No recent activity endpoint yet', 'Recent asset/procurement events will appear when history data is available. Phase 2 can add a dedicated activity feed endpoint.');
+}
+
+function eolQuarterLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown quarter';
+  const quarter = Math.floor(date.getMonth() / 3) + 1;
+  return `Q${quarter} ${date.getFullYear()}`;
+}
+
+function eolAssetForRow(row = {}) {
+  const rowId = String(row.assetId || row.customId || '').trim();
+  return state.assets.find((asset) => getAssetId(asset) === rowId) || {};
+}
+
+function eolRowField(row = {}, field = '') {
+  const asset = eolAssetForRow(row);
+  if (field === 'department') return displayDepartment(row.department || asset.department || 'Unassigned');
+  if (field === 'building') return displayLocation(row.location || row.building || asset.location || 'Unassigned');
+  if (field === 'category') return toTitle(row.category || asset.category || 'asset');
+  return '';
+}
+
+function eolFilterOptions(rows = [], field = '') {
+  return Array.from(new Set(rows.map((row) => eolRowField(row, field)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function renderEolFilterSelect(id, label, field, rows) {
+  const value = state.eolBudgetFilters[field] || 'all';
+  const options = eolFilterOptions(rows, field);
+  return `
+    <label class="icc-eol-filter">
+      <span>${escapeHtml(label)}</span>
+      <select class="form-select form-select-sm" data-icc-eol-filter="${escapeHtml(field)}" id="${escapeHtml(id)}">
+        <option value="all">All ${escapeHtml(label)}</option>
+        ${options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+      </select>
+    </label>
+  `;
+}
+
+function rowMatchesEolFilters(row = {}) {
+  const filters = state.eolBudgetFilters || {};
+  return ['department', 'building', 'category'].every((field) => {
+    const value = filters[field] || 'all';
+    return value === 'all' || eolRowField(row, field) === value;
+  });
+}
+
+function renderEolDrilldown(groups = []) {
+  const selected = state.eolBudgetSelectedQuarter || groups[0]?.label || '';
+  const group = groups.find((entry) => entry.label === selected);
+  if (!group) return '';
+  const rows = asArray(group.assets).slice(0, 24);
+  return `
+    <aside class="icc-eol-drilldown" aria-label="Affected assets for ${escapeHtml(group.label)}">
+      <div class="icc-eol-drilldown-head">
+        <div>
+          <strong>${escapeHtml(group.label)} affected assets</strong>
+          <span>${escapeHtml(String(group.count))} asset(s), ${escapeHtml(group.missingCost ? `${group.missingCost} missing cost` : 'cost evidence available where stored')}</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-icc-action="procurement">Open Procurement</button>
+      </div>
+      <div class="icc-eol-asset-list">
+        ${rows.map((asset) => `
+          <article class="icc-eol-asset-row">
+            <div>
+              <strong>${escapeHtml(asset.assetName || asset.assetId || 'Asset')}</strong>
+              <span>${escapeHtml(eolRowField(asset, 'building'))} / ${escapeHtml(eolRowField(asset, 'department'))}</span>
+            </div>
+            <span class="ops-attention-pill ${severityClass(asset.riskLevel || 'medium')}">${escapeHtml(asset.riskLevel || 'Review')}</span>
+            <small>${escapeHtml(asset.estimatedReplacementCost ? formatCurrency(asset.estimatedReplacementCost) : 'Cost missing')}</small>
+          </article>
+        `).join('') || emptyState('No affected assets listed', 'The selected quarter has summary data but no row-level assets.')}
+      </div>
+    </aside>
+  `;
+}
+
+function renderEolBudgetTimeline() {
+  const report = state.eolBudgetTimeline || {};
+  const allRows = asArray(report.rows);
+  const rows = allRows.filter(rowMatchesEolFilters);
+  const groups = new Map();
+  rows.forEach((row) => {
+    const key = eolQuarterLabel(row.eolDate);
+    if (!groups.has(key)) groups.set(key, { label: key, count: 0, budget: 0, missingCost: 0, assets: [] });
+    const group = groups.get(key);
+    group.count += 1;
+    const cost = Number(row.estimatedReplacementCost || 0);
+    if (Number.isFinite(cost) && cost > 0) group.budget += cost;
+    else group.missingCost += 1;
+    group.assets.push(row);
+  });
+  const horizon = Number(report?.totals?.monthsAhead || state.eolBudgetHorizon || 12);
+  const totalBudget = Number(report?.totals?.estimatedBudget || 0);
+  const timeline = Array.from(groups.values()).sort((a, b) => a.label.localeCompare(b.label));
+  return `
+    <section class="icc-eol-timeline-card">
+      <div class="icc-eol-timeline-head">
+        <div>
+          <div class="icc-budget-thermo-label">EOL budget forecast timeline</div>
+          <strong>Next ${escapeHtml(String(horizon))} months: ${escapeHtml(totalBudget ? formatCurrency(totalBudget) : 'Cost data missing')}</strong>
+          <p>${escapeHtml(report.summary || 'No EOL forecast data loaded yet.')}</p>
+        </div>
+        <div class="icc-eol-horizon-toggle" role="group" aria-label="EOL forecast horizon">
+          ${[12, 24, 36].map((months) => `
+            <button type="button" class="btn btn-sm ${horizon === months ? 'btn-primary' : 'btn-outline-primary'}" data-icc-eol-horizon="${months}">
+              ${months}m
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="icc-eol-filter-row" aria-label="EOL forecast filters">
+        ${renderEolFilterSelect('iccEolDeptFilter', 'Departments', 'department', allRows)}
+        ${renderEolFilterSelect('iccEolBuildingFilter', 'Buildings', 'building', allRows)}
+        ${renderEolFilterSelect('iccEolCategoryFilter', 'Categories', 'category', allRows)}
+      </div>
+      <div class="icc-eol-quarter-grid">
+        ${timeline.length ? timeline.slice(0, 12).map((group) => `
+          <article class="icc-eol-quarter-card ${state.eolBudgetSelectedQuarter === group.label ? 'is-selected' : ''}" role="button" tabindex="0" data-icc-eol-quarter="${escapeHtml(group.label)}">
+            <span>${escapeHtml(group.label)}</span>
+            <strong>${escapeHtml(formatCurrency(group.budget))}</strong>
+            <p>${escapeHtml(String(group.count))} asset(s) counted${group.missingCost ? `, ${group.missingCost} missing cost` : ''}</p>
+            <details class="ops-360-evidence">
+              <summary>View affected assets</summary>
+              <ul>${group.assets.slice(0, 20).map((asset) => `<li>${escapeHtml(asset.assetName || asset.assetId || '-')} - ${escapeHtml(asset.riskLevel || 'unknown risk')} - ${escapeHtml(asset.estimatedReplacementCost ? formatCurrency(asset.estimatedReplacementCost) : 'Cost missing')}</li>`).join('')}</ul>
+            </details>
+          </article>
+        `).join('') : emptyState('No EOL assets in selected horizon', 'Add purchase/warranty data or adjust the horizon to improve forecast coverage.')}
+      </div>
+      ${renderEolDrilldown(timeline)}
+      ${evidencePanel({
+        title: 'Forecast evidence',
+        source: 'Deterministic EOL budget report',
+        confidence: report.confidence || (rows.length ? 'Medium' : 'Low'),
+        evidence: [
+          `Assets counted: ${numberValue(report?.totals?.matchedAssets)}`,
+          `Cost source: stored purchase/replacement cost where available.`,
+          `Missing cost assets: ${numberValue(report?.totals?.missingCostAssets)}`,
+        ],
+        missingData: asArray(report.missingData),
+        action: 'Use this as planning evidence only; procurement requests still require review and confirmation.',
+      })}
+    </section>
+  `;
+}
+
+async function setEolBudgetHorizon(months) {
+  const horizon = Math.max(12, Math.min(36, Number(months) || 12));
+  try {
+    state.eolBudgetHorizon = horizon;
+    const target = document.getElementById('iccBudgetPlanning');
+    if (target) target.classList.add('is-refreshing');
+    state.eolBudgetTimeline = await postJson('/inventory/eol-budget-report', { monthsAhead: horizon });
+    renderBudget(buildSummary());
+  } catch (error) {
+    UI.error(error.message || 'Failed to load EOL budget timeline.');
+  } finally {
+    document.getElementById('iccBudgetPlanning')?.classList.remove('is-refreshing');
+  }
 }
 
 function renderBudget(summary) {
@@ -1179,6 +1870,7 @@ function renderBudget(summary) {
   `;
   document.getElementById('iccBudgetPlanning').innerHTML = `
     ${thermometer}
+    ${renderEolBudgetTimeline()}
     <div class="icc-budget-grid">
       ${kpiCard('Expected procurement cost', forecastHasBudget ? formatCurrency(forecast.estimatedBudget) : 'Data missing', forecast.summary || 'Requires EOL/risk and cost evidence.', forecastHasBudget ? 'info' : 'review')}
       ${kpiCard('EOL replacement forecast', formatCount(forecast.matchedAssets || summary.eolSoonCount), `${forecast.monthsAhead || 3}-month planning window`, summary.eolSoonCount ? 'medium' : 'healthy')}
@@ -1222,6 +1914,160 @@ function advanceWalkthrough(start = false) {
   renderWalkthrough();
 }
 
+function renderMiniAnalyticsBars(rows = [], emptyTitle = 'No graph data') {
+  if (!rows.length) {
+    return `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">${escapeHtml(emptyTitle)}</div>
+          <div class="ops-empty-state-copy">Add or load inventory/procurement evidence to populate this visualization.</div>
+        </div>
+      </div>
+    `;
+  }
+  const max = Math.max(1, ...rows.map((row) => numberValue(row.value)));
+  return `
+    <div class="icc-mini-chart-bars">
+      ${rows.slice(0, 8).map((row) => {
+        const value = numberValue(row.value);
+        const bucket = Math.max(0, Math.min(100, Math.ceil((value / max) * 10) * 10));
+        return `
+          <div class="icc-mini-chart-row">
+            <span>${escapeHtml(row.label)}</span>
+            <div class="icc-mini-chart-track"><i class="progress-${escapeHtml(String(bucket))}"></i></div>
+            <strong>${escapeHtml(row.display || String(value))}</strong>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderVisualAnalytics(summary = {}) {
+  const el = document.getElementById('iccVisualAnalytics');
+  if (!el) return;
+  const assets = Array.isArray(state.assets) ? state.assets : [];
+  const healthRows = [
+    { label: 'Healthy', value: assets.filter((asset) => String(asset.healthSeverity || asset.riskLevel || '').toLowerCase().includes('healthy')).length },
+    { label: 'Watch', value: assets.filter((asset) => ['medium', 'watch', 'amber'].includes(normalize(asset.healthSeverity || asset.riskLevel || ''))).length },
+    { label: 'High Risk', value: numberValue(summary.highRiskCount) },
+  ].filter((row) => row.value > 0);
+  const missingFields = [
+    { label: 'Serial', value: assets.filter((asset) => !String(asset.serialNumber || '').trim()).length },
+    { label: 'Cost', value: assets.filter((asset) => !Number(asset.purchaseCost || 0)).length },
+    { label: 'Warranty', value: assets.filter((asset) => !asset.warrantyEndDate).length },
+    { label: 'Purchase Date', value: assets.filter((asset) => !asset.purchaseDate).length },
+  ].filter((row) => row.value > 0);
+  const eolTimelineRows = Array.isArray(state.eolBudgetTimeline?.rows) ? state.eolBudgetTimeline.rows : [];
+  const eolRows = eolTimelineRows.length
+    ? Object.entries(eolTimelineRows.reduce((acc, row) => {
+        const key = eolQuarterLabel(row.eolDate || row.warrantyEndDate || row.targetDate);
+        acc[key] = (acc[key] || 0) + numberValue(row.estimatedReplacementCost || row.replacementCost || row.cost);
+        return acc;
+      }, {})).map(([label, value]) => ({ label, value, display: formatCurrency(value) }))
+    : [];
+  const riskRows = [
+    { label: 'Low stock', value: numberValue(summary.lowStockCount) },
+    { label: 'EOL soon', value: numberValue(summary.eolSoonCount) },
+    { label: 'Pending approvals', value: numberValue(summary.pendingApprovals) },
+    { label: 'Open POs', value: numberValue(summary.openPurchaseOrders) },
+    { label: 'Stale telemetry', value: numberValue(summary.staleTelemetryCount) },
+  ].filter((row) => row.value > 0);
+
+  el.innerHTML = `
+    <article class="icc-analytics-card ops-3d-card">
+      <div class="icc-analytics-card-head"><h3>Asset health distribution</h3><span class="ops-attention-pill is-info">Loaded assets</span></div>
+      ${renderMiniAnalyticsBars(healthRows, 'No health distribution yet')}
+    </article>
+    <article class="icc-analytics-card ops-3d-card">
+      <div class="icc-analytics-card-head"><h3>Missing data by field</h3><span class="ops-attention-pill is-review">Data quality</span></div>
+      ${renderMiniAnalyticsBars(missingFields, 'No missing-data graph yet')}
+    </article>
+    <article class="icc-analytics-card ops-3d-card">
+      <div class="icc-analytics-card-head"><h3>EOL replacement cost by quarter</h3><span class="ops-attention-pill is-info">EGP</span></div>
+      ${renderMiniAnalyticsBars(eolRows, 'No EOL forecast graph yet')}
+    </article>
+    <article class="icc-analytics-card ops-3d-card">
+      <div class="icc-analytics-card-head"><h3>Operations pressure</h3><span class="ops-attention-pill is-info">Command signals</span></div>
+      ${renderMiniAnalyticsBars(riskRows, 'No pressure graph yet')}
+    </article>
+  `;
+}
+
+function renderDepartmentGrid(summary = {}) {
+  const target = document.getElementById('iccDepartmentGrid');
+  if (!target) return;
+  const auditIds = new Set(asArray(summary.auditRows).map((row) => String(row.assetId || '')).filter(Boolean));
+  const riskIds = new Set(asArray(summary.priorities?.highRiskAssets).map((row) => String(row.assetId || '')).filter(Boolean));
+  const groups = new Map();
+  state.assets.forEach((asset) => {
+    const department = displayDepartment(asset.department);
+    if (!groups.has(department)) {
+      groups.set(department, {
+        department,
+        count: 0,
+        healthTotal: 0,
+        eol: 0,
+        highRisk: 0,
+        missing: 0,
+        audit: 0,
+      });
+    }
+    const group = groups.get(department);
+    const assetId = getAssetId(asset);
+    const missingCount = missingDataForAsset(asset).length;
+    const eol = isNearEol(asset);
+    const staleTelemetry = getTelemetryInfo(asset).stale;
+    const highRisk = riskIds.has(assetId);
+    const health = Math.max(0, Math.min(100, 100
+      - (missingCount * 6)
+      - (eol ? 18 : 0)
+      - (staleTelemetry ? 10 : 0)
+      - (highRisk ? 22 : 0)
+      - (auditIds.has(assetId) ? 12 : 0)));
+    group.count += 1;
+    group.healthTotal += health;
+    if (eol) group.eol += 1;
+    if (highRisk) group.highRisk += 1;
+    if (missingCount) group.missing += 1;
+    if (auditIds.has(assetId)) group.audit += 1;
+  });
+  const rows = Array.from(groups.values())
+    .map((row) => ({
+      ...row,
+      averageHealth: row.count ? Math.round(row.healthTotal / row.count) : 0,
+      pressure: row.eol + row.highRisk + row.missing + row.audit,
+    }))
+    .sort((a, b) => b.pressure - a.pressure || b.count - a.count)
+    .slice(0, 12);
+  target.innerHTML = rows.length ? rows.map((row) => {
+    const severity = row.pressure >= 8 || row.averageHealth < 55 ? 'high' : (row.pressure >= 3 || row.averageHealth < 75 ? 'medium' : 'healthy');
+    return `
+      <article class="icc-department-card ${severityClass(severity)}">
+        <div class="icc-department-card-head">
+          <div>
+            <span class="icc-section-kicker">Department</span>
+            <h3>${escapeHtml(row.department)}</h3>
+          </div>
+          <span class="ops-attention-pill ${severityClass(severity)}">${escapeHtml(toTitle(severity))}</span>
+        </div>
+        <div class="icc-department-score"><strong>${escapeHtml(String(row.averageHealth))}</strong><span>Avg health</span></div>
+        <div class="icc-department-metrics">
+          <span>${escapeHtml(String(row.count))} assets</span>
+          <span>${escapeHtml(String(row.eol))} EOL/warranty</span>
+          <span>${escapeHtml(String(row.highRisk))} high risk</span>
+          <span>${escapeHtml(String(row.missing))} missing data</span>
+          <span>${escapeHtml(String(row.audit))} audit issue(s)</span>
+        </div>
+        <div class="icc-chip-row">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-icc-ai-prompt="Summarize inventory health for ${escapeHtml(row.department)} department.">Ask AI</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-action="assets">Open Assets</button>
+        </div>
+      </article>
+    `;
+  }).join('') : emptyState('No department data yet', 'Assets without department data will appear as Unassigned once loaded.');
+}
+
 function renderAll() {
   const summary = buildSummary();
   applyFocusMode();
@@ -1236,6 +2082,8 @@ function renderAll() {
   renderAttention(summary);
   renderRiskHeatmap(summary);
   renderDataQuality(summary);
+  renderVisualAnalytics(summary);
+  renderDepartmentGrid(summary);
   renderActivity(summary);
   renderBudget(summary);
   renderWalkthrough();
@@ -1260,14 +2108,16 @@ function setFocusMode(enabled) {
   applyFocusMode();
 }
 
-function isDemoModeEnabled() {
-  return String(localStorage.getItem('opsmind_demo_mode') || '').trim().toLowerCase() === 'true';
-}
-
 function updateDemoModeVisibility() {
   const panel = document.getElementById('iccDemoPanel');
   if (!panel) return;
-  panel.classList.toggle('d-none', !isDemoModeEnabled());
+  panel.classList.remove('d-none');
+}
+
+function openGuidedTour() {
+  const panel = document.getElementById('iccDemoPanel');
+  panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  advanceWalkthrough(true);
 }
 
 function buildDashboardExplanationPrompt() {
@@ -1292,16 +2142,22 @@ async function loadCommandCenter(options = {}) {
   const background = Boolean(options.background);
   if (state.refreshing) return;
   state.refreshing = true;
-  setLoading(true, background ? 'Refreshing Command Center evidence...' : 'Loading Inventory Command Center...');
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  if (background) updateFreshnessStatus('refreshing', 'Refreshing...');
+  else setLoading(true, 'Loading Inventory Command Center...');
   if (!background) renderSkeletons();
   state.errors = [];
 
   try {
-    const [assetsRes, boardRes, auditRes, executiveRes] = await Promise.allSettled([
+    const [assetsRes, boardRes, auditRes, executiveRes, alertsRes, alertRulesRes, eolTimelineRes] = await Promise.allSettled([
       fetchAllAssets(),
       readJson('/inventory/procurement/board?status=all'),
       readJson('/inventory/audit-board'),
       readJson('/inventory/executive-dashboard'),
+      readJson('/inventory/alerts?status=open&limit=80'),
+      readJson('/inventory/alerts/rules'),
+      postJson('/inventory/eol-budget-report', { monthsAhead: state.eolBudgetHorizon || 12 }),
     ]);
 
     if (assetsRes.status === 'fulfilled') state.assets = assetsRes.value;
@@ -1316,17 +2172,27 @@ async function loadCommandCenter(options = {}) {
     if (executiveRes.status === 'fulfilled') state.executive = executiveRes.value;
     else state.errors.push(`Executive dashboard: ${executiveRes.reason?.message || 'failed'}`);
 
+    if (alertsRes.status === 'fulfilled') state.smartAlerts = alertsRes.value;
+    else state.errors.push(`Smart alerts: ${alertsRes.reason?.message || 'failed'}`);
+
+    if (alertRulesRes.status === 'fulfilled') state.alertRules = alertRulesRes.value;
+    else state.errors.push(`Alert rules: ${alertRulesRes.reason?.message || 'failed'}`);
+
+    if (eolTimelineRes.status === 'fulfilled') state.eolBudgetTimeline = eolTimelineRes.value;
+    else state.errors.push(`EOL budget forecast: ${eolTimelineRes.reason?.message || 'failed'}`);
+
     state.loadedAt = new Date().toISOString();
     renderAll();
 
     if (state.errors.length) {
       setError(`Loaded with partial data. ${state.errors.join(' | ')}`);
-      UI.warning('Inventory Command Center loaded with partial data.');
+      if (!background) UI.warning('Inventory Command Center loaded with partial data.');
     } else {
       setLoading(false);
     }
   } finally {
     state.refreshing = false;
+    if (background) requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
   }
 }
 
@@ -1343,6 +2209,18 @@ function openCommandCenterCopilot(prompt = 'What needs attention today?') {
     return;
   }
   navigateToInventoryAction('ai', prompt);
+}
+
+async function evaluateSmartAlerts() {
+  try {
+    updateFreshnessStatus('refreshing', 'Evaluating durable smart-alert rules...');
+    const result = await postJson('/inventory/alerts/evaluate', {});
+    UI.success(`Smart alerts evaluated: ${formatCount(result.alertsCreatedOrUpdated || 0)} event(s) updated.`);
+    await loadCommandCenter();
+  } catch (error) {
+    UI.error(error.message || 'Failed to evaluate smart alerts.');
+    updateFreshnessStatus('error', 'Smart-alert evaluation failed.');
+  }
 }
 
 function commandCenterCopilotContext() {
@@ -1380,6 +2258,10 @@ function handleAction(action) {
     window.location.href = '/pages/procurement.html';
     return;
   }
+  if (value === 'evaluate-alerts') {
+    evaluateSmartAlerts();
+    return;
+  }
   if (value === 'import') {
     navigateToInventoryAction('import');
     return;
@@ -1401,20 +2283,25 @@ function handleAction(action) {
   }
 }
 
+function findPriorityById(id = '') {
+  const rows = buildPriorityEvidence(buildSummary());
+  return rows.find((row) => priorityId(row) === String(id || '').trim()) || null;
+}
+
 function diagnosticsFeatureRows(aiReady, diagnostics = {}) {
-  const source = aiReady ? 'Gemma ready' : 'Fallback available';
-  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  const source = aiReady ? 'AI insight ready' : 'System data available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'local AI model';
   return [
     ['Inventory AI Daily Briefing', 'Yes', source, 'Creates a narrative from precomputed inventory/procurement evidence.'],
-    ['Explain this dashboard', 'Hybrid', source, 'Facts come from the Command Center; Gemma explains them.'],
-    ['Inventory 360 explanation', 'Hybrid', source, 'Deterministic metrics first, Gemma narrative second.'],
+    ['Explain this dashboard', 'Estimated', source, 'Facts come from the Command Center; AI insight explains them.'],
+    ['Inventory 360 explanation', 'Estimated', source, 'System metrics first, AI narrative second.'],
     ['Asset health summary', 'Yes', source, 'Uses compact CMDB evidence for one asset.'],
-    ['Procurement recommendation explanation', 'Hybrid', source, 'Recommendations are grounded in stock, EOL, audit, and request data.'],
-    ['Vendor quote comparison explanation', 'Hybrid', source, 'Quote facts remain deterministic; Gemma explains tradeoffs.'],
-    ['Budget impact explanation', 'Hybrid', source, 'Budget math is deterministic; Gemma summarizes implications.'],
-    ['FIFO explanation', 'Hybrid', source, 'Batch order is deterministic; Gemma explains the recommendation.'],
-    ['EOQ/MOQ explanation', 'Hybrid', source, 'EOQ/MOQ math is deterministic; Gemma explains missing data/conflicts.'],
-    ['Copilot prompt response', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+    ['Procurement recommendation explanation', 'Estimated', source, 'Recommendations are grounded in stock, EOL, audit, and request data.'],
+    ['Vendor quote comparison explanation', 'Estimated', source, 'Quote facts stay system-calculated; AI insight explains tradeoffs.'],
+    ['Budget impact explanation', 'Estimated', source, 'Budget math stays system-calculated; AI insight summarizes implications.'],
+    ['FIFO explanation', 'Estimated', source, 'Batch order is system-calculated; AI insight explains the recommendation.'],
+    ['EOQ/MOQ explanation', 'Estimated', source, 'EOQ/MOQ math is system-calculated; AI insight explains missing data/conflicts.'],
+    ['Copilot prompt response', 'Yes/Estimated', source, `Routes through Inventory AI service when ${model} is available.`],
   ];
 }
 
@@ -1429,7 +2316,7 @@ async function fetchGemmaDiagnostics() {
   const health = healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' };
   const diagnostics = diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' };
   const backend = backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' };
-  const test = testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' };
+  const test = testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend AI test unavailable' };
   const latencyMs = Math.round(performance.now() - startedAt);
   return { health, diagnostics, backend, test, latencyMs };
 }
@@ -1450,10 +2337,10 @@ function renderGemmaDiagnosticsBody(result) {
       <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
         <div>
           <div class="ops-gemma-kicker">Inventory AI diagnostics</div>
-          <h3>${escapeHtml(aiReady ? 'Gemma is ready for inventory AI features' : 'Gemma readiness needs attention')}</h3>
-          <p>${escapeHtml(aiReady ? 'Feature facts remain deterministic; Gemma is available for explanation and summarization.' : 'OpsMind will keep deterministic fallback available until Gemma responds successfully.')}</p>
+          <h3>${escapeHtml(aiReady ? 'AI insight is ready for inventory features' : 'AI insight readiness needs attention')}</h3>
+          <p>${escapeHtml(aiReady ? 'Feature facts remain system-calculated; AI insight is available for explanation and summarization.' : 'OpsMind will keep system data available until AI insight responds successfully.')}</p>
         </div>
-        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'AI insight ready' : 'System data mode')}</span>
       </div>
       <div class="ops-gemma-metrics">
         <div><strong>Provider</strong><span>${escapeHtml(provider)}</span></div>
@@ -1466,7 +2353,7 @@ function renderGemmaDiagnosticsBody(result) {
       ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
       <div class="table-responsive">
         <table class="table table-sm align-middle ops-gemma-table">
-          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Source returned</th><th>Safe test note</th><th></th></tr></thead>
+          <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
           <tbody>
             ${rows.map(([feature, requires, source, note]) => `
               <tr>
@@ -1476,7 +2363,7 @@ function renderGemmaDiagnosticsBody(result) {
                 <td>${escapeHtml(note)}</td>
                 <td class="text-end">
                   <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-gemma-retest>Test</button>
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-icc-gemma-ask="${escapeHtml(feature)}">Ask Gemma</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-icc-gemma-ask="${escapeHtml(feature)}">Ask AI</button>
                 </td>
               </tr>
             `).join('')}
@@ -1497,10 +2384,10 @@ async function openGemmaDiagnostics() {
           <div class="modal-content ops-diagnostics-modal">
             <div class="modal-header">
               <div>
-                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
-                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and fallback honesty.</div>
+                <h5 class="modal-title" id="${modalId}Title">AI diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and system-data safety.</div>
               </div>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close AI diagnostics"></button>
             </div>
             <div class="modal-body" id="${modalId}Body">
               <div class="ops-loading-stack">
@@ -1511,7 +2398,7 @@ async function openGemmaDiagnostics() {
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest AI</button>
             </div>
           </div>
         </div>
@@ -1523,7 +2410,7 @@ async function openGemmaDiagnostics() {
       const askBtn = event.target?.closest('[data-icc-gemma-ask]');
       if (askBtn) {
         const feature = askBtn.getAttribute('data-icc-gemma-ask') || 'Inventory AI';
-        navigateToInventoryAction('ai', `Test Gemma for ${feature}. Use real inventory/procurement evidence only and state whether Gemma or fallback was used.`);
+        navigateToInventoryAction('ai', `Test AI insight for ${feature}. Use real inventory/procurement evidence only and state whether AI insight, estimated, or system data was used.`);
       }
     });
     document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openGemmaDiagnostics());
@@ -1543,7 +2430,7 @@ async function openGemmaDiagnostics() {
     const result = await fetchGemmaDiagnostics();
     if (body) body.innerHTML = renderGemmaDiagnosticsBody(result);
   } catch (error) {
-    if (body) body.innerHTML = emptyState('Diagnostics unavailable', error.message || 'Could not complete read-only Gemma diagnostics.');
+    if (body) body.innerHTML = emptyState('Diagnostics unavailable', error.message || 'Could not complete read-only AI diagnostics.');
   }
 }
 
@@ -1570,6 +2457,8 @@ function bindActions() {
   if (explainBtn) explainBtn.addEventListener('click', () => handleAction('explain-dashboard'));
   const gemmaBtn = document.getElementById('iccGemmaDiagnosticsBtn');
   if (gemmaBtn) gemmaBtn.addEventListener('click', () => openGemmaDiagnostics());
+  const guidedTourBtn = document.getElementById('iccGuidedTourBtn');
+  if (guidedTourBtn) guidedTourBtn.addEventListener('click', () => openGuidedTour());
   const demoStartBtn = document.getElementById('iccDemoStartBtn');
   const demoNextBtn = document.getElementById('iccDemoNextBtn');
   if (demoStartBtn) demoStartBtn.addEventListener('click', () => advanceWalkthrough(true));
@@ -1581,14 +2470,55 @@ function bindActions() {
       handleAction(actionBtn.getAttribute('data-icc-action'));
       return;
     }
+    const doneBtn = event.target?.closest('[data-icc-priority-done]');
+    if (doneBtn) {
+      const row = findPriorityById(doneBtn.getAttribute('data-icc-priority-done'));
+      if (row) markPriorityDone(row);
+      return;
+    }
+    const dismissBtn = event.target?.closest('[data-icc-priority-dismiss]');
+    if (dismissBtn) {
+      const row = findPriorityById(dismissBtn.getAttribute('data-icc-priority-dismiss'));
+      if (row) openPriorityDismissModal(row);
+      return;
+    }
+    const restoreBtn = event.target?.closest('[data-icc-priority-restore]');
+    if (restoreBtn) {
+      restorePriority(restoreBtn.getAttribute('data-icc-priority-restore'));
+      return;
+    }
+    const qualityBtn = event.target?.closest('[data-icc-quality-fix]');
+    if (qualityBtn) {
+      openDataQualityFixModal(qualityBtn.getAttribute('data-icc-quality-fix') || 'all');
+      return;
+    }
+    const horizonBtn = event.target?.closest('[data-icc-eol-horizon]');
+    if (horizonBtn) {
+      setEolBudgetHorizon(horizonBtn.getAttribute('data-icc-eol-horizon'));
+      return;
+    }
+    const quarterBtn = event.target?.closest('[data-icc-eol-quarter]');
+    if (quarterBtn) {
+      state.eolBudgetSelectedQuarter = String(quarterBtn.getAttribute('data-icc-eol-quarter') || '');
+      renderBudget(buildSummary());
+      return;
+    }
     const promptBtn = event.target?.closest('[data-icc-ai-prompt]');
     if (promptBtn) {
       const prompt = String(promptBtn.getAttribute('data-icc-ai-prompt') || '').trim();
       openCommandCenterCopilot(prompt || 'What needs attention today?');
     }
   });
-  window.addEventListener('storage', (event) => {
-    if (event.key === 'opsmind_demo_mode') updateDemoModeVisibility();
+  document.addEventListener('change', (event) => {
+    const eolFilter = event.target?.closest('[data-icc-eol-filter]');
+    if (eolFilter) {
+      const key = String(eolFilter.getAttribute('data-icc-eol-filter') || '');
+      if (['department', 'building', 'category'].includes(key)) {
+        state.eolBudgetFilters[key] = eolFilter.value || 'all';
+        state.eolBudgetSelectedQuarter = '';
+        renderBudget(buildSummary());
+      }
+    }
   });
   applyFocusMode();
   updateDemoModeVisibility();
@@ -1596,6 +2526,7 @@ function bindActions() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   if (!ensureAccess()) return;
+  writePriorityState(readPriorityState());
   initInventoryAiCopilot({
     pageKey: 'inventory_command_center',
     pageLabel: 'Command Center',

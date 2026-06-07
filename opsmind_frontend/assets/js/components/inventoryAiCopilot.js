@@ -30,7 +30,57 @@ async function postJson(path, body = {}) {
   return payload;
 }
 
-function sourceLabel(entry = {}) {
+function parseSseBlock(block = '') {
+  const lines = String(block || '').split(/\r?\n/);
+  let event = 'message';
+  const dataLines = [];
+  lines.forEach((line) => {
+    if (line.startsWith('event:')) event = line.slice(6).trim() || 'message';
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  });
+  if (!dataLines.length) return null;
+  const dataText = dataLines.join('\n');
+  try {
+    return { event, data: JSON.parse(dataText) };
+  } catch {
+    return { event, data: { text: dataText } };
+  }
+}
+
+async function postAssistantStream(path, body = {}, handlers = {}) {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.message || `Inventory AI stream failed (${response.status})`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalPayload = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const parsed = parseSseBlock(block);
+      if (parsed?.event === 'metadata') handlers.onMetadata?.(parsed.data || {});
+      if (parsed?.event === 'chunk') handlers.onChunk?.(String(parsed.data?.text || ''), parsed.data || {});
+      if (parsed?.event === 'fallback') handlers.onFallback?.(parsed.data || {});
+      if (parsed?.event === 'done') finalPayload = parsed.data || {};
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+  return finalPayload || {};
+}
+
+function technicalSourceLabel(entry = {}) {
   const raw = String(entry.sourceLabel || entry.llmStatus || '').toLowerCase();
   if (entry.fallbackUsed || raw.includes('fallback')) return 'Fallback';
   if (entry.llmUsed || raw.includes('gemma')) return 'Gemma';
@@ -38,8 +88,20 @@ function sourceLabel(entry = {}) {
   return 'Deterministic';
 }
 
+function sourceLabel(entry = {}) {
+  const technical = technicalSourceLabel(entry);
+  if (technical === 'Gemma') return 'AI insight';
+  if (technical === 'Hybrid') return 'Estimated';
+  return 'System data';
+}
+
+function sourceInfoIcon(entry = {}) {
+  const technical = technicalSourceLabel(entry);
+  return `<span class="ops-source-info" title="Internal source: ${escapeHtml(technical)}" aria-label="Internal source: ${escapeHtml(technical)}"><i class="bi bi-info-circle"></i></span>`;
+}
+
 function statusModeFromResult(result = {}) {
-  const label = sourceLabel(result).toLowerCase();
+  const label = technicalSourceLabel(result).toLowerCase();
   if (label.includes('fallback')) return 'fallback';
   if (label.includes('gemma')) return 'gemma';
   if (label.includes('hybrid')) return 'gemma';
@@ -103,14 +165,14 @@ function createCopilotMarkup(options = {}) {
     <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel inventory-ai-chat-panel--shared" aria-label="Inventory AI Copilot" role="dialog" aria-hidden="true">
       <div class="inventory-ai-chat-header">
         <div>
-          <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">Gemma</span></div>
+          <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">AI insight</span></div>
           <div class="inventory-ai-chat-subtitle">Ask about inventory health, costs, stock, procurement, vendors, EOL, or next actions.</div>
           <div class="inventory-ai-chat-context-row">
             <span class="inventory-ai-chat-context-chip">${escapeHtml(pageLabel)} context</span>
             <span class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
               <span class="inventory-ai-chat-status-label">Status</span>
               <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
-              <span id="inventoryAiChatStatusText">Gemma ready</span>
+              <span id="inventoryAiChatStatusText">AI ready</span>
             </span>
           </div>
         </div>
@@ -138,7 +200,7 @@ function createCopilotMarkup(options = {}) {
             <i class="bi bi-send"></i>
           </button>
         </div>
-        <div class="small text-muted mt-1">Press Enter to send. Shift+Enter for a new line. Typing reveal is frontend-only, not fake streaming.</div>
+        <div class="small text-muted mt-1">Press Enter to send. Shift+Enter for a new line. Answers appear after evidence checks complete.</div>
       </div>
     </section>
   `;
@@ -182,10 +244,10 @@ export function initInventoryAiCopilot(options = {}) {
       text.textContent = isError
         ? 'Offline'
         : isFallback
-          ? 'Fallback mode'
+          ? 'System data mode'
           : isLoading
-            ? 'Gemma thinking'
-            : 'Gemma ready';
+            ? 'Checking evidence'
+            : 'AI ready';
     }
   }
 
@@ -214,7 +276,7 @@ export function initInventoryAiCopilot(options = {}) {
       const role = message.role === 'user' ? 'user' : 'assistant';
       const isAssistant = role === 'assistant';
       const badges = isAssistant ? [
-        `<span class="inventory-ai-chat-pill is-success">${escapeHtml(sourceLabel(message))}</span>`,
+        `<span class="inventory-ai-chat-pill is-success">${escapeHtml(sourceLabel(message))}${sourceInfoIcon(message)}</span>`,
         message.confidence ? `<span class="inventory-ai-chat-pill is-info">Evidence: ${escapeHtml(String(message.confidence).toUpperCase())}</span>` : '',
         message.dataScope ? `<span class="inventory-ai-chat-pill">${escapeHtml(message.dataScope)}</span>` : '',
       ].filter(Boolean).join('') : '';
@@ -222,10 +284,10 @@ export function initInventoryAiCopilot(options = {}) {
         ? `<div class="mt-2"><strong>Suggested actions</strong><div class="mt-1">${message.suggestedActions.map((item) => `<span class="inventory-ai-chat-pill">${escapeHtml(item)}</span>`).join('')}</div></div>`
         : '';
       const fallback = isAssistant && message.fallbackUsed
-        ? `<div class="inventory-ai-chat-fallback mt-2"><strong>Fallback used</strong><div class="small">Reason: ${escapeHtml(message.fallbackReason || 'Gemma was unavailable for this request.')}</div></div>`
+        ? `<div class="inventory-ai-chat-fallback mt-2"><strong>System data used</strong><div class="small">Reason: ${escapeHtml(message.fallbackReason || 'AI insight was unavailable for this request.')}</div></div>`
         : '';
       return `
-        <div class="inventory-ai-chat-msg ${role}">
+        <div class="inventory-ai-chat-msg ${role} ${message.justAdded ? 'ops-ai-response-fade' : ''}">
           <div class="inventory-ai-msg-head"><i class="bi ${isAssistant ? 'bi-robot' : 'bi-person-circle'}"></i><span>${isAssistant ? 'Inventory AI' : 'You'}</span></div>
           <div class="inventory-ai-chat-answer">${isAssistant ? '<strong>Answer:</strong> ' : ''}${escapeHtml(message.text || '')}${message.typing ? '<span class="inventory-ai-typing-caret" aria-hidden="true"></span>' : ''}</div>
           ${isAssistant && !message.typing ? `<div class="inventory-ai-chat-meta">${badges}${suggestions}${fallback}${renderMatchedItems(message.matchedItems)}${renderQuickActions(options.quickActions || [])}</div>` : ''}
@@ -233,8 +295,9 @@ export function initInventoryAiCopilot(options = {}) {
       `;
     }).join('');
     const elapsed = state.loadingSince ? Date.now() - state.loadingSince : 0;
-    const loading = state.loading
-      ? `<div class="inventory-ai-chat-msg assistant inventory-ai-chat-loading"><span class="inventory-ai-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(elapsed >= LONG_WAIT_MS ? 'Local Gemma may take longer on first response.' : 'Checking inventory evidence...')}</span></div>`
+    const hasStreamingAssistant = state.messages.some((message) => message.role === 'assistant' && message.typing);
+    const loading = state.loading && !hasStreamingAssistant
+      ? `<div class="inventory-ai-chat-msg assistant inventory-ai-chat-loading"><span class="inventory-ai-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>${escapeHtml(elapsed >= LONG_WAIT_MS ? 'Local AI may take longer on first response.' : 'Checking inventory evidence...')}</span></div>`
       : '';
     container.innerHTML = (messagesHtml || emptyState) + loading;
     container.scrollTop = container.scrollHeight;
@@ -245,45 +308,52 @@ export function initInventoryAiCopilot(options = {}) {
   function revealMessage(index) {
     const message = state.messages[index];
     if (!message || message.role !== 'assistant' || !message.typing) return;
-    if (prefersReducedMotion()) {
-      message.text = message.fullText || message.text || '';
-      message.typing = false;
-      render();
-      return;
-    }
-    const full = String(message.fullText || '');
-    const duration = Math.min(2600, Math.max(650, full.length * 14));
-    const tickMs = 55;
-    const charsPerTick = Math.max(2, Math.ceil(full.length / Math.max(1, duration / tickMs)));
-    let cursor = 0;
     if (state.typingTimer) clearInterval(state.typingTimer);
-    state.typingTimer = setInterval(() => {
-      cursor = Math.min(full.length, cursor + charsPerTick);
-      message.text = full.slice(0, cursor);
-      if (cursor >= full.length) {
-        message.typing = false;
-        clearInterval(state.typingTimer);
-        state.typingTimer = null;
-      }
-      render();
-    }, tickMs);
+    state.typingTimer = null;
+    message.text = message.fullText || message.text || '';
+    message.typing = false;
+    message.justAdded = true;
+    render();
   }
 
   function addAssistantMessage(entry = {}) {
     const fullText = String(entry.text || entry.answer || 'Completed.');
-    const shouldType = !prefersReducedMotion() && fullText.length > 12;
+    const shouldType = false;
     const message = {
       ...entry,
       role: 'assistant',
       fullText,
       text: shouldType ? '' : fullText,
       typing: shouldType,
+      justAdded: true,
       createdAt: Date.now(),
     };
     state.messages.push(message);
     const index = state.messages.length - 1;
     render();
     if (shouldType) revealMessage(index);
+  }
+
+  function addStreamingAssistantMessage(entry = {}) {
+    const message = {
+      ...entry,
+      role: 'assistant',
+      fullText: '',
+      text: '',
+      typing: true,
+      justAdded: true,
+      createdAt: Date.now(),
+    };
+    state.messages.push(message);
+    render();
+    return state.messages.length - 1;
+  }
+
+  function updateAssistantMessage(index, patch = {}) {
+    const message = state.messages[index];
+    if (!message || message.role !== 'assistant') return;
+    Object.assign(message, patch);
+    render();
   }
 
   function open(force = null) {
@@ -308,7 +378,7 @@ export function initInventoryAiCopilot(options = {}) {
     render();
     try {
       const context = typeof options.contextProvider === 'function' ? options.contextProvider() : {};
-      const result = await postJson('/inventory/ai/assistant', {
+      const requestBody = {
         query: value,
         message: value,
         context: {
@@ -316,9 +386,42 @@ export function initInventoryAiCopilot(options = {}) {
           pageContext: options.pageKey || options.pageLabel || 'inventory',
         },
         currentView: options.pageKey || 'inventory',
+        recentMessages: state.messages
+          .filter((message) => message.role === 'user' || message.role === 'assistant')
+          .slice(-8)
+          .map((message) => ({ role: message.role, text: message.text })),
+      };
+      let streamIndex = null;
+      let streamedText = '';
+      let result = await postAssistantStream('/inventory/ai/assistant/stream', requestBody, {
+        onMetadata: (meta) => {
+          setStatus(meta?.deterministicOnly ? 'deterministic' : 'loading');
+        },
+        onChunk: (chunk) => {
+          if (!chunk) return;
+          if (streamIndex === null) streamIndex = addStreamingAssistantMessage({
+            sourceLabel: 'gemma_generated',
+            llmUsed: true,
+          });
+          streamedText += chunk;
+          updateAssistantMessage(streamIndex, {
+            text: streamedText,
+            fullText: streamedText,
+            typing: true,
+            sourceLabel: 'gemma_generated',
+            llmUsed: true,
+          });
+        },
+        onFallback: () => {
+          setStatus('fallback');
+        },
+      }).catch(async (streamError) => {
+        console.warn('[InventoryAI] stream failed; using JSON assistant fallback', streamError);
+        return postJson('/inventory/ai/assistant', requestBody);
       });
-      addAssistantMessage({
-        text: String(result?.answer || 'No assistant answer returned.'),
+      const finalText = streamedText || String(result?.answer || 'No assistant answer returned.');
+      const finalEntry = {
+        text: finalText,
         confidence: String(result?.confidence || result?.evidenceConfidence || 'medium'),
         fallbackUsed: Boolean(result?.fallbackUsed),
         fallbackReason: String(result?.fallbackReason || ''),
@@ -328,11 +431,22 @@ export function initInventoryAiCopilot(options = {}) {
         dataScope: String(result?.dataScope || ''),
         matchedItems: Array.isArray(result?.matchedItems) ? result.matchedItems : [],
         suggestedActions: normalizeSuggestions(result?.suggestedActions),
-      });
+      };
+      if (streamIndex !== null) {
+        updateAssistantMessage(streamIndex, {
+          ...finalEntry,
+          text: finalText,
+          fullText: finalText,
+          typing: false,
+          justAdded: true,
+        });
+      } else {
+        addAssistantMessage(finalEntry);
+      }
       setStatus(statusModeFromResult(result));
     } catch (error) {
       addAssistantMessage({
-        text: 'I could not reach Inventory AI right now. Deterministic page data is still available; try again in a moment.',
+        text: 'I could not reach Inventory AI right now. System data is still available; try again in a moment.',
         fallbackUsed: true,
         fallbackReason: error.message || 'request_failed',
         confidence: 'low',

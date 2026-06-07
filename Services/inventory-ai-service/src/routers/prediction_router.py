@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from src.models import get_store
 from src.schemas import (
@@ -291,6 +293,91 @@ async def inventory_assistant(payload: InventoryAssistantRequest, request: Reque
             time.perf_counter() - started,
             labels={"endpoint": "inventory_assistant"},
         )
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post(
+    "/inventory-assistant-stream",
+    summary="Stream an inventory assistant answer from Gemma using deterministic context",
+)
+async def inventory_assistant_stream(payload: InventoryAssistantRequest, request: Request) -> StreamingResponse:
+    started = time.perf_counter()
+    service = request.app.state.inventory_reasoning_service
+
+    def stream_events():
+        deterministic = payload.deterministic_result or {}
+        fallback_answer = str(deterministic.get("answer") or "System data did not return an assistant answer.").strip()
+        suggested_actions = [
+            str(item).strip()
+            for item in (deterministic.get("suggestedActions") or deterministic.get("suggested_actions") or [])
+            if str(item).strip()
+        ][:12]
+        missing_data = [
+            str(item).strip()
+            for item in (deterministic.get("missingData") or deterministic.get("missing_data") or [])
+            if str(item).strip()
+        ][:24]
+        confidence = str(deterministic.get("confidence") or "medium").strip().lower() or "medium"
+        yield _sse_event("metadata", {
+            "source": "gemma",
+            "llmUsed": True,
+            "model": getattr(service.llm, "model", None),
+            "status": "stream_starting",
+        })
+        chunks: list[str] = []
+        try:
+            for chunk in service.stream_inventory_assistant_text(payload):
+                text = str(chunk or "")
+                if not text:
+                    continue
+                chunks.append(text)
+                yield _sse_event("chunk", {"text": text})
+            answer = "".join(chunks).strip()
+            if not answer:
+                raise RuntimeError("empty_stream")
+            yield _sse_event("done", {
+                "answer": answer,
+                "suggested_actions": suggested_actions,
+                "confidence": confidence,
+                "missing_data": missing_data,
+                "llm_used": True,
+                "llm_status": "ready",
+                "fallback_reason": None,
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+                "model": getattr(service.llm, "model", None),
+            })
+        except Exception as exc:
+            reason = str(exc) or "llm_stream_failed"
+            logger.warning("Inventory assistant stream fallback: %s", reason)
+            yield _sse_event("fallback", {
+                "answer": fallback_answer,
+                "reason": reason,
+                "source": "deterministic",
+            })
+            yield _sse_event("done", {
+                "answer": fallback_answer,
+                "suggested_actions": suggested_actions,
+                "confidence": confidence,
+                "missing_data": missing_data,
+                "llm_used": False,
+                "llm_status": "fallback" if getattr(service.llm, "enabled", False) else "disabled",
+                "fallback_reason": reason,
+                "duration_ms": round((time.perf_counter() - started) * 1000),
+                "model": getattr(service.llm, "model", None),
+            })
+
+    request.app.state.metrics.inc("inventory_ai_endpoint_total", labels={"endpoint": "inventory_assistant_stream"})
+    return StreamingResponse(
+        stream_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

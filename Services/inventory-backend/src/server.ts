@@ -903,6 +903,44 @@ function mergeAssetSpecifications(
     };
 }
 
+function buildAssetDispositionWorkflow(asset: Asset, body: any, action: 'retire' | 'dispose'): Record<string, any> {
+    const writeOffValue = parseOptionalNumberInput(body?.writeOffValue);
+    const bookValue = parseOptionalNumberInput(body?.bookValue || body?.depreciatedBookValue);
+    const approvalThreshold = Math.max(0, Number(process.env.INVENTORY_WRITE_OFF_APPROVAL_THRESHOLD || 5000));
+    const valueForApproval = Math.max(writeOffValue || 0, bookValue || 0);
+    const approvalRequired = action === 'dispose' || valueForApproval >= approvalThreshold;
+    const dispositionDate = parseOptionalDateInput(body?.dispositionDate) || new Date();
+    const currentSpecs = readAssetSpecifications(asset);
+    const existingWorkflow = (currentSpecs.disposalWorkflow && typeof currentSpecs.disposalWorkflow === 'object')
+        ? currentSpecs.disposalWorkflow as Record<string, any>
+        : {};
+
+    return {
+        ...existingWorkflow,
+        action,
+        status: action === 'dispose' ? 'disposed' : 'retired',
+        reason: normalizeSerialValue(body?.reason) || (action === 'dispose' ? 'disposed_by_inventory' : 'retired_by_inventory'),
+        notes: normalizeSerialValue(body?.notes),
+        incidentReference: normalizeSerialValue(body?.incidentReference),
+        evidenceReference: normalizeSerialValue(body?.evidenceReference),
+        disposalMethod: normalizeSerialValue(body?.disposalMethod),
+        writeOffValue,
+        bookValue,
+        glCode: normalizeSerialValue(body?.glCode),
+        approvalRequired,
+        approvalThreshold,
+        approvalStatus: approvalRequired
+            ? (normalizeSerialValue(body?.approvalReviewer) ? 'pending_reviewer_confirmation' : 'review_required')
+            : 'not_required',
+        approvalReviewer: normalizeSerialValue(body?.approvalReviewer),
+        requestedBy: normalizeSerialValue(body?.actor) || 'inventory-disposition',
+        requestedAt: new Date().toISOString(),
+        dispositionDate: dispositionDate.toISOString(),
+        statusBefore: String(asset.status || ''),
+        lifecycleStatusBefore: String((asset as any).lifecycleStatus || ''),
+    };
+}
+
 function normalizeLocationForComparison(value: unknown): string {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -2125,6 +2163,10 @@ function mapProcurementStatusToDb(value: unknown, fallback: PrismaProcurementReq
     return PROCUREMENT_STATUS_TO_DB[normalized] || fallback;
 }
 
+function mapProcurementStatusFromDb(value: PrismaProcurementRequestStatus | string): ProcurementRequestStatus {
+    return PROCUREMENT_STATUS_FROM_DB[value as PrismaProcurementRequestStatus] || normalizeProcurementStatusValue(value);
+}
+
 function mapProcurementPriorityToDb(value: unknown, fallback: PrismaProcurementRequestPriority = PrismaProcurementRequestPriority.MEDIUM): PrismaProcurementRequestPriority {
     const normalized = String(value || '').trim().toLowerCase();
     return PROCUREMENT_PRIORITY_TO_DB[normalized] || fallback;
@@ -2551,6 +2593,266 @@ function buildVendorQuoteScore(params: {
     const reliabilityScore = params.reliabilityScore !== null ? Math.min(20, Math.max(0, params.reliabilityScore * 2)) : 10;
     const moqPenalty = params.moq && params.moq > 1 ? Math.min(10, params.moq * 0.45) : 0;
     return Number((priceScore + warrantyScore + deliveryScore + reliabilityScore - moqPenalty).toFixed(2));
+}
+
+const INVENTORY_AUDIT_STATUSES = ['pending', 'confirmed', 'location_mismatch', 'not_found', 'damaged'] as const;
+type InventoryAuditStatus = typeof INVENTORY_AUDIT_STATUSES[number];
+
+const DEFAULT_INVENTORY_ALERT_RULES = [
+    {
+        ruleKey: 'stock_below_threshold',
+        name: 'Stock below threshold',
+        alertType: 'stock_below_threshold',
+        severity: 'high',
+        threshold: { minimumStockLevel: true },
+        recipientRole: 'Inventory Admin',
+        cooldownHours: 24,
+    },
+    {
+        ruleKey: 'eol_within_months',
+        name: 'EOL within review window',
+        alertType: 'eol_within_months',
+        severity: 'high',
+        threshold: { months: 6 },
+        recipientRole: 'Supervisor',
+        cooldownHours: 24,
+    },
+    {
+        ruleKey: 'procurement_stuck_status',
+        name: 'Procurement stuck in status',
+        alertType: 'procurement_stuck_status',
+        severity: 'medium',
+        threshold: { days: 7 },
+        recipientRole: 'Procurement Officer',
+        cooldownHours: 24,
+    },
+    {
+        ruleKey: 'budget_usage_threshold',
+        name: 'Budget pressure threshold',
+        alertType: 'budget_usage_threshold',
+        severity: 'high',
+        threshold: { percent: 80 },
+        recipientRole: 'Finance Reviewer',
+        cooldownHours: 24,
+    },
+    {
+        ruleKey: 'overdue_loaner',
+        name: 'Overdue loaner assets',
+        alertType: 'overdue_loaner',
+        severity: 'medium',
+        threshold: { daysOverdue: 0 },
+        recipientRole: 'Technician',
+        cooldownHours: 24,
+    },
+    {
+        ruleKey: 'data_quality_rate',
+        name: 'Data quality issue rate',
+        alertType: 'data_quality_rate',
+        severity: 'medium',
+        threshold: { percent: 20 },
+        recipientRole: 'Inventory Admin',
+        cooldownHours: 24,
+    },
+];
+
+function normalizeAuditStatus(value: unknown): InventoryAuditStatus {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return (INVENTORY_AUDIT_STATUSES as readonly string[]).includes(normalized)
+        ? normalized as InventoryAuditStatus
+        : 'pending';
+}
+
+function makeInventoryAuditSessionNumber(): string {
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    return `AUD-${day}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+function parseJsonMaybe(value: unknown): any {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(String(value));
+    } catch {
+        return null;
+    }
+}
+
+function getAssetDisplayLocation(asset: Pick<Asset, 'location' | 'specifications'>): string {
+    const specs = ((asset.specifications as Record<string, any>) || {});
+    return normalizeSerialValue(specs.mapLocationHint || specs.verificationLocation || specs.lastSeenLocation)
+        || mapLocationToFriendly(asset.location || '');
+}
+
+function getAssetDisplayDepartment(asset: Pick<Asset, 'department'>): string {
+    return mapDepartmentToFriendly(asset.department || '');
+}
+
+function mapAuditSessionRow(row: Record<string, any>) {
+    const summary = parseJsonMaybe(row.summary) || null;
+    return {
+        id: row.id,
+        sessionNumber: row.sessionNumber,
+        title: row.title,
+        status: row.status,
+        building: row.building || null,
+        room: row.room || null,
+        department: row.department || null,
+        category: row.category || null,
+        assetType: row.assetType || null,
+        auditor: row.auditor || null,
+        notes: row.notes || null,
+        summary,
+        startedAt: row.startedAt,
+        closedAt: row.closedAt || null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        itemCount: Number(row.itemCount || 0),
+        pendingCount: Number(row.pendingCount || 0),
+        confirmedCount: Number(row.confirmedCount || 0),
+        mismatchCount: Number(row.mismatchCount || 0),
+        notFoundCount: Number(row.notFoundCount || 0),
+        damagedCount: Number(row.damagedCount || 0),
+    };
+}
+
+function mapAuditItemRow(row: Record<string, any>) {
+    return {
+        id: row.id,
+        sessionId: row.sessionId,
+        assetId: row.assetId,
+        assetTag: row.assetTag || null,
+        serialNumber: row.serialNumber || null,
+        assetName: row.assetName || null,
+        expectedLocation: row.expectedLocation || null,
+        expectedDepartment: row.expectedDepartment || null,
+        expectedStatus: row.expectedStatus || null,
+        auditStatus: row.auditStatus || 'pending',
+        observedLocation: row.observedLocation || null,
+        condition: row.condition || null,
+        notes: row.notes || null,
+        auditor: row.auditor || null,
+        checkedAt: row.checkedAt || null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
+}
+
+async function ensureDefaultInventoryAlertRules(): Promise<void> {
+    for (const rule of DEFAULT_INVENTORY_ALERT_RULES) {
+        await prisma.$executeRawUnsafe(
+            `INSERT INTO "inventory_alert_rules" (
+                "id", "ruleKey", "name", "alertType", "enabled", "severity", "threshold",
+                "recipientRole", "cooldownHours", "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, $4, true, $5, $6::jsonb, $7, $8, NOW(), NOW())
+            ON CONFLICT ("ruleKey") DO NOTHING`,
+            crypto.randomUUID(),
+            rule.ruleKey,
+            rule.name,
+            rule.alertType,
+            rule.severity,
+            JSON.stringify(rule.threshold || {}),
+            rule.recipientRole,
+            rule.cooldownHours
+        );
+    }
+}
+
+function mapAlertRuleRow(row: Record<string, any>) {
+    return {
+        id: row.id,
+        ruleKey: row.ruleKey,
+        name: row.name,
+        alertType: row.alertType,
+        enabled: Boolean(row.enabled),
+        severity: row.severity || 'medium',
+        threshold: parseJsonMaybe(row.threshold) || {},
+        recipientRole: row.recipientRole || null,
+        cooldownHours: Number(row.cooldownHours || 24),
+        lastTriggeredAt: row.lastTriggeredAt || null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
+}
+
+function mapAlertEventRow(row: Record<string, any>) {
+    return {
+        id: row.id,
+        ruleId: row.ruleId || null,
+        ruleKey: row.ruleKey,
+        alertType: row.alertType,
+        severity: row.severity,
+        title: row.title,
+        message: row.message,
+        entityType: row.entityType || null,
+        entityId: row.entityId || null,
+        dedupeKey: row.dedupeKey,
+        status: row.status || 'open',
+        triggeredAt: row.triggeredAt,
+        resolvedAt: row.resolvedAt || null,
+        metadata: parseJsonMaybe(row.metadata) || null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+    };
+}
+
+async function upsertInventoryAlertEvent(params: {
+    rule: Record<string, any>;
+    severity?: string;
+    title: string;
+    message: string;
+    entityType?: string | null;
+    entityId?: string | null;
+    dedupeKey: string;
+    metadata?: Record<string, any> | null;
+}): Promise<void> {
+    const severity = normalizeSerialValue(params.severity) || normalizeSerialValue(params.rule.severity) || 'medium';
+    await prisma.$executeRawUnsafe(
+        `INSERT INTO "inventory_alert_events" (
+            "id", "ruleId", "ruleKey", "alertType", "severity", "title", "message",
+            "entityType", "entityId", "dedupeKey", "status", "triggeredAt", "metadata", "createdAt", "updatedAt"
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, 'open', NOW(), $11::jsonb, NOW(), NOW()
+        )
+        ON CONFLICT ("dedupeKey") DO UPDATE SET
+            "ruleId" = EXCLUDED."ruleId",
+            "severity" = EXCLUDED."severity",
+            "title" = EXCLUDED."title",
+            "message" = EXCLUDED."message",
+            "entityType" = EXCLUDED."entityType",
+            "entityId" = EXCLUDED."entityId",
+            "status" = 'open',
+            "triggeredAt" = NOW(),
+            "metadata" = EXCLUDED."metadata",
+            "updatedAt" = NOW()`,
+        crypto.randomUUID(),
+        params.rule.id || null,
+        params.rule.ruleKey,
+        params.rule.alertType,
+        severity,
+        params.title,
+        params.message,
+        params.entityType || null,
+        params.entityId || null,
+        params.dedupeKey,
+        JSON.stringify(params.metadata || {})
+    );
+    await prisma.$executeRawUnsafe(
+        'UPDATE "inventory_alert_rules" SET "lastTriggeredAt" = NOW(), "updatedAt" = NOW() WHERE "id" = $1',
+        params.rule.id
+    );
+}
+
+function simpleAssetDataQualityMissing(asset: Asset): string[] {
+    const missing: string[] = [];
+    if (!normalizeSerialValue(asset.serialNumber)) missing.push('serialNumber');
+    if (!normalizeSerialValue(asset.assetTag)) missing.push('assetTag');
+    if (!asset.purchaseDate) missing.push('purchaseDate');
+    if (!asset.warrantyEndDate) missing.push('warrantyEndDate');
+    if (!asset.department || String(asset.department) === 'UNASSIGNED') missing.push('department');
+    if (!asset.location) missing.push('location');
+    if (!asset.purchaseCost) missing.push('purchaseCost');
+    return missing;
 }
 
 async function ensureProcurementLegacyImported(): Promise<void> {
@@ -3735,6 +4037,28 @@ function classifyAiQueryIntent(query: string): string {
     const has = (...phrases: string[]) => phrases.some((phrase) => q.includes(phrase));
 
     if (
+        has('what needs attention', "what need's attention", 'what should i do next', 'what is urgent', 'what are todays priorities', "what are today's priorities", 'today priorities', 'todays priorities')
+        || /(?:explain|summarize|read).*(?:command center|dashboard|this page)/.test(q)
+        || /(?:urgent|priority|priorities).*(?:today|command center|dashboard|inventory)/.test(q)
+    ) return 'dashboard_attention';
+    if (
+        has('where am i', 'how do i use this', 'explain this page', 'what can i do here', 'help me use this')
+        || /(?:explain|help).*(?:this page|this screen|workspace)/.test(q)
+    ) return 'help_page_explain';
+    if (
+        has('procurement requests need attention', 'what procurement requests need attention', 'what pos are open', 'open pos', 'waiting for receiving', 'waiting to receive')
+        || /(?:procurement|request|po|purchase order).*(?:attention|open|stuck|waiting|receive|receiving)/.test(q)
+    ) return 'procurement_status';
+    if (
+        has('budget impact', 'department budget vs spend', 'what will eol cost us', 'eol cost', 'cost impact', 'budget vs spend', 'spend by department')
+        || /(?:budget|cost|spend|finance).*(?:impact|pressure|remaining|department|eol)/.test(q)
+    ) return 'cost_budget';
+    if (
+        has('what data is missing', 'fix missing data', 'missing cost data', 'missing serials', 'missing serial numbers', 'data quality')
+        || /(?:which|show|find).*(?:missing|incomplete).*(?:data|serial|cost|warranty|purchase)/.test(q)
+    ) return 'data_quality';
+
+    if (
         /(?:what changed|show changes|daily brief|today(?:'s)? inventory brief|inventory changes this week)/.test(q)
         || has('what changed today', "today's inventory brief", 'give me todays inventory brief', 'show inventory changes this week', 'daily brief')
     ) return 'daily_brief';
@@ -3814,6 +4138,11 @@ function buildInventoryInsightConfidence(params: {
 }
 
 const FACTUAL_ASSISTANT_INTENTS = new Set([
+    'dashboard_attention',
+    'procurement_status',
+    'cost_budget',
+    'data_quality',
+    'help_page_explain',
     'missing_serial',
     'missing_serials',
     'missing_data',
@@ -3826,6 +4155,11 @@ const FACTUAL_ASSISTANT_INTENTS = new Set([
 ]);
 
 const ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION = new Set([
+    'dashboard_attention',
+    'procurement_status',
+    'cost_budget',
+    'data_quality',
+    'help_page_explain',
     'procurement',
     'abc_analysis',
     'eoq_moq',
@@ -3853,6 +4187,11 @@ const ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION = new Set([
 ]);
 
 const ASSISTANT_INTENTS_DETERMINISTIC_ONLY = new Set([
+    'dashboard_attention',
+    'procurement_status',
+    'cost_budget',
+    'data_quality',
+    'help_page_explain',
     'abc_analysis',
     'eoq_moq',
     'fifo_issue_priority',
@@ -3863,6 +4202,11 @@ const ASSISTANT_INTENTS_DETERMINISTIC_ONLY = new Set([
 ]);
 
 const ASSISTANT_ROUTED_ACTION_BY_INTENT: Record<string, { action: string; endpoint: string }> = {
+    dashboard_attention: { action: 'dashboard_attention', endpoint: '/api/inventory/procurement/board + /api/assets' },
+    procurement_status: { action: 'procurement_status', endpoint: '/api/inventory/procurement/board' },
+    cost_budget: { action: 'finance_summary', endpoint: '/api/inventory/procurement/finance/summary' },
+    data_quality: { action: 'missing_data', endpoint: '/api/inventory/ai/missing-data' },
+    help_page_explain: { action: 'page_help', endpoint: 'current_page_context' },
     daily_brief: { action: 'daily_brief', endpoint: '/api/inventory/ai/daily-brief' },
     monthly_report: { action: 'monthly_report', endpoint: '/api/inventory/ai/monthly-report' },
     executive_dashboard: { action: 'executive_dashboard', endpoint: '/api/inventory/executive-dashboard' },
@@ -3912,6 +4256,11 @@ function deriveAssistantConfidence(params: {
     }
     const actionIntent = String(params.intent || '').toLowerCase();
     const highConfidenceActionIntents = new Set([
+        'dashboard_attention',
+        'procurement_status',
+        'cost_budget',
+        'data_quality',
+        'help_page_explain',
         'daily_brief',
         'monthly_report',
         'executive_dashboard',
@@ -4079,7 +4428,7 @@ function buildAssistantLlmInput(result: InventoryAssistantDeterministicResult, q
     };
 }
 
-function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string): InventoryAssistantDeterministicResult {
+function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string, pageContext: Record<string, any> = {}): InventoryAssistantDeterministicResult {
     const intent = classifyAiQueryIntent(query);
     const now = new Date();
     const matchedItems: InventoryAiMatchedItem[] = [];
@@ -4090,8 +4439,208 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
     let missingCount: number | null = null;
     let excludedCategories: string[] = [];
     const partialFailure = false;
+    const dashboardContext = (pageContext?.dashboard && typeof pageContext.dashboard === 'object') ? pageContext.dashboard : {};
+    const procurementContext = (pageContext?.procurement && typeof pageContext.procurement === 'object') ? pageContext.procurement : {};
 
-    if (intent === 'missing_serial' || intent === 'missing_serials') {
+    if (intent === 'dashboard_attention') {
+        scannedCount = snapshot.assets.length;
+        const riskRows = buildAssetRiskScores(snapshot).rows;
+        const highRiskRows = riskRows.filter((row) => ['critical', 'high'].includes(String(row.riskLevel || '').toLowerCase()));
+        const eolCandidates = snapshot.assets.filter((asset) => {
+            const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+            if (lifecycle === 'eol_expired') return true;
+            if (!asset.warrantyEndDate) return false;
+            const days = (asset.warrantyEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+            return days <= 180;
+        });
+        const lowStockRows = snapshot.spareStock.filter((item) => {
+            const reorder = Number(item.reorderPoint ?? item.minimumStockLevel ?? 0);
+            return Number(item.quantityAvailable || 0) <= reorder;
+        });
+        const missingFieldAssets = snapshot.assets.filter((asset) => (
+            !normalizeSerialValue(asset.serialNumber)
+            || !asset.purchaseDate
+            || !asset.warrantyEndDate
+            || Number(asset.purchaseCost || 0) <= 0
+        ));
+        highRiskRows.slice(0, 8).forEach((row) => {
+            const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
+            if (asset) matchedItems.push(buildAiMatchedItem(asset, `Attention: ${row.riskLevel} risk (${row.riskScore})`));
+        });
+        eolCandidates.slice(0, 8).forEach((asset) => {
+            if (!matchedItems.some((row) => row.assetId === asset.customId)) {
+                matchedItems.push(buildAiMatchedItem(asset, 'Attention: EOL/warranty planning window'));
+            }
+        });
+        lowStockRows.slice(0, 8).forEach((item) => {
+            matchedItems.push({
+                assetId: item.id,
+                name: item.partName,
+                type: String(item.componentType || 'spare stock'),
+                category: 'spare_part',
+                status: 'low_stock',
+                lifecycleStatus: 'stock_control',
+                location: String(item.location || '-'),
+                department: 'Unassigned',
+                serialNumber: null,
+                assetTag: null,
+                reason: `Attention: low stock (${item.quantityAvailable}/${item.reorderPoint ?? item.minimumStockLevel})`,
+            });
+        });
+        filtersUsed.dashboard = {
+            totalAssets: Number(dashboardContext.totalAssets ?? snapshot.assets.length),
+            lowStockCount: Number(dashboardContext.lowStockCount ?? lowStockRows.length),
+            highRiskCount: Number(dashboardContext.highRiskCount ?? highRiskRows.length),
+            eolSoonCount: Number(dashboardContext.eolSoonCount ?? eolCandidates.length),
+            missingDataCount: Number(dashboardContext.missingDataCount ?? missingFieldAssets.length),
+            pendingApprovals: Number(dashboardContext.pendingApprovals ?? procurementContext.pendingApprovals ?? 0),
+            openPurchaseOrders: Number(dashboardContext.openPurchaseOrders ?? procurementContext.openPurchaseOrders ?? 0),
+            auditIssueCount: Number(dashboardContext.auditIssueCount ?? 0),
+            staleTelemetryCount: Number(dashboardContext.staleTelemetryCount ?? 0),
+        };
+        missingCount = Number(filtersUsed.dashboard.missingDataCount || 0);
+        suggestedActions.push(
+            'Open Today\'s Priorities and handle high-risk or low-stock items first.',
+            'Review Smart Alerts and EOL budget forecast before procurement decisions.',
+            'Fix missing serial, cost, warranty, and purchase-date evidence to improve AI confidence.',
+        );
+        return {
+            answer: [
+                `Command Center attention summary: ${filtersUsed.dashboard.highRiskCount} high-risk asset(s), ${filtersUsed.dashboard.lowStockCount} low-stock item(s), ${filtersUsed.dashboard.eolSoonCount} EOL/warranty planning item(s), and ${filtersUsed.dashboard.missingDataCount} data-quality issue(s).`,
+                `Procurement signals: ${filtersUsed.dashboard.pendingApprovals} pending approval(s) and ${filtersUsed.dashboard.openPurchaseOrders} open PO(s).`,
+                'Next best move: clear urgent Today\'s Priorities, then review low-stock/EOL procurement and data-quality evidence.',
+            ].join(' '),
+            matchedItems: matchedItems.slice(0, 24),
+            filtersUsed,
+            confidence: scannedCount > 0 ? 'high' : 'medium',
+            missingData: missingFieldAssets.length ? ['serialNumber', 'purchaseDate', 'warrantyEndDate', 'purchaseCost'].filter((field) => missingFieldAssets.some((asset) => {
+                if (field === 'serialNumber') return !normalizeSerialValue(asset.serialNumber);
+                if (field === 'purchaseDate') return !asset.purchaseDate;
+                if (field === 'warrantyEndDate') return !asset.warrantyEndDate;
+                return Number(asset.purchaseCost || 0) <= 0;
+            })) : [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'help_page_explain') {
+        scannedCount = snapshot.assets.length;
+        suggestedActions.push(
+            'Use Today\'s Priorities for the fastest operations checklist.',
+            'Use Assets to inspect CMDB/Asset 360 and run audits, transfers, imports, and reports.',
+            'Use Procurement to manage requests, quotes, POs, receiving, finance, suppliers, ABC, EOQ/MOQ, and FIFO.',
+        );
+        return {
+            answer: 'This page is the Inventory operations cockpit. It combines asset health, risk, EOL, stock, procurement, finance, alerts, audit readiness, and AI insight. Ask “what needs attention today” for an action summary, or ask for a specific asset tag when you want an Asset 360 lookup.',
+            matchedItems: [],
+            filtersUsed,
+            confidence: 'high',
+            missingData: [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount: null,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'procurement_status') {
+        scannedCount = snapshot.assets.length;
+        filtersUsed.procurement = {
+            openRequests: Number(procurementContext.openRequests ?? 0),
+            pendingApprovals: Number(procurementContext.pendingApprovals ?? dashboardContext.pendingApprovals ?? 0),
+            orderedTransit: Number(procurementContext.orderedTransit ?? 0),
+            approvedNoPo: Number(procurementContext.approvedNoPo ?? 0),
+            missingQuotes: Number(procurementContext.missingQuotes ?? 0),
+            quotesNeedReview: Number(procurementContext.quotesNeedReview ?? 0),
+            receivingPending: Number(procurementContext.receivingPending ?? 0),
+            recommendations: Number(procurementContext.recommendations ?? 0),
+        };
+        suggestedActions.push('Open Procurement Requests for workflow blockers.', 'Review approved requests without POs and ordered requests waiting for receiving.', 'Compare vendor quotes before selecting best value.');
+        return {
+            answer: `Procurement attention: ${filtersUsed.procurement.openRequests} open request(s), ${filtersUsed.procurement.pendingApprovals} pending approval(s), ${filtersUsed.procurement.approvedNoPo} approved request(s) without PO, ${filtersUsed.procurement.receivingPending} receiving item(s), and ${filtersUsed.procurement.quotesNeedReview} quote(s) needing review.`,
+            matchedItems: [],
+            filtersUsed,
+            confidence: 'high',
+            missingData: [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount: null,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'cost_budget' || intent === 'budget_impact') {
+        scannedCount = snapshot.assets.length;
+        const assetsWithCost = snapshot.assets.filter((asset) => Number(asset.purchaseCost || 0) > 0);
+        const knownCost = assetsWithCost.reduce((sum, asset) => sum + Number(asset.purchaseCost || 0), 0);
+        filtersUsed.cost = {
+            knownAssetCost: Math.round(knownCost),
+            assetsWithCost: assetsWithCost.length,
+            assetsMissingCost: Math.max(0, snapshot.assets.length - assetsWithCost.length),
+            estimatedSpend: Number(procurementContext.estimatedSpend ?? 0),
+            actualSpend: Number(procurementContext.actualSpend ?? 0),
+            pendingApprovals: Number(procurementContext.pendingApprovals ?? dashboardContext.pendingApprovals ?? 0),
+        };
+        suggestedActions.push('Open Finance to compare allocated, committed, spent, and remaining budget.', 'Open EOL budget forecast for 12/24/36-month replacement planning.', 'Backfill missing purchase costs before treating budget totals as complete.');
+        return {
+            answer: `Budget impact summary: known asset purchase-cost evidence covers ${filtersUsed.cost.assetsWithCost}/${snapshot.assets.length} asset(s), with ${filtersUsed.cost.assetsMissingCost} missing cost value(s). Procurement evidence shows estimated spend ${filtersUsed.cost.estimatedSpend} EGP and actual spend ${filtersUsed.cost.actualSpend} EGP where available.`,
+            matchedItems: [],
+            filtersUsed,
+            confidence: filtersUsed.cost.assetsWithCost > 0 || filtersUsed.cost.estimatedSpend > 0 ? 'medium' : 'low',
+            missingData: filtersUsed.cost.assetsMissingCost ? ['purchaseCost', 'budgetAllocation'] : [],
+            suggestedActions,
+            supported: true,
+            intent: intent === 'budget_impact' ? 'cost_budget' : intent,
+            scannedCount,
+            missingCount: filtersUsed.cost.assetsMissingCost,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'data_quality' || intent === 'missing_data') {
+        scannedCount = snapshot.assets.length;
+        const rows = snapshot.assets.filter((asset) => (
+            !normalizeSerialValue(asset.serialNumber)
+            || !normalizeSerialValue(asset.assetTag)
+            || !asset.purchaseDate
+            || !asset.warrantyEndDate
+            || Number(asset.purchaseCost || 0) <= 0
+        ));
+        rows.slice(0, 80).forEach((asset) => {
+            const missing = [
+                !normalizeSerialValue(asset.serialNumber) ? 'serial' : '',
+                !normalizeSerialValue(asset.assetTag) ? 'asset tag' : '',
+                !asset.purchaseDate ? 'purchase date' : '',
+                !asset.warrantyEndDate ? 'warranty end' : '',
+                Number(asset.purchaseCost || 0) <= 0 ? 'purchase cost' : '',
+            ].filter(Boolean).join(', ');
+            matchedItems.push(buildAiMatchedItem(asset, `Missing ${missing}`));
+        });
+        missingCount = rows.length;
+        missingData.push('serialNumber', 'assetTag', 'purchaseDate', 'warrantyEndDate', 'purchaseCost');
+        suggestedActions.push('Use Fix Now for high-priority missing fields.', 'Start with assigned/high-risk assets before low-value stock records.', 'Re-run data quality after import or CSV repair.');
+        return {
+            answer: rows.length
+                ? `Data-quality scan found ${rows.length} asset(s) with missing serial, tag, purchase date, warranty date, or purchase-cost evidence.`
+                : 'Data-quality scan did not find missing serial, tag, purchase date, warranty date, or purchase-cost evidence in the loaded inventory snapshot.',
+            matchedItems,
+            filtersUsed,
+            confidence: scannedCount > 0 ? 'high' : 'medium',
+            missingData,
+            suggestedActions,
+            supported: true,
+            intent: 'data_quality',
+            scannedCount,
+            missingCount,
+            excludedCategories,
+            partialFailure,
+        };
+    } else if (intent === 'missing_serial' || intent === 'missing_serials') {
         excludedCategories = ['license', 'consumable', 'spare_part'];
         const assetsToScan = snapshot.assets.filter((asset) => !excludedCategories.includes(String(asset.category || '').toLowerCase()));
         scannedCount = assetsToScan.length;
@@ -4552,6 +5101,11 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
     if (!snapshot.spareStock.length) missingData.push('spareStockItems');
 
     const noMatchMessageByIntent: Record<string, string> = {
+        dashboard_attention: 'Command Center attention request recognized. Review Today\'s Priorities, Smart Alerts, EOL budget, and procurement blockers.',
+        procurement_status: 'Procurement status request recognized. Open Procurement Requests, Vendor Quotes, Purchase Orders, or Receiving for workflow details.',
+        cost_budget: 'Budget impact request recognized. Open Finance and EOL forecast for allocation, committed, spent, and replacement-cost evidence.',
+        data_quality: 'No data-quality gaps were found in the loaded inventory snapshot.',
+        help_page_explain: 'Page-help request recognized. Ask about attention, procurement, budget, data quality, or a specific asset tag.',
         missing_serials: 'No missing serial numbers found in the scanned inventory categories.',
         missing_serial: 'No missing serial numbers found in the scanned inventory categories.',
         duplicates: 'No duplicate serial/asset-tag groups were found in the scanned inventory set.',
@@ -4590,6 +5144,11 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         )
         : (noMatchMessageByIntent[intent] || `No matching records were found for "${query}" in the current dataset.`);
     const highConfidenceZeroIntents = new Set([
+        'dashboard_attention',
+        'procurement_status',
+        'cost_budget',
+        'data_quality',
+        'help_page_explain',
         'missing_serial',
         'missing_serials',
         'missing_data',
@@ -4646,6 +5205,28 @@ function applyAssistantQueryFilters(
     if (result?.filtersUsed && result.filtersUsed.matchedAsset) {
         return {
             ...result,
+            confidence: deriveAssistantConfidence({
+                intent: result.intent,
+                dataScope,
+                scannedCount: result.scannedCount,
+                matchedCount: result.matchedItems.length,
+                supported: result.supported,
+                partialFailure: result.partialFailure,
+            }),
+        };
+    }
+    const intentKey = String(result.intent || '').toLowerCase();
+    const preserveAnswerIntents = new Set([
+        'dashboard_attention',
+        'procurement_status',
+        'cost_budget',
+        'data_quality',
+        'help_page_explain',
+    ]);
+    if (preserveAnswerIntents.has(intentKey)) {
+        return {
+            ...result,
+            matchedItems: result.matchedItems.slice(0, 120),
             confidence: deriveAssistantConfidence({
                 intent: result.intent,
                 dataScope,
@@ -10110,7 +10691,7 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
         const dataScope = scoped.dataScope;
         const deterministicRaw = assetResolution.matchedAsset
             ? buildAssistantAssetFocusedDeterministicResult(scopedSnapshot, query, assetResolution.matchedAsset)
-            : deterministicAssistantAnswer(scopedSnapshot, query);
+            : deterministicAssistantAnswer(scopedSnapshot, query, resolvedContext as Record<string, any>);
         let deterministic = applyAssistantQueryFilters(deterministicRaw, scopedSnapshot, query, dataScope);
         if (
             !skipAssetDisambiguation
@@ -10228,6 +10809,357 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to run inventory AI assistant', error: error.message });
+    }
+});
+
+function writeInventoryAssistantSse(res: Response, event: string, payload: Record<string, any>): void {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function parseInventoryAssistantSseBlock(block: string): { event: string; data: any } | null {
+    const lines = String(block || '').split(/\r?\n/);
+    let event = 'message';
+    const dataLines: string[] = [];
+    lines.forEach((line) => {
+        if (line.startsWith('event:')) event = line.slice(6).trim() || 'message';
+        if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+    });
+    if (!dataLines.length) return null;
+    const dataText = dataLines.join('\n');
+    try {
+        return { event, data: JSON.parse(dataText) };
+    } catch {
+        return { event, data: { text: dataText } };
+    }
+}
+
+function buildInventoryAssistantStreamFinalPayload(params: {
+    answer: string;
+    deterministic: InventoryAssistantDeterministicResult;
+    deterministicConfidence: 'low' | 'medium' | 'high';
+    dataScope: InventoryInsightDataScope;
+    routedMeta: { action: string; endpoint: string } | null;
+    assetResolution: ReturnType<typeof resolveAssistantAssetMatch>;
+    sourceMeta: InventoryAiSourceMeta;
+    suggestedActions?: string[];
+    missingData?: string[];
+}): Record<string, any> {
+    const assetResolution = params.assetResolution;
+    return {
+        answer: params.answer,
+        matchedItems: params.deterministic.matchedItems,
+        filtersUsed: params.deterministic.filtersUsed,
+        confidence: params.deterministicConfidence,
+        missingData: Array.isArray(params.missingData) ? params.missingData : params.deterministic.missingData,
+        suggestedActions: Array.isArray(params.suggestedActions) ? params.suggestedActions : params.deterministic.suggestedActions,
+        dataScope: params.dataScope,
+        intent: params.deterministic.intent,
+        scannedCount: Number(params.deterministic.scannedCount || 0),
+        matchedCount: params.deterministic.matchedItems.length,
+        missingCount: typeof params.deterministic.missingCount === 'number' ? params.deterministic.missingCount : null,
+        excludedCategories: Array.isArray(params.deterministic.excludedCategories) ? params.deterministic.excludedCategories : [],
+        supported: params.deterministic.supported,
+        routedAction: params.routedMeta?.action || null,
+        routedEndpoint: params.routedMeta?.endpoint || null,
+        extractedAssetQuery: assetResolution.extractedAssetQuery,
+        matchedAssetId: assetResolution.matchedAsset?.customId || null,
+        matchedAssetTag: normalizeSerialValue(assetResolution.matchedAsset?.assetTag) || null,
+        matchedAssetName: assetResolution.matchedAsset?.name || null,
+        matchMethod: assetResolution.matchMethod || null,
+        searchedBy: assetResolution.searchedBy,
+        ...params.sourceMeta,
+    };
+}
+
+async function buildInventoryAssistantStreamContext(body: any): Promise<{
+    query: string;
+    deterministic: InventoryAssistantDeterministicResult;
+    deterministicConfidence: 'low' | 'medium' | 'high';
+    llmPayload: Record<string, any>;
+    contextSummary: Record<string, any>;
+    dataScope: InventoryInsightDataScope;
+    routedMeta: { action: string; endpoint: string } | null;
+    deterministicOnlyIntent: boolean;
+    assetResolution: ReturnType<typeof resolveAssistantAssetMatch>;
+    finalPayload?: Record<string, any>;
+}> {
+    const query = String(body?.query || '').trim();
+    if (!query) throw new RequestValidationError('query is required');
+    const context = (body?.context && typeof body.context === 'object') ? body.context : {};
+    const fullSnapshot = await buildInventoryAiSnapshot();
+    const requestedIntent = classifyAiQueryIntent(query);
+    const skipAssetDisambiguation = ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION.has(requestedIntent);
+    const assetResolution = resolveAssistantAssetMatch(fullSnapshot.assets, query);
+    if (!skipAssetDisambiguation && !assetResolution.matchedAsset && assetResolution.ambiguousAssets.length) {
+        const candidates = assetResolution.ambiguousAssets.slice(0, 8);
+        const deterministic: InventoryAssistantDeterministicResult = {
+            answer: `I found multiple possible assets for "${assetResolution.extractedAssetQuery || query}". Please choose one by asset tag.`,
+            matchedItems: candidates.map((asset) => buildAiMatchedItem(asset, 'Possible asset match')),
+            filtersUsed: { intent: 'asset_lookup', matchMethod: 'ambiguous', searchedBy: assetResolution.searchedBy },
+            confidence: 'medium',
+            missingData: [],
+            suggestedActions: ['Reply with the exact Asset Tag / Unique ID.', 'Or open the matching asset from the list below.'],
+            supported: true,
+            intent: 'asset_lookup',
+            scannedCount: Number(assetResolution.scannedCount || fullSnapshot.assets.length || 0),
+            missingCount: null,
+            excludedCategories: [],
+            partialFailure: false,
+        };
+        const finalPayload = buildInventoryAssistantStreamFinalPayload({
+            answer: deterministic.answer,
+            deterministic,
+            deterministicConfidence: 'medium',
+            dataScope: 'full_inventory',
+            routedMeta: null,
+            assetResolution,
+            sourceMeta: createInventoryAiSourceMeta(null, true),
+        });
+        return {
+            query,
+            deterministic,
+            deterministicConfidence: 'medium',
+            llmPayload: buildAssistantLlmInput(deterministic, query),
+            contextSummary: { assets: fullSnapshot.assets.length, scope: 'full_inventory' },
+            dataScope: 'full_inventory',
+            routedMeta: null,
+            deterministicOnlyIntent: true,
+            assetResolution,
+            finalPayload,
+        };
+    }
+
+    const resolvedContext = assetResolution.matchedAsset
+        ? { ...(context as Record<string, any>), selectedAssetCustomId: assetResolution.matchedAsset.customId }
+        : (context as Record<string, any>);
+    const scoped = resolveInventoryAiScopeFromContext(fullSnapshot, resolvedContext, query);
+    const scopedSnapshot = scoped.snapshot;
+    const dataScope = scoped.dataScope;
+    const deterministicRaw = assetResolution.matchedAsset
+        ? buildAssistantAssetFocusedDeterministicResult(scopedSnapshot, query, assetResolution.matchedAsset)
+        : deterministicAssistantAnswer(scopedSnapshot, query, resolvedContext as Record<string, any>);
+    let deterministic = applyAssistantQueryFilters(deterministicRaw, scopedSnapshot, query, dataScope);
+    if (
+        !skipAssetDisambiguation
+        && !assetResolution.matchedAsset
+        && assetResolution.explicitAssetSignal
+        && !deterministic.matchedItems.length
+    ) {
+        deterministic = {
+            ...deterministic,
+            answer: `I did not find an exact asset match for "${assetResolution.extractedAssetQuery || query}" in ${assetResolution.scannedCount} scanned records. Try the Asset Tag / Unique ID (example: UX260531-MAIN-PC-001).`,
+            suggestedActions: [
+                'Search by Asset Tag / Unique ID.',
+                'Open Parent Assets and copy the exact asset name.',
+                'Ask: "What components are linked to <Asset Tag>?".',
+            ],
+            supported: true,
+            intent: deterministic.intent === 'unknown' ? 'asset_lookup' : deterministic.intent,
+        };
+    }
+    const deterministicConfidence = deriveAssistantConfidence({
+        intent: deterministic.intent,
+        dataScope,
+        scannedCount: deterministic.scannedCount,
+        matchedCount: deterministic.matchedItems.length,
+        supported: deterministic.supported,
+        partialFailure: deterministic.partialFailure,
+    });
+    const llmPayload = buildAssistantLlmInput(deterministic, query);
+    if (assetResolution.matchedAsset) {
+        llmPayload.matchedAsset = {
+            customId: assetResolution.matchedAsset.customId,
+            assetTag: normalizeSerialValue(assetResolution.matchedAsset.assetTag),
+            name: assetResolution.matchedAsset.name,
+            type: canonicalAssetType(assetResolution.matchedAsset.type),
+            category: String(assetResolution.matchedAsset.category || '').toLowerCase(),
+            location: mapLocationToFriendly(assetResolution.matchedAsset.location),
+            department: mapDepartmentToFriendly(assetResolution.matchedAsset.department),
+            lifecycleStatus: String(assetResolution.matchedAsset.lifecycleStatus || '').toLowerCase(),
+        };
+        llmPayload.matchMethod = assetResolution.matchMethod;
+        llmPayload.extractedAssetQuery = assetResolution.extractedAssetQuery;
+    }
+    const intentKey = String(deterministic.intent || '').toLowerCase();
+    return {
+        query,
+        deterministic,
+        deterministicConfidence,
+        llmPayload,
+        contextSummary: {
+            assets: scopedSnapshot.assets.length,
+            components: scopedSnapshot.components.length,
+            maintenance: scopedSnapshot.maintenance.length,
+            lifecycleEvents: scopedSnapshot.lifecycleEvents.length,
+            spareStock: scopedSnapshot.spareStock.length,
+            scope: dataScope,
+        },
+        dataScope,
+        routedMeta: ASSISTANT_ROUTED_ACTION_BY_INTENT[intentKey] || null,
+        deterministicOnlyIntent: ASSISTANT_INTENTS_DETERMINISTIC_ONLY.has(intentKey),
+        assetResolution,
+    };
+}
+
+app.post('/api/inventory/ai/assistant/stream', inventoryReadGuard, async (req: Request, res: Response) => {
+    let streamContext: Awaited<ReturnType<typeof buildInventoryAssistantStreamContext>> | null = null;
+    try {
+        streamContext = await buildInventoryAssistantStreamContext(req.body);
+    } catch (error: any) {
+        if (error instanceof RequestValidationError) return res.status(400).json({ message: error.message });
+        return res.status(500).json({ message: 'Failed to prepare inventory AI assistant stream', error: error.message });
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    writeInventoryAssistantSse(res, 'metadata', {
+        stream: true,
+        query: streamContext.query,
+        intent: streamContext.deterministic.intent,
+        deterministicOnly: streamContext.deterministicOnlyIntent,
+        status: streamContext.deterministicOnlyIntent ? 'system_data_ready' : 'gemma_stream_starting',
+    });
+
+    if (streamContext.finalPayload || streamContext.deterministicOnlyIntent) {
+        const finalPayload = streamContext.finalPayload || buildInventoryAssistantStreamFinalPayload({
+            answer: streamContext.deterministic.answer,
+            deterministic: streamContext.deterministic,
+            deterministicConfidence: streamContext.deterministicConfidence,
+            dataScope: streamContext.dataScope,
+            routedMeta: streamContext.routedMeta,
+            assetResolution: streamContext.assetResolution,
+            sourceMeta: createInventoryAiSourceMeta(null, true),
+        });
+        writeInventoryAssistantSse(res, 'done', finalPayload);
+        res.end();
+        return;
+    }
+
+    const controller = new AbortController();
+    let sawGemmaChunk = false;
+    let ended = false;
+    let aiFinal: any = null;
+    let streamedAnswer = '';
+    const startupTimer = setTimeout(() => {
+        if (!sawGemmaChunk && !ended) controller.abort();
+    }, 3_000);
+
+    const fallback = (reason: string) => {
+        const sourceMeta = {
+            ...createInventoryAiSourceMeta(null),
+            fallbackReason: reason,
+            timedOut: reason.includes('timeout') || reason.includes('abort'),
+        };
+        const finalPayload = buildInventoryAssistantStreamFinalPayload({
+            answer: streamContext!.deterministic.answer,
+            deterministic: streamContext!.deterministic,
+            deterministicConfidence: streamContext!.deterministicConfidence,
+            dataScope: streamContext!.dataScope,
+            routedMeta: streamContext!.routedMeta,
+            assetResolution: streamContext!.assetResolution,
+            sourceMeta,
+        });
+        writeInventoryAssistantSse(res, 'fallback', { reason, source: 'deterministic' });
+        writeInventoryAssistantSse(res, 'done', finalPayload);
+    };
+
+    try {
+        const response = await fetch(`${INVENTORY_AI_SERVICE_URL}/inventory-assistant-stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: streamContext.query,
+                deterministicResult: streamContext.llmPayload,
+                contextSummary: streamContext.contextSummary,
+                recentMessages: Array.isArray(req.body?.recentMessages) ? req.body.recentMessages.slice(-8) : [],
+            }),
+            signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+            throw new Error(`inventory_ai_stream_status_${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let boundary = buffer.indexOf('\n\n');
+            while (boundary !== -1) {
+                const block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                const parsed = parseInventoryAssistantSseBlock(block);
+                if (parsed?.event === 'chunk') {
+                    const text = String(parsed.data?.text || '');
+                    if (text) {
+                        sawGemmaChunk = true;
+                        streamedAnswer += text;
+                        clearTimeout(startupTimer);
+                        writeInventoryAssistantSse(res, 'chunk', { text });
+                    }
+                } else if (parsed?.event === 'done') {
+                    aiFinal = parsed.data || {};
+                } else if (parsed?.event === 'fallback') {
+                    aiFinal = {
+                        ...(aiFinal || {}),
+                        answer: parsed.data?.answer || streamContext.deterministic.answer,
+                        llm_used: false,
+                        fallback_reason: parsed.data?.reason || 'inventory_ai_stream_fallback',
+                    };
+                }
+                boundary = buffer.indexOf('\n\n');
+            }
+        }
+        clearTimeout(startupTimer);
+        ended = true;
+        const aiLlmUsed = sawGemmaChunk && Boolean(aiFinal?.llm_used ?? true);
+        const sourceMeta: InventoryAiSourceMeta = aiLlmUsed
+            ? {
+                fallbackUsed: false,
+                llmUsed: true,
+                llmStatus: 'ready',
+                fallbackReason: null,
+                sourceLabel: 'gemma_generated',
+                source: 'gemma',
+                model: String(aiFinal?.model || INVENTORY_AI_MODEL_LABEL || '').trim() || null,
+                provider: INVENTORY_AI_PROVIDER_LABEL,
+                requestId: null,
+                durationMs: Number.isFinite(Number(aiFinal?.duration_ms)) ? Number(aiFinal.duration_ms) : null,
+                attempts: null,
+                timedOut: false,
+                helperStatus: 200,
+                helperErrorReason: null,
+            }
+            : {
+                ...createInventoryAiSourceMeta(null),
+                fallbackReason: String(aiFinal?.fallback_reason || 'gemma_stream_returned_no_chunks'),
+            };
+        const finalPayload = buildInventoryAssistantStreamFinalPayload({
+            answer: aiLlmUsed
+                ? String(aiFinal?.answer || streamedAnswer || '').trim()
+                : String(aiFinal?.answer || streamContext.deterministic.answer),
+            deterministic: streamContext.deterministic,
+            deterministicConfidence: streamContext.deterministicConfidence,
+            dataScope: streamContext.dataScope,
+            routedMeta: streamContext.routedMeta,
+            assetResolution: streamContext.assetResolution,
+            sourceMeta,
+            suggestedActions: Array.isArray(aiFinal?.suggested_actions) ? aiFinal.suggested_actions : undefined,
+            missingData: Array.isArray(aiFinal?.missing_data) ? aiFinal.missing_data : undefined,
+        });
+        writeInventoryAssistantSse(res, 'done', finalPayload);
+        res.end();
+    } catch (error: any) {
+        clearTimeout(startupTimer);
+        ended = true;
+        fallback(isInventoryAiTimeoutLikeError(error?.message || '') ? 'gemma_stream_start_timeout_3s' : (error?.message || 'inventory_ai_stream_failed'));
+        res.end();
     }
 });
 
@@ -11997,6 +12929,19 @@ app.post('/api/inventory/procurement/requests/:requestId/receive', inventoryAdmi
         const confirmInventoryImpact = Boolean(req.body?.confirmInventoryImpact);
         const requestItem = existing.items.find((row) => row.id === String(req.body?.requestItemId || '').trim()) || existing.items[0] || null;
         if (!requestItem) return res.status(400).json({ message: 'Procurement request has no request items' });
+        const latestPo = existing.purchaseOrders[0] || null;
+        const alreadyReceived = existing.items.reduce((sum, item) => sum + Number(item.quantityReceived || 0), 0);
+        const orderedTotal = existing.items.reduce((sum, item) => sum + Number(item.quantityOrdered || item.quantityApproved || item.quantityRequested || 0), 0);
+        const receivedAfter = alreadyReceived + receivedQuantity;
+        const requestStatusBefore = mapProcurementStatusFromDb(existing.status);
+        const requestStatusAfter = orderedTotal > 0 && receivedAfter >= orderedTotal ? 'Received' : 'Partially Received';
+        const poStatusBefore = latestPo ? mapProcurementPurchaseOrderStatusFromDb(latestPo.status) : null;
+        const poStatusAfter = latestPo
+            ? (orderedTotal > 0 && receivedAfter >= orderedTotal ? 'received' : 'partially_received')
+            : null;
+        const lastReceiving = existing.receivingRecords[0] || null;
+        const unitCost = Number(requestItem.unitActualCost || requestItem.unitEstimatedCost || 0);
+        const costImpact = Number.isFinite(unitCost) && unitCost > 0 ? Number((unitCost * receivedQuantity).toFixed(2)) : null;
 
         let stockBefore: number | null = null;
         let stockAfter: number | null = null;
@@ -12025,6 +12970,15 @@ app.post('/api/inventory/procurement/requests/:requestId/receive', inventoryAdmi
             spareStockBefore: stockBefore,
             spareStockAfter: stockAfter,
             spareStockPartName: stockPartName,
+            requestStatusBefore,
+            requestStatusAfter,
+            purchaseOrderStatusBefore: poStatusBefore,
+            purchaseOrderStatusAfter: poStatusAfter,
+            fifoBatchBefore: null,
+            fifoBatchAfter: applyTarget === 'spare_stock' ? 'batch_created_on_confirm' : null,
+            lastReceivedDateBefore: lastReceiving?.receivedAt?.toISOString() || null,
+            lastReceivedDateAfter: new Date().toISOString(),
+            costImpact,
             assetDraftRecommended: assetImpactExpected,
             summary: applyTarget === 'spare_stock'
                 ? `Spare stock will increase by ${receivedQuantity} and a FIFO batch receipt record will be created.`
@@ -13336,9 +14290,29 @@ app.post('/api/inventory/ai/monthly-report', inventoryReadGuard, async (req: Req
 app.post('/api/inventory/eol-budget-report', inventoryReadGuard, async (req: Request, res: Response) => {
     try {
         const snapshot = await buildInventoryAiSnapshot();
-        const range = parseDateRangeFromInput(req.body || {});
         const monthsRaw = parseOptionalIntegerInput(req.body?.monthsAhead || req.body?.horizonMonths || req.body?.windowMonths);
         const monthsAhead = monthsRaw && monthsRaw > 0 ? Math.min(36, monthsRaw) : 12;
+        const hasExplicitRange = Boolean(
+            req.body?.startDate
+            || req.body?.dateFrom
+            || req.body?.endDate
+            || req.body?.dateTo
+            || req.body?.month
+            || req.body?.year
+        );
+        const range = hasExplicitRange
+            ? parseDateRangeFromInput(req.body || {})
+            : (() => {
+                const start = new Date();
+                start.setHours(0, 0, 0, 0);
+                const end = new Date(start.getTime() + monthsAhead * 30.4375 * 86400000);
+                end.setHours(23, 59, 59, 999);
+                return {
+                    start,
+                    end,
+                    label: `${start.toISOString().slice(0, 10)} to ${end.toISOString().slice(0, 10)}`,
+                };
+            })();
         const report = buildEolBudgetReport({
             snapshot,
             monthsAhead,
@@ -16507,6 +17481,66 @@ app.post('/api/assets/:id/loaner-return', inventoryAdminGuard, async (req: Reque
     }
 });
 
+app.post('/api/assets/:id/loaner-recall', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const asset = await AssetService.getAssetByCustomId(req.params.id);
+        if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const currentSpecs = readAssetSpecifications(asset);
+        const status = String(currentSpecs.loanerStatus || '').trim().toLowerCase();
+        if (!['checked_out', 'overdue'].includes(status)) {
+            return res.status(400).json({ message: 'Loaner recall is available only when the asset is checked out or overdue.' });
+        }
+        const reviewer = normalizeSerialValue(req.body?.actor) || 'inventory-loaner';
+        const recallAt = new Date();
+        const recallDueDate = parseOptionalDateInput(req.body?.recallDueDate || req.body?.dueDate);
+        const reason = normalizeSerialValue(req.body?.reason) || 'loaner_recall';
+        const message = normalizeSerialValue(req.body?.message || req.body?.notes) || 'Please return this loaner asset.';
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            loanerRecallRequested: true,
+            loanerRecallRequestedAt: recallAt.toISOString(),
+            loanerRecallDueDate: recallDueDate?.toISOString() || null,
+            loanerRecallMessage: message,
+        });
+        const updated = await AssetService.updateAsset(req.params.id, { specifications: nextSpecs });
+
+        await recordLifecycleEvent({
+            assetId: req.params.id,
+            eventType: 'loaner_recall_requested',
+            oldValue: {
+                loanerStatus: currentSpecs.loanerStatus || null,
+                loanerRecallRequested: parseBooleanFlag(currentSpecs.loanerRecallRequested),
+            },
+            newValue: {
+                loanerStatus: currentSpecs.loanerStatus || null,
+                loanerRecallRequested: true,
+                loanerRecallRequestedAt: recallAt.toISOString(),
+                loanerRecallDueDate: recallDueDate?.toISOString() || null,
+            },
+            reason,
+            notes: message,
+            actor: reviewer,
+        });
+        await recordHistoryEvent({
+            assetId: req.params.id,
+            action: 'Loaner Recall Requested',
+            details: `${message}${recallDueDate ? ` Due ${recallDueDate.toISOString().slice(0, 10)}` : ''}`,
+        });
+
+        return res.json({
+            success: true,
+            asset: updated,
+            recall: {
+                requested: true,
+                requestedAt: recallAt.toISOString(),
+                dueDate: recallDueDate?.toISOString() || null,
+                message,
+            },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to request loaner recall', error: error.message });
+    }
+});
+
 app.get('/api/inventory/loaners', inventoryReadGuard, async (_req: Request, res: Response) => {
     try {
         const assets = await prisma.asset.findMany({
@@ -16619,6 +17653,641 @@ app.get('/api/inventory/audit-board', inventoryReadGuard, async (req: Request, r
         });
     } catch (error: any) {
         return res.status(500).json({ message: 'Failed to fetch audit board', error: error.message });
+    }
+});
+
+app.get('/api/inventory/audit-sessions', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const statusRaw = normalizeSerialValue(req.query.status);
+        const status = statusRaw && statusRaw.toLowerCase() !== 'all' ? statusRaw : null;
+        const limit = Math.max(10, Math.min(200, parseOptionalIntegerInput(req.query.limit) || 60));
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT s.*,
+                COUNT(i."id")::int AS "itemCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'pending')::int AS "pendingCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'confirmed')::int AS "confirmedCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'location_mismatch')::int AS "mismatchCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'not_found')::int AS "notFoundCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'damaged')::int AS "damagedCount"
+            FROM "inventory_audit_sessions" s
+            LEFT JOIN "inventory_audit_session_items" i ON i."sessionId" = s."id"
+            WHERE ($1::text IS NULL OR s."status" = $1)
+            GROUP BY s."id"
+            ORDER BY s."startedAt" DESC
+            LIMIT $2`,
+            status,
+            limit
+        );
+        return res.json({
+            count: rows.length,
+            sessions: rows.map(mapAuditSessionRow),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load audit sessions', error: error.message });
+    }
+});
+
+app.post('/api/inventory/audit-sessions', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const title = normalizeSerialValue(req.body?.title) || `Inventory audit ${new Date().toISOString().slice(0, 10)}`;
+        const auditor = normalizeSerialValue(req.body?.auditor) || 'inventory-auditor';
+        const buildingRaw = normalizeSerialValue(req.body?.building);
+        const departmentRaw = normalizeSerialValue(req.body?.department);
+        const room = normalizeSerialValue(req.body?.room);
+        const categoryRaw = normalizeSerialValue(req.body?.category);
+        const assetTypeRaw = normalizeSerialValue(req.body?.assetType || req.body?.type);
+        const notes = normalizeSerialValue(req.body?.notes);
+        const where: Prisma.AssetWhereInput = {};
+        if (buildingRaw) where.location = mapToAssetLocation(buildingRaw);
+        if (departmentRaw) where.department = mapToAssetDepartment(departmentRaw);
+        if (categoryRaw) where.category = mapToAssetCategory(categoryRaw);
+        if (assetTypeRaw && (!categoryRaw || normalizeValue(categoryRaw) === 'asset')) where.type = mapToAssetType(assetTypeRaw);
+
+        const assets = await prisma.asset.findMany({
+            where,
+            orderBy: [{ location: 'asc' }, { department: 'asc' }, { name: 'asc' }],
+            take: 3000,
+        });
+        if (!assets.length) {
+            return res.status(400).json({
+                message: 'No assets match this audit scope. Adjust building, department, category, or type.',
+                scope: { building: buildingRaw, room, department: departmentRaw, category: categoryRaw, assetType: assetTypeRaw },
+            });
+        }
+
+        const sessionId = crypto.randomUUID();
+        const sessionNumber = makeInventoryAuditSessionNumber();
+        await prisma.$executeRawUnsafe(
+            `INSERT INTO "inventory_audit_sessions" (
+                "id", "sessionNumber", "title", "status", "building", "room", "department",
+                "category", "assetType", "auditor", "notes", "startedAt", "createdAt", "updatedAt"
+            ) VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), NOW())`,
+            sessionId,
+            sessionNumber,
+            title,
+            buildingRaw,
+            room,
+            departmentRaw,
+            categoryRaw,
+            assetTypeRaw,
+            auditor,
+            notes
+        );
+
+        for (const asset of assets) {
+            await prisma.$executeRawUnsafe(
+                `INSERT INTO "inventory_audit_session_items" (
+                    "id", "sessionId", "assetId", "assetTag", "serialNumber", "assetName",
+                    "expectedLocation", "expectedDepartment", "expectedStatus", "auditStatus", "createdAt", "updatedAt"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', NOW(), NOW())
+                ON CONFLICT ("sessionId", "assetId") DO NOTHING`,
+                crypto.randomUUID(),
+                sessionId,
+                asset.customId,
+                normalizeSerialValue(asset.assetTag),
+                normalizeSerialValue(asset.serialNumber),
+                asset.name,
+                getAssetDisplayLocation(asset),
+                getAssetDisplayDepartment(asset),
+                String(asset.status || '').toLowerCase()
+            );
+        }
+
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT s.*,
+                COUNT(i."id")::int AS "itemCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'pending')::int AS "pendingCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'confirmed')::int AS "confirmedCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'location_mismatch')::int AS "mismatchCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'not_found')::int AS "notFoundCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'damaged')::int AS "damagedCount"
+            FROM "inventory_audit_sessions" s
+            LEFT JOIN "inventory_audit_session_items" i ON i."sessionId" = s."id"
+            WHERE s."id" = $1
+            GROUP BY s."id"`,
+            sessionId
+        );
+        return res.status(201).json({
+            session: mapAuditSessionRow(rows[0]),
+            checklistGenerated: assets.length,
+            scope: { building: buildingRaw, room, department: departmentRaw, category: categoryRaw, assetType: assetTypeRaw },
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create audit session', error: error.message });
+    }
+});
+
+app.get('/api/inventory/audit-sessions/:sessionId', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        const q = normalizeSerialValue(req.query.q);
+        const [sessionRows, itemRows] = await Promise.all([
+            prisma.$queryRawUnsafe<Record<string, any>[]>(
+                `SELECT s.*,
+                    COUNT(i."id")::int AS "itemCount",
+                    COUNT(*) FILTER (WHERE i."auditStatus" = 'pending')::int AS "pendingCount",
+                    COUNT(*) FILTER (WHERE i."auditStatus" = 'confirmed')::int AS "confirmedCount",
+                    COUNT(*) FILTER (WHERE i."auditStatus" = 'location_mismatch')::int AS "mismatchCount",
+                    COUNT(*) FILTER (WHERE i."auditStatus" = 'not_found')::int AS "notFoundCount",
+                    COUNT(*) FILTER (WHERE i."auditStatus" = 'damaged')::int AS "damagedCount"
+                FROM "inventory_audit_sessions" s
+                LEFT JOIN "inventory_audit_session_items" i ON i."sessionId" = s."id"
+                WHERE s."id" = $1 OR s."sessionNumber" = $1
+                GROUP BY s."id"
+                LIMIT 1`,
+                req.params.sessionId
+            ),
+            prisma.$queryRawUnsafe<Record<string, any>[]>(
+                `SELECT * FROM "inventory_audit_session_items"
+                WHERE "sessionId" IN (
+                    SELECT "id" FROM "inventory_audit_sessions" WHERE "id" = $1 OR "sessionNumber" = $1
+                )
+                AND (
+                    $2::text IS NULL
+                    OR "assetId" ILIKE '%' || $2 || '%'
+                    OR "assetTag" ILIKE '%' || $2 || '%'
+                    OR "serialNumber" ILIKE '%' || $2 || '%'
+                    OR "assetName" ILIKE '%' || $2 || '%'
+                )
+                ORDER BY
+                    CASE "auditStatus" WHEN 'pending' THEN 0 ELSE 1 END,
+                    "assetName" ASC
+                LIMIT 1500`,
+                req.params.sessionId,
+                q
+            ),
+        ]);
+        if (!sessionRows.length) return res.status(404).json({ message: 'Audit session not found' });
+        return res.json({
+            session: mapAuditSessionRow(sessionRows[0]),
+            items: itemRows.map(mapAuditItemRow),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load audit session', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/audit-sessions/:sessionId/items/:itemId', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const auditStatus = normalizeAuditStatus(req.body?.auditStatus || req.body?.status);
+        const observedLocation = normalizeSerialValue(req.body?.observedLocation || req.body?.location);
+        const condition = normalizeSerialValue(req.body?.condition);
+        const notes = normalizeSerialValue(req.body?.notes);
+        const auditor = normalizeSerialValue(req.body?.auditor || req.body?.actor) || 'inventory-auditor';
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT i.*, s."sessionNumber", s."status" AS "sessionStatus"
+            FROM "inventory_audit_session_items" i
+            JOIN "inventory_audit_sessions" s ON s."id" = i."sessionId"
+            WHERE (s."id" = $1 OR s."sessionNumber" = $1) AND i."id" = $2
+            LIMIT 1`,
+            req.params.sessionId,
+            req.params.itemId
+        );
+        if (!rows.length) return res.status(404).json({ message: 'Audit session item not found' });
+        if (rows[0].sessionStatus === 'closed') return res.status(400).json({ message: 'Closed audit sessions cannot be edited.' });
+
+        await prisma.$executeRawUnsafe(
+            `UPDATE "inventory_audit_session_items" SET
+                "auditStatus" = $1,
+                "observedLocation" = $2,
+                "condition" = $3,
+                "notes" = $4,
+                "auditor" = $5,
+                "checkedAt" = NOW(),
+                "updatedAt" = NOW()
+            WHERE "id" = $6`,
+            auditStatus,
+            observedLocation,
+            condition,
+            notes,
+            auditor,
+            req.params.itemId
+        );
+        await prisma.$executeRawUnsafe(
+            `UPDATE "inventory_audit_sessions" SET "updatedAt" = NOW() WHERE "id" = $1`,
+            rows[0].sessionId
+        );
+
+        const asset = await AssetService.getAssetByCustomId(rows[0].assetId);
+        if (asset) {
+            const currentSpecs = readAssetSpecifications(asset);
+            const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+                verificationStatus: auditStatus === 'confirmed' ? 'verified' : auditStatus,
+                verificationCondition: condition || currentSpecs.verificationCondition || null,
+                verificationNotes: notes || currentSpecs.verificationNotes || null,
+                verificationLocation: observedLocation || rows[0].expectedLocation || null,
+                lastVerifiedAt: new Date().toISOString(),
+                lastVerifiedBy: auditor,
+                missingFlag: auditStatus === 'not_found',
+                auditSessionNumber: rows[0].sessionNumber,
+            });
+            const updatePayload: Record<string, any> = { specifications: nextSpecs };
+            if (auditStatus === 'confirmed' && observedLocation) updatePayload.location = mapToAssetLocation(observedLocation);
+            await AssetService.updateAsset(rows[0].assetId, updatePayload);
+            await recordLifecycleEvent({
+                assetId: rows[0].assetId,
+                eventType: `audit_${auditStatus}`,
+                oldValue: {
+                    auditStatus: rows[0].auditStatus,
+                    expectedLocation: rows[0].expectedLocation,
+                },
+                newValue: {
+                    auditStatus,
+                    observedLocation,
+                    condition,
+                    auditSessionNumber: rows[0].sessionNumber,
+                },
+                reason: 'audit_session_update',
+                notes,
+                actor: auditor,
+            });
+            await recordHistoryEvent({
+                assetId: rows[0].assetId,
+                action: `Audit Session ${auditStatus.replace(/_/g, ' ')}`,
+                details: `${rows[0].sessionNumber}: ${notes || observedLocation || 'No notes'}`,
+            });
+        }
+
+        const updatedRows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            'SELECT * FROM "inventory_audit_session_items" WHERE "id" = $1 LIMIT 1',
+            req.params.itemId
+        );
+        return res.json({
+            item: mapAuditItemRow(updatedRows[0]),
+            assetHistoryUpdated: Boolean(asset),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update audit session item', error: error.message });
+    }
+});
+
+app.post('/api/inventory/audit-sessions/:sessionId/close', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT s.*,
+                COUNT(i."id")::int AS "itemCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'pending')::int AS "pendingCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'confirmed')::int AS "confirmedCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'location_mismatch')::int AS "mismatchCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'not_found')::int AS "notFoundCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'damaged')::int AS "damagedCount"
+            FROM "inventory_audit_sessions" s
+            LEFT JOIN "inventory_audit_session_items" i ON i."sessionId" = s."id"
+            WHERE s."id" = $1 OR s."sessionNumber" = $1
+            GROUP BY s."id"
+            LIMIT 1`,
+            req.params.sessionId
+        );
+        if (!rows.length) return res.status(404).json({ message: 'Audit session not found' });
+        const row = mapAuditSessionRow(rows[0]);
+        const total = Math.max(1, row.itemCount);
+        const summary = {
+            closedBy: normalizeSerialValue(req.body?.closedBy || req.body?.actor) || 'inventory-auditor',
+            closedAt: nowIsoString(),
+            total: row.itemCount,
+            confirmed: row.confirmedCount,
+            confirmedPercent: Number(((row.confirmedCount / total) * 100).toFixed(1)),
+            locationMismatches: row.mismatchCount,
+            notFound: row.notFoundCount,
+            damaged: row.damagedCount,
+            pending: row.pendingCount,
+            notes: normalizeSerialValue(req.body?.notes),
+            phase2: row.notFoundCount || row.damagedCount
+                ? 'Investigation task/ticket creation can be enabled later through the ticket workflow once ownership is confirmed.'
+                : null,
+        };
+        await prisma.$executeRawUnsafe(
+            `UPDATE "inventory_audit_sessions" SET
+                "status" = 'closed',
+                "summary" = $1::jsonb,
+                "closedAt" = NOW(),
+                "updatedAt" = NOW()
+            WHERE "id" = $2`,
+            JSON.stringify(summary),
+            rows[0].id
+        );
+        const closedRows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT s.*,
+                COUNT(i."id")::int AS "itemCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'pending')::int AS "pendingCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'confirmed')::int AS "confirmedCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'location_mismatch')::int AS "mismatchCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'not_found')::int AS "notFoundCount",
+                COUNT(*) FILTER (WHERE i."auditStatus" = 'damaged')::int AS "damagedCount"
+            FROM "inventory_audit_sessions" s
+            LEFT JOIN "inventory_audit_session_items" i ON i."sessionId" = s."id"
+            WHERE s."id" = $1
+            GROUP BY s."id"
+            LIMIT 1`,
+            rows[0].id
+        );
+        return res.json({
+            session: mapAuditSessionRow(closedRows[0]),
+            reconciliation: summary,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to close audit session', error: error.message });
+    }
+});
+
+app.get('/api/inventory/alerts/rules', inventoryReadGuard, async (_req: Request, res: Response) => {
+    try {
+        await ensureDefaultInventoryAlertRules();
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            'SELECT * FROM "inventory_alert_rules" ORDER BY "alertType" ASC, "name" ASC'
+        );
+        return res.json({ count: rows.length, rules: rows.map(mapAlertRuleRow) });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load inventory alert rules', error: error.message });
+    }
+});
+
+app.patch('/api/inventory/alerts/rules/:ruleKey', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        await ensureDefaultInventoryAlertRules();
+        const enabled = typeof req.body?.enabled === 'undefined' ? null : parseBooleanFlag(req.body.enabled);
+        const threshold = req.body?.threshold && typeof req.body.threshold === 'object' ? req.body.threshold : null;
+        const recipientRole = typeof req.body?.recipientRole === 'undefined' ? null : normalizeSerialValue(req.body.recipientRole);
+        const severity = typeof req.body?.severity === 'undefined' ? null : (normalizeSerialValue(req.body.severity) || 'medium');
+        const cooldownHours = typeof req.body?.cooldownHours === 'undefined'
+            ? null
+            : Math.max(1, Math.min(720, parseOptionalIntegerInput(req.body.cooldownHours) || 24));
+        await prisma.$executeRawUnsafe(
+            `UPDATE "inventory_alert_rules" SET
+                "enabled" = COALESCE($2::boolean, "enabled"),
+                "threshold" = COALESCE($3::jsonb, "threshold"),
+                "recipientRole" = COALESCE($4::text, "recipientRole"),
+                "severity" = COALESCE($5::text, "severity"),
+                "cooldownHours" = COALESCE($6::int, "cooldownHours"),
+                "updatedAt" = NOW()
+            WHERE "ruleKey" = $1`,
+            req.params.ruleKey,
+            enabled,
+            threshold ? JSON.stringify(threshold) : null,
+            recipientRole,
+            severity,
+            cooldownHours
+        );
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            'SELECT * FROM "inventory_alert_rules" WHERE "ruleKey" = $1 LIMIT 1',
+            req.params.ruleKey
+        );
+        if (!rows.length) return res.status(404).json({ message: 'Alert rule not found' });
+        return res.json({ rule: mapAlertRuleRow(rows[0]) });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to update inventory alert rule', error: error.message });
+    }
+});
+
+app.get('/api/inventory/alerts', inventoryReadGuard, async (req: Request, res: Response) => {
+    try {
+        await ensureDefaultInventoryAlertRules();
+        const status = normalizeSerialValue(req.query.status) || 'open';
+        const limit = Math.max(10, Math.min(500, parseOptionalIntegerInput(req.query.limit) || 120));
+        const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT e.*, r."name" AS "ruleName"
+            FROM "inventory_alert_events" e
+            LEFT JOIN "inventory_alert_rules" r ON r."id" = e."ruleId"
+            WHERE ($1::text = 'all' OR e."status" = $1)
+            ORDER BY e."triggeredAt" DESC
+            LIMIT $2`,
+            status,
+            limit
+        );
+        return res.json({ count: rows.length, alerts: rows.map(mapAlertEventRow) });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to load inventory alerts', error: error.message });
+    }
+});
+
+app.post('/api/inventory/alerts/evaluate', inventoryAdminGuard, async (_req: Request, res: Response) => {
+    try {
+        await ensureDefaultInventoryAlertRules();
+        const rules = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            'SELECT * FROM "inventory_alert_rules" WHERE "enabled" = true ORDER BY "alertType" ASC'
+        );
+        const ruleByKey = new Map(rules.map((rule) => [String(rule.ruleKey), rule]));
+        let createdOrUpdated = 0;
+
+        const stockRule = ruleByKey.get('stock_below_threshold');
+        if (stockRule) {
+            const stockRows = await prisma.spareStockItem.findMany({ orderBy: { updatedAt: 'desc' }, take: 1000 });
+            for (const stock of stockRows) {
+                const threshold = stock.reorderPoint ?? stock.minimumStockLevel ?? 0;
+                const availableQuantity = Number(stock.quantityAvailable || 0);
+                if (threshold > 0 && availableQuantity <= threshold) {
+                    await upsertInventoryAlertEvent({
+                        rule: stockRule,
+                        severity: availableQuantity <= Math.max(0, Math.floor(threshold / 2)) ? 'high' : 'medium',
+                        title: `${stock.partName} below stock threshold`,
+                        message: `Available quantity ${availableQuantity} is at/below threshold ${threshold}.`,
+                        entityType: 'spare_stock',
+                        entityId: stock.id,
+                        dedupeKey: `stock_below_threshold:${stock.id}`,
+                        metadata: {
+                            partName: stock.partName,
+                            quantityAvailable: availableQuantity,
+                            threshold,
+                            reorderPoint: stock.reorderPoint,
+                            minimumStockLevel: stock.minimumStockLevel,
+                        },
+                    });
+                    createdOrUpdated += 1;
+                }
+            }
+        }
+
+        const eolRule = ruleByKey.get('eol_within_months');
+        if (eolRule) {
+            const threshold = parseJsonMaybe(eolRule.threshold) || {};
+            const months = Math.max(1, Math.min(36, parseOptionalIntegerInput(threshold.months) || 6));
+            const now = new Date();
+            const upper = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+            const rows = await prisma.asset.findMany({
+                where: {
+                    warrantyEndDate: { gte: now, lte: upper },
+                    lifecycleStatus: { notIn: ['RETIRED', 'DISPOSED', 'LOST_STOLEN'] },
+                },
+                orderBy: { warrantyEndDate: 'asc' },
+                take: 1000,
+            });
+            for (const asset of rows) {
+                await upsertInventoryAlertEvent({
+                    rule: eolRule,
+                    severity: 'high',
+                    title: `${asset.name} warranty/EOL review due`,
+                    message: `Warranty ends ${asset.warrantyEndDate?.toISOString().slice(0, 10)} within ${months} month(s).`,
+                    entityType: 'asset',
+                    entityId: asset.customId,
+                    dedupeKey: `eol_within_months:${asset.customId}`,
+                    metadata: {
+                        assetId: asset.customId,
+                        assetTag: asset.assetTag,
+                        warrantyEndDate: asset.warrantyEndDate?.toISOString() || null,
+                        department: getAssetDisplayDepartment(asset),
+                        location: getAssetDisplayLocation(asset),
+                    },
+                });
+                createdOrUpdated += 1;
+            }
+        }
+
+        const stuckRule = ruleByKey.get('procurement_stuck_status');
+        if (stuckRule) {
+            const threshold = parseJsonMaybe(stuckRule.threshold) || {};
+            const days = Math.max(1, Math.min(120, parseOptionalIntegerInput(threshold.days) || 7));
+            const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+            const rows = await prisma.procurementRequest.findMany({
+                where: {
+                    updatedAt: { lt: cutoff },
+                    status: {
+                        notIn: [
+                            PrismaProcurementRequestStatus.REJECTED,
+                            PrismaProcurementRequestStatus.RECEIVED,
+                            PrismaProcurementRequestStatus.CLOSED,
+                            PrismaProcurementRequestStatus.CANCELLED,
+                        ],
+                    },
+                },
+                orderBy: { updatedAt: 'asc' },
+                take: 500,
+            });
+            for (const request of rows) {
+                await upsertInventoryAlertEvent({
+                    rule: stuckRule,
+                    severity: 'medium',
+                    title: `${request.requestNumber} has not moved`,
+                    message: `Request remains in ${mapProcurementStatusFromDb(request.status)} and was last updated ${request.updatedAt.toISOString().slice(0, 10)}.`,
+                    entityType: 'procurement_request',
+                    entityId: request.id,
+                    dedupeKey: `procurement_stuck_status:${request.id}`,
+                    metadata: {
+                        requestNumber: request.requestNumber,
+                        status: mapProcurementStatusFromDb(request.status),
+                        updatedAt: request.updatedAt.toISOString(),
+                        thresholdDays: days,
+                    },
+                });
+                createdOrUpdated += 1;
+            }
+        }
+
+        const budgetRule = ruleByKey.get('budget_usage_threshold');
+        if (budgetRule) {
+            const threshold = parseJsonMaybe(budgetRule.threshold) || {};
+            const percentLimit = Math.max(1, Math.min(100, parseOptionalIntegerInput(threshold.percent) || 80));
+            const allocations = await prisma.budgetAllocation.findMany({
+                include: {
+                    costCenter: true,
+                    period: true,
+                },
+                orderBy: { updatedAt: 'desc' },
+                take: 1000,
+            });
+            for (const allocation of allocations) {
+                const allocated = Number(allocation.allocatedAmount || 0);
+                if (allocated <= 0) continue;
+                const used = Number(allocation.reservedAmount || 0) + Number(allocation.committedAmount || 0) + Number(allocation.spentAmount || 0);
+                const percent = Math.round((used / allocated) * 100);
+                if (percent >= percentLimit) {
+                    await upsertInventoryAlertEvent({
+                        rule: budgetRule,
+                        severity: percent >= 100 ? 'high' : 'medium',
+                        title: `${allocation.costCenter.code} budget pressure ${percent}%`,
+                        message: `${allocation.period.label} budget usage reached ${percent}% (${used.toFixed(2)} of ${allocated.toFixed(2)} EGP).`,
+                        entityType: 'budget_allocation',
+                        entityId: allocation.id,
+                        dedupeKey: `budget_usage_threshold:${allocation.id}`,
+                        metadata: {
+                            costCenter: allocation.costCenter.code,
+                            department: allocation.department,
+                            building: allocation.building,
+                            period: allocation.period.label,
+                            allocated,
+                            used,
+                            percent,
+                        },
+                    });
+                    createdOrUpdated += 1;
+                }
+            }
+        }
+
+        const loanerRule = ruleByKey.get('overdue_loaner');
+        if (loanerRule) {
+            const assets = await prisma.asset.findMany({
+                where: {
+                    custodyStatus: 'CHECKED_OUT',
+                    expectedReturnDate: { lt: new Date() },
+                },
+                orderBy: { expectedReturnDate: 'asc' },
+                take: 1000,
+            });
+            for (const asset of assets) {
+                await upsertInventoryAlertEvent({
+                    rule: loanerRule,
+                    severity: 'medium',
+                    title: `${asset.name} loaner overdue`,
+                    message: `Expected return was ${asset.expectedReturnDate?.toISOString().slice(0, 10)}.`,
+                    entityType: 'asset',
+                    entityId: asset.customId,
+                    dedupeKey: `overdue_loaner:${asset.customId}`,
+                    metadata: {
+                        assetId: asset.customId,
+                        borrower: asset.assignedToName || asset.assignedToUserId || asset.assignedUser || null,
+                        expectedReturnDate: asset.expectedReturnDate?.toISOString() || null,
+                    },
+                });
+                createdOrUpdated += 1;
+            }
+        }
+
+        const dataRule = ruleByKey.get('data_quality_rate');
+        if (dataRule) {
+            const threshold = parseJsonMaybe(dataRule.threshold) || {};
+            const percentLimit = Math.max(1, Math.min(100, parseOptionalIntegerInput(threshold.percent) || 20));
+            const assets = await prisma.asset.findMany({ orderBy: { updatedAt: 'desc' }, take: 7000 });
+            const issueAssets = assets
+                .map((asset) => ({ asset, missing: simpleAssetDataQualityMissing(asset) }))
+                .filter((row) => row.missing.length > 0);
+            const percent = assets.length ? Math.round((issueAssets.length / assets.length) * 100) : 0;
+            if (assets.length && percent >= percentLimit) {
+                await upsertInventoryAlertEvent({
+                    rule: dataRule,
+                    severity: percent >= 50 ? 'high' : 'medium',
+                    title: `Inventory data quality issue rate ${percent}%`,
+                    message: `${issueAssets.length} of ${assets.length} asset record(s) are missing key lifecycle, warranty, cost, location, tag, or serial data.`,
+                    entityType: 'inventory',
+                    entityId: 'data_quality',
+                    dedupeKey: 'data_quality_rate:inventory',
+                    metadata: {
+                        percent,
+                        issueCount: issueAssets.length,
+                        totalAssets: assets.length,
+                        sampleAssets: issueAssets.slice(0, 12).map((row) => ({
+                            assetId: row.asset.customId,
+                            name: row.asset.name,
+                            missing: row.missing,
+                        })),
+                    },
+                });
+                createdOrUpdated += 1;
+            }
+        }
+
+        const alertRows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
+            `SELECT * FROM "inventory_alert_events"
+            WHERE "status" = 'open'
+            ORDER BY "triggeredAt" DESC
+            LIMIT 120`
+        );
+        return res.json({
+            evaluatedAt: nowIsoString(),
+            enabledRules: rules.length,
+            alertsCreatedOrUpdated: createdOrUpdated,
+            alerts: alertRows.map(mapAlertEventRow),
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to evaluate inventory alerts', error: error.message });
     }
 });
 
@@ -18064,25 +19733,37 @@ app.post('/api/assets/:id/retire', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const currentSpecs = readAssetSpecifications(asset);
+        const dispositionWorkflow = buildAssetDispositionWorkflow(asset, req.body, 'retire');
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            disposalWorkflow: dispositionWorkflow,
+            retiredAt: dispositionWorkflow.dispositionDate,
+            finalOutcome: 'retired',
+        });
         const updated = await AssetService.updateAsset(req.params.id, {
             status: 'RETIRED',
             lifecycleStatus: 'RETIRED',
+            specifications: nextSpecs,
         });
         await recordLifecycleEvent({
             assetId: req.params.id,
             eventType: 'asset_retired',
             oldValue: { status: String(asset.status), lifecycleStatus: String((asset as any).lifecycleStatus || '') },
-            newValue: { status: String(updated.status), lifecycleStatus: String((updated as any).lifecycleStatus || '') },
-            reason: normalizeSerialValue(req.body?.reason),
-            notes: normalizeSerialValue(req.body?.notes),
-            actor: normalizeSerialValue(req.body?.actor),
+            newValue: {
+                status: String(updated.status),
+                lifecycleStatus: String((updated as any).lifecycleStatus || ''),
+                disposalWorkflow: dispositionWorkflow,
+            },
+            reason: dispositionWorkflow.reason,
+            notes: dispositionWorkflow.notes,
+            actor: dispositionWorkflow.requestedBy,
         });
         await recordHistoryEvent({
             assetId: req.params.id,
             action: 'Asset Retired',
-            details: normalizeSerialValue(req.body?.reason) || 'Retired by user action',
+            details: `${dispositionWorkflow.reason || 'Retired by user action'}${dispositionWorkflow.approvalRequired ? ' | Write-off review required' : ''}`,
         });
-        res.json(updated);
+        res.json({ asset: updated, dispositionWorkflow });
     } catch (error: any) {
         res.status(500).json({ message: 'Failed to retire asset', error: error.message });
     }
@@ -18092,25 +19773,37 @@ app.post('/api/assets/:id/dispose', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const currentSpecs = readAssetSpecifications(asset);
+        const dispositionWorkflow = buildAssetDispositionWorkflow(asset, req.body, 'dispose');
+        const nextSpecs = mergeAssetSpecifications(currentSpecs, {
+            disposalWorkflow: dispositionWorkflow,
+            disposedAt: dispositionWorkflow.dispositionDate,
+            finalOutcome: 'disposed',
+        });
         const updated = await AssetService.updateAsset(req.params.id, {
             status: 'RETIRED',
             lifecycleStatus: 'DISPOSED',
+            specifications: nextSpecs,
         });
         await recordLifecycleEvent({
             assetId: req.params.id,
             eventType: 'asset_disposed',
             oldValue: { status: String(asset.status), lifecycleStatus: String((asset as any).lifecycleStatus || '') },
-            newValue: { status: String(updated.status), lifecycleStatus: String((updated as any).lifecycleStatus || '') },
-            reason: normalizeSerialValue(req.body?.reason),
-            notes: normalizeSerialValue(req.body?.notes),
-            actor: normalizeSerialValue(req.body?.actor),
+            newValue: {
+                status: String(updated.status),
+                lifecycleStatus: String((updated as any).lifecycleStatus || ''),
+                disposalWorkflow: dispositionWorkflow,
+            },
+            reason: dispositionWorkflow.reason,
+            notes: dispositionWorkflow.notes,
+            actor: dispositionWorkflow.requestedBy,
         });
         await recordHistoryEvent({
             assetId: req.params.id,
             action: 'Asset Disposed',
-            details: normalizeSerialValue(req.body?.reason) || 'Disposed by user action',
+            details: `${dispositionWorkflow.reason || 'Disposed by user action'} | Write-off review ${dispositionWorkflow.approvalStatus}`,
         });
-        res.json(updated);
+        res.json({ asset: updated, dispositionWorkflow });
     } catch (error: any) {
         res.status(500).json({ message: 'Failed to dispose asset', error: error.message });
     }

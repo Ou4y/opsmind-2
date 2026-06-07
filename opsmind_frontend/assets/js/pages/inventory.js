@@ -140,6 +140,12 @@ let importAiHeaderMappings = null;
 let lastImportCommitMeta = null;
 let loanerBoardRows = [];
 let auditBoardRows = [];
+let auditSessionState = {
+  sessions: [],
+  activeSession: null,
+  activeItems: [],
+  loading: false,
+};
 let procurementBoardState = {
   board: null,
   loading: false,
@@ -478,6 +484,7 @@ function isAutoRefreshEnabled() {
 function shouldPauseInventoryAutoRefresh() {
   if (document.visibilityState === 'hidden') return true;
   if (document.querySelector('.modal.show')) return true;
+  if (document.getElementById('inventoryAiChatPanel')?.classList.contains('is-open')) return true;
   const active = document.activeElement;
   if (!active) return false;
   const tag = String(active.tagName || '').toLowerCase();
@@ -1898,6 +1905,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (chip) clearInventoryFilterChip(chip.getAttribute('data-inventory-clear-filter'));
     });
   }
+  const aiSearchBtn = document.getElementById('inventoryAiSearchBtn');
+  if (aiSearchBtn && !aiSearchBtn.dataset.aiSearchBound) {
+    aiSearchBtn.dataset.aiSearchBound = 'true';
+    aiSearchBtn.addEventListener('click', runInventoryAiSearch);
+  }
   setupInventoryAutoRefresh();
   document.addEventListener('click', (event) => {
     const actionBtn = event.target?.closest('[data-inventory-360-action]');
@@ -1982,6 +1994,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const openBulkCheckoutBtn = document.getElementById('openBulkCheckoutBtn');
   const openLoanerBoardBtn = document.getElementById('openLoanerBoardBtn');
   const openAuditBoardBtn = document.getElementById('openAuditBoardBtn');
+  const openInventoryReportsPanelBtn = document.getElementById('openInventoryReportsPanelBtn');
+  const inventoryGenerateReportBtn = document.getElementById('inventoryGenerateReportBtn');
   const openProcurementBoardBtn = document.getElementById('openProcurementBoardBtn');
   const procurementBoardRefreshBtn = document.getElementById('procurementBoardRefreshBtn');
   const procurementCreateRequestBtn = document.getElementById('procurementCreateRequestBtn');
@@ -1999,6 +2013,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const loanerRefreshBtn = document.getElementById('loanerRefreshBtn');
   const loanerSearchInput = document.getElementById('loanerSearchInput');
   const auditBoardRefreshBtn = document.getElementById('auditBoardRefreshBtn');
+  const auditCreateSessionBtn = document.getElementById('auditCreateSessionBtn');
+  const auditSessionsRefreshBtn = document.getElementById('auditSessionsRefreshBtn');
+  const auditSessionsList = document.getElementById('auditSessionsList');
+  const auditSessionDetails = document.getElementById('auditSessionDetails');
   const mapRefreshBtn = document.getElementById('assetMapRefreshBtn');
   const mapResetFiltersBtn = document.getElementById('assetMapResetFiltersBtn');
   const mapSearchInput = document.getElementById('assetMapSearchInput');
@@ -2018,6 +2036,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (openBulkCheckoutBtn) openBulkCheckoutBtn.addEventListener('click', () => window.openBulkCheckoutModal());
   if (openLoanerBoardBtn) openLoanerBoardBtn.addEventListener('click', () => window.openLoanerBoardModal());
   if (openAuditBoardBtn) openAuditBoardBtn.addEventListener('click', () => window.openAuditBoardModal());
+  if (openInventoryReportsPanelBtn) openInventoryReportsPanelBtn.addEventListener('click', () => window.openInventoryReportsPanel());
+  if (inventoryGenerateReportBtn) inventoryGenerateReportBtn.addEventListener('click', () => window.generateInventoryReportCsv());
   if (openProcurementBoardBtn) openProcurementBoardBtn.addEventListener('click', () => window.openProcurementWorkspace());
   if (procurementBoardRefreshBtn) procurementBoardRefreshBtn.addEventListener('click', () => window.loadProcurementBoard());
   if (procurementCreateRequestBtn) procurementCreateRequestBtn.addEventListener('click', () => window.createProcurementRequestManual());
@@ -2068,6 +2088,32 @@ document.addEventListener('DOMContentLoaded', () => {
   if (loanerRefreshBtn) loanerRefreshBtn.addEventListener('click', () => window.loadLoanerBoard());
   if (loanerSearchInput) loanerSearchInput.addEventListener('input', () => window.renderLoanerBoard());
   if (auditBoardRefreshBtn) auditBoardRefreshBtn.addEventListener('click', () => window.loadAuditBoard());
+  if (auditCreateSessionBtn) auditCreateSessionBtn.addEventListener('click', () => window.createAuditSession());
+  if (auditSessionsRefreshBtn) auditSessionsRefreshBtn.addEventListener('click', () => window.loadAuditSessions());
+  if (auditSessionsList) {
+    auditSessionsList.addEventListener('click', (event) => {
+      const openBtn = event.target?.closest('[data-audit-session-open]');
+      if (openBtn) {
+        const sessionId = String(openBtn.getAttribute('data-audit-session-open') || '').trim();
+        if (sessionId) window.loadAuditSessionDetails(sessionId);
+        return;
+      }
+      const closeBtn = event.target?.closest('[data-audit-session-close]');
+      if (closeBtn) {
+        const sessionId = String(closeBtn.getAttribute('data-audit-session-close') || '').trim();
+        if (sessionId) window.closeAuditSession(sessionId);
+      }
+    });
+  }
+  if (auditSessionDetails) {
+    auditSessionDetails.addEventListener('click', (event) => {
+      const actionBtn = event.target?.closest('[data-audit-session-item-action]');
+      if (!actionBtn) return;
+      const itemId = String(actionBtn.getAttribute('data-audit-session-item-action') || '').trim();
+      const status = String(actionBtn.getAttribute('data-audit-session-status') || '').trim();
+      if (itemId && status) window.updateAuditSessionItem(itemId, status);
+    });
+  }
   if (mapRefreshBtn) mapRefreshBtn.addEventListener('click', () => window.loadInventoryMapAssets(true));
   if (mapCalibrateToggleBtn) {
     mapCalibrateToggleBtn.addEventListener('click', () => {
@@ -2176,7 +2222,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const inventoryAiPromptToggleBtn = document.getElementById('inventoryAiPromptToggleBtn');
   const inventoryAiChatMessages = document.getElementById('inventoryAiChatMessages');
   if (inventoryAiAssistantBtn) inventoryAiAssistantBtn.addEventListener('click', () => window.toggleInventoryAiChat(true));
-  if (inventoryAiSearchBtn) inventoryAiSearchBtn.addEventListener('click', () => window.openInventoryAiModal('search'));
+  if (inventoryAiSearchBtn && !inventoryAiSearchBtn.dataset.aiSearchBound) {
+    inventoryAiSearchBtn.dataset.aiSearchBound = 'true';
+    inventoryAiSearchBtn.addEventListener('click', runInventoryAiSearch);
+  }
   if (inventoryAiMissingDataBtn) inventoryAiMissingDataBtn.addEventListener('click', () => window.openInventoryAiModal('missing_data'));
   if (inventoryAiMaintenanceBtn) inventoryAiMaintenanceBtn.addEventListener('click', () => window.openInventoryAiModal('maintenance'));
   if (inventoryAiProcurementBtn) inventoryAiProcurementBtn.addEventListener('click', () => window.openInventoryAiModal('procurement'));
@@ -2392,6 +2441,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (returnBtn) {
         const assetId = String(returnBtn.getAttribute('data-loaner-return-id') || '').trim();
         if (assetId) window.loanerReturnAsset(assetId);
+      }
+      const recallBtn = event.target?.closest('[data-loaner-recall-id]');
+      if (recallBtn) {
+        const assetId = String(recallBtn.getAttribute('data-loaner-recall-id') || '').trim();
+        if (assetId) window.loanerRecallAsset(assetId);
       }
     });
   }
@@ -2683,7 +2737,7 @@ function updateInventoryFreshnessStatus(status = 'ready', message = '') {
     : 'Auto-refresh paused';
   const loadedText = inventoryPageState.loadedAt ? `Updated ${formatRelativeTime(inventoryPageState.loadedAt)}` : 'Waiting for first load';
   const label = message || (status === 'refreshing'
-    ? 'Refreshing inventory data...'
+    ? 'Refreshing...'
     : (status === 'error' ? `Refresh failed. ${loadedText}.` : `${loadedText}. ${autoText}.`));
   const stateClass = status === 'error' ? 'is-error' : (status === 'refreshing' ? 'is-refreshing' : 'is-ready');
   if (badge) {
@@ -2712,7 +2766,7 @@ function setupInventoryAutoRefresh() {
     }
     loadAssets({ background: true }).catch((error) => {
       console.warn('[Inventory] Auto refresh failed:', error?.message || error);
-      updateInventoryFreshnessStatus('error', 'Failed to auto-refresh inventory data.');
+      updateInventoryFreshnessStatus('error', 'Refresh failed');
     });
   }, AUTO_REFRESH_INTERVAL_MS);
 }
@@ -2737,11 +2791,13 @@ function refreshInventorySecondaryEvidence() {
 async function loadAssets(options = {}) {
   if (loadAssetsInFlightPromise) return loadAssetsInFlightPromise;
   const background = Boolean(options.background);
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
 
   loadAssetsInFlightPromise = (async () => {
     let endpoint = '/assets';
     try {
-      updateInventoryFreshnessStatus('refreshing', background ? 'Refreshing inventory evidence...' : 'Loading inventory data...');
+      updateInventoryFreshnessStatus('refreshing', background ? 'Refreshing...' : 'Loading inventory data...');
       if (!background) showInventoryTableLoadingState();
       const searchTerm = String(document.getElementById('searchInput')?.value || '').trim();
       const buildingFilter = String(document.getElementById('filterBuilding')?.value || 'all');
@@ -2789,7 +2845,9 @@ async function loadAssets(options = {}) {
     } catch (error) {
       console.error('Error:', error);
       renderInventoryLoadError(error, endpoint);
-      updateInventoryFreshnessStatus('error', `Data loaded failed at ${endpoint}. ${error?.message || 'Check logs.'}`);
+      updateInventoryFreshnessStatus('error', background ? 'Refresh failed' : `Data loaded failed at ${endpoint}. ${error?.message || 'Check logs.'}`);
+    } finally {
+      if (background) requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
     }
   })();
 
@@ -2943,6 +3001,137 @@ function getEOLDetails(asset) {
     shortAction,
     whyDetails,
   };
+}
+
+function calculateAssetHealthScore(asset) {
+  const now = new Date();
+  const specs = getAssetSpecs(asset);
+  const lifecycle = getLifecycleSnapshot(asset);
+  const eol = getEOLDetails(asset);
+  const startDate = lifecycle.commissionedAt || lifecycle.purchaseDate || toValidDate(asset.purchaseDate || specs.purchaseDate || asset.createdAt);
+  const expectedYears = Math.max(0.5, Number(eol?.metrics?.years || 5));
+  const ageYears = startDate ? Math.max(0, (now - startDate) / (365 * 24 * 60 * 60 * 1000)) : null;
+  const agePenalty = ageYears === null ? 12 : Math.min(30, (ageYears / expectedYears) * 30);
+
+  const warrantyDate = toValidDate(asset.warrantyEndDate || specs.warrantyEndDate || specs.warrantyEnd);
+  let warrantyPenalty = 0;
+  if (!warrantyDate) warrantyPenalty = 10;
+  else {
+    const warrantyDays = Math.ceil((warrantyDate - now) / (24 * 60 * 60 * 1000));
+    if (warrantyDays < 0) warrantyPenalty = 20;
+    else if (warrantyDays <= 180) warrantyPenalty = 14;
+    else if (warrantyDays <= 365) warrantyPenalty = 8;
+  }
+
+  let eolPenalty = 0;
+  if (eol.isClosedLifecycle) eolPenalty = 20;
+  else if (eol.daysRemaining < 0) eolPenalty = 20;
+  else if (eol.daysRemaining <= 180) eolPenalty = 16;
+  else if (eol.daysRemaining <= 365) eolPenalty = 10;
+  else if (eol.lowConfidence) eolPenalty = 6;
+
+  const maintenanceDate = toValidDate(
+    specs.lastMaintenanceDate
+    || specs.lastMaintainedAt
+    || specs.maintenanceDate
+    || specs.lastServiceDate
+  );
+  let maintenancePenalty = 0;
+  if (!maintenanceDate) maintenancePenalty = 6;
+  else {
+    const maintenanceDays = Math.floor((now - maintenanceDate) / (24 * 60 * 60 * 1000));
+    if (maintenanceDays > 365) maintenancePenalty = 15;
+    else if (maintenanceDays > 180) maintenancePenalty = 8;
+  }
+
+  const missingFields = [];
+  if (!asset.serialNumber) missingFields.push('serial');
+  if (!asset.assetTag) missingFields.push('asset tag');
+  if (!asset.purchaseDate && !specs.purchaseDate) missingFields.push('purchase date');
+  if (!asset.warrantyEndDate && !specs.warrantyEndDate && !specs.warrantyEnd) missingFields.push('warranty');
+  if (!asset.purchaseCost && !specs.purchaseCost) missingFields.push('purchase cost');
+  if (!asset.location) missingFields.push('location');
+  if (!asset.department || normalizeValue(asset.department) === 'unassigned') missingFields.push('department');
+  const dataCompletenessPenalty = Math.min(15, (missingFields.length / 7) * 15);
+
+  const riskScore = Math.max(0, Math.min(100, Math.round(agePenalty + warrantyPenalty + eolPenalty + maintenancePenalty + dataCompletenessPenalty)));
+  const healthScore = Math.max(0, Math.min(100, 100 - riskScore));
+  const evidenceChecks = [
+    startDate,
+    warrantyDate,
+    maintenanceDate,
+    asset.purchaseCost || specs.purchaseCost,
+    !missingFields.length,
+  ].filter(Boolean).length;
+  const coverage = Math.round((evidenceChecks / 5) * 100);
+  const confidence = coverage >= 80 ? 'High' : (coverage >= 50 ? 'Medium' : 'Low');
+  const status = healthScore <= 39 ? 'Poor' : (healthScore <= 69 ? 'Watch' : 'Healthy');
+  return {
+    score: healthScore,
+    riskScore,
+    status,
+    confidence,
+    coverage,
+    missingFields,
+    breakdown: {
+      agePenalty: Math.round(agePenalty),
+      warrantyPenalty: Math.round(warrantyPenalty),
+      eolPenalty: Math.round(eolPenalty),
+      maintenancePenalty: Math.round(maintenancePenalty),
+      dataCompletenessPenalty: Math.round(dataCompletenessPenalty),
+    },
+    evidence: [
+      ageYears === null ? 'Age: purchase/commission date missing' : `Age: ${ageYears.toFixed(1)} of ${expectedYears.toFixed(1)} expected years`,
+      warrantyDate ? `Warranty: ${warrantyDate.toLocaleDateString()}` : 'Warranty: missing',
+      maintenanceDate ? `Last maintenance: ${maintenanceDate.toLocaleDateString()}` : 'Maintenance history: missing',
+      `EOL: ${eol.remainingText || 'unknown'}`,
+      missingFields.length ? `Missing: ${missingFields.join(', ')}` : 'Core identity/cost/location data complete',
+    ],
+  };
+}
+
+function renderAssetHealthPill(asset) {
+  const health = calculateAssetHealthScore(asset);
+  const bucket = Math.max(0, Math.min(100, Math.ceil(health.score / 10) * 10));
+  const severityClass = health.score <= 39 ? 'is-urgent' : (health.score <= 69 ? 'is-review' : 'is-healthy');
+  return `
+    <div class="inventory-health-pill ${severityClass}" title="Health score ${UI.escapeHTML(String(health.score))}/100; evidence confidence ${UI.escapeHTML(health.confidence)}">
+      <span class="inventory-health-meter progress-${UI.escapeHTML(String(bucket))}"></span>
+      <strong>${UI.escapeHTML(String(health.score))}</strong>
+      <span>${UI.escapeHTML(health.status)}</span>
+    </div>
+    <div class="inventory-group-unit-meta">Evidence confidence: ${UI.escapeHTML(health.confidence)} (${UI.escapeHTML(String(health.coverage))}% coverage)</div>
+  `;
+}
+
+function renderAssetHealthBreakdown(asset) {
+  const health = calculateAssetHealthScore(asset);
+  const severityClass = health.score <= 39 ? 'is-urgent' : (health.score <= 69 ? 'is-review' : 'is-healthy');
+  return `
+    <section class="inventory-health-breakdown ${severityClass}">
+      <div class="inventory-health-breakdown-score">
+        <span>${UI.escapeHTML(String(health.score))}</span>
+        <small>/100</small>
+      </div>
+      <div class="inventory-health-breakdown-copy">
+        <div class="inventory-section-kicker">Asset health score</div>
+        <h6>${UI.escapeHTML(health.status)} - Evidence confidence ${UI.escapeHTML(health.confidence)}</h6>
+        <p>Health Score = 100 - risk score. Risk weights: age 30%, warranty 20%, EOL 20%, maintenance gap 15%, data completeness 15%.</p>
+        <div class="inventory-health-breakdown-grid">
+          <span>Age ${UI.escapeHTML(String(health.breakdown.agePenalty))}/30</span>
+          <span>Warranty ${UI.escapeHTML(String(health.breakdown.warrantyPenalty))}/20</span>
+          <span>EOL ${UI.escapeHTML(String(health.breakdown.eolPenalty))}/20</span>
+          <span>Maintenance ${UI.escapeHTML(String(health.breakdown.maintenancePenalty))}/15</span>
+          <span>Data ${UI.escapeHTML(String(health.breakdown.dataCompletenessPenalty))}/15</span>
+        </div>
+        <details class="inventory-group-evidence-drawer">
+          <summary>Score evidence</summary>
+          <ul>${health.evidence.map((row) => `<li>${UI.escapeHTML(row)}</li>`).join('')}</ul>
+          <div>This is not a Gemma confidence score; it describes the completeness of asset evidence used by the deterministic formula.</div>
+        </details>
+      </div>
+    </section>
+  `;
 }
 
 window.showEolWhy = async function showEolWhy(assetId) {
@@ -3820,6 +4009,9 @@ function resetFilters() {
   if (lifecycleSelect) lifecycleSelect.value = 'all';
   const searchInput = document.getElementById('searchInput');
   if (searchInput) searchInput.value = '';
+  const aiSearchChips = document.getElementById('inventoryAiSearchAppliedChips');
+  if (aiSearchChips) aiSearchChips.innerHTML = '';
+  renderAiSearchState();
   if (currentInventoryView === 'spare_stock') {
     renderTable();
     return;
@@ -3849,6 +4041,11 @@ function filterGroupTable() {
 function handleSearchKeyPress(event) {
   if (event.key === 'Enter') {
     if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    if (document.getElementById('inventoryAiSearchModeToggle')?.checked) {
+      event.preventDefault();
+      runInventoryAiSearch();
+      return;
+    }
     inventoryPageState.page = 1;
     loadAssets().catch((error) => {
       showMessage(error.message || 'Failed to search inventory.', 'error');
@@ -4184,12 +4381,37 @@ function inventory360Evidence(title, evidence = [], missingData = []) {
   `;
 }
 
+function inventoryTechnicalSourceLabel(value = {}) {
+  const raw = typeof value === 'string'
+    ? value
+    : (value.sourceLabel || value.source || value.aiSource || value.recommendationSource || value.llmStatus || '');
+  const key = normalizeValue(raw);
+  if (value?.fallbackUsed || key.includes('fallback')) return 'Fallback';
+  if (value?.llmUsed || key.includes('gemma')) return 'Gemma';
+  if (key.includes('hybrid') || ((key.includes('ai') || key.includes('plus')) && key.includes('deterministic'))) return 'Hybrid';
+  if (key.includes('deterministic') || key.includes('rule')) return 'Deterministic';
+  return raw ? String(raw).replace(/_/g, ' ') : 'Deterministic';
+}
+
+function inventoryPublicSourceLabel(value = {}) {
+  const technical = inventoryTechnicalSourceLabel(value);
+  if (technical === 'Gemma') return 'AI insight';
+  if (technical === 'Hybrid') return 'Estimated';
+  return 'System data';
+}
+
+function inventorySourceInfoIcon(value = {}) {
+  const technical = inventoryTechnicalSourceLabel(value);
+  return `<span class="ops-source-info" title="Internal source: ${UI.escapeHTML(technical)}" aria-label="Internal source: ${UI.escapeHTML(technical)}"><i class="bi bi-info-circle"></i></span>`;
+}
+
 function inventory360Card({ title, value, subtitle, severity = 'info', source = 'Deterministic', evidence = [], missingData = [], actions = [] } = {}) {
+  const publicSource = inventoryPublicSourceLabel(source);
   return `
     <article class="ops-360-card ${severityClass(severity)}">
       <div class="ops-360-card-head">
         <div>
-          <div class="ops-360-card-kicker">${UI.escapeHTML(source)}</div>
+          <div class="ops-360-card-kicker">${UI.escapeHTML(publicSource)}${inventorySourceInfoIcon(source)}</div>
           <h3>${UI.escapeHTML(title || 'Inventory insight')}</h3>
         </div>
         <span class="ops-attention-pill ${severityClass(severity)}">${UI.escapeHTML(String(severity || 'Info'))}</span>
@@ -4375,19 +4597,19 @@ async function refreshInventory360ProcurementBoard(force = false) {
 }
 
 function inventoryGemmaFeatureRows(aiReady, diagnostics = {}) {
-  const source = aiReady ? 'Gemma ready' : 'Fallback available';
-  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  const source = aiReady ? 'AI insight ready' : 'System data available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'local AI model';
   return [
-    ['Inventory AI Daily Briefing', 'Yes', source, 'Daily brief endpoint should use Gemma for narrative when ready.'],
-    ['Explain Inventory 360', 'Hybrid', source, 'Inventory facts are deterministic; Gemma explains the loaded evidence.'],
+    ['Inventory AI Daily Briefing', 'Yes', source, 'Daily brief endpoint should use AI insight for narrative when ready.'],
+    ['Explain Inventory 360', 'Estimated', source, 'Inventory facts are system-calculated; AI insight explains the loaded evidence.'],
     ['Asset health summary', 'Yes', source, 'CMDB evidence packet should route through Inventory AI service.'],
-    ['AI Risk Score', 'Hybrid', source, 'Risk facts are deterministic; Gemma can explain reasons and next actions.'],
-    ['Draft Ticket', 'Yes/Hybrid', source, 'Draft text can be Gemma-generated, but user review remains required.'],
-    ['AI Import Repair', 'Hybrid', source, 'Column/error evidence is compact; safe fixes still require review.'],
-    ['AI Map Columns', 'Hybrid', source, 'Header/sample evidence is sent only when mapping needs AI.'],
-    ['AI Spec Verification', 'Hybrid', source, 'Trusted-source/spec facts remain evidence-backed.'],
-    ['Procurement recommendation explanation', 'Hybrid', source, 'Uses real stock/EOL/audit/request evidence.'],
-    ['Copilot prompt response', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+    ['AI Risk Score', 'Estimated', source, 'Risk facts are system-calculated; AI insight can explain reasons and next actions.'],
+    ['Draft Ticket', 'Yes/Estimated', source, 'Draft text can use AI insight, but user review remains required.'],
+    ['AI Import Repair', 'Estimated', source, 'Column/error evidence is compact; safe fixes still require review.'],
+    ['AI Map Columns', 'Estimated', source, 'Header/sample evidence is sent only when mapping needs AI.'],
+    ['AI Spec Verification', 'Estimated', source, 'Trusted-source/spec facts remain evidence-backed.'],
+    ['Procurement recommendation explanation', 'Estimated', source, 'Uses real stock/EOL/audit/request evidence.'],
+    ['Copilot prompt response', 'Yes/Estimated', source, `Routes through Inventory AI service when ${model} is available.`],
   ];
 }
 
@@ -4403,7 +4625,7 @@ async function fetchInventoryGemmaDiagnostics() {
     health: healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' },
     diagnostics: diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' },
     backend: backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' },
-    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' },
+    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend AI test unavailable' },
     latencyMs: Math.round(performance.now() - startedAt),
   };
 }
@@ -4424,10 +4646,10 @@ function renderInventoryGemmaDiagnosticsBody(result = {}) {
       <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
         <div>
           <div class="ops-gemma-kicker">Inventory AI diagnostics</div>
-          <h3>${UI.escapeHTML(aiReady ? 'Gemma is ready for Inventory AI' : 'Inventory AI is using fallback readiness')}</h3>
-          <p>${UI.escapeHTML(aiReady ? 'Calculations stay deterministic; Gemma is available for summaries, explanations, and recommendation wording.' : 'Fallback remains available. Retest after Ollama/Gemma is running and warmed up.')}</p>
+          <h3>${UI.escapeHTML(aiReady ? 'AI insight is ready for Inventory' : 'Inventory system data is available')}</h3>
+          <p>${UI.escapeHTML(aiReady ? 'Calculations stay system-calculated; AI insight is available for summaries, explanations, and recommendation wording.' : 'System data remains available. Retest after local AI is running and warmed up.')}</p>
         </div>
-        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${UI.escapeHTML(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${UI.escapeHTML(aiReady ? 'AI insight ready' : 'System data mode')}</span>
       </div>
       <div class="ops-gemma-metrics">
         <div><strong>Provider</strong><span>${UI.escapeHTML(provider)}</span></div>
@@ -4440,7 +4662,7 @@ function renderInventoryGemmaDiagnosticsBody(result = {}) {
       ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${UI.escapeHTML(String(lastError).replace(/_/g, ' '))}</div>` : ''}
       <div class="table-responsive">
         <table class="table table-sm align-middle ops-gemma-table">
-          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Readiness/source</th><th>What this verifies</th><th></th></tr></thead>
+          <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>What this verifies</th><th></th></tr></thead>
           <tbody>
             ${rows.map(([feature, requires, source, note]) => `
               <tr>
@@ -4450,7 +4672,7 @@ function renderInventoryGemmaDiagnosticsBody(result = {}) {
                 <td>${UI.escapeHTML(note)}</td>
                 <td class="text-end">
                   <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-gemma-retest>Test</button>
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-inventory-gemma-ask="${UI.escapeHTML(feature)}">Ask Gemma</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-inventory-gemma-ask="${UI.escapeHTML(feature)}">Ask AI</button>
                 </td>
               </tr>
             `).join('')}
@@ -4471,10 +4693,10 @@ async function openInventoryGemmaDiagnostics() {
           <div class="modal-content ops-diagnostics-modal">
             <div class="modal-header">
               <div>
-                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
-                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and fallback labels.</div>
+                <h5 class="modal-title" id="${modalId}Title">AI diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Inventory AI routing, model readiness, and source-label honesty.</div>
               </div>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close AI diagnostics"></button>
             </div>
             <div class="modal-body" id="${modalId}Body">
               <div class="ops-loading-stack">
@@ -4485,7 +4707,7 @@ async function openInventoryGemmaDiagnostics() {
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest AI</button>
             </div>
           </div>
         </div>
@@ -4497,7 +4719,7 @@ async function openInventoryGemmaDiagnostics() {
       const askBtn = event.target?.closest('[data-inventory-gemma-ask]');
       if (askBtn) {
         const feature = askBtn.getAttribute('data-inventory-gemma-ask') || 'Inventory AI';
-        openInventoryCopilotWithPrompt(`Test ${feature} with Gemma. Use real inventory evidence only and state whether Gemma, hybrid, deterministic, or fallback was used.`);
+        openInventoryCopilotWithPrompt(`Test ${feature} with AI insight. Use real inventory evidence only and state whether AI insight, estimated, or system data was used.`);
       }
     });
     document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openInventoryGemmaDiagnostics());
@@ -4523,7 +4745,7 @@ async function openInventoryGemmaDiagnostics() {
           <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
           <div>
             <div class="ops-empty-state-title">Diagnostics unavailable</div>
-            <div class="ops-empty-state-copy">${UI.escapeHTML(error.message || 'Could not complete read-only Gemma diagnostics.')}</div>
+            <div class="ops-empty-state-copy">${UI.escapeHTML(error.message || 'Could not complete read-only AI diagnostics.')}</div>
           </div>
         </div>
       `;
@@ -4545,6 +4767,31 @@ function openInventoryCopilotWithPrompt(prompt = '') {
   }
 }
 
+async function openInventoryGuidedTour() {
+  await showInventoryFormModal({
+    title: 'Inventory Guided Tour',
+    message: 'A read-only walkthrough of the real Inventory workspace. It never imports, creates, transfers, checks out, deletes, or updates records by itself.',
+    messageHtml: `
+      <div class="ops-guided-tour-panel">
+        <ol class="ops-guided-tour-list">
+          <li><strong>Inventory 360:</strong> start with portfolio health, risk, stock, cost, data quality, and procurement impact.</li>
+          <li><strong>Assets table:</strong> use category tabs, filters, and search without losing full building/department options.</li>
+          <li><strong>Import and Create:</strong> review previews, AI repair suggestions, validation warnings, and confirmation summaries before committing.</li>
+          <li><strong>CMDB / Asset 360:</strong> inspect identity, components, relationships, lifecycle, telemetry, and evidence confidence.</li>
+          <li><strong>Operations:</strong> use transfer, bulk checkout, loaners, audit board, QR labels, and Asset Map from the action bar.</li>
+          <li><strong>Copilot:</strong> ask for health, missing data, procurement priorities, EOL risk, and next actions using loaded evidence.</li>
+        </ol>
+        <div class="ops-guided-tour-note">Phase 1 can add anchored tooltip overlays. Phase 0 exposes this guided panel clearly without hidden demo flags.</div>
+      </div>
+    `,
+    confirmText: 'Close',
+    cancelText: 'Dismiss',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [],
+  });
+}
+
 function handleInventory360Action(action = '') {
   const value = String(action || '').trim();
   const viewActionMap = {
@@ -4562,6 +4809,10 @@ function handleInventory360Action(action = '') {
   }
   if (value === 'gemma-diagnostics') {
     openInventoryGemmaDiagnostics();
+    return;
+  }
+  if (value === 'guided-tour') {
+    openInventoryGuidedTour();
     return;
   }
   if (value === 'assets') {
@@ -4644,6 +4895,92 @@ window.changeInventoryPage = (delta = 0) => {
     showMessage(error.message || 'Failed to change page.', 'error');
   });
 };
+
+function renderInventoryMiniBars(rows = [], emptyText = 'No graph data yet') {
+  if (!rows.length) {
+    return `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">${UI.escapeHTML(emptyText)}</div>
+          <div class="ops-empty-state-copy">Load or filter assets to populate this graph.</div>
+        </div>
+      </div>
+    `;
+  }
+  const max = Math.max(1, ...rows.map((row) => Number(row.value || 0)));
+  return `
+    <div class="inventory-mini-chart-bars">
+      ${rows.slice(0, 8).map((row) => {
+        const value = Number(row.value || 0);
+        const bucket = Math.max(0, Math.min(100, Math.ceil((value / max) * 10) * 10));
+        return `
+          <div class="inventory-mini-chart-row">
+            <span>${UI.escapeHTML(row.label)}</span>
+            <div class="inventory-mini-chart-track"><i class="progress-${UI.escapeHTML(String(bucket))}"></i></div>
+            <strong>${UI.escapeHTML(row.display || String(value))}</strong>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderInventoryVisualAnalytics(baseAssets = [], filteredAssets = []) {
+  const el = document.getElementById('inventoryVisualAnalytics');
+  if (!el) return;
+  const assets = Array.isArray(filteredAssets) && filteredAssets.length ? filteredAssets : (Array.isArray(baseAssets) ? baseAssets : []);
+  const byCategory = new Map();
+  const byTypeHealth = new Map();
+  let costKnown = 0;
+  let costMissing = 0;
+  let eolSoon = 0;
+  assets.forEach((asset) => {
+    const category = String(asset.category || 'asset').replace(/_/g, ' ') || 'asset';
+    byCategory.set(category, (byCategory.get(category) || 0) + 1);
+    const type = canonicalType(asset.type || asset.assetType || 'Asset');
+    const health = calculateAssetHealthScore(asset);
+    if (!byTypeHealth.has(type)) byTypeHealth.set(type, { count: 0, total: 0 });
+    const entry = byTypeHealth.get(type);
+    entry.count += 1;
+    entry.total += Number(health.score || 0);
+    if (Number(asset.purchaseCost || 0) > 0) costKnown += 1;
+    else costMissing += 1;
+    const eol = getEOLDetails(asset);
+    if (eol?.procurementRecommended || eol?.lowConfidence || Number(eol?.daysRemaining) <= 180) eolSoon += 1;
+  });
+  const categoryRows = Array.from(byCategory.entries())
+    .map(([label, value]) => ({ label: label.replace(/\b\w/g, (ch) => ch.toUpperCase()), value }))
+    .sort((a, b) => b.value - a.value);
+  const healthRows = Array.from(byTypeHealth.entries())
+    .map(([label, row]) => ({ label, value: Math.round(row.total / Math.max(1, row.count)), display: `${Math.round(row.total / Math.max(1, row.count))}/100` }))
+    .sort((a, b) => b.value - a.value);
+  const costRows = [
+    { label: 'Cost known', value: costKnown },
+    { label: 'Cost missing', value: costMissing },
+  ].filter((row) => row.value > 0);
+  const eolRows = [
+    { label: 'EOL / evidence review', value: eolSoon },
+    { label: 'No immediate EOL signal', value: Math.max(0, assets.length - eolSoon) },
+  ].filter((row) => row.value > 0);
+  el.innerHTML = `
+    <article class="inventory-analytics-card ops-3d-card">
+      <div class="inventory-analytics-card-head"><h3>Assets by category</h3><span>${UI.escapeHTML(String(assets.length))} shown</span></div>
+      ${renderInventoryMiniBars(categoryRows, 'No category graph yet')}
+    </article>
+    <article class="inventory-analytics-card ops-3d-card">
+      <div class="inventory-analytics-card-head"><h3>Avg health by type</h3><span>0-100</span></div>
+      ${renderInventoryMiniBars(healthRows, 'No health graph yet')}
+    </article>
+    <article class="inventory-analytics-card ops-3d-card">
+      <div class="inventory-analytics-card-head"><h3>Cost coverage</h3><span>EGP evidence</span></div>
+      ${renderInventoryMiniBars(costRows, 'No cost coverage graph yet')}
+    </article>
+    <article class="inventory-analytics-card ops-3d-card">
+      <div class="inventory-analytics-card-head"><h3>EOL planning</h3><span>Evidence</span></div>
+      ${renderInventoryMiniBars(eolRows, 'No EOL graph yet')}
+    </article>
+  `;
+}
 
 function renderTable() {
   const tableBody = document.getElementById('inventoryTableBody');
@@ -4789,6 +5126,7 @@ function renderTable() {
     ].join(' ').toLowerCase();
     return haystack.includes(searchTerm);
   });
+  renderInventoryVisualAnalytics(baseAssets, filteredAssets);
 
   if (!filteredAssets || filteredAssets.length === 0) {
     tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
@@ -5354,7 +5692,7 @@ window.viewAssetDetails = (assetName) => {
             <details class="inventory-group-evidence-drawer">
               <summary>Why?</summary>
               <div>
-                Source: deterministic EOL profile plus local asset evidence. Unknown evidence: ${UI.escapeHTML(String(unknownCount))};
+                Source: system EOL profile plus local asset evidence. Unknown evidence: ${UI.escapeHTML(String(unknownCount))};
                 low confidence: ${UI.escapeHTML(String(lowConfidenceCount))}; procurement recommended: ${UI.escapeHTML(String(failingCount))}.
               </div>
             </details>
@@ -5423,6 +5761,7 @@ window.viewAssetDetails = (assetName) => {
         </td>
         <td><span class="inventory-group-clamped-text" title="${UI.escapeHTML(locationLabel)}">${UI.escapeHTML(locationLabel)}</span></td>
         <td><span class="inventory-group-clamped-text" title="${UI.escapeHTML(departmentLabel)}">${UI.escapeHTML(departmentLabel)}</span></td>
+        <td>${renderAssetHealthPill(asset)}</td>
         <td class="inventory-group-eol-cell">
           ${eolApplicable ? `
             <div class="mb-1"><span class="badge ${eol.statusClass}">${UI.escapeHTML(eol.remainingText)}</span></div>
@@ -6241,6 +6580,13 @@ window.renderLoanerBoard = () => {
               ${canReturn ? '' : 'disabled'}
               title="${UI.escapeHTML(canReturn ? 'Record loaner return.' : 'Loaner return is available only when asset is currently loaned out.')}"
             >Return</button>
+            <button
+              type="button"
+              class="btn btn-sm ${canReturn ? 'btn-outline-warning' : 'btn-outline-secondary'}"
+              data-loaner-recall-id="${UI.escapeHTML(row.assetId)}"
+              ${canReturn ? '' : 'disabled'}
+              title="${UI.escapeHTML(canReturn ? 'Request this loaner back without changing custody state.' : 'Recall is available only when asset is checked out or overdue.')}"
+            >Recall</button>
           </div>
           ${blockedReason ? `<div class="small text-muted mt-1">${UI.escapeHTML(blockedReason)}</div>` : ''}
         </td>
@@ -6291,6 +6637,18 @@ window.loanerCheckoutAsset = async (assetId) => {
         required: false,
       },
       {
+        name: 'conditionOut',
+        label: 'Checkout Condition',
+        type: 'select',
+        options: [
+          { value: 'good', label: 'Good' },
+          { value: 'used_serviceable', label: 'Used but serviceable' },
+          { value: 'needs_review', label: 'Needs review' },
+        ],
+        value: 'good',
+        required: true,
+      },
+      {
         name: 'reason',
         label: 'Reason',
         type: 'text',
@@ -6311,7 +6669,9 @@ window.loanerCheckoutAsset = async (assetId) => {
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
       loanedTo: form.values.loanedTo,
+      assignedDepartment: form.values.department || null,
       expectedReturnDate: form.values.expectedReturnDate || null,
+      conditionOut: form.values.conditionOut || null,
       notes: [form.values.reason, form.values.notes, form.values.department ? `Department: ${form.values.department}` : ''].filter(Boolean).join(' | '),
       actor: 'inventory-ui-loaner',
     });
@@ -6374,10 +6734,291 @@ window.loanerReturnAsset = async (assetId) => {
   }
 };
 
+window.loanerRecallAsset = async (assetId) => {
+  const row = (loanerBoardRows || []).find((entry) => String(entry.assetId || '') === String(assetId || ''));
+  if (!row) {
+    showMessage('Loaner asset row not found.', 'warning');
+    return;
+  }
+  const status = normalizeValue(row.loanerStatus || '');
+  if (!(status === 'checkedout' || status === 'overdue')) {
+    showMessage('Recall is available only when the loaner is checked out or overdue.', 'warning');
+    return;
+  }
+  const form = await showInventoryFormModal({
+    title: 'Recall Loaner',
+    message: `Request return for: ${row.name || assetId}`,
+    confirmText: 'Send Recall Request',
+    confirmClass: 'btn-warning',
+    dialogClass: 'modal-md',
+    fields: [
+      {
+        name: 'recallDueDate',
+        label: 'Requested Return Date',
+        type: 'date',
+        value: row.expectedReturnDate ? String(row.expectedReturnDate).slice(0, 10) : '',
+        required: false,
+      },
+      {
+        name: 'reason',
+        label: 'Recall Reason',
+        type: 'text',
+        value: 'Loaner recall',
+        required: true,
+      },
+      {
+        name: 'message',
+        label: 'Message / Notes',
+        type: 'textarea',
+        rows: 3,
+        value: 'Please return this loaner asset for operational need.',
+        required: true,
+      },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-recall`, {
+      recallDueDate: form.values.recallDueDate || null,
+      reason: form.values.reason || 'loaner_recall',
+      message: form.values.message || '',
+      actor: 'inventory-ui-loaner',
+    });
+    showMessage(`Recall requested for ${assetId}. Custody state was not changed.`, 'success');
+    await Promise.all([window.loadLoanerBoard(), loadAssets()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to request loaner recall.', 'error');
+  }
+};
+
 window.openAuditBoardModal = async () => {
   const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('auditBoardModal'));
   modal.show();
-  await window.loadAuditBoard();
+  await Promise.all([window.loadAuditBoard(), window.loadAuditSessions()]);
+};
+
+window.loadAuditSessions = async () => {
+  const summaryEl = document.getElementById('auditSessionSummary');
+  const listEl = document.getElementById('auditSessionsList');
+  auditSessionState.loading = true;
+  if (summaryEl) summaryEl.textContent = 'Loading audit sessions...';
+  if (listEl) listEl.innerHTML = '<div class="ops-loading-stack"><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span></div>';
+  try {
+    const payload = await readInventoryJson('/inventory/audit-sessions?limit=40');
+    auditSessionState.sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+    auditSessionState.loading = false;
+    window.renderAuditSessions();
+  } catch (error) {
+    auditSessionState.loading = false;
+    if (summaryEl) summaryEl.textContent = 'Audit sessions could not be loaded.';
+    if (listEl) listEl.innerHTML = '<div class="ops-empty-state-card"><div><div class="ops-empty-state-title">Audit sessions unavailable</div><div class="ops-empty-state-copy">Run the safe migration for audit session tables, then refresh.</div></div></div>';
+    showMessage(error.message || 'Failed to load audit sessions.', 'error');
+  }
+};
+
+window.renderAuditSessions = () => {
+  const summaryEl = document.getElementById('auditSessionSummary');
+  const listEl = document.getElementById('auditSessionsList');
+  if (!summaryEl || !listEl) return;
+  const sessions = Array.isArray(auditSessionState.sessions) ? auditSessionState.sessions : [];
+  const openCount = sessions.filter((session) => String(session.status || '').toLowerCase() !== 'closed').length;
+  summaryEl.textContent = sessions.length
+    ? `${sessions.length} recent session(s), ${openCount} open. Session data is persisted and survives refresh/restart.`
+    : 'No audit sessions yet. Create one to generate a physical cycle-count checklist.';
+  listEl.innerHTML = sessions.map((session) => {
+    const total = Number(session.itemCount || 0);
+    const confirmed = Number(session.confirmedCount || 0);
+    const percent = total ? Math.round((confirmed / total) * 100) : 0;
+    const percentBucket = Math.max(0, Math.min(100, Math.ceil(percent / 10) * 10));
+    const closed = String(session.status || '').toLowerCase() === 'closed';
+    return `
+      <article class="inventory-audit-session-card ${closed ? 'is-closed' : 'is-open'}">
+        <div class="inventory-audit-session-card-head">
+          <div>
+            <div class="inventory-section-kicker">${UI.escapeHTML(session.sessionNumber || session.id || '-')}</div>
+            <strong>${UI.escapeHTML(session.title || 'Audit session')}</strong>
+          </div>
+          <span class="ops-attention-pill ${closed ? 'is-healthy' : 'is-info'}">${UI.escapeHTML(closed ? 'Closed' : 'Open')}</span>
+        </div>
+        <div class="inventory-audit-progress" aria-label="Audit progress ${UI.escapeHTML(String(percent))}%">
+          <span class="inventory-audit-progress-fill progress-${UI.escapeHTML(String(percentBucket))}"></span>
+        </div>
+        <div class="inventory-audit-session-meta">
+          <span>${UI.escapeHTML(String(confirmed))}/${UI.escapeHTML(String(total))} confirmed</span>
+          <span>${UI.escapeHTML(session.building || 'All buildings')}</span>
+          <span>${UI.escapeHTML(session.department || 'All departments')}</span>
+        </div>
+        <div class="inventory-audit-session-meta">
+          <span>Mismatch ${UI.escapeHTML(String(session.mismatchCount || 0))}</span>
+          <span>Missing ${UI.escapeHTML(String(session.notFoundCount || 0))}</span>
+          <span>Damaged ${UI.escapeHTML(String(session.damagedCount || 0))}</span>
+        </div>
+        <div class="inventory-audit-session-actions">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-audit-session-open="${UI.escapeHTML(session.id)}">Open</button>
+          ${closed ? '' : `<button type="button" class="btn btn-sm btn-outline-dark" data-audit-session-close="${UI.escapeHTML(session.id)}">Close</button>`}
+        </div>
+      </article>
+    `;
+  }).join('') || '<div class="ops-empty-state-card"><div><div class="ops-empty-state-title">No sessions yet</div><div class="ops-empty-state-copy">Create a scoped physical audit session to generate an expected asset checklist.</div></div></div>';
+};
+
+window.createAuditSession = async () => {
+  const form = await showInventoryFormModal({
+    title: 'Create Physical Audit Session',
+    message: 'Choose a scope. OpsMind will generate the expected asset checklist from the full inventory database.',
+    confirmText: 'Create Session',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'title', label: 'Session Title', type: 'text', value: `Cycle count ${new Date().toISOString().slice(0, 10)}`, required: true },
+      { name: 'auditor', label: 'Auditor', type: 'text', value: 'inventory-auditor', required: true },
+      { name: 'building', label: 'Building', type: 'select', options: [{ value: '', label: 'All Buildings' }, ...getKnownBuildingOptions()], required: false },
+      { name: 'room', label: 'Room / Location Detail', type: 'text', placeholder: 'Optional room, lab, shelf, or zone' },
+      { name: 'department', label: 'Department', type: 'select', options: [{ value: '', label: 'All Departments' }, ...STANDARD_MIU_DEPARTMENTS.map((dept) => ({ value: dept, label: dept }))], required: false },
+      { name: 'category', label: 'Record Category', type: 'select', options: ['', 'asset', 'component', 'accessory', 'consumable', 'spare_part', 'license'].map((value) => ({ value, label: value ? value.replace(/_/g, ' ') : 'All Categories' })), required: false },
+      { name: 'assetType', label: 'Asset Type', type: 'text', placeholder: 'Optional type, e.g. laptop, desktop, projector' },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    const payload = await postInventoryJson('/inventory/audit-sessions', form.values);
+    showMessage(`Audit session ${payload?.session?.sessionNumber || ''} created with ${payload?.checklistGenerated || 0} checklist item(s).`, 'success');
+    await window.loadAuditSessions();
+    if (payload?.session?.id) await window.loadAuditSessionDetails(payload.session.id);
+  } catch (error) {
+    showMessage(error.message || 'Failed to create audit session.', 'error');
+  }
+};
+
+window.loadAuditSessionDetails = async (sessionId) => {
+  const detailsEl = document.getElementById('auditSessionDetails');
+  if (detailsEl) detailsEl.innerHTML = '<div class="ops-loading-stack"><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span></div>';
+  try {
+    const payload = await readInventoryJson(`/inventory/audit-sessions/${encodeURIComponent(sessionId)}`);
+    auditSessionState.activeSession = payload?.session || null;
+    auditSessionState.activeItems = Array.isArray(payload?.items) ? payload.items : [];
+    window.renderAuditSessionDetails();
+  } catch (error) {
+    if (detailsEl) detailsEl.innerHTML = '<div class="ops-empty-state-card"><div><div class="ops-empty-state-title">Session unavailable</div><div class="ops-empty-state-copy">The selected audit session could not be loaded.</div></div></div>';
+    showMessage(error.message || 'Failed to load audit session details.', 'error');
+  }
+};
+
+window.renderAuditSessionDetails = () => {
+  const detailsEl = document.getElementById('auditSessionDetails');
+  const session = auditSessionState.activeSession;
+  const rows = Array.isArray(auditSessionState.activeItems) ? auditSessionState.activeItems : [];
+  if (!detailsEl) return;
+  if (!session) {
+    detailsEl.innerHTML = '<div class="ops-empty-state-card"><div><div class="ops-empty-state-title">No session selected</div><div class="ops-empty-state-copy">Create or open an audit session to review its checklist.</div></div></div>';
+    return;
+  }
+  const closed = String(session.status || '').toLowerCase() === 'closed';
+  detailsEl.innerHTML = `
+    <div class="inventory-audit-session-current">
+      <div>
+        <div class="inventory-section-kicker">${UI.escapeHTML(session.sessionNumber || session.id || '-')}</div>
+        <strong>${UI.escapeHTML(session.title || 'Audit session')}</strong>
+        <div class="small text-muted">${UI.escapeHTML(session.building || 'All buildings')} / ${UI.escapeHTML(session.department || 'All departments')} / ${UI.escapeHTML(session.category || 'All categories')}</div>
+      </div>
+      <span class="ops-attention-pill ${closed ? 'is-healthy' : 'is-info'}">${UI.escapeHTML(closed ? 'Closed' : 'Open')}</span>
+    </div>
+    <div class="inventory-audit-session-items">
+      ${rows.slice(0, 400).map((item) => {
+        const status = String(item.auditStatus || 'pending').toLowerCase();
+        const statusClass = status === 'confirmed' ? 'is-healthy' : (status === 'pending' ? 'is-info' : 'is-review');
+        return `
+          <article class="inventory-audit-item-card ${statusClass}">
+            <div>
+              <div class="fw-semibold">${UI.escapeHTML(item.assetName || item.assetId || '-')}</div>
+              <div class="small text-muted">${UI.escapeHTML(item.assetId || '-')} | ${UI.escapeHTML(item.assetTag || item.serialNumber || '-')}</div>
+              <div class="inventory-audit-session-meta">
+                <span>Expected: ${UI.escapeHTML(item.expectedLocation || '-')}</span>
+                <span>${UI.escapeHTML(item.expectedDepartment || '-')}</span>
+              </div>
+              ${item.notes ? `<div class="small text-muted">Notes: ${UI.escapeHTML(item.notes)}</div>` : ''}
+            </div>
+            <div class="inventory-audit-item-actions">
+              <span class="ops-attention-pill ${statusClass}">${UI.escapeHTML(status.replace(/_/g, ' '))}</span>
+              ${closed ? '' : `
+                <button type="button" class="btn btn-sm btn-outline-success" data-audit-session-item-action="${UI.escapeHTML(item.id)}" data-audit-session-status="confirmed">Confirm</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" data-audit-session-item-action="${UI.escapeHTML(item.id)}" data-audit-session-status="location_mismatch">Mismatch</button>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-audit-session-item-action="${UI.escapeHTML(item.id)}" data-audit-session-status="not_found">Not Found</button>
+                <button type="button" class="btn btn-sm btn-outline-warning text-dark" data-audit-session-item-action="${UI.escapeHTML(item.id)}" data-audit-session-status="damaged">Damaged</button>
+              `}
+            </div>
+          </article>
+        `;
+      }).join('') || '<div class="ops-empty-state-card"><div><div class="ops-empty-state-title">No checklist items</div><div class="ops-empty-state-copy">This session has no assets in scope.</div></div></div>'}
+    </div>
+  `;
+};
+
+window.updateAuditSessionItem = async (itemId, auditStatus) => {
+  const item = (auditSessionState.activeItems || []).find((row) => String(row.id || '') === String(itemId || ''));
+  const session = auditSessionState.activeSession;
+  if (!item || !session) return;
+  const form = await showInventoryFormModal({
+    title: `Mark ${String(auditStatus || '').replace(/_/g, ' ')}`,
+    message: `${item.assetName || item.assetId} in ${session.sessionNumber || 'audit session'}`,
+    confirmText: 'Save Audit Result',
+    confirmClass: auditStatus === 'not_found' || auditStatus === 'damaged' ? 'btn-warning' : 'btn-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'observedLocation', label: 'Observed Location', type: 'select', options: [{ value: '', label: 'Use expected location' }, ...getKnownBuildingOptions()], value: item.observedLocation || item.expectedLocation || '' },
+      { name: 'condition', label: 'Observed Condition', type: 'select', options: ['Good', 'Needs Review', 'Damaged', 'Missing'].map((label) => ({ value: label, label })), value: auditStatus === 'damaged' ? 'Damaged' : (auditStatus === 'not_found' ? 'Missing' : 'Good') },
+      { name: 'auditor', label: 'Auditor', type: 'text', value: item.auditor || session.auditor || 'inventory-auditor', required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, value: item.notes || '' },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await postInventoryJson(`/inventory/audit-sessions/${encodeURIComponent(session.id)}/items/${encodeURIComponent(itemId)}`, {
+      auditStatus,
+      ...form.values,
+    }, 'PATCH');
+    showMessage('Audit checklist item updated.', 'success');
+    await Promise.all([window.loadAuditSessionDetails(session.id), window.loadAuditSessions(), window.loadAuditBoard()]);
+  } catch (error) {
+    showMessage(error.message || 'Failed to update audit item.', 'error');
+  }
+};
+
+window.closeAuditSession = async (sessionId) => {
+  const session = (auditSessionState.sessions || []).find((row) => String(row.id || '') === String(sessionId || ''))
+    || auditSessionState.activeSession;
+  const form = await showInventoryFormModal({
+    title: 'Close Audit Session',
+    messageHtml: `
+      <div class="ops-confirm-impact-card">
+        <strong>${UI.escapeHTML(session?.sessionNumber || sessionId || 'Audit session')}</strong>
+        <p>Closing locks the session and stores its reconciliation summary. It does not delete assets or overwrite locations silently.</p>
+        <ul>
+          <li>Confirmed: ${UI.escapeHTML(String(session?.confirmedCount ?? '-'))}</li>
+          <li>Location mismatches: ${UI.escapeHTML(String(session?.mismatchCount ?? '-'))}</li>
+          <li>Not found: ${UI.escapeHTML(String(session?.notFoundCount ?? '-'))}</li>
+          <li>Damaged: ${UI.escapeHTML(String(session?.damagedCount ?? '-'))}</li>
+        </ul>
+      </div>
+    `,
+    confirmText: 'Close Session',
+    confirmClass: 'btn-outline-dark',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'closedBy', label: 'Closed By', type: 'text', value: session?.auditor || 'inventory-auditor', required: true },
+      { name: 'notes', label: 'Closing Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    const payload = await postInventoryJson(`/inventory/audit-sessions/${encodeURIComponent(sessionId)}/close`, form.values);
+    showMessage(`Audit session closed. Confirmed ${payload?.reconciliation?.confirmedPercent ?? 0}% of checklist.`, 'success');
+    await window.loadAuditSessions();
+    await window.loadAuditSessionDetails(payload?.session?.id || sessionId);
+  } catch (error) {
+    showMessage(error.message || 'Failed to close audit session.', 'error');
+  }
 };
 
 window.loadAuditBoard = async () => {
@@ -7622,6 +8263,15 @@ function renderCmdbBody(customId, data, asset) {
     : (riskSignalCount
       ? { label: 'Generate AI health summary', action: `window.cmdbAiHealthSummary('${customId}')`, reason: 'Risk/EOL evidence needs review' }
       : { label: 'View lifecycle', action: '', reason: 'Asset 360 is currently serviceable' });
+  const lifecycleKeyForDisposition = normalizeLifecycleStatus(asset?.lifecycleStatus || asset?.status || '');
+  const dispositionWorkflow = specs.disposalWorkflow && typeof specs.disposalWorkflow === 'object' ? specs.disposalWorkflow : {};
+  const isAssetClosedForDisposition = ['retired', 'disposed', 'lost_stolen'].includes(lifecycleKeyForDisposition);
+  const dispositionStatusLabel = isAssetClosedForDisposition
+    ? displayLifecycleStatus(asset?.lifecycleStatus || asset?.status || dispositionWorkflow.status || 'retired')
+    : 'Active';
+  const dispositionCopy = isAssetClosedForDisposition
+    ? `Closure recorded${dispositionWorkflow.approvalStatus ? ` | Approval ${dispositionWorkflow.approvalStatus}` : ''}.`
+    : 'Retire, dispose, or write off only after review. Stores evidence in lifecycle history.';
 
   return `
     <div class="card border-0 shadow-sm mb-3 asset-digital-passport-card">
@@ -7639,6 +8289,7 @@ function renderCmdbBody(customId, data, asset) {
         </div>
       </div>
     </div>
+    ${renderAssetHealthBreakdown(asset || {})}
     <div class="asset-360-summary-grid mb-3">
       <article class="asset-360-summary-card ${riskSignalCount ? 'is-review' : 'is-healthy'}">
         <div class="asset-360-summary-label">Health / Risk / EOL</div>
@@ -7665,6 +8316,14 @@ function renderCmdbBody(customId, data, asset) {
         <div class="asset-360-summary-value">${UI.escapeHTML(asset360NextAction.label)}</div>
         <p>${UI.escapeHTML(asset360NextAction.reason)}</p>
         ${asset360NextAction.action ? `<button type="button" class="btn btn-sm btn-outline-primary" onclick="${UI.escapeHTML(asset360NextAction.action)}">${UI.escapeHTML(asset360NextAction.label)}</button>` : ''}
+      </article>
+      <article class="asset-360-summary-card ${isAssetClosedForDisposition ? 'is-neutral' : 'is-review'}">
+        <div class="asset-360-summary-label">Disposition / Write-off</div>
+        <div class="asset-360-summary-value">${UI.escapeHTML(dispositionStatusLabel)}</div>
+        <p>${UI.escapeHTML(dispositionCopy)}</p>
+        ${isAssetClosedForDisposition
+    ? `<button type="button" class="btn btn-sm btn-outline-secondary" disabled title="This asset already has a closed lifecycle status.">Already Closed</button>`
+    : `<button type="button" class="btn btn-sm btn-outline-danger" onclick="window.cmdbAssetDisposition('${customId}')">Retire / Write-off</button>`}
       </article>
     </div>
     ${isParentContext ? `
@@ -7994,6 +8653,120 @@ async function fetchGroupCmdbData(selectedAssetIds = []) {
   return Object.fromEntries(pairs);
 }
 
+function buildGroupUnitComparison(asset, data = {}) {
+  const health = calculateAssetHealthScore(asset);
+  const lifecycle = getLifecycleSnapshot(asset);
+  const eol = getEOLDetails(asset);
+  const startDate = lifecycle.commissionedAt || lifecycle.purchaseDate || toValidDate(asset.purchaseDate || asset.createdAt);
+  const ageYears = startDate ? Math.max(0, (new Date() - startDate) / (365 * 24 * 60 * 60 * 1000)) : null;
+  const maintenanceRows = Array.isArray(data.maintenance) ? data.maintenance : [];
+  const lastMaintenance = maintenanceRows
+    .map((row) => toValidDate(row.performedAt || row.createdAt))
+    .filter(Boolean)
+    .sort((a, b) => b - a)[0] || null;
+  const activeCustody = (Array.isArray(data.custody) ? data.custody : [])
+    .find((row) => row.checkoutDate && !row.returnedDate);
+  const openIssues = [
+    health.score < 70 ? 'health watch' : '',
+    eol.procurementRecommended ? 'procurement review' : '',
+    eol.lowConfidence ? 'low EOL evidence' : '',
+    ...maintenanceRows.filter((row) => ['open', 'in_progress', 'scheduled'].includes(normalizeValue(row.status))).map((row) => row.maintenanceType || 'maintenance issue'),
+  ].filter(Boolean);
+  return {
+    assetId: asset.customId,
+    name: asset.name || asset.customId,
+    healthScore: health.score,
+    healthStatus: health.status,
+    age: ageYears === null ? 'Missing' : `${ageYears.toFixed(1)}y`,
+    ageNumber: ageYears,
+    warranty: asset.warrantyEndDate ? formatCmdbDate(asset.warrantyEndDate) : 'Missing',
+    warrantyDate: toValidDate(asset.warrantyEndDate),
+    lastMaintained: lastMaintenance ? lastMaintenance.toLocaleDateString() : 'Missing',
+    currentCustodian: activeCustody?.assignedToName || asset.assignedToName || asset.assignedToUserId || 'Available',
+    eolDate: eol.expiryDate ? eol.expiryDate.toLocaleDateString() : 'Unknown',
+    eolDays: Number(eol.daysRemaining),
+    openIssues: openIssues.length ? openIssues.join(', ') : 'No open issue signal',
+    openIssueCount: openIssues.length,
+    purchaseCost: asset.purchaseCost ? inventory360Currency(asset.purchaseCost) : 'Cost missing',
+    purchaseCostNumber: Number(asset.purchaseCost || 0),
+    location: getAssetDisplayLocation(asset),
+    status: `${displayStatus(asset.status)} / ${displayLifecycleStatus(asset.lifecycleStatus || '')}`,
+  };
+}
+
+function compareMetricClass(metric, left, right, side) {
+  if (metric === 'healthScore') {
+    if (left.healthScore === right.healthScore) return 'is-neutral';
+    return side === 'left'
+      ? (left.healthScore > right.healthScore ? 'is-better' : 'is-worse')
+      : (right.healthScore > left.healthScore ? 'is-better' : 'is-worse');
+  }
+  if (metric === 'eolDays' || metric === 'purchaseCostNumber') {
+    const l = Number(left[metric]);
+    const r = Number(right[metric]);
+    if (!Number.isFinite(l) || !Number.isFinite(r) || l === r) return 'is-neutral';
+    return side === 'left'
+      ? (l > r ? 'is-better' : 'is-worse')
+      : (r > l ? 'is-better' : 'is-worse');
+  }
+  if (metric === 'openIssueCount') {
+    if (left.openIssueCount === right.openIssueCount) return 'is-neutral';
+    return side === 'left'
+      ? (left.openIssueCount < right.openIssueCount ? 'is-better' : 'is-worse')
+      : (right.openIssueCount < left.openIssueCount ? 'is-better' : 'is-worse');
+  }
+  return 'is-neutral';
+}
+
+function renderGroupUnitComparisonPanel(selectedData = []) {
+  if (selectedData.length < 2) {
+    return `
+      <div class="inventory-group-compare-empty">
+        Select at least two units to compare health, warranty, EOL, custody, cost, and open issue signals side by side.
+      </div>
+    `;
+  }
+  const [leftRaw, rightRaw] = selectedData.slice(0, 2);
+  const left = buildGroupUnitComparison(leftRaw.asset, leftRaw.data);
+  const right = buildGroupUnitComparison(rightRaw.asset, rightRaw.data);
+  const rows = [
+    ['Health score', 'healthScore', `${left.healthScore}/100 (${left.healthStatus})`, `${right.healthScore}/100 (${right.healthStatus})`],
+    ['Age', 'ageNumber', left.age, right.age],
+    ['Warranty', 'eolDays', left.warranty, right.warranty],
+    ['Last maintained', 'neutral', left.lastMaintained, right.lastMaintained],
+    ['Custodian', 'neutral', left.currentCustodian, right.currentCustodian],
+    ['EOL date', 'eolDays', left.eolDate, right.eolDate],
+    ['Open issues', 'openIssueCount', left.openIssues, right.openIssues],
+    ['Purchase cost', 'purchaseCostNumber', left.purchaseCost, right.purchaseCost],
+    ['Location', 'neutral', left.location, right.location],
+    ['Status', 'neutral', left.status, right.status],
+  ];
+  const prompt = `Which unit should I replace first: ${left.assetId} or ${right.assetId}? Use only loaded health, EOL, warranty, maintenance, custody, cost, and location evidence.`;
+  return `
+    <section class="inventory-group-compare-panel">
+      <div class="inventory-group-compare-head">
+        <div>
+          <div class="inventory-section-kicker">Side-by-side unit comparison</div>
+          <h6>${UI.escapeHTML(left.assetId)} vs ${UI.escapeHTML(right.assetId)}</h6>
+          <p class="small text-muted mb-0">Comparison uses the first two selected units; bulk actions can still use larger selections.</p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" data-ai-prompt="${UI.escapeHTML(prompt)}">
+          <i class="bi bi-stars me-1"></i>Ask AI: replace first?
+        </button>
+      </div>
+      <div class="inventory-group-compare-table">
+        ${rows.map(([label, metric, leftValue, rightValue]) => `
+          <div class="inventory-group-compare-row">
+            <span>${UI.escapeHTML(label)}</span>
+            <strong class="${compareMetricClass(metric, left, right, 'left')}">${UI.escapeHTML(leftValue)}</strong>
+            <strong class="${compareMetricClass(metric, left, right, 'right')}">${UI.escapeHTML(rightValue)}</strong>
+          </div>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
 function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
   const selectedSet = new Set(selectedAssetIds);
   const selectedAssets = groupAssets.filter((asset) => selectedSet.has(asset.customId));
@@ -8104,6 +8877,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
         <div class="alert alert-light border py-2 mb-2 small">
           Group CMDB lets you compare differences across units and apply actions only to selected units.
         </div>
+        ${renderGroupUnitComparisonPanel(selectedData)}
         <ul class="nav nav-tabs" role="tablist">
           <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="components" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-components" type="button">Components</button></li>
           <li class="nav-item"><button class="nav-link" data-group-cmdb-tab="maintenance" data-bs-toggle="tab" data-bs-target="#${GROUP_CMDB_MODAL_ID}-maintenance" type="button">Maintenance</button></li>
@@ -8407,8 +9181,8 @@ window.cmdbAiHealthSummary = async (assetId) => {
             <summary class="small text-primary">Why low evidence confidence?</summary>
             <div class="small text-muted mt-1">${UI.escapeHTML(
               evidenceReason
-                ? `Low evidence confidence because ${evidenceReason}. This is not a Gemma failure.`
-                : 'Gemma generated the answer, but supporting asset evidence is limited.'
+                ? `Low evidence confidence because ${evidenceReason}. This is not an AI failure.`
+                : 'AI insight generated the answer, but supporting asset evidence is limited.'
             )}</div>
             <div class="small text-muted mt-1">Add telemetry readings, warranty/purchase details, and maintenance history to improve confidence.</div>
           </details>
@@ -9795,6 +10569,18 @@ window.cmdbLoanerCheckout = async (assetId) => {
         required: false,
       },
       {
+        name: 'conditionOut',
+        label: 'Checkout Condition',
+        type: 'select',
+        options: [
+          { value: 'good', label: 'Good' },
+          { value: 'used_serviceable', label: 'Used but serviceable' },
+          { value: 'needs_review', label: 'Needs review' },
+        ],
+        value: 'good',
+        required: true,
+      },
+      {
         name: 'reason',
         label: 'Reason',
         type: 'text',
@@ -9814,7 +10600,9 @@ window.cmdbLoanerCheckout = async (assetId) => {
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/loaner-checkout`, {
       loanedTo: form.values.loanedTo,
+      assignedDepartment: form.values.department || null,
       expectedReturnDate: form.values.expectedReturnDate || null,
+      conditionOut: form.values.conditionOut || null,
       reason: form.values.reason || 'loaner_checkout',
       notes: [form.values.notes, form.values.department ? `Department: ${form.values.department}` : ''].filter(Boolean).join(' | '),
       actor: 'inventory-ui-cmdb',
@@ -9879,6 +10667,114 @@ window.cmdbLoanerReturn = async (assetId) => {
     await refreshCmdbModal(assetId, 'custody');
   } catch (error) {
     showMessage(error.message || 'Failed to run loaner return.', 'error');
+  }
+};
+
+window.cmdbAssetDisposition = async (assetId) => {
+  const asset = currentAssets.find((entry) => entry.customId === assetId) || await readInventoryJson(`/assets/${encodeURIComponent(assetId)}`).catch(() => null);
+  if (!asset) {
+    showMessage('Asset not found for retire/write-off workflow.', 'warning');
+    return;
+  }
+  const lifecycleKey = normalizeLifecycleStatus(asset.lifecycleStatus || asset.status || '');
+  if (['retired', 'disposed', 'lost_stolen'].includes(lifecycleKey)) {
+    showMessage('This asset already has a closed lifecycle status.', 'info');
+    return;
+  }
+  const cost = getInventory360AssetCost(asset || {});
+  const defaultWriteOffValue = Number(cost.currentValue || cost.purchaseCost || cost.replacementCost || 0);
+  const form = await showInventoryFormModal({
+    title: 'Retire / Write-off Asset',
+    messageHtml: `
+      <div class="ops-confirm-impact-card inventory-disposition-review-card">
+        <strong>${UI.escapeHTML(asset.name || assetId)}</strong>
+        <p>This workflow changes the asset lifecycle and records disposal/write-off evidence. It will not delete the asset or remove CMDB history.</p>
+        <ul>
+          <li>Asset tag: ${UI.escapeHTML(getDisplayAssetTag(asset) || asset.customId || assetId)}</li>
+          <li>Current lifecycle: ${UI.escapeHTML(displayLifecycleStatus(asset.lifecycleStatus || asset.status || '-'))}</li>
+          <li>Known cost evidence: ${UI.escapeHTML(cost.hasAny ? inventory360Currency(defaultWriteOffValue) : 'Missing / unknown')}</li>
+        </ul>
+      </div>
+    `,
+    confirmText: 'Review Disposition',
+    confirmClass: 'btn-outline-danger',
+    dialogClass: 'modal-lg',
+    fields: [
+      {
+        name: 'dispositionAction',
+        label: 'Disposition Action',
+        type: 'select',
+        options: [
+          { value: 'retire', label: 'Retire asset' },
+          { value: 'dispose', label: 'Dispose / write off asset' },
+        ],
+        value: 'retire',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      {
+        name: 'reason',
+        label: 'Reason',
+        type: 'select',
+        options: [
+          { value: 'end_of_useful_life', label: 'End of useful life' },
+          { value: 'damaged_beyond_repair', label: 'Damaged beyond repair' },
+          { value: 'technologically_obsolete', label: 'Technologically obsolete' },
+          { value: 'lost_stolen', label: 'Lost / stolen evidence' },
+          { value: 'external_transfer', label: 'Transferred externally' },
+          { value: 'other', label: 'Other reviewed reason' },
+        ],
+        value: 'end_of_useful_life',
+        required: true,
+        colClass: 'col-md-6',
+      },
+      { name: 'dispositionDate', label: 'Disposition Date', type: 'date', value: new Date().toISOString().slice(0, 10), required: true, colClass: 'col-md-6' },
+      { name: 'writeOffValue', label: 'Write-off Value (EGP)', type: 'number', value: defaultWriteOffValue || '', min: 0, step: 0.01, colClass: 'col-md-6', helpText: 'Leave blank if finance value is unknown.' },
+      { name: 'bookValue', label: 'Book Value / Depreciated Value (EGP)', type: 'number', value: '', min: 0, step: 0.01, colClass: 'col-md-6' },
+      { name: 'glCode', label: 'Finance / GL Reference', type: 'text', placeholder: 'Optional internal finance reference', colClass: 'col-md-6' },
+      { name: 'disposalMethod', label: 'Disposal Method', type: 'text', placeholder: 'Recycle, salvage, vendor pickup, secure destruction...', colClass: 'col-md-6' },
+      { name: 'incidentReference', label: 'Incident / Audit Reference', type: 'text', placeholder: 'Optional ticket, audit, or incident ID', colClass: 'col-md-6' },
+      { name: 'evidenceReference', label: 'Evidence Reference', type: 'text', placeholder: 'Photo log, report, invoice, committee note...', colClass: 'col-md-6' },
+      { name: 'approvalReviewer', label: 'Reviewer / Approver', type: 'text', placeholder: 'Required by policy for high-value write-offs', colClass: 'col-md-6' },
+      { name: 'notes', label: 'Review Notes', type: 'textarea', rows: 3, colClass: 'col-12' },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  const action = String(form.values.dispositionAction || 'retire').toLowerCase() === 'dispose' ? 'dispose' : 'retire';
+  const writeOffValue = Number(form.values.writeOffValue || 0);
+  const bookValue = Number(form.values.bookValue || 0);
+  const needsExtraReview = action === 'dispose' || Math.max(writeOffValue || 0, bookValue || 0) >= 5000;
+  const confirmed = await confirmInventoryAction({
+    title: action === 'dispose' ? 'Confirm Disposal / Write-off' : 'Confirm Asset Retirement',
+    message: `${action === 'dispose' ? 'Dispose/write off' : 'Retire'} ${asset.name || assetId}. This updates lifecycle status, keeps the asset record, and records audit evidence. ${needsExtraReview ? 'This action is flagged for reviewer confirmation.' : 'No high-value write-off threshold was detected.'}`,
+    type: needsExtraReview ? 'danger' : 'warning',
+    confirmText: action === 'dispose' ? 'Confirm Disposal' : 'Confirm Retirement',
+    confirmClass: needsExtraReview ? 'inventory-insight-danger' : 'inventory-insight-primary',
+  });
+  if (!confirmed) return;
+
+  try {
+    const payload = {
+      reason: form.values.reason,
+      dispositionDate: form.values.dispositionDate,
+      writeOffValue: Number.isFinite(writeOffValue) && writeOffValue > 0 ? writeOffValue : null,
+      bookValue: Number.isFinite(bookValue) && bookValue > 0 ? bookValue : null,
+      glCode: form.values.glCode || null,
+      disposalMethod: form.values.disposalMethod || null,
+      incidentReference: form.values.incidentReference || null,
+      evidenceReference: form.values.evidenceReference || null,
+      approvalReviewer: form.values.approvalReviewer || null,
+      notes: form.values.notes || null,
+      actor: 'inventory-ui-cmdb',
+    };
+    const endpoint = action === 'dispose' ? 'dispose' : 'retire';
+    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/${endpoint}`, payload);
+    showMessage(action === 'dispose' ? 'Asset disposal/write-off recorded.' : 'Asset retirement recorded.', 'success');
+    await loadAssets();
+    await refreshCmdbModal(assetId, 'lifecycle');
+  } catch (error) {
+    showMessage(error.message || 'Failed to record asset disposition.', 'error');
   }
 };
 
@@ -10100,13 +10996,13 @@ function inventoryAiStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   const map = {
     online: { text: 'Online', dotClass: '' },
-    gemma: { text: 'Gemma ready', dotClass: '' },
-    ready: { text: 'Gemma ready', dotClass: '' },
-    deterministic_only: { text: 'Rule-based', dotClass: 'warning' },
-    fallback: { text: 'Fallback mode', dotClass: 'warning' },
-    disabled: { text: 'Fallback mode', dotClass: 'warning' },
+    gemma: { text: 'AI ready', dotClass: '' },
+    ready: { text: 'AI ready', dotClass: '' },
+    deterministic_only: { text: 'System data', dotClass: 'warning' },
+    fallback: { text: 'System data mode', dotClass: 'warning' },
+    disabled: { text: 'System data mode', dotClass: 'warning' },
     offline: { text: 'Offline', dotClass: 'error' },
-    loading: { text: 'Gemma thinking', dotClass: 'warning' },
+    loading: { text: 'Checking evidence', dotClass: 'warning' },
     error: { text: 'Offline', dotClass: 'error' },
   };
   return map[normalized] || map.online;
@@ -10129,17 +11025,17 @@ function setInventoryAiChatStatus(status) {
       ? 'fallback'
       : ((normalized === 'error' || normalized === 'offline') ? 'offline' : 'online');
     if (status === 'fallback') {
-      statusBadge.title = 'Using rule-based fallback because Gemma is unavailable or slow.';
+      statusBadge.title = 'Using system data because AI insight is unavailable or slow.';
     } else if (normalized === 'deterministic_only') {
-      statusBadge.title = 'This result is rule-based and does not require Gemma.';
+      statusBadge.title = 'This result is system-calculated and does not require AI insight.';
     } else if (normalized === 'disabled') {
-      statusBadge.title = 'LLM is disabled. Using rule-based fallback.';
+      statusBadge.title = 'AI insight is disabled. Using system data.';
     } else if (normalized === 'loading') {
-      statusBadge.title = 'Gemma is processing your request.';
+      statusBadge.title = 'AI insight is processing your request.';
     } else if (status === 'error' || normalized === 'offline') {
       statusBadge.title = 'Inventory AI service is currently unreachable.';
     } else {
-      statusBadge.title = 'Gemma and inventory AI service are available.';
+      statusBadge.title = 'AI insight and inventory AI service are available.';
     }
   }
   syncInventorySavedViewControl();
@@ -10319,6 +11215,212 @@ function clearInventoryFilterChip(key = '') {
   syncFilters();
 }
 
+function chooseFilterOption(selectId, targetValue = '') {
+  const select = document.getElementById(selectId);
+  const target = normalizeValue(targetValue);
+  if (!select || !target || target === 'all') return false;
+  const option = Array.from(select.options).find((candidate) => {
+    const value = normalizeValue(candidate.value);
+    const label = normalizeValue(candidate.textContent);
+    return value === target || label === target || label.includes(target) || target.includes(label);
+  });
+  if (!option) return false;
+  select.value = option.value;
+  return true;
+}
+
+function viewForAiCategoryHint(categoryHint = '') {
+  const key = normalizeValue(categoryHint);
+  if (key.includes('component')) return 'components';
+  if (key.includes('accessory')) return 'accessories';
+  if (key.includes('consumable')) return 'consumables';
+  if (key.includes('license')) return 'licenses';
+  if (key.includes('spare') || key.includes('stock')) return 'spare_stock';
+  return '';
+}
+
+function optionLabelInQuery(selectId, query = '') {
+  const select = document.getElementById(selectId);
+  const normalizedQuery = normalizeValue(query);
+  if (!select || !normalizedQuery) return '';
+  const option = Array.from(select.options).find((candidate) => {
+    if (!candidate.value || candidate.value === 'all') return false;
+    const value = normalizeValue(candidate.value);
+    const label = normalizeValue(candidate.textContent);
+    return (label && normalizedQuery.includes(label)) || (value && normalizedQuery.includes(value));
+  });
+  return option ? (option.textContent || option.value || '') : '';
+}
+
+function deriveLocalAiSearchHints(query = '') {
+  const normalizedQuery = normalizeValue(query);
+  let categoryHint = '';
+  if (/\b(component|components|ram|ssd|gpu|cpu)\b/i.test(query)) categoryHint = 'component';
+  if (/\b(accessory|accessories|keyboard|mouse|webcam)\b/i.test(query)) categoryHint = categoryHint || 'accessory';
+  if (/\b(license|licenses|windows|office)\b/i.test(query)) categoryHint = categoryHint || 'license';
+  if (/\b(consumable|consumables|paper|toner)\b/i.test(query)) categoryHint = categoryHint || 'consumable';
+  if (/\b(spare|stock|battery|charger|lamp|cable)\b/i.test(query)) categoryHint = categoryHint || 'spare';
+  return {
+    location: optionLabelInQuery('filterBuilding', query),
+    department: optionLabelInQuery('filterDept', query),
+    lifecycleStatus: optionLabelInQuery('filterLifecycle', query),
+    categoryHint,
+    tokens: normalizedQuery.split(/\s+/).filter((token) => token.length > 2),
+  };
+}
+
+function normalizeAiSearchFilters(rawFilters = {}, localHints = {}) {
+  const raw = (rawFilters && typeof rawFilters === 'object') ? rawFilters : {};
+  const normalized = {
+    category: raw.category || raw.categoryHint || raw.view || localHints.categoryHint || '',
+    department: raw.department || localHints.department || '',
+    building: raw.building || raw.location || localHints.location || '',
+    warranty_status: raw.warranty_status || raw.warrantyStatus || '',
+    eol_within_months: raw.eol_within_months || raw.eolWithinMonths || null,
+    health_score_below: raw.health_score_below || raw.healthScoreBelow || null,
+    status: raw.status || raw.lifecycleStatus || localHints.lifecycleStatus || '',
+    assigned_to: raw.assigned_to || raw.assignedTo || '',
+    cost_missing: Boolean(raw.cost_missing || raw.costMissing),
+    asset_type: raw.asset_type || raw.assetType || '',
+    tokens: Array.isArray(raw.tokens) ? raw.tokens : (Array.isArray(localHints.tokens) ? localHints.tokens : []),
+  };
+  normalized.eol_within_months = Number.isFinite(Number(normalized.eol_within_months)) ? Number(normalized.eol_within_months) : null;
+  normalized.health_score_below = Number.isFinite(Number(normalized.health_score_below)) ? Number(normalized.health_score_below) : null;
+  return normalized;
+}
+
+function renderAiSearchAppliedChips(chips = []) {
+  const chipsEl = document.getElementById('inventoryAiSearchAppliedChips');
+  if (!chipsEl) return;
+  chipsEl.innerHTML = chips.length
+    ? chips.map((chip) => `<span class="inventory-ai-search-chip">${UI.escapeHTML(chip)}</span>`).join('')
+    : '';
+}
+
+function renderAiSearchState({ state = '', title = '', detail = '', source = '', actions = [] } = {}) {
+  const stateEl = document.getElementById('inventoryAiSearchState');
+  if (!stateEl) return;
+  if (!state) {
+    stateEl.className = 'inventory-ai-search-state d-none';
+    stateEl.innerHTML = '';
+    return;
+  }
+  const normalized = normalizeValue(state);
+  stateEl.className = `inventory-ai-search-state is-${UI.escapeHTML(normalized || 'info')}`;
+  stateEl.innerHTML = `
+    <div>
+      <strong>${UI.escapeHTML(title || 'AI search state')}</strong>
+      ${detail ? `<span>${UI.escapeHTML(detail)}</span>` : ''}
+    </div>
+    ${source ? `<em>${UI.escapeHTML(source)}</em>` : ''}
+    ${actions.length ? `<div class="inventory-ai-search-state-actions">${actions.map((action) => `<span>${UI.escapeHTML(action)}</span>`).join('')}</div>` : ''}
+  `;
+}
+
+function applyValidatedAiSearchFilters(filters = {}, query = '', result = {}) {
+  const applied = [];
+  const unsupported = [];
+  const firstResult = Array.isArray(result?.results) ? result.results[0] : null;
+  const nextView = viewForAiCategoryHint(filters.category);
+
+  if (filters.building && chooseFilterOption('filterBuilding', filters.building)) applied.push(`Building: ${filters.building}`);
+  if (filters.department && chooseFilterOption('filterDept', filters.department)) applied.push(`Department: ${filters.department}`);
+  if (filters.asset_type && chooseFilterOption('filterType', filters.asset_type)) applied.push(`Type: ${filters.asset_type}`);
+  if (filters.status && chooseFilterOption('filterLifecycle', filters.status)) applied.push(`Lifecycle: ${filters.status}`);
+
+  if (filters.cost_missing) {
+    setInventorySavedView('missing_data', { skipLoad: true });
+    applied.push('Saved view: Missing Data');
+  }
+  if (filters.eol_within_months !== null || /expiring|eol|end.of.life/i.test(String(filters.warranty_status || ''))) {
+    setInventorySavedView('eol_soon', { skipLoad: true });
+    applied.push(filters.eol_within_months !== null ? `EOL within ${filters.eol_within_months} months` : 'Warranty/EOL expiring');
+  }
+  if (filters.health_score_below !== null) {
+    setInventorySavedView('high_risk', { skipLoad: true });
+    applied.push(`Health score below ${filters.health_score_below}`);
+  }
+  if (filters.assigned_to) {
+    unsupported.push(`Assigned to: ${filters.assigned_to}`);
+  }
+
+  const searchInput = document.getElementById('searchInput');
+  if (!applied.length && Array.isArray(filters.tokens) && filters.tokens.length && searchInput) {
+    searchInput.value = filters.tokens.join(' ');
+    applied.push('AI search terms');
+  } else if (!applied.length && firstResult && searchInput) {
+    searchInput.value = String(firstResult.assetId || firstResult.customId || firstResult.assetName || firstResult.name || query).trim();
+    applied.push('Best matched asset');
+  }
+
+  renderAiSearchAppliedChips([
+    ...applied,
+    ...unsupported.map((item) => `${item} (not a table filter yet)`),
+  ]);
+  return { applied, unsupported, nextView };
+}
+
+async function runInventoryAiSearch() {
+  const searchInput = document.getElementById('searchInput');
+  const aiSearchBtn = document.getElementById('inventoryAiSearchBtn');
+  const aiModeToggle = document.getElementById('inventoryAiSearchModeToggle');
+  const query = String(searchInput?.value || '').trim();
+  if (!query) {
+    showMessage('Type a natural-language inventory search first.', 'warning');
+    return;
+  }
+  if (aiModeToggle) aiModeToggle.checked = true;
+  if (aiSearchBtn) {
+    aiSearchBtn.disabled = true;
+    aiSearchBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>AI';
+  }
+  renderAiSearchState({
+    state: 'loading',
+    title: 'Interpreting search',
+    detail: 'Checking full inventory evidence before changing filters.',
+    source: 'Gemma when available; system data fallback if needed.',
+  });
+  try {
+    const result = await postInventoryJson('/inventory/ai/search', { query });
+    const localHints = deriveLocalAiSearchHints(query);
+    const filters = normalizeAiSearchFilters(result?.interpretedFilters, localHints);
+    const { applied, unsupported, nextView } = applyValidatedAiSearchFilters(filters, query, result);
+
+    const sourceText = result?.llmUsed ? 'AI insight' : (result?.fallbackUsed ? 'System data fallback' : 'System data');
+    const resultCount = Array.isArray(result?.results) ? result.results.length : 0;
+    const unsupportedText = unsupported.length ? ` ${unsupported.length} parsed field(s) are shown as chips because no safe table control exists yet.` : '';
+    const stateKind = applied.length ? (unsupported.length ? 'partial' : 'success') : (resultCount ? 'partial' : 'failure');
+    renderAiSearchState({
+      state: stateKind,
+      title: stateKind === 'success' ? 'AI search applied' : (stateKind === 'partial' ? 'AI search partially applied' : 'AI search not applied'),
+      detail: `${sourceText}: found ${resultCount} candidate(s). ${applied.length ? `Applied ${applied.join(', ')}.` : 'No safe filter control matched this request.'}${unsupportedText}`,
+      source: result?.fallbackUsed ? `Fallback reason: ${result?.fallbackReason || 'AI unavailable'}` : sourceText,
+      actions: stateKind === 'failure' ? ['Try an asset tag, building, department, type, EOL, or missing-data phrase.'] : [],
+    });
+    showMessage(`${sourceText}: found ${resultCount} candidate(s). ${applied.length ? `Applied ${applied.join(', ')}.` : 'No safe filter change was available.'}${unsupportedText}`, stateKind === 'failure' ? 'warning' : 'info');
+
+    if (nextView && normalizeInventoryView(nextView) !== normalizeInventoryView(currentInventoryView)) {
+      setInventoryView(nextView);
+    } else {
+      syncFilters();
+    }
+  } catch (error) {
+    renderAiSearchState({
+      state: 'failure',
+      title: 'AI search failed safely',
+      detail: 'No filters were changed. Your current table view was preserved.',
+      source: error.message || 'Inventory AI search request failed.',
+      actions: ['Try a simpler query or use regular filters.'],
+    });
+    showMessage(error.message || 'AI inventory search failed.', 'error');
+  } finally {
+    if (aiSearchBtn) {
+      aiSearchBtn.disabled = false;
+      aiSearchBtn.innerHTML = '<i class="bi bi-stars me-1"></i>AI';
+    }
+  }
+}
+
 function beginCmdbAiAction(actionKey) {
   if (cmdbAiInFlightActions.has(actionKey)) {
     showMessage('This AI action is already running. Please wait for the current response.', 'info');
@@ -10345,7 +11447,7 @@ function startAiPanelLoading(panel, message) {
   const textEl = panel.querySelector('[data-ai-loading-text]');
   const longWaitTimer = setTimeout(() => {
     if (!textEl) return;
-    textEl.textContent = 'Gemma is thinking... First response may take longer while the local model wakes up.';
+    textEl.textContent = 'AI insight is checking evidence... First response may take longer while the local model wakes up.';
   }, INVENTORY_AI_LONG_WAIT_MS);
   return () => clearTimeout(longWaitTimer);
 }
@@ -10356,14 +11458,14 @@ function aiSourceMetaHtml(result = {}) {
   const fallbackUsed = Boolean(result?.fallbackUsed);
   const fallbackReason = String(result?.fallbackReason || '').trim();
   if (llmUsed) {
-    return '<div class="small text-muted mt-1"><span class="badge bg-success-subtle text-success-emphasis border">Gemma-generated</span> Inventory AI service + local Gemma reasoning.</div>';
+    return `<div class="small text-muted mt-1"><span class="badge bg-success-subtle text-success-emphasis border">AI insight</span>${inventorySourceInfoIcon({ llmUsed: true, source: 'Gemma' })} Inventory AI service reasoning.</div>`;
   }
   if (llmStatus === 'deterministic_only') {
-    return '<div class="small text-muted mt-1"><span class="badge bg-info-subtle text-info-emphasis border">Rule-based summary</span> This result is deterministic and does not require Gemma.</div>';
+    return `<div class="small text-muted mt-1"><span class="badge bg-info-subtle text-info-emphasis border">System data</span>${inventorySourceInfoIcon({ source: 'Deterministic' })} This result is system-calculated.</div>`;
   }
   if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
     const reasonText = fallbackReason ? ` Reason: ${UI.escapeHTML(fallbackReason)}.` : '';
-    return `<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">Fallback summary</span> AI model unavailable. Showing deterministic CMDB summary.${reasonText}</div>`;
+    return `<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">System data</span>${inventorySourceInfoIcon({ source: 'Fallback' })} AI insight unavailable. Showing system CMDB summary.${reasonText}</div>`;
   }
   return '<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">Inventory AI service</span></div>';
 }
@@ -10373,10 +11475,10 @@ function aiSourceMetaText(result = {}) {
   const llmStatus = String(result?.llmStatus || '').trim().toLowerCase();
   const fallbackUsed = Boolean(result?.fallbackUsed);
   const fallbackReason = String(result?.fallbackReason || '').trim();
-  if (llmUsed) return 'Source: Gemma-generated.';
-  if (llmStatus === 'deterministic_only') return 'Source: Rule-based deterministic logic.';
+  if (llmUsed) return 'Source: AI insight.';
+  if (llmStatus === 'deterministic_only') return 'Source: System data.';
   if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
-    return `Source: Deterministic fallback${fallbackReason ? ` (${fallbackReason})` : ''}.`;
+    return `Source: System data${fallbackReason ? ` (${fallbackReason})` : ''}.`;
   }
   return 'Source: Inventory AI service.';
 }
@@ -10464,39 +11566,24 @@ function finishInventoryAiTypingReveal() {
 function startInventoryAiTypingReveal(index) {
   const entry = inventoryAiChatState.messages[index];
   if (!entry || entry.role !== 'assistant' || !entry.typing) return;
-  if (inventoryAiPrefersReducedMotion()) {
-    entry.text = String(entry.fullText || entry.text || '');
-    entry.typing = false;
-    renderInventoryAiChatMessages();
-    return;
-  }
-  const fullText = String(entry.fullText || '');
-  const duration = Math.min(2800, Math.max(650, fullText.length * 14));
-  const tickMs = 55;
-  const charsPerTick = Math.max(2, Math.ceil(fullText.length / Math.max(1, duration / tickMs)));
-  let cursor = 0;
   if (inventoryAiChatState.typingTimer) clearInterval(inventoryAiChatState.typingTimer);
-  inventoryAiChatState.typingTimer = setInterval(() => {
-    cursor = Math.min(fullText.length, cursor + charsPerTick);
-    entry.text = fullText.slice(0, cursor);
-    if (cursor >= fullText.length) {
-      entry.typing = false;
-      clearInterval(inventoryAiChatState.typingTimer);
-      inventoryAiChatState.typingTimer = null;
-    }
-    renderInventoryAiChatMessages();
-  }, tickMs);
+  inventoryAiChatState.typingTimer = null;
+  entry.text = String(entry.fullText || entry.text || '');
+  entry.typing = false;
+  entry.justAdded = true;
+  renderInventoryAiChatMessages();
 }
 
 function addInventoryAiAssistantMessage(entry = {}) {
   const fullText = String(entry.text || entry.answer || 'Completed.');
-  const shouldType = !inventoryAiPrefersReducedMotion() && fullText.length > 12;
+  const shouldType = false;
   const message = {
     ...entry,
     role: 'assistant',
     fullText,
     text: shouldType ? '' : fullText,
     typing: shouldType,
+    justAdded: true,
     createdAt: entry.createdAt || Date.now(),
   };
   inventoryAiChatState.messages.push(message);
@@ -11399,15 +12486,14 @@ function renderInventoryAiChatMessages() {
     const metaPills = [];
     if (isAssistant) {
       if (entry.llmUsed) {
-        metaPills.push('<span class="inventory-ai-chat-pill is-success">Gemma</span>');
-        metaPills.push('<span class="inventory-ai-chat-pill is-success">AI-generated</span>');
-        metaPills.push('<span class="inventory-ai-chat-pill is-info">Fallback: No</span>');
+        metaPills.push(`<span class="inventory-ai-chat-pill is-success">AI insight${inventorySourceInfoIcon({ llmUsed: true, source: 'Gemma' })}</span>`);
+        metaPills.push('<span class="inventory-ai-chat-pill is-info">System data substitute: No</span>');
       }
       if (entry.fallbackUsed) {
-        metaPills.push('<span class="inventory-ai-chat-pill is-warning">Fallback</span>');
+        metaPills.push(`<span class="inventory-ai-chat-pill is-warning">System data${inventorySourceInfoIcon({ source: 'Fallback' })}</span>`);
       }
       if (String(entry.llmStatus || '').toLowerCase() === 'deterministic_only') {
-        metaPills.push('<span class="inventory-ai-chat-pill is-info">Deterministic</span>');
+        metaPills.push(`<span class="inventory-ai-chat-pill is-info">System data${inventorySourceInfoIcon({ source: 'Deterministic' })}</span>`);
       }
       if (resolvedConfidence) {
         metaPills.push(`<span class="inventory-ai-chat-pill">Evidence confidence: ${UI.escapeHTML(capitalize(String(resolvedConfidence)))}</span>`);
@@ -11416,7 +12502,7 @@ function renderInventoryAiChatMessages() {
         metaPills.push('<span class="inventory-ai-chat-pill is-warning">Data quality: Limited</span>');
       }
       if (entry.sourceLabel) {
-        metaPills.push(`<span class="inventory-ai-chat-pill">Source: ${UI.escapeHTML(String(entry.sourceLabel).replace(/_/g, ' '))}</span>`);
+        metaPills.push(`<span class="inventory-ai-chat-pill">Source: ${UI.escapeHTML(inventoryPublicSourceLabel(entry))}${inventorySourceInfoIcon(entry)}</span>`);
       }
       if (entry.dataScope) {
         const scopeLabel = String(entry.dataScope) === 'filtered_view' ? 'Scope: current filtered view' : 'Scope: full inventory';
@@ -11468,8 +12554,8 @@ function renderInventoryAiChatMessages() {
           <div class="small text-muted mt-1">
             ${UI.escapeHTML(
               evidenceReason
-                ? `Low evidence confidence because ${evidenceReason}. This is not a Gemma failure.`
-                : 'This answer used Gemma, but supporting asset evidence is limited.'
+                ? `Low evidence confidence because ${evidenceReason}. This is not an AI failure.`
+                : 'This answer used AI insight, but supporting asset evidence is limited.'
             )}
           </div>
           <div class="small text-muted mt-1">Improve this by adding purchase/warranty dates, telemetry readings, and maintenance history.</div>
@@ -11479,15 +12565,15 @@ function renderInventoryAiChatMessages() {
     const fallbackCardHtml = isAssistant && entry.fallbackUsed
       ? `
         <div class="inventory-ai-chat-fallback mt-2">
-          <div class="fw-semibold small">Fallback summary</div>
-          <div class="small mt-1">AI model unavailable for this response. Showing deterministic output.</div>
+          <div class="fw-semibold small">System data summary</div>
+          <div class="small mt-1">AI insight unavailable for this response. Showing system-calculated output.</div>
           ${entry.fallbackReason ? `<div class="small mt-1 text-muted">Reason: ${UI.escapeHTML(String(entry.fallbackReason).replace(/_/g, ' '))}</div>` : ''}
         </div>
       `
       : '';
     const answerText = `${UI.escapeHTML(String(entry.text || ''))}${entry.typing ? '<span class="inventory-ai-typing-caret" aria-hidden="true"></span>' : ''}`;
     return `
-      <div class="inventory-ai-chat-msg ${role}">
+      <div class="inventory-ai-chat-msg ${role} ${entry.justAdded ? 'ops-ai-response-fade' : ''}">
         <div class="inventory-ai-msg-head"><i class="bi ${senderIcon}"></i><span>${senderLabel}</span>${timestampHtml}</div>
         <div class="inventory-ai-chat-answer">${role === 'assistant' ? '<strong>Answer:</strong> ' : ''}${answerText}</div>
         ${(!entry.typing && (metaPills.length || suggestionPills || matchedItemsHtml || fallbackCardHtml)) ? `
@@ -11505,8 +12591,8 @@ function renderInventoryAiChatMessages() {
   }).join('');
   const loadingElapsed = inventoryAiChatState.loadingSince ? (Date.now() - Number(inventoryAiChatState.loadingSince)) : 0;
   const loadingText = loadingElapsed >= INVENTORY_AI_LONG_WAIT_MS
-    ? 'Gemma is thinking... First response may take longer while the local model wakes up.'
-    : 'Gemma is analyzing inventory data...';
+    ? 'AI insight is checking evidence... First response may take longer while the local model wakes up.'
+    : 'AI insight is analyzing inventory data...';
   const loadingRow = inventoryAiChatState.loading
     ? `
       <div class="inventory-ai-chat-msg assistant inventory-ai-chat-loading">
@@ -11994,7 +13080,7 @@ function renderInventoryAiResult(payload) {
       <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Severity</th><th>Reason</th><th>Assets</th><th>Action</th></tr></thead><tbody>
       ${groups.map((group) => `<tr><td>${UI.escapeHTML(group.severity || '-')}</td><td>${UI.escapeHTML(group.reason || '-')}</td><td>${UI.escapeHTML((group.assets || []).map((asset) => asset.assetId).join(', ') || '-')}</td><td>${UI.escapeHTML(group.recommendedAction || '-')}</td></tr>`).join('') || '<tr><td colspan="4" class="text-muted">No duplicate groups.</td></tr>'}
       </tbody></table></div>
-      <div class="small text-muted mt-2">Embedding support: ${UI.escapeHTML(payload?.embeddingSupport?.enabled ? `${payload.embeddingSupport.provider}:${payload.embeddingSupport.model}` : 'fallback deterministic only')}</div>
+      <div class="small text-muted mt-2">Embedding support: ${UI.escapeHTML(payload?.embeddingSupport?.enabled ? `${payload.embeddingSupport.provider}:${payload.embeddingSupport.model}` : 'System data only')}</div>
     `;
     return;
   }
@@ -12566,7 +13652,7 @@ window.runInventoryAiAction = async () => {
       result = await postInventoryJson(endpoint, payload);
     }
     renderInventoryAiResult(result || {});
-    if (statusEl) statusEl.textContent = `Completed (${result?.fallbackUsed ? 'fallback path used' : 'LLM-assisted path used'}).`;
+    if (statusEl) statusEl.textContent = `Completed (${result?.fallbackUsed ? 'System data used' : 'AI insight used'}).`;
   } catch (error) {
     if (statusEl) statusEl.textContent = 'Failed.';
     showMessage(error.message || 'Inventory AI request failed.', 'error');
@@ -13888,7 +14974,7 @@ async function runSpecPreviewRequest(mode = 'cache_only') {
       const noSourceReason = normalizeValue(reason).includes('no trusted') || normalizeValue(reason).includes('cache') || normalizeValue(reason).includes('insufficient');
       if (noSourceReason) {
         setSpecPreviewStatus(
-          `No trusted source found; using safe fallback. ${reason || 'Please review and edit specs before create.'}${warningText}`,
+          `No trusted source found; using safe system defaults. ${reason || 'Please review and edit specs before create.'}${warningText}`,
           'warning'
         );
         return;
@@ -14432,6 +15518,150 @@ window.exportAssetsToDetailedPDF = function() {
 
   doc.save('asset_inventory_with_specs.pdf');
   showMessage('Inventory PDF exported successfully.', 'success');
+};
+
+function csvEscape(value) {
+  const text = String(value ?? '');
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadCsvFile(filename, rows = []) {
+  const headers = rows.length ? Object.keys(rows[0]) : ['message'];
+  const csv = [
+    headers.map(csvEscape).join(','),
+    ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(',')),
+  ].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+window.openInventoryReportsPanel = () => {
+  const statusEl = document.getElementById('inventoryReportStatus');
+  if (statusEl) statusEl.textContent = 'Choose a report type, then generate a CSV download.';
+  const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('inventoryReportsModal'));
+  modal.show();
+};
+
+async function ensureReportAssetsLoaded() {
+  if (!Array.isArray(currentAssets) || !currentAssets.length) {
+    await loadAssets();
+  }
+  return Array.isArray(currentAssets) ? currentAssets : [];
+}
+
+window.generateInventoryReportCsv = async () => {
+  const type = String(document.getElementById('inventoryReportTypeSelect')?.value || 'asset_inventory');
+  const statusEl = document.getElementById('inventoryReportStatus');
+  const button = document.getElementById('inventoryGenerateReportBtn');
+  if (statusEl) statusEl.textContent = 'Generating report...';
+  if (button) button.disabled = true;
+  try {
+    let rows = [];
+    let filename = `${type}-${new Date().toISOString().slice(0, 10)}.csv`;
+    if (type === 'asset_inventory') {
+      const assets = await ensureReportAssetsLoaded();
+      rows = assets.map((asset) => ({
+        assetId: asset.customId || '',
+        assetTag: getDisplayAssetTag(asset) || '',
+        name: asset.name || '',
+        category: getAssetCategoryKey(asset),
+        type: formatType(asset.type || ''),
+        status: displayStatus(asset.status || ''),
+        lifecycleStatus: displayLifecycleStatus(asset.lifecycleStatus || ''),
+        location: getAssetDisplayLocation(asset),
+        department: getAssetDisplayDepartment(asset),
+        healthScore: calculateAssetHealthScore(asset).score,
+        warrantyEndDate: asset.warrantyEndDate || '',
+        purchaseCostEgp: asset.purchaseCost || '',
+      }));
+    } else if (type === 'procurement_spend') {
+      const board = await readInventoryJson('/inventory/procurement/board?status=all');
+      rows = (Array.isArray(board?.requests) ? board.requests : []).map((request) => ({
+        requestId: request.requestId || request.requestNumber || request.id || '',
+        title: request.title || '',
+        status: request.status || '',
+        priority: request.priority || '',
+        department: request.linkedDepartment || request.department || '',
+        building: request.linkedLocation || request.building || '',
+        estimatedBudgetEgp: request.estimatedBudget || request.estimatedCost || '',
+        actualCostEgp: request.actualCost || '',
+        source: request.source || '',
+        updatedAt: request.updatedAt || '',
+      }));
+    } else if (type === 'warranty_expiry') {
+      const assets = await ensureReportAssetsLoaded();
+      rows = assets
+        .filter((asset) => asset.warrantyEndDate)
+        .sort((a, b) => new Date(a.warrantyEndDate) - new Date(b.warrantyEndDate))
+        .map((asset) => ({
+          assetId: asset.customId || '',
+          name: asset.name || '',
+          warrantyEndDate: asset.warrantyEndDate || '',
+          location: getAssetDisplayLocation(asset),
+          department: getAssetDisplayDepartment(asset),
+          healthScore: calculateAssetHealthScore(asset).score,
+        }));
+    } else if (type === 'eol_forecast') {
+      const report = await postInventoryJson('/inventory/eol-budget-report', { monthsAhead: 36 });
+      rows = (Array.isArray(report?.rows) ? report.rows : []).map((row) => ({
+        assetId: row.assetId || '',
+        assetName: row.assetName || row.name || '',
+        eolDate: row.eolDate || row.predictedEolDate || '',
+        eolQuarter: row.quarter || row.eolQuarter || '',
+        estimatedReplacementCostEgp: row.estimatedReplacementCost || row.replacementCost || '',
+        costSource: row.costSource || '',
+        department: row.department || '',
+        location: row.location || '',
+        confidence: report.confidence || '',
+      }));
+    } else if (type === 'data_quality') {
+      const assets = await ensureReportAssetsLoaded();
+      rows = assets
+        .map((asset) => ({ asset, missing: getAssetDataQualityMissingFields(asset) }))
+        .filter((row) => row.missing.length)
+        .map(({ asset, missing }) => ({
+          assetId: asset.customId || '',
+          name: asset.name || '',
+          missingFields: missing.join('; '),
+          location: getAssetDisplayLocation(asset),
+          department: getAssetDisplayDepartment(asset),
+          healthEvidenceConfidence: calculateAssetHealthScore(asset).confidence,
+        }));
+    } else if (type === 'audit_reconciliation') {
+      const payload = await readInventoryJson('/inventory/audit-sessions?status=all&limit=200');
+      rows = (Array.isArray(payload?.sessions) ? payload.sessions : []).map((session) => ({
+        sessionNumber: session.sessionNumber || '',
+        title: session.title || '',
+        status: session.status || '',
+        auditor: session.auditor || '',
+        building: session.building || '',
+        department: session.department || '',
+        itemCount: session.itemCount || 0,
+        confirmedCount: session.confirmedCount || 0,
+        mismatchCount: session.mismatchCount || 0,
+        notFoundCount: session.notFoundCount || 0,
+        damagedCount: session.damagedCount || 0,
+        startedAt: session.startedAt || '',
+        closedAt: session.closedAt || '',
+      }));
+    }
+    if (!rows.length) rows = [{ message: 'No rows available for this report with current data.' }];
+    downloadCsvFile(filename, rows);
+    if (statusEl) statusEl.textContent = `Generated ${rows.length} row(s) for ${type.replace(/_/g, ' ')}.`;
+    showMessage('CSV report generated.', 'success');
+  } catch (error) {
+    if (statusEl) statusEl.textContent = 'Report generation failed.';
+    showMessage(error.message || 'Failed to generate report.', 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
 };
 
 window.generateEOLReport = async function() {

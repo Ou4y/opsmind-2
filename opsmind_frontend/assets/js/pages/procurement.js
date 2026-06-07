@@ -182,6 +182,7 @@ function autoRefreshEnabled() {
 function shouldPauseProcurementAutoRefresh() {
   if (document.visibilityState === 'hidden') return true;
   if (document.querySelector('.modal.show')) return true;
+  if (document.getElementById('inventoryAiChatPanel')?.classList.contains('is-open')) return true;
   const active = document.activeElement;
   if (!active) return false;
   const tag = String(active.tagName || '').toLowerCase();
@@ -205,7 +206,7 @@ function urgencyClass(value) {
   return 'is-info';
 }
 
-function sourceLabel(row = {}) {
+function technicalSourceLabel(row = {}) {
   const raw = row.sourceLabel || row.source || row.aiSource || row.recommendationSource || '';
   const normalized = normalizeValue(raw);
   if (normalized.includes('gemma')) return 'Gemma';
@@ -213,6 +214,18 @@ function sourceLabel(row = {}) {
   if (normalized.includes('fallback')) return 'Fallback';
   if (normalized.includes('deterministic') || normalized.includes('rule')) return 'Deterministic';
   return raw ? String(raw).replace(/_/g, ' ') : 'Deterministic';
+}
+
+function sourceLabel(row = {}) {
+  const technical = technicalSourceLabel(row);
+  if (technical === 'Gemma') return 'AI insight';
+  if (technical === 'Hybrid') return 'Estimated';
+  return 'System data';
+}
+
+function sourceInfoIcon(row = {}) {
+  const technical = technicalSourceLabel(row);
+  return `<span class="ops-source-info" title="Internal source: ${escapeHtml(technical)}" aria-label="Internal source: ${escapeHtml(technical)}"><i class="bi bi-info-circle"></i></span>`;
 }
 
 function buildLifecycleStepper(status) {
@@ -589,11 +602,11 @@ function quoteScore(quote = {}, allQuotes = []) {
   const price = numericOrNull(quote.totalPrice);
   const warranty = numericOrNull(quote.warrantyMonths) || 0;
   const delivery = numericOrNull(quote.deliveryDays ?? quote.leadTimeDays) || 999;
-  const reliability = numericOrNull(quote.reliabilityScore) || 0;
+  const reliabilityEvidence = deriveVendorReliabilityEvidence(quote);
   const priceScore = minPrice && price ? Math.max(0, 40 - ((price - minPrice) / Math.max(minPrice, 1)) * 40) : 18;
   const warrantyScore = Math.min(20, warranty / 2);
   const deliveryScore = Math.max(0, 20 - Math.min(20, delivery / 2));
-  const reliabilityScore = Math.min(20, reliability * 2);
+  const reliabilityScore = reliabilityEvidence.score === null ? 0 : Math.min(20, reliabilityEvidence.score / 5);
   const selectedBonus = quote.selected ? 8 : 0;
   return Number((priceScore + warrantyScore + deliveryScore + reliabilityScore + selectedBonus).toFixed(2));
 }
@@ -611,6 +624,109 @@ function quoteTradeoffText(quote = {}, isBest = false) {
   if (moq !== null) parts.push(`MOQ ${moq}`);
   if (!parts.length) parts.push('Add price, warranty, delivery, MOQ, and reliability data to compare this quote properly.');
   return parts.join(' | ');
+}
+
+function deriveVendorReliabilityEvidence(quote = {}) {
+  const manual = numericOrNull(quote.reliabilityScore);
+  if (manual !== null) {
+    return {
+      score: Math.max(0, Math.min(100, Math.round(manual * 10))),
+      source: 'manual_rating',
+      label: `${manual}/10 manual rating`,
+      detail: 'Reliability source: manual vendor/quote rating entered by staff.',
+      completedCount: null,
+    };
+  }
+  const vendorName = String(quote.vendorName || '').trim().toLowerCase();
+  const vendorId = String(quote.vendorId || '').trim().toLowerCase();
+  if (!vendorName && !vendorId) {
+    return {
+      score: null,
+      source: 'insufficient_data',
+      label: 'insufficient data',
+      detail: 'Reliability needs a manual rating or at least 2 completed POs for this vendor.',
+      completedCount: 0,
+    };
+  }
+  const completed = [];
+  getBoardRequests().forEach((request) => {
+    const pos = Array.isArray(request.purchaseOrders) ? request.purchaseOrders : [];
+    const receipts = Array.isArray(request.receivingRecords) ? request.receivingRecords : [];
+    pos.forEach((po) => {
+      const poVendorName = String(po.vendorName || '').trim().toLowerCase();
+      const poVendorId = String(po.vendorId || '').trim().toLowerCase();
+      const matchesVendor = (vendorId && poVendorId === vendorId) || (vendorName && poVendorName === vendorName);
+      const status = String(po.status || '').toLowerCase();
+      if (!matchesVendor || !['received', 'closed', 'partially_received'].includes(status)) return;
+      const expected = po.expectedDeliveryDate ? new Date(po.expectedDeliveryDate) : null;
+      const relatedReceipt = receipts.find((receipt) => !po.poNumber || String(receipt.poNumber || receipt.purchaseOrderNumber || '') === String(po.poNumber || '')) || receipts[0];
+      const receivedAt = relatedReceipt?.receivedAt ? new Date(relatedReceipt.receivedAt) : null;
+      completed.push({
+        expected,
+        receivedAt,
+        onTime: Boolean(expected && receivedAt && receivedAt.getTime() <= expected.getTime()),
+      });
+    });
+  });
+  if (completed.length < 2) {
+    return {
+      score: null,
+      source: 'insufficient_data',
+      label: `${completed.length}/2 completed PO(s)`,
+      detail: 'Reliability is calculated only after at least 2 completed POs with receiving evidence.',
+      completedCount: completed.length,
+    };
+  }
+  const dated = completed.filter((row) => row.expected && row.receivedAt);
+  const onTime = dated.filter((row) => row.onTime).length;
+  const score = dated.length ? Math.round((onTime / dated.length) * 100) : 50;
+  return {
+    score,
+    source: 'calculated_from_pos',
+    label: `${score}% from ${completed.length} completed PO(s)`,
+    detail: `Reliability source: calculated on-time receiving rate (${onTime}/${dated.length || completed.length}) from completed POs.`,
+    completedCount: completed.length,
+  };
+}
+
+function quoteRadarScores(quote = {}, allQuotes = []) {
+  const prices = allQuotes.map((row) => numericOrNull(row.totalPrice)).filter((value) => value !== null && value > 0);
+  const minPrice = prices.length ? Math.min(...prices) : null;
+  const maxPrice = prices.length ? Math.max(...prices) : null;
+  const price = numericOrNull(quote.totalPrice);
+  const warranty = numericOrNull(quote.warrantyMonths);
+  const delivery = numericOrNull(quote.deliveryDays ?? quote.leadTimeDays);
+  const reliability = deriveVendorReliabilityEvidence(quote);
+  const moq = numericOrNull(quote.minimumOrderQuantity);
+  const priceCompetitiveness = minPrice && maxPrice && price
+    ? (maxPrice === minPrice ? 100 : Math.max(0, Math.min(100, Math.round(100 - (((price - minPrice) / (maxPrice - minPrice)) * 100)))))
+    : 45;
+  return [
+    { label: 'Price', score: priceCompetitiveness, evidence: price === null ? 'price missing' : formatCurrency(price) },
+    { label: 'Warranty', score: warranty === null ? 40 : Math.max(0, Math.min(100, Math.round((warranty / 60) * 100))), evidence: warranty === null ? 'missing' : `${warranty}m` },
+    { label: 'Delivery', score: delivery === null ? 40 : Math.max(0, Math.min(100, Math.round(100 - Math.min(100, (delivery / 60) * 100)))), evidence: delivery === null ? 'missing' : `${delivery}d` },
+    { label: 'Reliability', score: reliability.score, evidence: reliability.label, source: reliability.source, detail: reliability.detail },
+    { label: 'MOQ', score: moq === null ? 50 : Math.max(0, Math.min(100, Math.round(100 - Math.min(100, (Math.max(0, moq - 1) / 50) * 100)))), evidence: moq === null ? 'missing' : String(moq) },
+  ];
+}
+
+function quoteRadarHtml(quote = {}, allQuotes = []) {
+  return `
+    <div class="proc-vendor-radar-bars" aria-label="Vendor score visual">
+      ${quoteRadarScores(quote, allQuotes).map((dimension) => {
+        const missing = dimension.score === null || typeof dimension.score === 'undefined';
+        const bucket = missing ? 0 : Math.max(0, Math.min(100, Math.ceil(Number(dimension.score || 0) / 10) * 10));
+        return `
+          <div class="proc-vendor-radar-row ${missing ? 'is-insufficient' : ''}" title="${escapeHtml(dimension.detail || '')}">
+            <span>${escapeHtml(dimension.label)}</span>
+            <div class="proc-vendor-radar-track"><span class="progress-${escapeHtml(String(bucket))}"></span></div>
+            <strong>${escapeHtml(missing ? 'n/a' : String(dimension.score))}</strong>
+            <small>${escapeHtml(dimension.evidence)}</small>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
 }
 
 function renderKanbanBoard(requests = []) {
@@ -659,8 +775,13 @@ function renderKanbanBoard(requests = []) {
                 </div>
                 <div class="proc-kanban-actions">
                   <button type="button" class="btn btn-sm btn-outline-primary" data-proc-view-request="${escapeHtml(row.requestId || '')}">Details</button>
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-update-status="${escapeHtml(row.requestId || '')}">Status</button>
-                  <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-add-quote="${escapeHtml(row.requestId || '')}">Quote</button>
+                  <div class="dropdown proc-kanban-more-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">More</button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                      <button type="button" class="dropdown-item" data-proc-update-status="${escapeHtml(row.requestId || '')}"><i class="bi bi-arrow-repeat me-2"></i>Status</button>
+                      <button type="button" class="dropdown-item" data-proc-add-quote="${escapeHtml(row.requestId || '')}"><i class="bi bi-receipt me-2"></i>Add Quote</button>
+                    </div>
+                  </div>
                 </div>
               </article>
             `;
@@ -793,6 +914,7 @@ function renderVendorBattleCards(requests = []) {
                   <span>Warranty ${escapeHtml(String(quote.warrantyMonths ?? '-'))}m</span>
                   <span>MOQ ${escapeHtml(String(quote.minimumOrderQuantity ?? '-'))}</span>
                 </div>
+                ${quoteRadarHtml(quote, quotes)}
                 <details class="proc-ai-rec-evidence">
                   <summary>Why this value?</summary>
                   <div>${escapeHtml(quoteTradeoffText(quote, isBest))}</div>
@@ -808,6 +930,125 @@ function renderVendorBattleCards(requests = []) {
       </article>
     `;
   }).join('');
+}
+
+function procurementAnalyticsRows(dimension = 'status') {
+  const requests = getBoardRequests();
+  const rows = [];
+  if (dimension === 'status') {
+    const counts = new Map();
+    requests.forEach((request) => {
+      const key = String(request.status || 'Draft').trim() || 'Draft';
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    counts.forEach((value, label) => rows.push({ label, value, detail: `${value} request(s)` }));
+  } else if (dimension === 'department') {
+    const financeRows = Array.isArray(state.finance?.allocations) ? state.finance.allocations : [];
+    const byDepartment = new Map();
+    financeRows.forEach((row) => {
+      const label = String(row.department || 'Unassigned').trim() || 'Unassigned';
+      if (!byDepartment.has(label)) byDepartment.set(label, { label, allocated: 0, value: 0 });
+      const entry = byDepartment.get(label);
+      entry.allocated += Number(row.allocatedAmount || 0);
+      entry.value += Number(row.committedAmount || 0) + Number(row.spentAmount || 0) + Number(row.reservedAmount || 0);
+    });
+    byDepartment.forEach((entry) => rows.push({
+      label: entry.label,
+      value: Math.round(entry.value),
+      detail: `${formatCurrency(entry.value)} used of ${entry.allocated ? formatCurrency(entry.allocated) : 'missing allocation'}`,
+    }));
+  } else if (dimension === 'vendor') {
+    const byVendor = new Map();
+    requests.forEach((request) => {
+      (Array.isArray(request.vendorQuotes) ? request.vendorQuotes : []).forEach((quote) => {
+        const label = String(quote.vendorName || 'Unknown vendor').trim() || 'Unknown vendor';
+        byVendor.set(label, (byVendor.get(label) || 0) + Number(quote.totalPrice || 0));
+      });
+    });
+    byVendor.forEach((value, label) => rows.push({ label, value: Math.round(value), detail: formatCurrency(value) }));
+  } else if (dimension === 'receiving') {
+    const buckets = new Map([
+      ['Received', 0],
+      ['Partially Received', 0],
+      ['Waiting', 0],
+    ]);
+    requests.forEach((request) => {
+      const key = normalizeValue(request.status || '');
+      if (key === 'received' || key === 'closed') buckets.set('Received', (buckets.get('Received') || 0) + 1);
+      else if (key === 'partiallyreceived') buckets.set('Partially Received', (buckets.get('Partially Received') || 0) + 1);
+      else if (['ordered', 'approved'].includes(key)) buckets.set('Waiting', (buckets.get('Waiting') || 0) + 1);
+    });
+    buckets.forEach((value, label) => rows.push({ label, value, detail: `${value} request(s)` }));
+  }
+  return rows.sort((a, b) => Number(b.value || 0) - Number(a.value || 0)).slice(0, 12);
+}
+
+function renderLightweightChart(rows = [], type = 'bar') {
+  if (!rows.length) {
+    return `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No graph data yet</div>
+          <div class="ops-empty-state-copy">Create requests, quotes, budget allocations, or receiving records to populate this graph.</div>
+        </div>
+      </div>
+    `;
+  }
+  const max = Math.max(1, ...rows.map((row) => Number(row.value || 0)));
+  if (type === 'table') {
+    return `
+      <div class="proc-analytics-table">
+        ${rows.map((row) => `
+          <div class="proc-analytics-table-row">
+            <strong>${escapeHtml(row.label)}</strong>
+            <span>${escapeHtml(String(row.value))}</span>
+            <small>${escapeHtml(row.detail || '')}</small>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+  return `
+    <div class="proc-analytics-bars" aria-label="Procurement analytics bar chart">
+      ${rows.map((row) => {
+        const bucket = Math.max(0, Math.min(100, Math.ceil((Number(row.value || 0) / max) * 10) * 10));
+        return `
+          <div class="proc-analytics-bar-row">
+            <span>${escapeHtml(row.label)}</span>
+            <div class="proc-analytics-bar-track"><i class="progress-${escapeHtml(String(bucket))}"></i></div>
+            <strong>${escapeHtml(String(row.value))}</strong>
+            <small>${escapeHtml(row.detail || '')}</small>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderProcurementAnalyticsBuilder() {
+  const output = document.getElementById('procAnalyticsBuilderOutput');
+  if (!output) return;
+  const dimension = document.getElementById('procAnalyticsDimension')?.value || 'status';
+  const type = document.getElementById('procAnalyticsChartType')?.value || 'bar';
+  const rows = procurementAnalyticsRows(dimension);
+  const label = {
+    status: 'Procurement requests by status',
+    department: 'Department budget vs spend',
+    vendor: 'Spend by vendor quote evidence',
+    receiving: 'Receiving progress',
+  }[dimension] || 'Procurement analytics preset';
+  output.innerHTML = `
+    <div class="proc-analytics-graph-card ops-3d-card">
+      <div class="proc-analytics-graph-head">
+        <div>
+          <div class="proc-kanban-kicker">Analytics preset</div>
+          <h6>${escapeHtml(label)}</h6>
+        </div>
+        <span class="ops-attention-pill is-info">System data</span>
+      </div>
+      ${renderLightweightChart(rows, type)}
+    </div>
+  `;
 }
 
 function procurement360Evidence(title, evidence = [], missingData = []) {
@@ -826,11 +1067,12 @@ function procurement360Evidence(title, evidence = [], missingData = []) {
 }
 
 function procurement360Card({ title, value, subtitle, severity = 'info', source = 'Deterministic', evidence = [], missingData = [], actions = [] } = {}) {
+  const publicSource = sourceLabel({ source });
   return `
     <article class="ops-360-card ${urgencyClass(severity)}">
       <div class="ops-360-card-head">
         <div>
-          <div class="ops-360-card-kicker">${escapeHtml(source)}</div>
+          <div class="ops-360-card-kicker">${escapeHtml(publicSource)}${sourceInfoIcon({ source })}</div>
           <h3>${escapeHtml(title || 'Procurement insight')}</h3>
         </div>
         <span class="ops-attention-pill ${urgencyClass(severity)}">${escapeHtml(String(severity || 'Info'))}</span>
@@ -839,9 +1081,12 @@ function procurement360Card({ title, value, subtitle, severity = 'info', source 
       <p>${escapeHtml(subtitle || '')}</p>
       ${procurement360Evidence(title, evidence, missingData)}
       ${actions.length ? `<div class="ops-360-actions">${actions.map((action, index) => `
-        <button type="button" class="btn btn-sm ${index === 0 ? 'btn-primary' : 'btn-outline-primary'}" data-proc-360-action="${escapeHtml(action.action || '')}">
-          ${escapeHtml(action.label || 'Open')}
-        </button>
+        <div class="ops-360-action-stack">
+          <button type="button" class="btn btn-sm ${index === 0 ? 'btn-primary' : 'btn-outline-primary'}" data-proc-360-action="${escapeHtml(action.action || '')}">
+            ${escapeHtml(action.label || 'Open')}
+          </button>
+          ${action.reason ? `<span class="proc-workflow-evidence-reason">${escapeHtml(action.reason)}</span>` : ''}
+        </div>
       `).join('')}</div>` : ''}
     </article>
   `;
@@ -861,6 +1106,85 @@ function getRequestReceivingRecords(request = {}) {
   return Array.isArray(request.receivingRecords)
     ? request.receivingRecords
     : (Array.isArray(request.receipts) ? request.receipts : []);
+}
+
+function getRequestApprovals(request = {}) {
+  return Array.isArray(request.approvals)
+    ? request.approvals
+    : (Array.isArray(request.approvalHistory) ? request.approvalHistory : []);
+}
+
+function findDecisionDate(request = {}, statusOrDecision = '') {
+  const key = normalizeValue(statusOrDecision);
+  const match = getRequestApprovals(request).find((row) => {
+    const decision = normalizeValue(row.decision || row.action || '');
+    const toStatus = normalizeValue(row.toStatus || row.status || '');
+    return decision === key || toStatus === key || decision.includes(key) || toStatus.includes(key);
+  });
+  return match?.createdAt || match?.date || match?.decidedAt || null;
+}
+
+function selectedQuoteForRequest(request = {}) {
+  const quotes = getRequestQuotes(request);
+  return quotes.find((quote) => quote.selected || normalizeValue(quote.status) === 'selected')
+    || quotes
+      .filter((quote) => numericOrNull(quote.totalPrice) !== null)
+      .sort((a, b) => (numericOrNull(a.totalPrice) || Infinity) - (numericOrNull(b.totalPrice) || Infinity))[0]
+    || null;
+}
+
+function primaryPurchaseOrderForRequest(request = {}) {
+  return getRequestPurchaseOrders(request)[0] || request.purchaseOrder || null;
+}
+
+function requestedQuantityForRequest(request = {}) {
+  const items = Array.isArray(request.items) ? request.items : [];
+  const itemTotal = items.reduce((sum, item) => sum + (Number(item.quantityRequested ?? item.quantity ?? 0) || 0), 0);
+  return itemTotal || Number(request.quantityRequested ?? request.quantity ?? 0) || 0;
+}
+
+function receivedQuantityForRequest(request = {}) {
+  const items = Array.isArray(request.items) ? request.items : [];
+  const itemTotal = items.reduce((sum, item) => sum + (Number(item.quantityReceived ?? 0) || 0), 0);
+  const recordTotal = getRequestReceivingRecords(request).reduce((sum, record) => sum + (Number(record.receivedQuantity ?? record.quantityReceived ?? 0) || 0), 0);
+  return itemTotal || recordTotal || Number(request.quantityReceived ?? 0) || 0;
+}
+
+function workflowEvidenceReason(request = {}, next = {}) {
+  const status = normalizeValue(request.status || '');
+  if (status === 'submitted') {
+    const user = request.requestedBy || request.createdBy || request.submitter || 'requester';
+    const date = formatDate(findDecisionDate(request, 'submit') || request.submittedAt || request.updatedAt || request.createdAt);
+    return `Submitted by ${user} on ${date}. Awaiting reviewer.`;
+  }
+  if (status === 'underreview') {
+    const quoteCount = getRequestQuotes(request).length;
+    return `${quoteCount} quote(s) received. Awaiting manager approval.`;
+  }
+  if (status === 'approved' && next.type === 'po') {
+    const approvedAt = formatDate(findDecisionDate(request, 'approve') || request.approvedAt || request.updatedAt || request.createdAt);
+    const quote = selectedQuoteForRequest(request);
+    if (quote?.vendorName && numericOrNull(quote.totalPrice) !== null) {
+      return `Approved on ${approvedAt}. Best quote: ${quote.vendorName} at ${formatCurrency(quote.totalPrice)}.`;
+    }
+    return 'Approved request. Quote evidence incomplete.';
+  }
+  if (status === 'approved') return 'Approved request. Quote evidence incomplete.';
+  if (status === 'ordered') {
+    const po = primaryPurchaseOrderForRequest(request);
+    if (po?.poNumber || po?.vendorName || po?.expectedDeliveryDate) {
+      return `PO #${po.poNumber || '-'} sent to ${po.vendorName || 'vendor'}. Expected: ${formatDate(po.expectedDeliveryDate || po.expectedDelivery || po.deliveryDate)}.`;
+    }
+    return 'Ordered request. Receiving evidence incomplete.';
+  }
+  if (status === 'partiallyreceived') {
+    const requested = requestedQuantityForRequest(request);
+    const received = receivedQuantityForRequest(request);
+    const remaining = Math.max(0, requested - received);
+    if (requested || received) return `${received} of ${requested || '?'} units received. ${remaining || 0} remaining.`;
+    return 'Ordered request. Receiving evidence incomplete.';
+  }
+  return 'Request is ready for the next workflow step.';
 }
 
 function buildProcurement360Summary() {
@@ -939,15 +1263,31 @@ function buildProcurement360Summary() {
 function getNextProcurementAction(summary = buildProcurement360Summary()) {
   const requests = summary.requests || [];
   const approval = requests.find((row) => ['submitted', 'underreview'].includes(normalizeValue(row.status)));
-  if (approval) return { type: 'status', requestId: approval.requestId, title: 'Approve or reject request', reason: `${approval.requestId} is waiting for a decision.` };
+  if (approval) {
+    const title = normalizeValue(approval.status) === 'submitted' ? 'Move to Under Review' : 'Approve or reject request';
+    const next = { type: 'status', requestId: approval.requestId, title, reason: `${approval.requestId} is waiting for a decision.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(approval, next) };
+  }
   const needsQuote = requests.find((row) => normalizeValue(row.status) === 'approved' && !getRequestQuotes(row).length);
-  if (needsQuote) return { type: 'quote', requestId: needsQuote.requestId, title: 'Add vendor quote', reason: `${needsQuote.requestId} is approved but has no quote.` };
+  if (needsQuote) {
+    const next = { type: 'quote', requestId: needsQuote.requestId, title: 'Add vendor quote', reason: `${needsQuote.requestId} is approved but has no quote.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsQuote, next) };
+  }
   const needsPo = requests.find((row) => normalizeValue(row.status) === 'approved' && getRequestQuotes(row).some((quote) => quote.selected) && !getRequestPurchaseOrders(row).length);
-  if (needsPo) return { type: 'po', requestId: needsPo.requestId, title: 'Create purchase order', reason: `${needsPo.requestId} has an approved selected quote.` };
+  if (needsPo) {
+    const next = { type: 'po', requestId: needsPo.requestId, title: 'Create purchase order', reason: `${needsPo.requestId} has an approved selected quote.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsPo, next) };
+  }
   const needsReceive = requests.find((row) => ['ordered', 'partiallyreceived'].includes(normalizeValue(row.status)));
-  if (needsReceive) return { type: 'receive', requestId: needsReceive.requestId, title: 'Receive stock', reason: `${needsReceive.requestId} is ordered or partially received.` };
+  if (needsReceive) {
+    const next = { type: 'receive', requestId: needsReceive.requestId, title: normalizeValue(needsReceive.status) === 'partiallyreceived' ? 'Receive remaining' : 'Receive stock', reason: `${needsReceive.requestId} is ordered or partially received.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsReceive, next) };
+  }
   const draft = requests.find((row) => normalizeValue(row.status) === 'draft');
-  if (draft) return { type: 'status', requestId: draft.requestId, title: 'Submit draft request', reason: `${draft.requestId} is still in Draft.` };
+  if (draft) {
+    const next = { type: 'status', requestId: draft.requestId, title: 'Submit draft request', reason: `${draft.requestId} is still in Draft.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(draft, next) };
+  }
   return null;
 }
 
@@ -967,7 +1307,7 @@ function renderProcurement360() {
       subtitle: `${summary.pendingApprovals} pending approval | ${summary.orderedTransit} ordered/in transit | ${summary.receivedClosed} received/closed`,
       severity: summary.pendingApprovals || summary.agingRequests ? 'Medium' : 'Healthy',
       evidence: [`Open requests: ${summary.openRequests}`, `Partially received: ${summary.partiallyReceived}`, `Aging requests: ${summary.agingRequests}`, `Status counts loaded: ${Object.keys(summary.statusCounts || {}).length}`],
-      actions: [{ label: 'Continue Workflow', action: 'continue' }, { label: 'Requests', action: 'requests' }],
+      actions: [{ label: 'Continue Workflow', action: 'continue', reason: nextAction?.evidenceReason || 'Request is ready for the next workflow step.' }, { label: 'Requests', action: 'requests' }],
     }),
     procurement360Card({
       title: 'Cost & Budget',
@@ -1012,7 +1352,7 @@ function renderProcurement360() {
       subtitle: nextAction ? `${nextAction.title}: ${nextAction.reason}` : 'No immediate workflow blocker from loaded procurement evidence.',
       severity: nextAction ? 'Medium' : 'Healthy',
       evidence: nextAction ? [nextAction.reason] : ['No pending approval, quote, PO, or receiving blocker detected.'],
-      actions: [{ label: nextAction ? nextAction.title : 'Create Request', action: nextAction ? 'continue' : 'create' }, { label: 'Explain', action: 'explain' }],
+      actions: [{ label: nextAction ? nextAction.title : 'Create Request', action: nextAction ? 'continue' : 'create', reason: nextAction?.evidenceReason || '' }, { label: 'Explain', action: 'explain' }],
     }),
   ].join('');
 }
@@ -1067,6 +1407,7 @@ function renderBoard() {
       `EOL-driven: ${Number(analytics.eolDrivenCandidates || 0)}`,
     ].join(' | ');
   }
+  renderProcurementAnalyticsBuilder();
 
   const priorityRows = [];
   (Array.isArray(priorities.urgentReplacements) ? priorities.urgentReplacements.slice(0, 8) : []).forEach((row) => {
@@ -1128,7 +1469,7 @@ function renderBoard() {
             <div class="proc-ai-rec-main">
               <div class="proc-ai-rec-kicker">
                 <span class="ops-attention-pill ${urgencyClass(priority)}">${escapeHtml(priority.toUpperCase())}</span>
-                <span class="ops-attention-pill is-info">Source: ${escapeHtml(sourceLabel(row))}</span>
+                <span class="ops-attention-pill is-info">Source: ${escapeHtml(sourceLabel(row))}${sourceInfoIcon(row)}</span>
                 ${row.evidenceLevel || row.dataQuality ? `<span class="ops-attention-pill is-review">Evidence: ${escapeHtml(String(row.evidenceLevel || row.dataQuality))}</span>` : ''}
               </div>
               <div class="proc-ai-rec-title">${escapeHtml(row.itemName || row.title || 'Procurement recommendation')}</div>
@@ -1163,6 +1504,8 @@ function renderBoard() {
   if (requestsBody) {
     requestsBody.innerHTML = requests.map((row) => {
       const selectedQuote = Array.isArray(row.vendorQuotes) ? row.vendorQuotes.find((quote) => quote.selected) : null;
+      const next = getNextProcurementAction({ requests: [row] });
+      const evidenceReason = next?.evidenceReason || workflowEvidenceReason(row, next || {});
       return `
         <tr class="${String(row.requestId || '') === state.recentlyUpdatedRequestId ? 'proc-row-updated' : ''}">
           <td>
@@ -1185,7 +1528,10 @@ function renderBoard() {
           <td>${escapeHtml(formatDate(row.updatedAt))}</td>
           <td class="text-end">
             <div class="d-flex flex-wrap justify-content-end gap-1">
-              <button type="button" class="btn btn-sm btn-primary" data-proc-continue-request="${escapeHtml(row.requestId || '')}" data-role-required="procurement">Continue</button>
+              <div class="proc-workflow-next">
+                <button type="button" class="btn btn-sm btn-primary" data-proc-continue-request="${escapeHtml(row.requestId || '')}" data-role-required="procurement">Continue</button>
+                <span class="proc-workflow-evidence-reason">${escapeHtml(evidenceReason)}</span>
+              </div>
               <button type="button" class="btn btn-sm btn-outline-primary" data-proc-view-request="${escapeHtml(row.requestId || '')}">Details</button>
               <div class="dropdown">
                 <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">More</button>
@@ -1253,8 +1599,13 @@ function renderBoard() {
         <td><span class="badge ${statusBadgeClass(po.status || '-')}">${escapeHtml(String(po.status || '-').replace(/_/g, ' '))}</span></td>
         <td>${escapeHtml(formatDate(po.expectedDelivery))}</td>
         <td>${escapeHtml(formatDate(po.updatedAt || po.createdAt))}</td>
+        <td class="text-end">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-proc-export-po="${escapeHtml(request.requestId || '')}" data-proc-po-number="${escapeHtml(po.poNumber || '')}">
+            <i class="bi bi-file-earmark-pdf me-1"></i>Export
+          </button>
+        </td>
       </tr>
-    `).join('') || emptyStateRow(6, 'No purchase orders yet', 'Create a PO from an approved request after vendor quote review.');
+    `).join('') || emptyStateRow(7, 'No purchase orders yet', 'Create a PO from an approved request after vendor quote review.');
   }
 
   const receivingRows = [];
@@ -1538,6 +1889,22 @@ function renderFinancePanel() {
     <span class="badge text-bg-light me-1 mb-1">Available: ${escapeHtml(formatCurrency(totals.available))}</span>
   `;
   const rows = Array.isArray(payload.allocations) ? payload.allocations : [];
+  const byDepartment = new Map();
+  rows.forEach((row) => {
+    const department = String(row.department || 'Unassigned').trim() || 'Unassigned';
+    if (!byDepartment.has(department)) {
+      byDepartment.set(department, { department, allocated: 0, committed: 0, spent: 0, reserved: 0, available: 0 });
+    }
+    const entry = byDepartment.get(department);
+    entry.allocated += Number(row.allocatedAmount || 0);
+    entry.committed += Number(row.committedAmount || 0);
+    entry.spent += Number(row.spentAmount || 0);
+    entry.reserved += Number(row.reservedAmount || 0);
+    entry.available += Number(row.availableAmount || 0);
+  });
+  const departmentCards = Array.from(byDepartment.values())
+    .sort((a, b) => (b.committed + b.spent + b.reserved) - (a.committed + a.spent + a.reserved))
+    .slice(0, 8);
   tbody.innerHTML = rows.slice(0, 200).map((row) => `
     <tr>
       <td><div class="fw-semibold">${escapeHtml(row.costCenter || '-')}</div><div class="small text-muted">${escapeHtml(row.period || '-')}</div></td>
@@ -1549,6 +1916,33 @@ function renderFinancePanel() {
       <td>${escapeHtml(formatCurrency(row.availableAmount))}</td>
     </tr>
   `).join('') || '<tr><td colspan="7" class="text-muted">No budget allocations yet.</td></tr>';
+  if (departmentCards.length) {
+    totalsEl.innerHTML += `
+      <div class="proc-dept-budget-grid">
+        ${departmentCards.map((row) => {
+          const used = row.reserved + row.committed + row.spent;
+          const percent = row.allocated > 0 ? Math.round((used / row.allocated) * 100) : null;
+          const severity = percent === null ? 'is-info' : (percent >= 100 ? 'is-urgent' : (percent >= 80 ? 'is-review' : 'is-healthy'));
+          const bucket = percent === null ? 0 : Math.max(0, Math.min(100, Math.ceil(percent / 10) * 10));
+          return `
+            <article class="proc-dept-budget-card ${severity}">
+              <div class="proc-dept-budget-head">
+                <strong>${escapeHtml(row.department)}</strong>
+                <span class="ops-attention-pill ${severity}">${escapeHtml(percent === null ? 'Budget missing' : `${percent}% used`)}</span>
+              </div>
+              <div class="proc-dept-budget-bar"><span class="progress-${escapeHtml(String(bucket))}"></span></div>
+              <div class="proc-dept-budget-values">
+                <span>Allocated ${escapeHtml(row.allocated ? formatCurrency(row.allocated) : 'Budget data missing')}</span>
+                <span>Committed ${escapeHtml(formatCurrency(row.committed))}</span>
+                <span>Spent ${escapeHtml(formatCurrency(row.spent))}</span>
+                <span>Remaining ${escapeHtml(formatCurrency(row.available))}</span>
+              </div>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
 }
 
 function renderSuppliersPanel() {
@@ -1583,7 +1977,9 @@ async function loadBoard(options = {}) {
   const background = Boolean(options.background);
   const statusFilterEl = document.getElementById('procStatusFilter');
   state.statusFilter = String(statusFilterEl?.value || 'all').trim() || 'all';
-  setLoadingState(true, background ? 'Refreshing procurement evidence...' : 'Loading procurement board...');
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  setLoadingState(true, background ? 'Refreshing...' : 'Loading procurement board...');
   if (!background) setProcurementSkeletonState();
   try {
     state.board = await readJson(`/inventory/procurement/board?status=${encodeURIComponent(state.statusFilter)}`);
@@ -1593,10 +1989,11 @@ async function loadBoard(options = {}) {
     setLoadingState(false);
   } catch (error) {
     console.error(error);
-    setLoadError(error.message || 'Failed to load board');
-    notify(error.message || 'Failed to load procurement board.', 'error');
+    setLoadError(background ? 'Refresh failed' : (error.message || 'Failed to load board'));
+    if (!background) notify(error.message || 'Failed to load procurement board.', 'error');
   } finally {
     state.loading = false;
+    if (background) requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
   }
 }
 
@@ -2012,13 +2409,13 @@ async function openRequestDetails(requestId) {
             <h4>Next Best Action</h4>
             <div class="proc-detail-next-action">
               <strong>${escapeHtml(nextStep?.title || 'No immediate blocker')}</strong>
-              <p>${escapeHtml(nextStep?.reason || 'No pending approval, quote, PO, or receiving blocker was detected from this request status.')}</p>
+              <p>${escapeHtml(nextStep?.evidenceReason || nextStep?.reason || 'No pending approval, quote, PO, or receiving blocker was detected from this request status.')}</p>
             </div>
           </div>
           <div class="proc-detail-section">
             <h4>AI / Evidence</h4>
             <div class="proc-detail-next-action">
-              <strong>${escapeHtml(sourceLabel(aiEvidence))}</strong>
+              <strong>${escapeHtml(sourceLabel(aiEvidence))}${sourceInfoIcon(aiEvidence)}</strong>
               <p>${escapeHtml(String(aiEvidence.recommendationEvidence || aiEvidence.evidence || aiEvidence.reason || 'No AI evidence metadata was returned for this request.'))}</p>
             </div>
           </div>
@@ -2101,7 +2498,7 @@ async function viewRecommendationEvidence(index) {
         <div class="proc-evidence-grid">
           <div><strong>Priority</strong><span>${escapeHtml(String(row.priority || row.urgency || '-'))}</span></div>
           <div><strong>Quantity</strong><span>${escapeHtml(String(row.recommendedQuantity ?? row.quantity ?? '-'))}</span></div>
-          <div><strong>Source</strong><span>${escapeHtml(sourceLabel(row))}</span></div>
+          <div><strong>Source</strong><span>${escapeHtml(sourceLabel(row))}${sourceInfoIcon(row)}</span></div>
           <div><strong>Evidence</strong><span>${escapeHtml(String(row.evidenceLevel || row.dataQuality || '-'))}</span></div>
         </div>
         <div class="proc-evidence-copy">${escapeHtml(String(row.evidenceSummary || row.evidence || row.reason || 'No additional evidence text was provided.'))}</div>
@@ -2325,16 +2722,36 @@ async function receiveRequest(requestId) {
       previewOnly: true,
     });
     const impact = preview?.impactPreview || {};
+    const diffRows = [
+      ['Stock level', impact.applyTarget === 'spare_stock' ? (impact.spareStockBefore ?? '-') : 'No stock update', impact.applyTarget === 'spare_stock' ? (impact.spareStockAfter ?? '-') : 'No stock update'],
+      ['FIFO batch', impact.fifoBatchBefore || 'None', impact.fifoBatchAfter ? 'Batch created on confirm' : 'No batch'],
+      ['Request status', impact.requestStatusBefore || request.status || '-', impact.requestStatusAfter || '-'],
+      ['PO status', impact.purchaseOrderStatusBefore || '-', impact.purchaseOrderStatusAfter || '-'],
+      ['Last received date', impact.lastReceivedDateBefore ? formatDate(impact.lastReceivedDateBefore) : 'None recorded', impact.lastReceivedDateAfter ? formatDate(impact.lastReceivedDateAfter) : 'Today'],
+      ['Cost impact', impact.costImpact ? formatCurrency(impact.costImpact) : 'Cost data missing', impact.costImpact ? formatCurrency(impact.costImpact) : 'Cost data missing'],
+    ];
     const confirmMessageHtml = `
       <div class="proc-receiving-impact-card ${impact.applyTarget === 'spare_stock' ? 'has-inventory-impact' : ''}">
         <div class="proc-receiving-impact-label">Preview before confirmation</div>
         <div class="proc-receiving-impact-title">${escapeHtml(impact.itemName || request.itemType || 'Receiving impact')}</div>
+        <div class="proc-impact-summary-row">
+          <span>Request ${escapeHtml(impact.requestId || requestId)}</span>
+          <span>Quantity ${escapeHtml(String(impact.receivedQuantity || payload.receivedQuantity))}</span>
+          <span>Target ${escapeHtml(String(impact.applyTarget || payload.applyTarget).replace(/_/g, ' '))}</span>
+        </div>
+        <div class="proc-receiving-diff-table">
+          <div class="proc-receiving-diff-header"><span>Impact</span><strong>Before</strong><strong>After</strong></div>
+          ${diffRows.map(([label, before, after]) => `
+            <div class="proc-receiving-diff-row ${String(before) === String(after) ? 'is-unchanged' : 'is-changed'}">
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(String(before))}</strong>
+              <strong>${escapeHtml(String(after))}</strong>
+            </div>
+          `).join('')}
+        </div>
         <ul class="proc-impact-list">
-          <li><span>Request</span><strong>${escapeHtml(impact.requestId || requestId)}</strong></li>
-          <li><span>Quantity</span><strong>${escapeHtml(String(impact.receivedQuantity || payload.receivedQuantity))}</strong></li>
-          <li><span>Target</span><strong>${escapeHtml(String(impact.applyTarget || payload.applyTarget).replace(/_/g, ' '))}</strong></li>
-          ${impact.applyTarget === 'spare_stock' ? `<li><span>Spare stock</span><strong>${escapeHtml(String(impact.spareStockBefore ?? '-'))} -> ${escapeHtml(String(impact.spareStockAfter ?? '-'))}</strong></li>` : ''}
           <li><span>History</span><strong>Procurement receiving event</strong></li>
+          <li><span>Inventory impact</span><strong>${escapeHtml(impact.applyTarget === 'spare_stock' ? 'Spare stock + FIFO batch' : (impact.assetDraftRecommended ? 'Asset receiving review required' : 'Record only'))}</strong></li>
         </ul>
         <div class="proc-impact-note">${escapeHtml(impact.summary || 'Review receiving impact before applying.')}</div>
       </div>
@@ -2381,6 +2798,31 @@ function openProcurementCopilot(prompt = '') {
   window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
 }
 
+async function openProcurementGuidedTour() {
+  await showFormModal({
+    title: 'Procurement Guided Tour',
+    message: 'A read-only walkthrough of the real procurement workspace. It does not create, approve, order, or receive anything.',
+    messageHtml: `
+      <div class="ops-guided-tour-panel">
+        <ol class="ops-guided-tour-list">
+          <li><strong>Dashboard:</strong> review open requests, approvals, ordered items, receiving, spend, and AI recommendation signals.</li>
+          <li><strong>AI Recommendations:</strong> inspect evidence before converting any recommendation into a reviewed request.</li>
+          <li><strong>Requests:</strong> follow lifecycle status and use Continue Workflow only after reading the evidence reason.</li>
+          <li><strong>Vendor Quotes and Orders:</strong> compare quote price, delivery, warranty, reliability, then create a PO after review.</li>
+          <li><strong>Receiving:</strong> preview inventory impact before applying stock, batch, license, or asset updates.</li>
+          <li><strong>Analysis and Business tabs:</strong> use ABC, EOQ/MOQ, FIFO, Finance, and Suppliers as decision support, not automatic approvals.</li>
+        </ol>
+        <div class="ops-guided-tour-note">Phase 1 can add anchored tooltip overlays; Phase 0 exposes the tour as a clear guided panel using live page data.</div>
+      </div>
+    `,
+    confirmText: 'Close',
+    cancelText: 'Dismiss',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [],
+  });
+}
+
 function procurementCopilotContext() {
   const summary = buildProcurement360Summary();
   return {
@@ -2411,8 +2853,12 @@ function showProcurementTab(tabName = 'dashboard') {
     quotes: 'proc-quotes-tab',
     orders: 'proc-po-tab',
     receiving: 'proc-receiving-tab',
+    abc: 'proc-abc-tab',
+    eoq: 'proc-eoq-tab',
+    fifo: 'proc-fifo-tab',
     finance: 'proc-finance-tab',
     suppliers: 'proc-suppliers-tab',
+    analytics: 'proc-analytics-tab',
   };
   const btn = document.getElementById(map[tabName] || map.dashboard);
   if (btn && window.bootstrap?.Tab) bootstrap.Tab.getOrCreateInstance(btn).show();
@@ -2434,11 +2880,18 @@ function applyInitialProcurementHash() {
     'purchase-orders': 'orders',
     po: 'orders',
     receiving: 'receiving',
+    abc: 'abc',
+    'abc-analysis': 'abc',
+    eoq: 'eoq',
+    'eoq-moq': 'eoq',
+    fifo: 'fifo',
     finance: 'finance',
     budgets: 'finance',
     suppliers: 'suppliers',
     supplier: 'suppliers',
     rfq: 'suppliers',
+    analytics: 'analytics',
+    graphs: 'analytics',
   };
   const tabName = aliases[hash];
   if (tabName) showProcurementTab(tabName);
@@ -2474,17 +2927,83 @@ function continueRequestWorkflow(requestId) {
   else if (next.type === 'receive') receiveRequest(requestId);
 }
 
+function exportPurchaseOrderDocument(requestId, poNumber) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found for PO export.', 'warning');
+    return;
+  }
+  const purchaseOrders = getRequestPurchaseOrders(request);
+  const po = purchaseOrders.find((entry) => String(entry.poNumber || '') === String(poNumber || '')) || purchaseOrders[0];
+  if (!po) {
+    notify('Purchase order not found.', 'warning');
+    return;
+  }
+  const items = Array.isArray(po.items) && po.items.length ? po.items : (Array.isArray(request.items) ? request.items : []);
+  const total = items.reduce((sum, item) => sum + Number(item.totalPrice || item.totalCost || (Number(item.quantityOrdered || item.quantityRequested || 0) * Number(item.unitPrice || item.unitEstimatedCost || 0)) || 0), 0);
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(po.poNumber || 'Purchase Order')}</title>
+        <link href="/assets/css/main.css?v=6" rel="stylesheet">
+      </head>
+      <body class="proc-po-print-body">
+        <button class="proc-po-print-button" onclick="window.print()">Print / Save as PDF</button>
+        <div class="proc-po-print-head">
+          <div>
+            <h1>Purchase Order</h1>
+            <div class="proc-po-print-muted">OpsMind internal procurement document. Not a payment record.</div>
+          </div>
+          <div>
+            <strong>${escapeHtml(po.poNumber || '-')}</strong><br>
+            <span class="proc-po-print-muted">Request ${escapeHtml(request.requestId || request.requestNumber || '-')}</span>
+          </div>
+        </div>
+        <div class="proc-po-print-grid">
+          <div class="proc-po-print-box"><strong>Vendor</strong><br>${escapeHtml(po.vendorName || 'Vendor not specified')}</div>
+          <div class="proc-po-print-box"><strong>Status</strong><br>${escapeHtml(String(po.status || '-').replace(/_/g, ' '))}</div>
+          <div class="proc-po-print-box"><strong>Expected Delivery</strong><br>${escapeHtml(formatDate(po.expectedDeliveryDate || po.expectedDelivery))}</div>
+          <div class="proc-po-print-box"><strong>Department / Building</strong><br>${escapeHtml(request.department || 'Unassigned')} / ${escapeHtml(request.building || '-')}</div>
+        </div>
+        <h2>Items</h2>
+        <table class="proc-po-print-table">
+          <thead><tr><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Notes</th></tr></thead>
+          <tbody>
+            ${items.map((item) => {
+              const qty = Number(item.quantityOrdered || item.quantityRequested || 0);
+              const unit = Number(item.unitPrice || item.unitEstimatedCost || 0);
+              const lineTotal = Number(item.totalPrice || item.totalCost || (qty * unit) || 0);
+              return `<tr><td>${escapeHtml(item.itemName || item.name || 'Item')}</td><td>${escapeHtml(String(qty || '-'))}</td><td>${escapeHtml(unit ? formatCurrency(unit) : '-')}</td><td>${escapeHtml(lineTotal ? formatCurrency(lineTotal) : '-')}</td><td>${escapeHtml(item.notes || '')}</td></tr>`;
+            }).join('') || '<tr><td colspan="5">No item rows stored.</td></tr>'}
+          </tbody>
+        </table>
+        <p class="proc-po-print-total">Estimated PO Total: ${escapeHtml(total ? formatCurrency(total) : 'Not calculated')}</p>
+        <p class="proc-po-print-muted">Generated ${escapeHtml(new Date().toLocaleString())}. Prices, vendors, and quantities come only from stored procurement data.</p>
+      </body>
+    </html>
+  `;
+  const printWindow = window.open('', '', 'width=960,height=720');
+  if (!printWindow) {
+    notify('Please allow popups to export/print this purchase order.', 'warning');
+    return;
+  }
+  printWindow.document.write(html);
+  printWindow.document.close();
+  notify(`Opened export view for ${po.poNumber || 'purchase order'}.`, 'success');
+}
+
 function procurementGemmaFeatureRows(aiReady, diagnostics = {}) {
-  const source = aiReady ? 'Gemma ready' : 'Fallback available';
-  const model = diagnostics?.llm_model || diagnostics?.model || 'Gemma model';
+  const source = aiReady ? 'AI insight ready' : 'System data available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'local AI model';
   return [
-    ['AI purchase recommendations', 'Hybrid', source, 'Recommendations are grounded in stock, EOL, audit, maintenance, and request evidence.'],
-    ['Procurement 360 explanation', 'Hybrid', source, 'Deterministic board metrics first; Gemma explains priorities.'],
-    ['Vendor quote comparison', 'Hybrid', source, 'Quote facts are deterministic; Gemma explains best-value tradeoffs.'],
-    ['Budget impact explanation', 'Hybrid', source, 'Budget math remains deterministic; Gemma summarizes risk and actions.'],
-    ['FIFO explanation', 'Hybrid', source, 'FIFO queue is deterministic; Gemma explains oldest-batch reasoning.'],
-    ['EOQ/MOQ explanation', 'Hybrid', source, 'Formula results stay deterministic; Gemma explains missing data/conflicts.'],
-    ['Procurement Copilot prompt', 'Yes/Hybrid', source, `Routes through Inventory AI service when ${model} is available.`],
+    ['AI purchase recommendations', 'Estimated', source, 'Recommendations are grounded in stock, EOL, audit, maintenance, and request evidence.'],
+    ['Procurement 360 explanation', 'Estimated', source, 'System board metrics first; AI insight explains priorities.'],
+    ['Vendor quote comparison', 'Estimated', source, 'Quote facts are system-calculated; AI insight explains best-value tradeoffs.'],
+    ['Budget impact explanation', 'Estimated', source, 'Budget math remains system-calculated; AI insight summarizes risk and actions.'],
+    ['FIFO explanation', 'Estimated', source, 'FIFO queue is system-calculated; AI insight explains oldest-batch reasoning.'],
+    ['EOQ/MOQ explanation', 'Estimated', source, 'Formula results stay system-calculated; AI insight explains missing data/conflicts.'],
+    ['Procurement Copilot prompt', 'Yes/Estimated', source, `Routes through Inventory AI service when ${model} is available.`],
   ];
 }
 
@@ -2500,7 +3019,7 @@ async function fetchProcurementGemmaDiagnostics() {
     health: healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' },
     diagnostics: diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' },
     backend: backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' },
-    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend Gemma test unavailable' },
+    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend AI test unavailable' },
     latencyMs: Math.round(performance.now() - startedAt),
   };
 }
@@ -2521,10 +3040,10 @@ function renderProcurementGemmaDiagnosticsBody(result = {}) {
       <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
         <div>
           <div class="ops-gemma-kicker">Procurement AI diagnostics</div>
-          <h3>${escapeHtml(aiReady ? 'Gemma is ready for Procurement AI' : 'Procurement AI fallback is available')}</h3>
-          <p>${escapeHtml(aiReady ? 'Procurement calculations remain deterministic; Gemma is available for explanation and narrative recommendations.' : 'OpsMind will continue showing rule-based procurement evidence until Gemma is available.')}</p>
+          <h3>${escapeHtml(aiReady ? 'AI insight is ready for Procurement' : 'Procurement system data is available')}</h3>
+          <p>${escapeHtml(aiReady ? 'Procurement calculations remain system-calculated; AI insight is available for explanation and narrative recommendations.' : 'OpsMind will continue showing system procurement evidence until AI insight is available.')}</p>
         </div>
-        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'Gemma ready' : 'Fallback mode')}</span>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'AI insight ready' : 'System data mode')}</span>
       </div>
       <div class="ops-gemma-metrics">
         <div><strong>Provider</strong><span>${escapeHtml(provider)}</span></div>
@@ -2537,7 +3056,7 @@ function renderProcurementGemmaDiagnosticsBody(result = {}) {
       ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
       <div class="table-responsive">
         <table class="table table-sm align-middle ops-gemma-table">
-          <thead><tr><th>AI feature</th><th>Requires Gemma</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
+          <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
           <tbody>
             ${rows.map(([feature, requires, source, note]) => `
               <tr>
@@ -2547,7 +3066,7 @@ function renderProcurementGemmaDiagnosticsBody(result = {}) {
                 <td>${escapeHtml(note)}</td>
                 <td class="text-end">
                   <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-gemma-retest>Test</button>
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-gemma-ask="${escapeHtml(feature)}">Ask Gemma</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-gemma-ask="${escapeHtml(feature)}">Ask AI</button>
                 </td>
               </tr>
             `).join('')}
@@ -2568,10 +3087,10 @@ async function openProcurementGemmaDiagnostics() {
           <div class="modal-content ops-diagnostics-modal">
             <div class="modal-header">
               <div>
-                <h5 class="modal-title" id="${modalId}Title">Gemma diagnostics</h5>
-                <div class="modal-subtitle">Read-only checks for Procurement AI readiness, source labels, and fallback safety.</div>
+                <h5 class="modal-title" id="${modalId}Title">AI diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Procurement AI readiness, source labels, and system-data safety.</div>
               </div>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close Gemma diagnostics"></button>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close AI diagnostics"></button>
             </div>
             <div class="modal-body" id="${modalId}Body">
               <div class="ops-loading-stack">
@@ -2582,7 +3101,7 @@ async function openProcurementGemmaDiagnostics() {
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest Gemma</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest AI</button>
             </div>
           </div>
         </div>
@@ -2594,7 +3113,7 @@ async function openProcurementGemmaDiagnostics() {
       const askBtn = event.target?.closest('[data-proc-gemma-ask]');
       if (askBtn) {
         const feature = askBtn.getAttribute('data-proc-gemma-ask') || 'Procurement AI';
-        sessionStorage.setItem('inventory_copilot_prefill', `Test ${feature} with Gemma. Use real procurement evidence only and state whether Gemma, hybrid, deterministic, or fallback was used.`);
+        sessionStorage.setItem('inventory_copilot_prefill', `Test ${feature} with AI insight. Use real procurement evidence only and state whether AI insight, estimated, or system data was used.`);
         window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
       }
     });
@@ -2621,7 +3140,7 @@ async function openProcurementGemmaDiagnostics() {
           <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
           <div>
             <div class="ops-empty-state-title">Diagnostics unavailable</div>
-            <div class="ops-empty-state-copy">${escapeHtml(error.message || 'Could not complete read-only Gemma diagnostics.')}</div>
+            <div class="ops-empty-state-copy">${escapeHtml(error.message || 'Could not complete read-only AI diagnostics.')}</div>
           </div>
         </div>
       `;
@@ -2639,7 +3158,7 @@ function setupProcurementAutoRefresh() {
     }
     loadBoard({ background: true }).catch((error) => {
       console.warn('[Procurement] Auto refresh failed:', error?.message || error);
-      setLoadError('Failed to auto-refresh procurement evidence.');
+      setLoadError('Refresh failed');
     });
   }, AUTO_REFRESH_INTERVAL_MS);
 }
@@ -2684,10 +3203,14 @@ function bindActions() {
   const catalogCreateBtn = document.getElementById('procCatalogCreateBtn');
   const openInventoryBtn = document.getElementById('procOpenInventoryBtn');
   const askCopilotBtn = document.getElementById('procAskCopilotBtn');
+  const guidedTourBtn = document.getElementById('procGuidedTourBtn');
   const kanbanBoard = document.getElementById('procKanbanBoard');
   const priorityBoard = document.getElementById('procRequestPriorityBoard');
   const vendorBattleCards = document.getElementById('procVendorBattleCards');
   const requestViewButtons = Array.from(document.querySelectorAll('[data-proc-request-view]'));
+  const analyticsDimension = document.getElementById('procAnalyticsDimension');
+  const analyticsChartType = document.getElementById('procAnalyticsChartType');
+  const analyticsRenderBtn = document.getElementById('procAnalyticsRenderBtn');
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => loadBoard());
   if (createBtn) createBtn.addEventListener('click', () => createManualRequest());
@@ -2702,11 +3225,22 @@ function bindActions() {
   if (supplierCreateBtn) supplierCreateBtn.addEventListener('click', () => createSupplier());
   if (catalogCreateBtn) catalogCreateBtn.addEventListener('click', () => createSupplierCatalogItem());
   if (openInventoryBtn) openInventoryBtn.addEventListener('click', () => { window.location.href = '/pages/inventory.html'; });
+  if (guidedTourBtn) guidedTourBtn.addEventListener('click', () => openProcurementGuidedTour());
   if (askCopilotBtn) {
     askCopilotBtn.addEventListener('click', () => {
       openProcurementCopilot('What should we buy next? Use this Procurement page evidence only.');
     });
   }
+  document.querySelectorAll('[data-proc-open-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button.getAttribute('data-proc-open-tab') || 'dashboard';
+      showProcurementTab(target);
+      window.location.hash = target;
+    });
+  });
+  if (analyticsDimension) analyticsDimension.addEventListener('change', renderProcurementAnalyticsBuilder);
+  if (analyticsChartType) analyticsChartType.addEventListener('change', renderProcurementAnalyticsBuilder);
+  if (analyticsRenderBtn) analyticsRenderBtn.addEventListener('click', renderProcurementAnalyticsBuilder);
   window.addEventListener('hashchange', applyInitialProcurementHash);
   requestViewButtons.forEach((button) => {
     button.addEventListener('click', () => setRequestViewMode(button.getAttribute('data-proc-request-view') || 'table'));
@@ -2854,6 +3388,18 @@ function bindActions() {
         const requestId = String(rejectBtn.getAttribute('data-proc-quote-reject') || '').trim();
         const quoteId = String(rejectBtn.getAttribute('data-proc-quote-id') || '').trim();
         if (requestId && quoteId) updateQuoteStatus(requestId, quoteId, 'reject');
+      }
+    });
+  }
+
+  const poBody = document.getElementById('procPurchaseOrdersTableBody');
+  if (poBody) {
+    poBody.addEventListener('click', (event) => {
+      const exportBtn = event.target?.closest('[data-proc-export-po]');
+      if (exportBtn) {
+        const requestId = String(exportBtn.getAttribute('data-proc-export-po') || '').trim();
+        const poNumber = String(exportBtn.getAttribute('data-proc-po-number') || '').trim();
+        if (requestId) exportPurchaseOrderDocument(requestId, poNumber);
       }
     });
   }

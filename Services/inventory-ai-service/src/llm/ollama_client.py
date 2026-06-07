@@ -313,3 +313,56 @@ class OllamaClient:
                     continue
                 return None
         return None
+
+    def generate_stream(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+    ):
+        """Yield Ollama text chunks for streaming UI flows.
+
+        This intentionally does not use JSON mode. Narrative assistant answers are
+        much faster and more reliable when Gemma can emit plain text chunks.
+        """
+        if time.time() < self._blocked_until_epoch:
+            return
+        if not self.enabled:
+            return
+
+        payload = {
+            "model": self._model,
+            "prompt": str(prompt or "").rstrip(),
+            "stream": True,
+            "keep_alive": self._keep_alive,
+            "options": {
+                "temperature": float(temperature),
+                "num_predict": 360,
+            },
+        }
+
+        self._last_checked_epoch = time.time()
+        saw_chunk = False
+        try:
+            with self._client.stream("POST", f"{self._base_url}/api/generate", json=payload) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        envelope = json.loads(line)
+                    except Exception:
+                        continue
+                    chunk = envelope.get("response")
+                    if isinstance(chunk, str) and chunk:
+                        saw_chunk = True
+                        yield chunk
+                    if envelope.get("done"):
+                        break
+            self._mark_success()
+            if not saw_chunk:
+                logger.warning("Ollama generate_stream completed without text chunks.")
+        except Exception as exc:
+            message = str(exc)
+            self._mark_failure(message, apply_cooldown=True)
+            logger.warning("Ollama generate_stream failed: %s", exc)
+            raise

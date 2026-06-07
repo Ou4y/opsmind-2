@@ -32,6 +32,17 @@
                     <div class="input-group input-group-sm inventory-search-group inventory-toolbar-search">
                         <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
                         <input type="text" id="searchInput" class="form-control border-start-0" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
+                        <button class="btn btn-outline-primary inventory-ai-search-btn" type="button" id="inventoryAiSearchBtn" aria-label="Search inventory with AI">
+                            <i class="bi bi-stars me-1"></i>AI
+                        </button>
+                    </div>
+                    <div class="inventory-ai-search-mode" aria-label="Inventory search mode">
+                        <label class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="inventoryAiSearchModeToggle">
+                            <span class="form-check-label">Search with AI</span>
+                        </label>
+                        <div id="inventoryAiSearchAppliedChips" class="inventory-ai-search-chip-row" aria-live="polite"></div>
+                        <div id="inventoryAiSearchState" class="inventory-ai-search-state d-none" aria-live="polite"></div>
                     </div>
 
                     <div class="inventory-toolbar-cluster inventory-toolbar-primary">
@@ -63,6 +74,9 @@
                             </button>
                             <button class="dropdown-item" type="button" onclick="exportAssetsToDetailedPDF()">
                                 <i class="bi bi-file-pdf me-2"></i>Export PDF with QR & Specs
+                            </button>
+                            <button class="dropdown-item" type="button" id="openInventoryReportsPanelBtn">
+                                <i class="bi bi-table me-2"></i>Export Reports (CSV)
                             </button>
                             <div class="dropdown-divider"></div>
                             <div class="inventory-dropdown-section-label">Planning</div>
@@ -103,7 +117,10 @@
                             <span>Auto-refreshes every 60s</span>
                         </span>
                         <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-360-action="gemma-diagnostics">
-                            <i class="bi bi-cpu me-1"></i>Gemma Diagnostics
+                            <i class="bi bi-cpu me-1"></i>AI Diagnostics
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-360-action="guided-tour">
+                            <i class="bi bi-question-circle me-1"></i>Guided Tour
                         </button>
                         <button type="button" class="btn btn-sm btn-primary" data-inventory-360-action="next-best">
                             <i class="bi bi-bullseye me-1"></i>Next Best Action
@@ -118,7 +135,7 @@
                     <span title="Asset 360 is the drill-down for one selected asset.">Asset 360 = one asset drill-down</span>
                     <span title="Data Quality measures missing identity, location, warranty, cost, and relationship evidence.">Data Quality</span>
                     <span title="Cost Impact uses only stored purchase, replacement, quote, invoice, stock, or maintenance cost fields.">Cost Impact</span>
-                    <span title="Gemma explains real evidence; deterministic means rule-based calculations.">Gemma / Deterministic</span>
+                    <span title="Internal source details are available in evidence tooltips.">AI insight / System data</span>
                 </div>
                 <div id="inventory360Totals" class="ops-total-strip" aria-live="polite"></div>
                 <div id="inventory360Grid" class="ops-360-grid" aria-live="polite">
@@ -231,6 +248,17 @@
                     </div>
                 </div>
             </div>
+            <section class="inventory-analytics-strip mb-4" aria-labelledby="inventoryAnalyticsTitle">
+                <div class="inventory-analytics-strip-head">
+                    <div>
+                        <div class="inventory-section-kicker">Visual analytics</div>
+                        <h2 id="inventoryAnalyticsTitle">Inventory Graph Snapshot</h2>
+                        <p>Current loaded asset view: category mix, health signals, cost coverage, and EOL planning.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="inventoryVisualAnalytics" class="inventory-analytics-grid"></div>
+            </section>
             <div class="card border shadow-sm inventory-table-card">
                 <div class="card-body p-0">
                     <div class="table-responsive inventory-table-wrap">
@@ -685,6 +713,39 @@
                 </div>
                 <div class="modal-body">
                     <div class="small text-muted mb-2">This MVP tracks verification, stale checks, missing assets, and location mismatches. Full gamification leaderboard is future work.</div>
+                    <section class="inventory-audit-session-panel" aria-labelledby="auditSessionTitle">
+                        <div class="inventory-audit-session-head">
+                            <div>
+                                <div class="inventory-section-kicker">Cycle-count sessions</div>
+                                <h6 id="auditSessionTitle" class="mb-1">Named Physical Audit Sessions</h6>
+                                <p class="small text-muted mb-0">Create a scoped checklist from live inventory records, then reconcile confirmed, missing, damaged, and location mismatch items.</p>
+                            </div>
+                            <div class="inventory-audit-session-actions">
+                                <button type="button" class="btn btn-sm btn-primary" id="auditCreateSessionBtn"><i class="bi bi-plus-lg me-1"></i>New Session</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="auditSessionsRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Sessions</button>
+                            </div>
+                        </div>
+                        <div id="auditSessionSummary" class="inventory-audit-session-summary">Loading audit sessions...</div>
+                        <div class="inventory-audit-session-grid">
+                            <div>
+                                <div class="fw-semibold small mb-1">Recent Sessions</div>
+                                <div id="auditSessionsList" class="inventory-audit-session-list">
+                                    <div class="ops-loading-stack"><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="fw-semibold small mb-1">Checklist</div>
+                                <div id="auditSessionDetails" class="inventory-audit-session-details">
+                                    <div class="ops-empty-state-card">
+                                        <div>
+                                            <div class="ops-empty-state-title">No session selected</div>
+                                            <div class="ops-empty-state-copy">Create or open an audit session to review its expected asset checklist.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                     <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
                         <div class="input-group input-group-sm inventory-modal-input-compact">
                             <span class="input-group-text">Stale After</span>
@@ -717,6 +778,43 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="inventoryReportsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title fw-bold"><i class="bi bi-table me-2"></i>Inventory Reporting / Export Foundation</h5>
+                        <div class="small text-muted">CSV-first export using live Inventory, Procurement, EOL, Data Quality, and Audit evidence.</div>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="inventory-report-panel">
+                        <div class="inventory-report-controls">
+                            <label for="inventoryReportTypeSelect" class="form-label">Report Type</label>
+                            <select id="inventoryReportTypeSelect" class="form-select">
+                                <option value="asset_inventory">Asset inventory export</option>
+                                <option value="procurement_spend">Procurement spend export</option>
+                                <option value="warranty_expiry">Warranty expiry export</option>
+                                <option value="eol_forecast">EOL forecast export</option>
+                                <option value="data_quality">Data quality export</option>
+                                <option value="audit_reconciliation">Audit reconciliation export</option>
+                            </select>
+                            <div class="form-text">Exports use available local/API data and label missing evidence clearly. PDF/Excel server generation remains Phase 2.</div>
+                        </div>
+                        <div id="inventoryReportStatus" class="inventory-report-status">
+                            Choose a report type, then generate a CSV download.
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="inventoryGenerateReportBtn"><i class="bi bi-download me-1"></i>Generate CSV</button>
                 </div>
             </div>
         </div>
@@ -858,13 +956,13 @@
     <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel" aria-label="Inventory AI Chat">
         <div class="inventory-ai-chat-header">
             <div>
-                <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">Gemma</span></div>
+                <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">AI insight</span></div>
                 <div class="inventory-ai-chat-subtitle">Ask about CMDB health, missing data, maintenance, EOL risk, and procurement.</div>
                 <div class="inventory-ai-chat-context-chip">Assets page context</div>
                 <div class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
                     <span class="inventory-ai-chat-status-label">Status</span>
                     <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
-                    <span id="inventoryAiChatStatusText">Gemma ready</span>
+                    <span id="inventoryAiChatStatusText">AI ready</span>
                 </div>
             </div>
             <div class="d-flex gap-1">
@@ -1369,6 +1467,7 @@
                                         <th>Status</th>
                                         <th>Location</th>
                                         <th>Department</th>
+                                        <th>Health</th>
                                         <th>EOL Status</th>
                                         <th class="text-end">Individual Actions</th>
                                     </tr>

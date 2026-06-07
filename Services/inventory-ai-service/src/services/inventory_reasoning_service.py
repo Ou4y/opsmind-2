@@ -23,6 +23,7 @@ from src.llm.prompts import (
     IMPORT_COLUMN_MAPPING_PROMPT,
     IMPORT_ERROR_REPAIR_PROMPT,
     INVENTORY_ASSISTANT_PROMPT,
+    INVENTORY_ASSISTANT_STREAM_PROMPT,
     INVENTORY_ACTION_PLAN_PROMPT,
     INVENTORY_TICKET_DRAFT_PROMPT,
     MAINTENANCE_RECOMMENDATION_PROMPT,
@@ -946,6 +947,23 @@ class InventoryReasoningService:
             llm_status="ready" if llm_used else ("fallback" if self.llm.enabled else "disabled"),
             fallback_reason=fallback_reason,
         )
+
+    def stream_inventory_assistant_text(self, payload: InventoryAssistantRequest):
+        deterministic = payload.deterministic_result or {}
+        if not self.llm.enabled:
+            raise RuntimeError("llm_disabled")
+        generate_stream = getattr(self.llm, "generate_stream", None)
+        if not callable(generate_stream):
+            raise RuntimeError("llm_streaming_not_supported")
+        prompt_payload = {
+            "query": payload.query,
+            "deterministic_result": deterministic,
+            "context_summary": payload.context_summary,
+        }
+        prompt = INVENTORY_ASSISTANT_STREAM_PROMPT.format(
+            payload_json=json.dumps(prompt_payload, ensure_ascii=False),
+        )
+        yield from generate_stream(prompt, 0.1)
 
     async def data_correction_suggestions(self, payload: DataCorrectionSuggestionsRequest) -> DataCorrectionSuggestionsResponse:
         suggestions = payload.suggestions or []

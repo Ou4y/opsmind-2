@@ -44,8 +44,11 @@
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="iccFocusModeBtn" aria-pressed="false">
                         <i class="bi bi-bullseye me-1"></i>Focus Mode
                     </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="iccGuidedTourBtn">
+                        <i class="bi bi-question-circle me-1"></i>Guided Tour
+                    </button>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="iccGemmaDiagnosticsBtn">
-                        <i class="bi bi-cpu me-1"></i>Gemma Diagnostics
+                        <i class="bi bi-cpu me-1"></i>AI Diagnostics
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="iccRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
                 </div>
@@ -66,7 +69,7 @@
                 <div class="icc-section-header">
                     <div>
                         <h2 id="iccDailyBriefingTitle">AI Daily Briefing</h2>
-                        <p>OpsMind gathers real evidence first, then Gemma explains it when available.</p>
+                        <p>OpsMind gathers real evidence first, then adds AI insight when available.</p>
                     </div>
                     <span class="ops-attention-pill is-info" id="iccDailyBriefingSource">Preparing</span>
                 </div>
@@ -160,6 +163,28 @@
                 </div>
             </section>
 
+            <section class="icc-section icc-focus-secondary" aria-labelledby="iccVisualAnalyticsTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccVisualAnalyticsTitle">Command Center Analytics</h2>
+                        <p>Lightweight real-data visualizations for health, risk, missing data, EOL cost, and stock pressure.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="iccVisualAnalytics" class="icc-analytics-grid"></div>
+            </section>
+
+            <section class="icc-section icc-focus-secondary" aria-labelledby="iccDepartmentGridTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccDepartmentGridTitle">Department Grid</h2>
+                        <p>Department-level inventory health, EOL, missing-data, and audit pressure from loaded records.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="iccDepartmentGrid" class="icc-department-grid"></div>
+            </section>
+
             <section class="icc-section icc-two-column icc-focus-secondary">
                 <div class="icc-panel" aria-labelledby="iccActivityTitle">
                     <div class="icc-section-header compact">
@@ -218,9 +243,9 @@
                         <span class="ops-attention-pill is-urgent">Critical A item</span>
                     </div>
                 </div>
-                <div class="icc-panel icc-demo-mode-only d-none" id="iccDemoPanel" aria-labelledby="iccDemoTitle">
-                    <h2 id="iccDemoTitle">Presentation Walkthrough</h2>
-                    <p class="icc-panel-copy">A guided presentation path. It never creates or changes records by itself.</p>
+                <div class="icc-panel icc-guided-tour-panel" id="iccDemoPanel" aria-labelledby="iccDemoTitle">
+                    <h2 id="iccDemoTitle">Guided Tour</h2>
+                    <p class="icc-panel-copy">A guided path through real Inventory, Procurement, AI, and reporting workflows. It never creates or changes records by itself.</p>
                     <div class="icc-walkthrough-status" id="iccWalkthroughStatus">Ready to start.</div>
                     <ol class="icc-demo-list" id="iccDemoWalkthroughList">
                         <li data-icc-demo-step="0">Open Inventory Command Center</li>

@@ -29,6 +29,9 @@
                     <button type="button" class="btn btn-outline-primary" id="procAskCopilotBtn">
                         <i class="bi bi-stars me-1"></i>Ask Copilot
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="procGuidedTourBtn">
+                        <i class="bi bi-question-circle me-1"></i>Guided Tour
+                    </button>
                     <button type="button" class="btn btn-outline-secondary" id="procRefreshBtn">
                         <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                     </button>
@@ -62,7 +65,7 @@
                                 <span>Auto-refreshes every 60s</span>
                             </span>
                             <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-360-action="gemma-diagnostics">
-                                <i class="bi bi-cpu me-1"></i>Gemma Diagnostics
+                                <i class="bi bi-cpu me-1"></i>AI Diagnostics
                             </button>
                             <button type="button" class="btn btn-sm btn-primary" data-proc-360-action="continue" data-role-required="procurement">
                                 <i class="bi bi-play-circle me-1"></i>Continue Workflow
@@ -189,6 +192,29 @@
 
                 <div class="tab-content">
                     <div class="tab-pane fade show active" id="proc-dashboard-pane" role="tabpanel" aria-labelledby="proc-dashboard-tab" tabindex="0">
+                        <div class="proc-discovery-strip" aria-label="Procurement quick discovery links">
+                            <button type="button" class="proc-discovery-card" data-proc-open-tab="finance">
+                                <span class="proc-discovery-icon"><i class="bi bi-wallet2"></i></span>
+                                <span>
+                                    <strong>Department Budget vs Spend</strong>
+                                    <small>Allocated, committed, spent, and remaining by department.</small>
+                                </span>
+                            </button>
+                            <button type="button" class="proc-discovery-card" data-proc-open-tab="quotes">
+                                <span class="proc-discovery-icon"><i class="bi bi-radar"></i></span>
+                                <span>
+                                    <strong>Vendor Radar / Vendor Comparison</strong>
+                                    <small>Compare price, warranty, delivery, reliability, and MOQ flexibility.</small>
+                                </span>
+                            </button>
+                            <button type="button" class="proc-discovery-card" data-proc-open-tab="analytics">
+                                <span class="proc-discovery-icon"><i class="bi bi-graph-up-arrow"></i></span>
+                                <span>
+                                    <strong>Procurement Analytics</strong>
+                                    <small>Use preset charts from real procurement data.</small>
+                                </span>
+                            </button>
+                        </div>
                         <div class="row g-3">
                             <div class="col-12 col-xl-8">
                                 <div class="card proc-section-card">
@@ -233,7 +259,7 @@
                         <div class="card proc-section-card">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <h5 class="mb-0 fs-6">AI Procurement Recommendations</h5>
-                                <span class="small text-muted">Gemma or deterministic evidence-based recommendations</span>
+                                <span class="small text-muted">AI insight or system-data evidence-based recommendations</span>
                             </div>
                             <div class="card-body">
                                 <div class="table-responsive">
@@ -319,7 +345,8 @@
                     <div class="tab-pane fade" id="proc-quotes-pane" role="tabpanel" aria-labelledby="proc-quotes-tab" tabindex="0">
                         <div class="card proc-section-card">
                             <div class="card-header">
-                                <h5 class="mb-0 fs-6">Vendor Quotes</h5>
+                                <h5 class="mb-0 fs-6">Vendor Radar / Vendor Battle Cards</h5>
+                                <div class="small text-muted">Compare vendors by price, warranty, delivery, reliability, and MOQ flexibility.</div>
                             </div>
                             <div class="card-body">
                                 <div id="procVendorBattleCards" class="proc-vendor-battle-grid mb-3"></div>
@@ -362,10 +389,11 @@
                                                 <th>Status</th>
                                                 <th>Expected Delivery</th>
                                                 <th>Updated</th>
+                                                <th class="text-end">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody id="procPurchaseOrdersTableBody">
-                                            <tr><td colspan="6" class="text-muted">No purchase orders yet.</td></tr>
+                                            <tr><td colspan="7" class="text-muted">No purchase orders yet.</td></tr>
                                         </tbody>
                                     </table>
                                 </div>
@@ -502,7 +530,10 @@
                             <div class="col-12">
                                 <div class="card proc-section-card">
                                     <div class="card-header d-flex justify-content-between align-items-center">
-                                        <h5 class="mb-0 fs-6">Finance & Budget Foundation</h5>
+                                        <div>
+                                            <h5 class="mb-0 fs-6">Department Budget vs Spend</h5>
+                                            <div class="small text-muted">Compare allocated, committed, spent, and remaining budget by department.</div>
+                                        </div>
                                         <div class="d-flex gap-2">
                                             <button type="button" class="btn btn-sm btn-outline-secondary" id="procFinanceRefreshBtn"><i class="bi bi-arrow-clockwise"></i></button>
                                             <button type="button" class="btn btn-sm btn-outline-primary" id="procFinanceCreateCenterBtn">Add Cost Center</button>
@@ -618,6 +649,41 @@
                                     </div>
                                     <div class="card-body">
                                         <div id="procTopItemsList" class="small text-muted">No analytics data yet.</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="card proc-section-card proc-analytics-builder-card">
+                                    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                        <div>
+                                            <h5 class="mb-0 fs-6">Procurement Analytics Presets</h5>
+                                            <div class="small text-muted">Preset charts from loaded requests, quotes, finance, receiving, and supplier evidence. This is not a free-form BI builder.</div>
+                                        </div>
+                                        <span class="ops-attention-pill is-info">Real loaded data only</span>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="proc-analytics-builder-controls" aria-label="Procurement analytics preset controls">
+                                            <div>
+                                                <label for="procAnalyticsDimension" class="form-label form-label-sm mb-1">Dimension</label>
+                                                <select id="procAnalyticsDimension" class="form-select form-select-sm">
+                                                    <option value="status">Requests by status</option>
+                                                    <option value="department">Budget/spend by department</option>
+                                                    <option value="vendor">Spend by vendor</option>
+                                                    <option value="receiving">Receiving progress</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label for="procAnalyticsChartType" class="form-label form-label-sm mb-1">Chart Type</label>
+                                                <select id="procAnalyticsChartType" class="form-select form-select-sm">
+                                                    <option value="bar">Bar</option>
+                                                    <option value="table">Table</option>
+                                                </select>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" id="procAnalyticsRenderBtn">
+                                                <i class="bi bi-magic me-1"></i>Render Preset
+                                            </button>
+                                        </div>
+                                        <div id="procAnalyticsBuilderOutput" class="proc-analytics-builder-output mt-3"></div>
                                     </div>
                                 </div>
                             </div>

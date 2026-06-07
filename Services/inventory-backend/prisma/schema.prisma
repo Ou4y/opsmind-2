@@ -1259,6 +1259,106 @@ model AssetHistory {
   @@map("asset_embedded_history")
 }
 
+model InventoryAuditSession {
+  id          String    @id @default(uuid())
+  sessionNumber String  @unique
+  title       String
+  status      String    @default("open")
+  building    String?
+  room        String?
+  department  String?
+  category    String?
+  assetType   String?
+  auditor     String?
+  notes       String?
+  summary     Json?
+  startedAt   DateTime  @default(now())
+  closedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items       InventoryAuditSessionItem[]
+
+  @@index([status, startedAt])
+  @@index([building, department])
+  @@index([category, assetType])
+  @@map("inventory_audit_sessions")
+}
+
+model InventoryAuditSessionItem {
+  id                 String    @id @default(uuid())
+  sessionId          String
+  assetId            String
+  assetTag           String?
+  serialNumber       String?
+  assetName          String?
+  expectedLocation   String?
+  expectedDepartment String?
+  expectedStatus     String?
+  auditStatus        String    @default("pending")
+  observedLocation   String?
+  condition          String?
+  notes              String?
+  auditor            String?
+  checkedAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  session            InventoryAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, assetId])
+  @@index([assetId])
+  @@index([assetTag])
+  @@index([auditStatus])
+  @@map("inventory_audit_session_items")
+}
+
+model InventoryAlertRule {
+  id              String    @id @default(uuid())
+  ruleKey         String    @unique
+  name            String
+  alertType       String
+  enabled         Boolean   @default(true)
+  severity        String    @default("medium")
+  threshold       Json?
+  recipientRole   String?
+  cooldownHours   Int       @default(24)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  events          InventoryAlertEvent[]
+
+  @@index([enabled, alertType])
+  @@map("inventory_alert_rules")
+}
+
+model InventoryAlertEvent {
+  id           String    @id @default(uuid())
+  ruleId       String?
+  ruleKey      String
+  alertType    String
+  severity     String
+  title        String
+  message      String
+  entityType   String?
+  entityId     String?
+  dedupeKey    String    @unique
+  status       String    @default("open")
+  triggeredAt  DateTime  @default(now())
+  resolvedAt   DateTime?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  rule         InventoryAlertRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  @@index([status, severity, triggeredAt])
+  @@index([ruleKey, triggeredAt])
+  @@index([entityType, entityId])
+  @@map("inventory_alert_events")
+}
+
 model Ticket {
   id           String         @id @default(uuid())
   title        String
