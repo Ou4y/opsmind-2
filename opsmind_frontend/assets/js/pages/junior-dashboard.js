@@ -729,7 +729,7 @@ window.searchSimilarIssue = async function(ticketId) {
     }
 
     const response = await fetch(
-        'http://localhost:3004/analytics/check-similar-issue',
+        'http://localhost:3006/analytics/check-similar-issue',
         {
             method: 'POST',
             headers: {

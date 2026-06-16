@@ -94,6 +94,90 @@ exports.addSolution = async (req, res) => {
   res.json(ticket);
 };
 
+
+// check similar issue
+exports.checkSimilarIssue = async (req, res) => {
+  try {
+    const { title, description } = req.body;
+
+    if (!title && !description) {
+      return res.status(400).json({
+        found: false,
+        message: "Title or description is required"
+      });
+    }
+
+    const currentText =
+      `${title || ""} ${description || ""}`
+        .toLowerCase()
+        .trim();
+
+    const solvedTickets = await Ticket.find({
+      technician_solution: {
+        $exists: true,
+        $ne: ""
+      }
+    });
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const ticket of solvedTickets) {
+
+      const oldText =
+        `${ticket.title || ""} ${ticket.description || ""}`
+          .toLowerCase()
+          .trim();
+
+      const currentWords = currentText
+        .split(/\s+/)
+        .filter(Boolean);
+
+      const oldWords = oldText
+        .split(/\s+/)
+        .filter(Boolean);
+
+      const commonWords = currentWords.filter(
+        word => oldWords.includes(word)
+      );
+
+      const score =
+        currentWords.length > 0
+          ? commonWords.length / currentWords.length
+          : 0;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = ticket;
+      }
+    }
+
+    if (bestMatch && bestScore >= 0.4) {
+      return res.json({
+        found: true,
+        similarityScore: bestScore,
+        solution: bestMatch.technician_solution
+      });
+    }
+
+    return res.json({
+      found: false,
+      message: "No similar tickets found"
+    });
+
+  } catch (error) {
+    console.error("Similarity Search Error:", error);
+
+    return res.status(500).json({
+      found: false,
+      message: "Internal Server Error"
+    });
+  }
+};
+
+
+
+
 // generate PDF
 exports.generatePDF = async (req, res) => {
   try {
