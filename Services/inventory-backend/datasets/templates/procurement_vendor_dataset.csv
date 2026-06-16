@@ -1,0 +1,2 @@
+assetType,brand,model,supplier,replacementCost,leadTimeDays,minimumOrderQuantity,preferredVendor,warrantyMonths
+laptop,Dell,Latitude 5440,TechSupplier A,1190,21,5,true,36

@@ -4,13 +4,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     environment:
       PORT: ${PORT:-3004}
       NODE_ENV: ${NODE_ENV:-development}
-      DATABASE_URL: ${DATABASE_URL}
-      RABBITMQ_URL: ${RABBITMQ_URL}
+      DATABASE_URL: ${DATABASE_URL:-mysql://opsmind:opsmind@mysql:3306/sla_db}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://opsmind:opsmind@rabbitmq:5672}
       RABBITMQ_SLA_EXCHANGE: ${RABBITMQ_SLA_EXCHANGE:-opsmind.sla.exchange}
       RABBITMQ_NOTIFICATION_WARNING_KEY: ${RABBITMQ_NOTIFICATION_WARNING_KEY:-ticket.notification.slaWarning}
       RABBITMQ_NOTIFICATION_BREACH_KEY: ${RABBITMQ_NOTIFICATION_BREACH_KEY:-ticket.notification.slaBreached}

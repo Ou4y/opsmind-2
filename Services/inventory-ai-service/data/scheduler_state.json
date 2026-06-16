@@ -1,3 +1,46 @@
 {
-  "daily_spec_jobs_last_run": "2026-05-22"
+  "daily_spec_jobs_last_run": "2026-05-24",
+  "spec_variant_policy": {
+    "updated_at_utc": "2026-05-24T01:00:00.319631+00:00",
+    "force_variant": "",
+    "reason": "insufficient_samples control=44 candidate=0 required=40",
+    "control": {
+      "evaluated_records": 44,
+      "precision_by_field": {
+        "RAM": 0.9643,
+        "CPU": 0.0,
+        "Storage": 0.9643,
+        "Display": 0.0,
+        "OS": 1.0
+      },
+      "recall_by_field": {
+        "RAM": 1.0,
+        "CPU": 0.0,
+        "Storage": 0.7105,
+        "Display": 0.0,
+        "OS": 0.7368
+      }
+    },
+    "candidate": {
+      "evaluated_records": 0,
+      "precision_by_field": {
+        "RAM": 0.0,
+        "CPU": 0.0,
+        "Storage": 0.0,
+        "Display": 0.0,
+        "OS": 0.0
+      },
+      "recall_by_field": {
+        "RAM": 0.0,
+        "CPU": 0.0,
+        "Storage": 0.0,
+        "Display": 0.0,
+        "OS": 0.0
+      }
+    },
+    "scores": {
+      "control": 0.5376,
+      "candidate": 0.0
+    }
+  }
 }

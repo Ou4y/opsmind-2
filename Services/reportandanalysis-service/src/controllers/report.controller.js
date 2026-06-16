@@ -3,11 +3,13 @@ const { getResolvedTickets } = require("../services/ticket.service");
 const PDFDocument = require("pdfkit");
 const axios = require("axios");
 
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || "http://auth-service:3002";
+
 //  function get UUID from auth 
 async function getTechnicianUUID(numericId) {
   try {
     const res = await axios.get(
-      `http://host.docker.internal:3002/users/${numericId}`
+      `${AUTH_SERVICE_URL}/users/${numericId}`
     );
 
     return res.data.id;

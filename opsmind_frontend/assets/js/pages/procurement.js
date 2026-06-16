@@ -1,0 +1,3447 @@
+import UI from '/assets/js/ui.js';
+import AuthService from '/services/authService.js';
+import { initInventoryAiCopilot } from '/assets/js/components/inventoryAiCopilot.js';
+
+const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
+const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const AUTO_REFRESH_PREF_KEY = 'opsmind_auto_refresh_enabled';
+const PROCUREMENT_STATUSES = [
+  'Draft',
+  'Submitted',
+  'Under Review',
+  'Approved',
+  'Rejected',
+  'Ordered',
+  'Partially Received',
+  'Received',
+  'Closed',
+  'Cancelled',
+];
+const PROCUREMENT_LIFECYCLE_STAGES = [
+  'Draft',
+  'Submitted',
+  'Under Review',
+  'Approved',
+  'Ordered',
+  'Partially Received',
+  'Received',
+  'Closed',
+];
+const STANDARD_MIU_DEPARTMENTS = [
+  'Computer Science',
+  'Business',
+  'Mass Communication',
+  'Pharmacy',
+  'Dentistry',
+  'Engineering',
+  'Architecture',
+  'ALSUN',
+  'Unassigned',
+];
+const KNOWN_LOCATIONS = [
+  'Central Warehouse',
+  'Main Building',
+  'K Building',
+  'N Building',
+  'S Building',
+  'R Building',
+  'Pharmacy Building',
+  'Copy Center',
+  'Mosque',
+  'Workshop',
+];
+const ALLOWED_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
+
+const state = {
+  board: null,
+  loading: false,
+  statusFilter: 'all',
+  recentlyUpdatedRequestId: null,
+  abcAnalysis: null,
+  eoqMoq: null,
+  fifo: null,
+  finance: null,
+  suppliers: null,
+  supplierCatalog: null,
+  loadedAt: 0,
+  refreshTimer: null,
+  requestView: localStorage.getItem('opsmind_procurement_request_view') || 'table',
+};
+
+function ensureAccess() {
+  const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+  const level = String(context.technicianLevel || '').toUpperCase();
+  if (!AuthService.isAuthenticated() || (context.roleCategory !== 'ADMIN' && !ALLOWED_LEVELS.has(level))) {
+    sessionStorage.setItem('opsmind_error', 'Access denied: Procurement is available only to Admin and Technician levels (Junior/Senior/Supervisor).');
+    window.location.href = context.dashboardPath || '/pages/dashboard.html';
+    return false;
+  }
+  return true;
+}
+
+function authHeaders(extra = {}) {
+  return {
+    ...AuthService.getAuthHeaders(),
+    ...extra,
+  };
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers: authHeaders(options.headers || {}),
+  });
+  if (response.status === 401) {
+    AuthService.clearAuth();
+    window.location.href = '/index.html';
+    throw new Error('Session expired. Please sign in again.');
+  }
+  if (response.status === 403) {
+    throw new Error('You do not have permission to perform this procurement action.');
+  }
+  return response;
+}
+
+async function readJson(path) {
+  const response = await request(path);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
+  return payload;
+}
+
+async function sendJson(path, body = {}, method = 'POST') {
+  const response = await request(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
+  return payload;
+}
+
+function notify(message, type = 'info') {
+  const safeType = String(type || 'info').toLowerCase();
+  if (safeType === 'success') UI.success(message);
+  else if (safeType === 'warning') UI.warning(message);
+  else if (safeType === 'error') UI.error(message);
+  else UI.info(message);
+}
+
+function escapeHtml(value) {
+  return UI.escapeHTML(String(value ?? ''));
+}
+
+function normalizeValue(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function formatDate(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleDateString();
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleString();
+}
+
+function formatCurrency(value) {
+  if (value === null || typeof value === 'undefined' || String(value).trim() === '') return 'Cost data missing';
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 'Cost data missing';
+  return new Intl.NumberFormat('en-EG', {
+    style: 'currency',
+    currency: 'EGP',
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatRelativeTime(value) {
+  if (!value) return 'not updated yet';
+  const timestamp = typeof value === 'number' ? value : new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 'not updated yet';
+  const diffSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (diffSeconds < 45) return 'just now';
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} hr ago`;
+  return new Date(timestamp).toLocaleString();
+}
+
+function autoRefreshEnabled() {
+  return String(localStorage.getItem(AUTO_REFRESH_PREF_KEY) || 'true').toLowerCase() !== 'false';
+}
+
+function shouldPauseProcurementAutoRefresh() {
+  if (document.visibilityState === 'hidden') return true;
+  if (document.querySelector('.modal.show')) return true;
+  if (document.getElementById('inventoryAiChatPanel')?.classList.contains('is-open')) return true;
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = String(active.tagName || '').toLowerCase();
+  return ['input', 'textarea', 'select'].includes(tag) || active.isContentEditable;
+}
+
+function statusBadgeClass(status) {
+  const normalized = normalizeValue(status);
+  if (normalized === 'approved' || normalized === 'received' || normalized === 'closed') return 'bg-success';
+  if (normalized === 'ordered' || normalized === 'partiallyreceived' || normalized === 'underreview' || normalized === 'submitted') return 'bg-warning text-dark';
+  if (normalized === 'rejected' || normalized === 'cancelled') return 'bg-danger';
+  return 'bg-secondary';
+}
+
+function urgencyClass(value) {
+  const normalized = normalizeValue(value);
+  if (['critical', 'urgent', 'high', 'overdue', 'a'].includes(normalized)) return 'is-urgent';
+  if (['medium', 'warning', 'review', 'b'].includes(normalized)) return 'is-review';
+  if (['success', 'healthy', 'good', 'green'].includes(normalized)) return 'is-healthy';
+  if (['neutral', 'unknown', 'missing', 'gray', 'grey'].includes(normalized)) return 'is-neutral';
+  return 'is-info';
+}
+
+function technicalSourceLabel(row = {}) {
+  const raw = row.sourceLabel || row.source || row.aiSource || row.recommendationSource || '';
+  const normalized = normalizeValue(raw);
+  if (normalized.includes('gemma')) return 'Gemma';
+  if (normalized.includes('hybrid')) return 'Hybrid';
+  if (normalized.includes('fallback')) return 'Fallback';
+  if (normalized.includes('deterministic') || normalized.includes('rule')) return 'Deterministic';
+  return raw ? String(raw).replace(/_/g, ' ') : 'Deterministic';
+}
+
+function sourceLabel(row = {}) {
+  const technical = technicalSourceLabel(row);
+  if (technical === 'Gemma') return 'AI insight';
+  if (technical === 'Hybrid') return 'Estimated';
+  return 'System data';
+}
+
+function sourceInfoIcon(row = {}) {
+  const technical = technicalSourceLabel(row);
+  return `<span class="ops-source-info" title="Internal source: ${escapeHtml(technical)}" aria-label="Internal source: ${escapeHtml(technical)}"><i class="bi bi-info-circle"></i></span>`;
+}
+
+function buildLifecycleStepper(status) {
+  const normalized = normalizeValue(status);
+  const isTerminalException = normalized === 'rejected' || normalized === 'cancelled';
+  if (isTerminalException) {
+    return `
+      <div class="proc-lifecycle-stepper is-exception" aria-label="Procurement lifecycle status">
+        <span class="proc-lifecycle-exception">${escapeHtml(String(status || 'Stopped'))}</span>
+      </div>
+    `;
+  }
+  const currentIndex = Math.max(0, PROCUREMENT_LIFECYCLE_STAGES.findIndex((stage) => normalizeValue(stage) === normalized));
+  return `
+    <div class="proc-lifecycle-stepper" aria-label="Procurement lifecycle status">
+      ${PROCUREMENT_LIFECYCLE_STAGES.map((stage, index) => {
+        const stateClass = index < currentIndex ? 'is-complete' : (index === currentIndex ? 'is-current' : 'is-pending');
+        return `
+          <span class="proc-lifecycle-step ${stateClass}" title="${escapeHtml(stage)}">
+            <span class="proc-lifecycle-dot" aria-hidden="true"></span>
+            <span class="proc-lifecycle-label">${escapeHtml(stage)}</span>
+          </span>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function emptyStateRow(colspan, title, message, actionHtml = '') {
+  return `
+    <tr class="proc-empty-row">
+      <td colspan="${Math.max(1, Number(colspan || 1))}">
+        <div class="ops-empty-state-card">
+          <div>
+            <div class="ops-empty-state-title">${escapeHtml(title)}</div>
+            <div class="ops-empty-state-copy">${escapeHtml(message)}</div>
+          </div>
+          ${actionHtml ? `<div class="ops-empty-state-actions">${actionHtml}</div>` : ''}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function markProcurementUpdated(requestId) {
+  state.recentlyUpdatedRequestId = String(requestId || '').trim() || null;
+  if (!state.recentlyUpdatedRequestId) return;
+  window.setTimeout(() => {
+    state.recentlyUpdatedRequestId = null;
+    document.querySelectorAll('.proc-row-updated').forEach((row) => row.classList.remove('proc-row-updated'));
+  }, 1800);
+}
+
+function setKpiValue(element, value) {
+  if (!element) return;
+  const next = Number(value || 0);
+  element.textContent = String(next);
+  element.classList.toggle('has-attention', next > 0 && element.id === 'procSummaryApprovals');
+}
+
+function buildTableSkeletonRow(colspan = 6, lines = 3) {
+  const safeColspan = Math.max(1, Number(colspan || 1));
+  const rows = Array.from({ length: Math.max(1, Number(lines || 2)) }).map((_, index) => {
+    const sizeClass = index === 0 ? 'lg' : (index === 1 ? 'md' : 'sm');
+    return `<span class="ops-skeleton-line ${sizeClass}"></span>`;
+  }).join('');
+  return `
+    <tr class="ops-loading-row">
+      <td colspan="${safeColspan}">
+        <div class="ops-skeleton-table-stack">${rows}</div>
+      </td>
+    </tr>
+  `;
+}
+
+function setProcurementSkeletonState() {
+  const tableSkeletonMap = [
+    ['procPriorityTableBody', 4],
+    ['procRecommendationsTableBody', 7],
+    ['procRequestsTableBody', 6],
+    ['procQuotesTableBody', 8],
+    ['procPurchaseOrdersTableBody', 6],
+    ['procReceivingTableBody', 6],
+    ['procAbcTableBody', 6],
+    ['procEoqTableBody', 7],
+    ['procFifoTableBody', 6],
+    ['procFinanceTableBody', 7],
+    ['procSuppliersTableBody', 5],
+    ['procCatalogTableBody', 5],
+  ];
+  tableSkeletonMap.forEach(([id, colspan]) => {
+    const bodyEl = document.getElementById(id);
+    if (!bodyEl) return;
+    bodyEl.innerHTML = buildTableSkeletonRow(colspan, 3);
+  });
+}
+
+function setLoadingState(loading, message) {
+  const dot = document.getElementById('procLoadDot');
+  const text = document.getElementById('procLoadStatusText');
+  const badge = document.getElementById('procFreshnessBadge');
+  state.loading = Boolean(loading);
+  if (dot) {
+    dot.classList.remove('ready', 'loading', 'error');
+    dot.classList.add(loading ? 'loading' : 'ready');
+  }
+  const defaultMessage = loading
+    ? 'Loading procurement board...'
+    : `Updated ${formatRelativeTime(state.loadedAt)}. ${autoRefreshEnabled() ? `Auto-refreshes every ${AUTO_REFRESH_INTERVAL_MS / 1000}s.` : 'Auto-refresh paused.'}`;
+  const finalMessage = message || defaultMessage;
+  if (text) text.textContent = finalMessage;
+  if (badge) {
+    badge.className = `ops-freshness-pill ${loading ? 'is-refreshing' : 'is-ready'}`;
+    badge.innerHTML = `
+      <i class="bi ${loading ? 'bi-arrow-repeat' : 'bi-check2-circle'}" aria-hidden="true"></i>
+      <span>${escapeHtml(finalMessage)}</span>
+    `;
+  }
+}
+
+function setLoadError(message) {
+  const dot = document.getElementById('procLoadDot');
+  const text = document.getElementById('procLoadStatusText');
+  const badge = document.getElementById('procFreshnessBadge');
+  if (dot) {
+    dot.classList.remove('ready', 'loading');
+    dot.classList.add('error');
+  }
+  if (text) text.textContent = message || 'Failed to load procurement board.';
+  if (badge) {
+    badge.className = 'ops-freshness-pill is-error';
+    badge.innerHTML = `
+      <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+      <span>${escapeHtml(message || 'Failed to load procurement board.')}</span>
+    `;
+  }
+}
+
+function formatOptions(options = []) {
+  return (Array.isArray(options) ? options : []).map((option) => {
+    if (option && typeof option === 'object') {
+      const value = String(option.value ?? '').trim();
+      const label = String(option.label ?? value).trim() || value;
+      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    }
+    const value = String(option ?? '').trim();
+    return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+  }).join('');
+}
+
+function normalizeFieldValue(field, value) {
+  const type = String(field?.type || 'text').toLowerCase();
+  if (type === 'checkbox') return Boolean(value);
+  if (type === 'number') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const raw = String(value ?? '');
+  return field?.trim === false ? raw : raw.trim();
+}
+
+function showFormModal(options = {}) {
+  return new Promise((resolve) => {
+    const fields = Array.isArray(options.fields) ? options.fields : [];
+    const modalId = `procFormModal-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const title = String(options.title || 'Procurement Action');
+    const message = String(options.message || '').trim();
+    const messageHtml = String(options.messageHtml || '').trim();
+    const confirmText = String(options.confirmText || 'Save');
+    const cancelText = String(options.cancelText || 'Cancel');
+    const confirmClass = String(options.confirmClass || 'btn-primary');
+    const dialogClass = String(options.dialogClass || 'modal-lg');
+
+    const fieldsHtml = fields.map((field, index) => {
+      const name = String(field?.name || `field_${index}`).trim();
+      const type = String(field?.type || 'text').toLowerCase();
+      const id = `${modalId}-field-${index}`;
+      const label = String(field?.label || name || `Field ${index + 1}`);
+      const placeholder = String(field?.placeholder || '');
+      const required = Boolean(field?.required);
+      const helpText = String(field?.helpText || '');
+      const colClass = String(field?.colClass || 'col-12');
+      const rawValue = field?.value;
+      const safeValue = rawValue === null || typeof rawValue === 'undefined' ? '' : String(rawValue);
+      const requiredFlag = required ? 'required' : '';
+      let inputHtml = '';
+
+      if (type === 'textarea') {
+        const rows = Math.max(2, Number(field?.rows || 3));
+        inputHtml = `<textarea class="form-control form-control-sm" id="${id}" data-field-index="${index}" rows="${rows}" placeholder="${escapeHtml(placeholder)}" ${requiredFlag}>${escapeHtml(safeValue)}</textarea>`;
+      } else if (type === 'select') {
+        const includeBlank = !required || placeholder;
+        inputHtml = `
+          <select class="form-select form-select-sm" id="${id}" data-field-index="${index}" ${requiredFlag}>
+            ${includeBlank ? `<option value="">${escapeHtml(placeholder || 'Select...')}</option>` : ''}
+            ${formatOptions(field?.options || [])}
+          </select>
+        `;
+      } else if (type === 'checkbox') {
+        const checked = Boolean(rawValue) ? 'checked' : '';
+        inputHtml = `
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" id="${id}" data-field-index="${index}" ${checked}>
+            <label class="form-check-label small" for="${id}">${escapeHtml(label)}</label>
+          </div>
+        `;
+      } else {
+        inputHtml = `
+          <input
+            type="${escapeHtml(type || 'text')}"
+            class="form-control form-control-sm"
+            id="${id}"
+            data-field-index="${index}"
+            value="${escapeHtml(safeValue)}"
+            placeholder="${escapeHtml(placeholder)}"
+            ${field?.min !== undefined ? `min="${escapeHtml(String(field.min))}"` : ''}
+            ${field?.max !== undefined ? `max="${escapeHtml(String(field.max))}"` : ''}
+            ${field?.step !== undefined ? `step="${escapeHtml(String(field.step))}"` : ''}
+            ${requiredFlag}
+          >
+        `;
+      }
+
+      return `
+        <div class="${escapeHtml(colClass)}" data-field-wrapper="${index}">
+          ${type === 'checkbox' ? '' : `<label class="form-label form-label-sm mb-1 fw-semibold" for="${id}">${escapeHtml(label)}${required ? ' *' : ''}</label>`}
+          ${inputHtml}
+          ${helpText ? `<div class="form-text small">${escapeHtml(helpText)}</div>` : ''}
+          <div class="invalid-feedback" id="${id}-feedback"></div>
+        </div>
+      `;
+    }).join('');
+
+    const html = `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered ${escapeHtml(dialogClass)}">
+          <div class="modal-content border-0 shadow proc-workflow-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title fw-bold">${escapeHtml(title)}</h5>
+                ${message ? `<div class="proc-modal-subtitle">${escapeHtml(message)}</div>` : ''}
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              ${messageHtml ? `<div class="proc-modal-guidance">${messageHtml}</div>` : ''}
+              <form id="${modalId}-form" novalidate>
+                <div class="row g-2">${fieldsHtml}</div>
+              </form>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
+              <button type="button" class="btn ${escapeHtml(confirmClass)}" id="${modalId}-confirm">${escapeHtml(confirmText)}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', html);
+    const modalEl = document.getElementById(modalId);
+    const formEl = document.getElementById(`${modalId}-form`);
+    const confirmBtn = document.getElementById(`${modalId}-confirm`);
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    let settled = false;
+
+    const setError = (index, messageText) => {
+      const input = formEl?.querySelector(`[data-field-index="${index}"]`);
+      if (!input) return;
+      input.classList.add('is-invalid');
+      const feedback = modalEl?.querySelector(`#${input.id}-feedback`);
+      if (feedback) feedback.textContent = String(messageText || 'Required field.');
+    };
+
+    const clearError = (index) => {
+      const input = formEl?.querySelector(`[data-field-index="${index}"]`);
+      if (!input) return;
+      input.classList.remove('is-invalid');
+      const feedback = modalEl?.querySelector(`#${input.id}-feedback`);
+      if (feedback) feedback.textContent = '';
+    };
+
+    confirmBtn?.addEventListener('click', () => {
+      const values = {};
+      let hasError = false;
+      fields.forEach((_, idx) => clearError(idx));
+
+      for (let index = 0; index < fields.length; index += 1) {
+        const field = fields[index];
+        const name = String(field?.name || `field_${index}`).trim();
+        const type = String(field?.type || 'text').toLowerCase();
+        const input = formEl?.querySelector(`[data-field-index="${index}"]`);
+        if (!input) continue;
+
+        const rawValue = type === 'checkbox' ? Boolean(input.checked) : input.value;
+        const normalized = normalizeFieldValue(field, rawValue);
+        values[name] = normalized;
+
+        if (field?.required) {
+          const missing = type === 'checkbox' ? !Boolean(normalized) : !String(normalized ?? '').trim();
+          if (missing) {
+            setError(index, `${field?.label || name} is required.`);
+            if (!hasError) input.focus();
+            hasError = true;
+            continue;
+          }
+        }
+
+        if (typeof field?.validate === 'function') {
+          const errorText = field.validate(normalized, values);
+          if (errorText) {
+            setError(index, errorText);
+            if (!hasError) input.focus();
+            hasError = true;
+          }
+        }
+      }
+
+      if (hasError) return;
+      settled = true;
+      modal.hide();
+      resolve({ confirmed: true, values });
+    });
+
+    modalEl?.addEventListener('hidden.bs.modal', () => {
+      modalEl.remove();
+      if (!settled) resolve({ confirmed: false, values: {} });
+    }, { once: true });
+
+    modal.show();
+    setTimeout(() => {
+      fields.forEach((field, index) => {
+        if (String(field?.type || '').toLowerCase() !== 'select') return;
+        const select = formEl?.querySelector(`[data-field-index="${index}"]`);
+        const value = field?.value;
+        if (!select || value === null || typeof value === 'undefined') return;
+        select.value = String(value);
+      });
+      const first = modalEl?.querySelector('input,select,textarea');
+      if (first && typeof first.focus === 'function') first.focus();
+    }, 20);
+  });
+}
+
+function getRequestById(requestId) {
+  const rows = Array.isArray(state.board?.requests) ? state.board.requests : [];
+  return rows.find((row) => String(row.requestId || '') === String(requestId || '')) || null;
+}
+
+function getBoardRequests() {
+  return Array.isArray(state.board?.requests) ? state.board.requests : [];
+}
+
+function getBoardRecommendations() {
+  return Array.isArray(state.board?.aiRecommendations) ? state.board.aiRecommendations : [];
+}
+
+function numericOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function requestDisplayCost(row = {}) {
+  const selectedQuote = Array.isArray(row.vendorQuotes) ? row.vendorQuotes.find((quote) => quote.selected) : null;
+  return numericOrNull(selectedQuote?.totalPrice)
+    ?? numericOrNull(row.actualCost)
+    ?? numericOrNull(row.estimatedBudget)
+    ?? null;
+}
+
+function quoteScore(quote = {}, allQuotes = []) {
+  const prices = allQuotes.map((row) => numericOrNull(row.totalPrice)).filter((value) => value !== null && value > 0);
+  const minPrice = prices.length ? Math.min(...prices) : null;
+  const price = numericOrNull(quote.totalPrice);
+  const warranty = numericOrNull(quote.warrantyMonths) || 0;
+  const delivery = numericOrNull(quote.deliveryDays ?? quote.leadTimeDays) || 999;
+  const reliabilityEvidence = deriveVendorReliabilityEvidence(quote);
+  const priceScore = minPrice && price ? Math.max(0, 40 - ((price - minPrice) / Math.max(minPrice, 1)) * 40) : 18;
+  const warrantyScore = Math.min(20, warranty / 2);
+  const deliveryScore = Math.max(0, 20 - Math.min(20, delivery / 2));
+  const reliabilityScore = reliabilityEvidence.score === null ? 0 : Math.min(20, reliabilityEvidence.score / 5);
+  const selectedBonus = quote.selected ? 8 : 0;
+  return Number((priceScore + warrantyScore + deliveryScore + reliabilityScore + selectedBonus).toFixed(2));
+}
+
+function quoteTradeoffText(quote = {}, isBest = false) {
+  const parts = [];
+  const price = numericOrNull(quote.totalPrice);
+  const delivery = numericOrNull(quote.deliveryDays ?? quote.leadTimeDays);
+  const warranty = numericOrNull(quote.warrantyMonths);
+  const moq = numericOrNull(quote.minimumOrderQuantity);
+  if (isBest) parts.push('Best value based on available price, delivery, warranty, reliability, and selection evidence.');
+  if (price !== null) parts.push(`Total price ${formatCurrency(price)}`);
+  if (delivery !== null) parts.push(`Delivery ${delivery} day(s)`);
+  if (warranty !== null) parts.push(`Warranty ${warranty} month(s)`);
+  if (moq !== null) parts.push(`MOQ ${moq}`);
+  if (!parts.length) parts.push('Add price, warranty, delivery, MOQ, and reliability data to compare this quote properly.');
+  return parts.join(' | ');
+}
+
+function deriveVendorReliabilityEvidence(quote = {}) {
+  const manual = numericOrNull(quote.reliabilityScore);
+  if (manual !== null) {
+    return {
+      score: Math.max(0, Math.min(100, Math.round(manual * 10))),
+      source: 'manual_rating',
+      label: `${manual}/10 manual rating`,
+      detail: 'Reliability source: manual vendor/quote rating entered by staff.',
+      completedCount: null,
+    };
+  }
+  const vendorName = String(quote.vendorName || '').trim().toLowerCase();
+  const vendorId = String(quote.vendorId || '').trim().toLowerCase();
+  if (!vendorName && !vendorId) {
+    return {
+      score: null,
+      source: 'insufficient_data',
+      label: 'insufficient data',
+      detail: 'Reliability needs a manual rating or at least 2 completed POs for this vendor.',
+      completedCount: 0,
+    };
+  }
+  const completed = [];
+  getBoardRequests().forEach((request) => {
+    const pos = Array.isArray(request.purchaseOrders) ? request.purchaseOrders : [];
+    const receipts = Array.isArray(request.receivingRecords) ? request.receivingRecords : [];
+    pos.forEach((po) => {
+      const poVendorName = String(po.vendorName || '').trim().toLowerCase();
+      const poVendorId = String(po.vendorId || '').trim().toLowerCase();
+      const matchesVendor = (vendorId && poVendorId === vendorId) || (vendorName && poVendorName === vendorName);
+      const status = String(po.status || '').toLowerCase();
+      if (!matchesVendor || !['received', 'closed', 'partially_received'].includes(status)) return;
+      const expected = po.expectedDeliveryDate ? new Date(po.expectedDeliveryDate) : null;
+      const relatedReceipt = receipts.find((receipt) => !po.poNumber || String(receipt.poNumber || receipt.purchaseOrderNumber || '') === String(po.poNumber || '')) || receipts[0];
+      const receivedAt = relatedReceipt?.receivedAt ? new Date(relatedReceipt.receivedAt) : null;
+      completed.push({
+        expected,
+        receivedAt,
+        onTime: Boolean(expected && receivedAt && receivedAt.getTime() <= expected.getTime()),
+      });
+    });
+  });
+  if (completed.length < 2) {
+    return {
+      score: null,
+      source: 'insufficient_data',
+      label: `${completed.length}/2 completed PO(s)`,
+      detail: 'Reliability is calculated only after at least 2 completed POs with receiving evidence.',
+      completedCount: completed.length,
+    };
+  }
+  const dated = completed.filter((row) => row.expected && row.receivedAt);
+  const onTime = dated.filter((row) => row.onTime).length;
+  const score = dated.length ? Math.round((onTime / dated.length) * 100) : 50;
+  return {
+    score,
+    source: 'calculated_from_pos',
+    label: `${score}% from ${completed.length} completed PO(s)`,
+    detail: `Reliability source: calculated on-time receiving rate (${onTime}/${dated.length || completed.length}) from completed POs.`,
+    completedCount: completed.length,
+  };
+}
+
+function quoteRadarScores(quote = {}, allQuotes = []) {
+  const prices = allQuotes.map((row) => numericOrNull(row.totalPrice)).filter((value) => value !== null && value > 0);
+  const minPrice = prices.length ? Math.min(...prices) : null;
+  const maxPrice = prices.length ? Math.max(...prices) : null;
+  const price = numericOrNull(quote.totalPrice);
+  const warranty = numericOrNull(quote.warrantyMonths);
+  const delivery = numericOrNull(quote.deliveryDays ?? quote.leadTimeDays);
+  const reliability = deriveVendorReliabilityEvidence(quote);
+  const moq = numericOrNull(quote.minimumOrderQuantity);
+  const priceCompetitiveness = minPrice && maxPrice && price
+    ? (maxPrice === minPrice ? 100 : Math.max(0, Math.min(100, Math.round(100 - (((price - minPrice) / (maxPrice - minPrice)) * 100)))))
+    : 45;
+  return [
+    { label: 'Price', score: priceCompetitiveness, evidence: price === null ? 'price missing' : formatCurrency(price) },
+    { label: 'Warranty', score: warranty === null ? 40 : Math.max(0, Math.min(100, Math.round((warranty / 60) * 100))), evidence: warranty === null ? 'missing' : `${warranty}m` },
+    { label: 'Delivery', score: delivery === null ? 40 : Math.max(0, Math.min(100, Math.round(100 - Math.min(100, (delivery / 60) * 100)))), evidence: delivery === null ? 'missing' : `${delivery}d` },
+    { label: 'Reliability', score: reliability.score, evidence: reliability.label, source: reliability.source, detail: reliability.detail },
+    { label: 'MOQ', score: moq === null ? 50 : Math.max(0, Math.min(100, Math.round(100 - Math.min(100, (Math.max(0, moq - 1) / 50) * 100)))), evidence: moq === null ? 'missing' : String(moq) },
+  ];
+}
+
+function quoteRadarHtml(quote = {}, allQuotes = []) {
+  return `
+    <div class="proc-vendor-radar-bars" aria-label="Vendor score visual">
+      ${quoteRadarScores(quote, allQuotes).map((dimension) => {
+        const missing = dimension.score === null || typeof dimension.score === 'undefined';
+        const bucket = missing ? 0 : Math.max(0, Math.min(100, Math.ceil(Number(dimension.score || 0) / 10) * 10));
+        return `
+          <div class="proc-vendor-radar-row ${missing ? 'is-insufficient' : ''}" title="${escapeHtml(dimension.detail || '')}">
+            <span>${escapeHtml(dimension.label)}</span>
+            <div class="proc-vendor-radar-track"><span class="progress-${escapeHtml(String(bucket))}"></span></div>
+            <strong>${escapeHtml(missing ? 'n/a' : String(dimension.score))}</strong>
+            <small>${escapeHtml(dimension.evidence)}</small>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderKanbanBoard(requests = []) {
+  const el = document.getElementById('procKanbanBoard');
+  if (!el) return;
+  if (!requests.length) {
+    el.innerHTML = `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No requests on the board yet</div>
+          <div class="ops-empty-state-copy">Create a procurement request from manual need, AI recommendation, low stock, EOL, audit, or maintenance evidence.</div>
+        </div>
+        <div class="ops-empty-state-actions">
+          <button type="button" class="btn btn-sm btn-primary" id="procCreateKanbanEmptyBtn">Create Request</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  const kanbanStages = [...PROCUREMENT_LIFECYCLE_STAGES, 'Stopped'];
+  const columns = kanbanStages.map((status) => {
+    const rows = status === 'Stopped'
+      ? requests.filter((row) => ['rejected', 'cancelled'].includes(normalizeValue(row.status || '')))
+      : requests.filter((row) => normalizeValue(row.status || 'Draft') === normalizeValue(status));
+    return `
+      <section class="proc-kanban-column" aria-label="${escapeHtml(status)} requests">
+        <div class="proc-kanban-column-head">
+          <span>${escapeHtml(status)}</span>
+          <strong>${escapeHtml(String(rows.length))}</strong>
+        </div>
+        <div class="proc-kanban-cards">
+          ${rows.slice(0, 5).map((row) => {
+            const cost = requestDisplayCost(row);
+            return `
+              <article class="proc-kanban-card ${urgencyClass(row.priority || row.status)} ${String(row.requestId || '') === state.recentlyUpdatedRequestId ? 'proc-row-updated' : ''}">
+                <div class="proc-kanban-card-top">
+                  <span class="ops-attention-pill ${urgencyClass(row.priority || row.status)}">${escapeHtml(row.priority || 'Medium')}</span>
+                  <span class="proc-kanban-id">${escapeHtml(row.requestId || '-')}</span>
+                </div>
+                <h6>${escapeHtml(row.title || row.itemType || 'Procurement request')}</h6>
+                <p>${escapeHtml(row.reason || row.itemCategory || 'Review request details.')}</p>
+                <div class="proc-kanban-meta">
+                  <span>${escapeHtml(row.linkedDepartment || 'Unassigned')}</span>
+                  <span>${escapeHtml(row.linkedLocation || '-')}</span>
+                  <span>${cost !== null ? escapeHtml(formatCurrency(cost)) : 'Budget TBD'}</span>
+                </div>
+                <div class="proc-kanban-actions">
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-view-request="${escapeHtml(row.requestId || '')}">Details</button>
+                  <div class="dropdown proc-kanban-more-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">More</button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                      <button type="button" class="dropdown-item" data-proc-update-status="${escapeHtml(row.requestId || '')}"><i class="bi bi-arrow-repeat me-2"></i>Status</button>
+                      <button type="button" class="dropdown-item" data-proc-add-quote="${escapeHtml(row.requestId || '')}"><i class="bi bi-receipt me-2"></i>Add Quote</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            `;
+          }).join('') || '<div class="proc-kanban-empty">No requests in this stage.</div>'}
+          ${rows.length > 5 ? `<div class="proc-kanban-more">${escapeHtml(String(rows.length - 5))} more in table</div>` : ''}
+        </div>
+      </section>
+    `;
+  }).join('');
+  el.innerHTML = columns;
+}
+
+function renderRequestPriorityBoard(requests = []) {
+  const el = document.getElementById('procRequestPriorityBoard');
+  if (!el) return;
+  if (!requests.length) {
+    el.innerHTML = `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No requests to prioritize</div>
+          <div class="ops-empty-state-copy">Create requests from low stock, EOL, audit, maintenance, AI recommendations, or manual demand.</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  const lanes = [
+    { key: 'critical', label: 'Critical / High', matcher: (row) => ['critical', 'high', 'urgent'].includes(normalizeValue(row.priority || row.urgency || '')) },
+    { key: 'approval', label: 'Needs Approval', matcher: (row) => ['submitted', 'underreview'].includes(normalizeValue(row.status || '')) },
+    { key: 'ordered', label: 'Ordered / Receiving', matcher: (row) => ['ordered', 'partiallyreceived'].includes(normalizeValue(row.status || '')) },
+    { key: 'ai', label: 'AI / Evidence-led', matcher: (row) => normalizeValue(row.source || '').includes('ai') || normalizeValue(row.source || '').includes('eol') || normalizeValue(row.source || '').includes('lowstock') },
+  ];
+  el.innerHTML = lanes.map((lane) => {
+    const rows = requests.filter(lane.matcher);
+    return `
+      <section class="proc-priority-lane ${urgencyClass(lane.key)}" aria-label="${escapeHtml(lane.label)}">
+        <div class="proc-priority-lane-head">
+          <span>${escapeHtml(lane.label)}</span>
+          <strong>${escapeHtml(String(rows.length))}</strong>
+        </div>
+        <div class="proc-priority-lane-body">
+          ${rows.slice(0, 6).map((row) => `
+            <article class="proc-priority-request-card ${urgencyClass(row.priority || row.status)}">
+              <div class="proc-priority-request-top">
+                <span class="ops-attention-pill ${urgencyClass(row.priority || row.status)}">${escapeHtml(row.priority || 'Medium')}</span>
+                <span>${escapeHtml(row.requestId || '-')}</span>
+              </div>
+              <h6>${escapeHtml(row.title || row.itemType || 'Procurement request')}</h6>
+              <p>${escapeHtml(row.reason || 'Review the request evidence before action.')}</p>
+              <div class="proc-priority-request-actions">
+                <button type="button" class="btn btn-sm btn-outline-primary" data-proc-view-request="${escapeHtml(row.requestId || '')}">Details</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-update-status="${escapeHtml(row.requestId || '')}">Status</button>
+              </div>
+            </article>
+          `).join('') || '<div class="proc-kanban-empty">No matching requests.</div>'}
+        </div>
+      </section>
+    `;
+  }).join('');
+}
+
+function applyRequestViewMode() {
+  const view = ['table', 'kanban', 'priority'].includes(state.requestView) ? state.requestView : 'table';
+  state.requestView = view;
+  const tablePanel = document.getElementById('procRequestsTablePanel');
+  const kanbanPanel = document.getElementById('procKanbanPanel');
+  const priorityPanel = document.getElementById('procRequestPriorityPanel');
+  tablePanel?.classList.toggle('d-none', view !== 'table');
+  kanbanPanel?.classList.toggle('d-none', view !== 'kanban');
+  priorityPanel?.classList.toggle('d-none', view !== 'priority');
+  document.querySelectorAll('[data-proc-request-view]').forEach((button) => {
+    const active = button.getAttribute('data-proc-request-view') === view;
+    button.classList.toggle('btn-primary', active);
+    button.classList.toggle('btn-outline-primary', !active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function setRequestViewMode(view = 'table') {
+  state.requestView = ['table', 'kanban', 'priority'].includes(view) ? view : 'table';
+  localStorage.setItem('opsmind_procurement_request_view', state.requestView);
+  applyRequestViewMode();
+}
+
+function renderVendorBattleCards(requests = []) {
+  const el = document.getElementById('procVendorBattleCards');
+  if (!el) return;
+  const groups = [];
+  requests.forEach((request) => {
+    const quotes = Array.isArray(request.vendorQuotes) ? request.vendorQuotes : [];
+    if (quotes.length) groups.push({ request, quotes });
+  });
+  if (!groups.length) {
+    el.innerHTML = `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No vendor quotes yet</div>
+          <div class="ops-empty-state-copy">Add quotes to compare price, warranty, delivery, MOQ, and reliability before selecting best value.</div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  el.innerHTML = groups.slice(0, 6).map(({ request, quotes }) => {
+    const scored = quotes
+      .map((quote) => ({ quote, score: quoteScore(quote, quotes) }))
+      .sort((a, b) => b.score - a.score);
+    const bestQuoteId = scored[0]?.quote?.quoteId || '';
+    return `
+      <article class="proc-vendor-battle-card">
+        <div class="proc-vendor-battle-head">
+          <div>
+            <div class="proc-vendor-battle-kicker">${escapeHtml(request.requestId || '-')}</div>
+            <h6>${escapeHtml(request.title || request.itemType || 'Vendor quote comparison')}</h6>
+          </div>
+          <span class="ops-attention-pill is-info">${escapeHtml(String(quotes.length))} quote(s)</span>
+        </div>
+        <div class="proc-vendor-card-row">
+          ${scored.slice(0, 4).map(({ quote, score }) => {
+            const isBest = String(quote.quoteId || '') === String(bestQuoteId || '');
+            return `
+              <div class="proc-vendor-mini-card ${isBest ? 'is-best-value' : ''}">
+                <div class="proc-vendor-mini-head">
+                  <strong>${escapeHtml(quote.vendorName || 'Vendor')}</strong>
+                  ${isBest ? '<span class="ops-attention-pill is-healthy">Best Value</span>' : `<span class="ops-attention-pill is-info">Score ${escapeHtml(String(score))}</span>`}
+                </div>
+                <div class="proc-vendor-mini-metrics">
+                  <span>Price ${escapeHtml(formatCurrency(quote.totalPrice))}</span>
+                  <span>Delivery ${escapeHtml(String(quote.deliveryDays ?? quote.leadTimeDays ?? '-'))}d</span>
+                  <span>Warranty ${escapeHtml(String(quote.warrantyMonths ?? '-'))}m</span>
+                  <span>MOQ ${escapeHtml(String(quote.minimumOrderQuantity ?? '-'))}</span>
+                </div>
+                ${quoteRadarHtml(quote, quotes)}
+                <details class="proc-ai-rec-evidence">
+                  <summary>Why this value?</summary>
+                  <div>${escapeHtml(quoteTradeoffText(quote, isBest))}</div>
+                </details>
+                <div class="proc-vendor-mini-actions">
+                  <button type="button" class="btn btn-sm btn-outline-success" data-proc-quote-select="${escapeHtml(request.requestId || '')}" data-proc-quote-id="${escapeHtml(quote.quoteId || '')}">Select</button>
+                  <button type="button" class="btn btn-sm btn-outline-danger" data-proc-quote-reject="${escapeHtml(request.requestId || '')}" data-proc-quote-id="${escapeHtml(quote.quoteId || '')}">Reject</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function procurementAnalyticsRows(dimension = 'status') {
+  const requests = getBoardRequests();
+  const rows = [];
+  if (dimension === 'status') {
+    const counts = new Map();
+    requests.forEach((request) => {
+      const key = String(request.status || 'Draft').trim() || 'Draft';
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    counts.forEach((value, label) => rows.push({ label, value, detail: `${value} request(s)` }));
+  } else if (dimension === 'department') {
+    const financeRows = Array.isArray(state.finance?.allocations) ? state.finance.allocations : [];
+    const byDepartment = new Map();
+    financeRows.forEach((row) => {
+      const label = String(row.department || 'Unassigned').trim() || 'Unassigned';
+      if (!byDepartment.has(label)) byDepartment.set(label, { label, allocated: 0, value: 0 });
+      const entry = byDepartment.get(label);
+      entry.allocated += Number(row.allocatedAmount || 0);
+      entry.value += Number(row.committedAmount || 0) + Number(row.spentAmount || 0) + Number(row.reservedAmount || 0);
+    });
+    byDepartment.forEach((entry) => rows.push({
+      label: entry.label,
+      value: Math.round(entry.value),
+      detail: `${formatCurrency(entry.value)} used of ${entry.allocated ? formatCurrency(entry.allocated) : 'missing allocation'}`,
+    }));
+  } else if (dimension === 'vendor') {
+    const byVendor = new Map();
+    requests.forEach((request) => {
+      (Array.isArray(request.vendorQuotes) ? request.vendorQuotes : []).forEach((quote) => {
+        const label = String(quote.vendorName || 'Unknown vendor').trim() || 'Unknown vendor';
+        byVendor.set(label, (byVendor.get(label) || 0) + Number(quote.totalPrice || 0));
+      });
+    });
+    byVendor.forEach((value, label) => rows.push({ label, value: Math.round(value), detail: formatCurrency(value) }));
+  } else if (dimension === 'receiving') {
+    const buckets = new Map([
+      ['Received', 0],
+      ['Partially Received', 0],
+      ['Waiting', 0],
+    ]);
+    requests.forEach((request) => {
+      const key = normalizeValue(request.status || '');
+      if (key === 'received' || key === 'closed') buckets.set('Received', (buckets.get('Received') || 0) + 1);
+      else if (key === 'partiallyreceived') buckets.set('Partially Received', (buckets.get('Partially Received') || 0) + 1);
+      else if (['ordered', 'approved'].includes(key)) buckets.set('Waiting', (buckets.get('Waiting') || 0) + 1);
+    });
+    buckets.forEach((value, label) => rows.push({ label, value, detail: `${value} request(s)` }));
+  }
+  return rows.sort((a, b) => Number(b.value || 0) - Number(a.value || 0)).slice(0, 12);
+}
+
+function renderLightweightChart(rows = [], type = 'bar') {
+  if (!rows.length) {
+    return `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No graph data yet</div>
+          <div class="ops-empty-state-copy">Create requests, quotes, budget allocations, or receiving records to populate this graph.</div>
+        </div>
+      </div>
+    `;
+  }
+  const max = Math.max(1, ...rows.map((row) => Number(row.value || 0)));
+  if (type === 'table') {
+    return `
+      <div class="proc-analytics-table">
+        ${rows.map((row) => `
+          <div class="proc-analytics-table-row">
+            <strong>${escapeHtml(row.label)}</strong>
+            <span>${escapeHtml(String(row.value))}</span>
+            <small>${escapeHtml(row.detail || '')}</small>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+  return `
+    <div class="proc-analytics-bars" aria-label="Procurement analytics bar chart">
+      ${rows.map((row) => {
+        const bucket = Math.max(0, Math.min(100, Math.ceil((Number(row.value || 0) / max) * 10) * 10));
+        return `
+          <div class="proc-analytics-bar-row">
+            <span>${escapeHtml(row.label)}</span>
+            <div class="proc-analytics-bar-track"><i class="progress-${escapeHtml(String(bucket))}"></i></div>
+            <strong>${escapeHtml(String(row.value))}</strong>
+            <small>${escapeHtml(row.detail || '')}</small>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderProcurementAnalyticsBuilder() {
+  const output = document.getElementById('procAnalyticsBuilderOutput');
+  if (!output) return;
+  const dimension = document.getElementById('procAnalyticsDimension')?.value || 'status';
+  const type = document.getElementById('procAnalyticsChartType')?.value || 'bar';
+  const rows = procurementAnalyticsRows(dimension);
+  const label = {
+    status: 'Procurement requests by status',
+    department: 'Department budget vs spend',
+    vendor: 'Spend by vendor quote evidence',
+    receiving: 'Receiving progress',
+  }[dimension] || 'Procurement analytics preset';
+  output.innerHTML = `
+    <div class="proc-analytics-graph-card ops-3d-card">
+      <div class="proc-analytics-graph-head">
+        <div>
+          <div class="proc-kanban-kicker">Analytics preset</div>
+          <h6>${escapeHtml(label)}</h6>
+        </div>
+        <span class="ops-attention-pill is-info">System data</span>
+      </div>
+      ${renderLightweightChart(rows, type)}
+    </div>
+  `;
+}
+
+function procurement360Evidence(title, evidence = [], missingData = []) {
+  const evidenceRows = (Array.isArray(evidence) ? evidence : []).filter(Boolean);
+  const missingRows = (Array.isArray(missingData) ? missingData : []).filter(Boolean);
+  return `
+    <details class="ops-360-evidence">
+      <summary>View Evidence</summary>
+      <div class="ops-360-evidence-body">
+        <strong>${escapeHtml(title || 'Evidence')}</strong>
+        ${evidenceRows.length ? `<ul>${evidenceRows.map((row) => `<li>${escapeHtml(row)}</li>`).join('')}</ul>` : '<p>No extra evidence rows.</p>'}
+        ${missingRows.length ? `<p><strong>Missing data:</strong> ${escapeHtml(missingRows.join(', '))}</p>` : ''}
+      </div>
+    </details>
+  `;
+}
+
+function procurement360Card({ title, value, subtitle, severity = 'info', source = 'Deterministic', evidence = [], missingData = [], actions = [] } = {}) {
+  const publicSource = sourceLabel({ source });
+  return `
+    <article class="ops-360-card ${urgencyClass(severity)}">
+      <div class="ops-360-card-head">
+        <div>
+          <div class="ops-360-card-kicker">${escapeHtml(publicSource)}${sourceInfoIcon({ source })}</div>
+          <h3>${escapeHtml(title || 'Procurement insight')}</h3>
+        </div>
+        <span class="ops-attention-pill ${urgencyClass(severity)}">${escapeHtml(String(severity || 'Info'))}</span>
+      </div>
+      <div class="ops-360-card-value">${escapeHtml(String(value ?? '-'))}</div>
+      <p>${escapeHtml(subtitle || '')}</p>
+      ${procurement360Evidence(title, evidence, missingData)}
+      ${actions.length ? `<div class="ops-360-actions">${actions.map((action, index) => `
+        <div class="ops-360-action-stack">
+          <button type="button" class="btn btn-sm ${index === 0 ? 'btn-primary' : 'btn-outline-primary'}" data-proc-360-action="${escapeHtml(action.action || '')}">
+            ${escapeHtml(action.label || 'Open')}
+          </button>
+          ${action.reason ? `<span class="proc-workflow-evidence-reason">${escapeHtml(action.reason)}</span>` : ''}
+        </div>
+      `).join('')}</div>` : ''}
+    </article>
+  `;
+}
+
+function getRequestQuotes(request = {}) {
+  return Array.isArray(request.vendorQuotes) ? request.vendorQuotes : [];
+}
+
+function getRequestPurchaseOrders(request = {}) {
+  return Array.isArray(request.purchaseOrders)
+    ? request.purchaseOrders
+    : (request.purchaseOrder ? [request.purchaseOrder] : []);
+}
+
+function getRequestReceivingRecords(request = {}) {
+  return Array.isArray(request.receivingRecords)
+    ? request.receivingRecords
+    : (Array.isArray(request.receipts) ? request.receipts : []);
+}
+
+function getRequestApprovals(request = {}) {
+  return Array.isArray(request.approvals)
+    ? request.approvals
+    : (Array.isArray(request.approvalHistory) ? request.approvalHistory : []);
+}
+
+function findDecisionDate(request = {}, statusOrDecision = '') {
+  const key = normalizeValue(statusOrDecision);
+  const match = getRequestApprovals(request).find((row) => {
+    const decision = normalizeValue(row.decision || row.action || '');
+    const toStatus = normalizeValue(row.toStatus || row.status || '');
+    return decision === key || toStatus === key || decision.includes(key) || toStatus.includes(key);
+  });
+  return match?.createdAt || match?.date || match?.decidedAt || null;
+}
+
+function selectedQuoteForRequest(request = {}) {
+  const quotes = getRequestQuotes(request);
+  return quotes.find((quote) => quote.selected || normalizeValue(quote.status) === 'selected')
+    || quotes
+      .filter((quote) => numericOrNull(quote.totalPrice) !== null)
+      .sort((a, b) => (numericOrNull(a.totalPrice) || Infinity) - (numericOrNull(b.totalPrice) || Infinity))[0]
+    || null;
+}
+
+function primaryPurchaseOrderForRequest(request = {}) {
+  return getRequestPurchaseOrders(request)[0] || request.purchaseOrder || null;
+}
+
+function requestedQuantityForRequest(request = {}) {
+  const items = Array.isArray(request.items) ? request.items : [];
+  const itemTotal = items.reduce((sum, item) => sum + (Number(item.quantityRequested ?? item.quantity ?? 0) || 0), 0);
+  return itemTotal || Number(request.quantityRequested ?? request.quantity ?? 0) || 0;
+}
+
+function receivedQuantityForRequest(request = {}) {
+  const items = Array.isArray(request.items) ? request.items : [];
+  const itemTotal = items.reduce((sum, item) => sum + (Number(item.quantityReceived ?? 0) || 0), 0);
+  const recordTotal = getRequestReceivingRecords(request).reduce((sum, record) => sum + (Number(record.receivedQuantity ?? record.quantityReceived ?? 0) || 0), 0);
+  return itemTotal || recordTotal || Number(request.quantityReceived ?? 0) || 0;
+}
+
+function workflowEvidenceReason(request = {}, next = {}) {
+  const status = normalizeValue(request.status || '');
+  if (status === 'submitted') {
+    const user = request.requestedBy || request.createdBy || request.submitter || 'requester';
+    const date = formatDate(findDecisionDate(request, 'submit') || request.submittedAt || request.updatedAt || request.createdAt);
+    return `Submitted by ${user} on ${date}. Awaiting reviewer.`;
+  }
+  if (status === 'underreview') {
+    const quoteCount = getRequestQuotes(request).length;
+    return `${quoteCount} quote(s) received. Awaiting manager approval.`;
+  }
+  if (status === 'approved' && next.type === 'po') {
+    const approvedAt = formatDate(findDecisionDate(request, 'approve') || request.approvedAt || request.updatedAt || request.createdAt);
+    const quote = selectedQuoteForRequest(request);
+    if (quote?.vendorName && numericOrNull(quote.totalPrice) !== null) {
+      return `Approved on ${approvedAt}. Best quote: ${quote.vendorName} at ${formatCurrency(quote.totalPrice)}.`;
+    }
+    return 'Approved request. Quote evidence incomplete.';
+  }
+  if (status === 'approved') return 'Approved request. Quote evidence incomplete.';
+  if (status === 'ordered') {
+    const po = primaryPurchaseOrderForRequest(request);
+    if (po?.poNumber || po?.vendorName || po?.expectedDeliveryDate) {
+      return `PO #${po.poNumber || '-'} sent to ${po.vendorName || 'vendor'}. Expected: ${formatDate(po.expectedDeliveryDate || po.expectedDelivery || po.deliveryDate)}.`;
+    }
+    return 'Ordered request. Receiving evidence incomplete.';
+  }
+  if (status === 'partiallyreceived') {
+    const requested = requestedQuantityForRequest(request);
+    const received = receivedQuantityForRequest(request);
+    const remaining = Math.max(0, requested - received);
+    if (requested || received) return `${received} of ${requested || '?'} units received. ${remaining || 0} remaining.`;
+    return 'Ordered request. Receiving evidence incomplete.';
+  }
+  return 'Request is ready for the next workflow step.';
+}
+
+function buildProcurement360Summary() {
+  const board = state.board || {};
+  const requests = getBoardRequests();
+  const recommendations = getBoardRecommendations();
+  const analytics = board.analytics || {};
+  const statusCounts = board.statusCounts || {};
+  const priorities = board.priorities || {};
+  const quotes = [];
+  const purchaseOrders = [];
+  const receivingRecords = [];
+  requests.forEach((request) => {
+    getRequestQuotes(request).forEach((quote) => quotes.push({ request, quote }));
+    getRequestPurchaseOrders(request).forEach((po) => purchaseOrders.push({ request, po }));
+    getRequestReceivingRecords(request).forEach((record) => receivingRecords.push({ request, record }));
+  });
+  const openRequests = requests.filter((row) => !['received', 'closed', 'cancelled', 'rejected'].includes(normalizeValue(row.status))).length;
+  const pendingApprovals = requests.filter((row) => ['submitted', 'underreview'].includes(normalizeValue(row.status))).length;
+  const orderedTransit = requests.filter((row) => ['ordered', 'partiallyreceived'].includes(normalizeValue(row.status))).length;
+  const partiallyReceived = requests.filter((row) => normalizeValue(row.status) === 'partiallyreceived').length;
+  const receivedClosed = requests.filter((row) => ['received', 'closed'].includes(normalizeValue(row.status))).length;
+  const approvedNoPo = requests.filter((row) => normalizeValue(row.status) === 'approved' && !getRequestPurchaseOrders(row).length).length;
+  const missingQuotes = requests.filter((row) => ['submitted', 'underreview', 'approved'].includes(normalizeValue(row.status)) && !getRequestQuotes(row).length).length;
+  const quotesNeedReview = quotes.filter(({ quote }) => !quote.selected && !['rejected', 'selected'].includes(normalizeValue(quote.status || ''))).length;
+  const selectedQuotes = quotes.filter(({ quote }) => quote.selected).length;
+  const moqConflicts = Number(state.eoqMoq?.summary?.moqConflictItems ?? analytics?.eoqMoq?.moqConflictItems ?? 0) || 0;
+  const estimatedSpend = requests.reduce((sum, row) => sum + (numericOrNull(row.estimatedBudget) || 0), 0);
+  const selectedQuoteSpend = quotes.reduce((sum, row) => sum + (row.quote?.selected ? (numericOrNull(row.quote.totalPrice) || 0) : 0), 0);
+  const actualSpend = requests.reduce((sum, row) => sum + (numericOrNull(row.actualCost) || 0), 0);
+  const orderedAmount = purchaseOrders.reduce((sum, row) => sum + (numericOrNull(row.po.totalPrice ?? row.po.amount ?? row.po.estimatedTotal) || 0), 0);
+  const invoiceActual = Number(analytics.invoiceActualAmount ?? analytics.actualInvoiceAmount ?? 0) || 0;
+  const financeTotals = state.finance?.totals || analytics.finance?.totals || {};
+  const availableBudget = numericOrNull(financeTotals.available);
+  const budgetPressure = availableBudget !== null && availableBudget < 0 ? Math.abs(availableBudget) : 0;
+  const missingCostData = requests.filter((row) => numericOrNull(row.estimatedBudget) === null && requestDisplayCost(row) === null).length;
+  const receivingPending = Number(analytics.receivedVsPending?.pending ?? orderedTransit) || 0;
+  const stockUpdatesWaiting = receivingRecords.filter(({ record }) => record.applyTarget === 'spare_stock' && !record.confirmInventoryImpact).length;
+  const fifoBatches = Array.isArray(state.fifo?.batches) ? state.fifo.batches.length : Number(analytics?.fifo?.batchCount || 0);
+  const agingRequests = Number(analytics.agingApprovedRequests || 0);
+
+  return {
+    requests,
+    recommendations,
+    priorities,
+    openRequests,
+    pendingApprovals,
+    orderedTransit,
+    partiallyReceived,
+    receivedClosed,
+    approvedNoPo,
+    missingQuotes,
+    quotesNeedReview,
+    selectedQuotes,
+    moqConflicts,
+    estimatedSpend,
+    selectedQuoteSpend,
+    actualSpend,
+    orderedAmount,
+    invoiceActual,
+    budgetPressure,
+    availableBudget,
+    missingCostData,
+    receivingPending,
+    stockUpdatesWaiting,
+    fifoBatches,
+    agingRequests,
+    lowStockRecommendations: (Array.isArray(priorities.lowStockItems) ? priorities.lowStockItems.length : 0),
+    eolRecommendations: (Array.isArray(priorities.urgentReplacements) ? priorities.urgentReplacements.length : 0),
+    auditRecommendations: (Array.isArray(priorities.auditNeeds) ? priorities.auditNeeds.length : 0),
+    maintenanceRecommendations: (Array.isArray(priorities.maintenanceNeeds) ? priorities.maintenanceNeeds.length : 0),
+    statusCounts,
+  };
+}
+
+function getNextProcurementAction(summary = buildProcurement360Summary()) {
+  const requests = summary.requests || [];
+  const approval = requests.find((row) => ['submitted', 'underreview'].includes(normalizeValue(row.status)));
+  if (approval) {
+    const title = normalizeValue(approval.status) === 'submitted' ? 'Move to Under Review' : 'Approve or reject request';
+    const next = { type: 'status', requestId: approval.requestId, title, reason: `${approval.requestId} is waiting for a decision.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(approval, next) };
+  }
+  const needsQuote = requests.find((row) => normalizeValue(row.status) === 'approved' && !getRequestQuotes(row).length);
+  if (needsQuote) {
+    const next = { type: 'quote', requestId: needsQuote.requestId, title: 'Add vendor quote', reason: `${needsQuote.requestId} is approved but has no quote.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsQuote, next) };
+  }
+  const needsPo = requests.find((row) => normalizeValue(row.status) === 'approved' && getRequestQuotes(row).some((quote) => quote.selected) && !getRequestPurchaseOrders(row).length);
+  if (needsPo) {
+    const next = { type: 'po', requestId: needsPo.requestId, title: 'Create purchase order', reason: `${needsPo.requestId} has an approved selected quote.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsPo, next) };
+  }
+  const needsReceive = requests.find((row) => ['ordered', 'partiallyreceived'].includes(normalizeValue(row.status)));
+  if (needsReceive) {
+    const next = { type: 'receive', requestId: needsReceive.requestId, title: normalizeValue(needsReceive.status) === 'partiallyreceived' ? 'Receive remaining' : 'Receive stock', reason: `${needsReceive.requestId} is ordered or partially received.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(needsReceive, next) };
+  }
+  const draft = requests.find((row) => normalizeValue(row.status) === 'draft');
+  if (draft) {
+    const next = { type: 'status', requestId: draft.requestId, title: 'Submit draft request', reason: `${draft.requestId} is still in Draft.` };
+    return { ...next, evidenceReason: workflowEvidenceReason(draft, next) };
+  }
+  return null;
+}
+
+function renderProcurement360() {
+  const grid = document.getElementById('procurement360Grid');
+  if (!grid) return;
+  const summary = buildProcurement360Summary();
+  const knownCostTotal = summary.estimatedSpend + summary.selectedQuoteSpend + summary.orderedAmount + summary.actualSpend + summary.invoiceActual;
+  const vendorIssues = summary.quotesNeedReview + summary.missingQuotes + summary.moqConflicts;
+  const receivingIssues = summary.receivingPending + summary.partiallyReceived + summary.stockUpdatesWaiting;
+  const nextAction = getNextProcurementAction(summary);
+
+  grid.innerHTML = [
+    procurement360Card({
+      title: 'Procurement Health',
+      value: summary.openRequests,
+      subtitle: `${summary.pendingApprovals} pending approval | ${summary.orderedTransit} ordered/in transit | ${summary.receivedClosed} received/closed`,
+      severity: summary.pendingApprovals || summary.agingRequests ? 'Medium' : 'Healthy',
+      evidence: [`Open requests: ${summary.openRequests}`, `Partially received: ${summary.partiallyReceived}`, `Aging requests: ${summary.agingRequests}`, `Status counts loaded: ${Object.keys(summary.statusCounts || {}).length}`],
+      actions: [{ label: 'Continue Workflow', action: 'continue', reason: nextAction?.evidenceReason || 'Request is ready for the next workflow step.' }, { label: 'Requests', action: 'requests' }],
+    }),
+    procurement360Card({
+      title: 'Cost & Budget',
+      value: knownCostTotal > 0 ? formatCurrency(knownCostTotal) : 'Cost data missing',
+      subtitle: knownCostTotal > 0
+        ? `${formatCurrency(summary.estimatedSpend)} estimated | ${formatCurrency(summary.selectedQuoteSpend)} selected quotes`
+        : 'Add estimates, quotes, POs, invoices, or budget allocations to improve cost analytics.',
+      severity: summary.budgetPressure || summary.missingCostData ? 'Medium' : 'Healthy',
+      evidence: [`Estimated spend: ${formatCurrency(summary.estimatedSpend)}`, `Selected quotes: ${formatCurrency(summary.selectedQuoteSpend)}`, `Ordered amount: ${formatCurrency(summary.orderedAmount)}`, `Actual/invoice amount: ${formatCurrency(summary.actualSpend + summary.invoiceActual)}`, `Available budget: ${summary.availableBudget === null ? 'Missing' : formatCurrency(summary.availableBudget)}`],
+      missingData: summary.missingCostData ? [`${summary.missingCostData} request(s) missing cost evidence`] : [],
+      actions: [{ label: 'Finance', action: 'finance' }, { label: 'Explain Cost', action: 'explain-cost' }],
+    }),
+    procurement360Card({
+      title: 'Vendor Intelligence',
+      value: vendorIssues,
+      subtitle: `${summary.quotesNeedReview} quote(s) need review | ${summary.selectedQuotes} selected quote(s) | ${summary.moqConflicts} MOQ conflict(s)`,
+      severity: vendorIssues ? 'Medium' : 'Healthy',
+      evidence: [`Missing quotes: ${summary.missingQuotes}`, `Quotes needing review: ${summary.quotesNeedReview}`, `Selected/best-value quotes: ${summary.selectedQuotes}`, `MOQ conflicts: ${summary.moqConflicts}`],
+      missingData: summary.missingQuotes ? ['vendor quote data'] : [],
+      actions: [{ label: 'Vendor Quotes', action: 'quotes' }, { label: 'Suppliers', action: 'suppliers' }],
+    }),
+    procurement360Card({
+      title: 'Receiving Impact',
+      value: receivingIssues,
+      subtitle: `${summary.receivingPending} pending | ${summary.partiallyReceived} partial | ${summary.fifoBatches} FIFO batch signal(s)`,
+      severity: receivingIssues ? 'Medium' : 'Healthy',
+      evidence: [`Pending receiving: ${summary.receivingPending}`, `Partial receiving: ${summary.partiallyReceived}`, `Stock updates waiting: ${summary.stockUpdatesWaiting}`, `FIFO batch records/signals: ${summary.fifoBatches}`],
+      actions: [{ label: 'Receiving', action: 'receiving' }],
+    }),
+    procurement360Card({
+      title: 'AI Recommendations',
+      value: summary.recommendations.length,
+      subtitle: `${summary.lowStockRecommendations} low stock | ${summary.eolRecommendations} EOL | ${summary.auditRecommendations} audit-driven`,
+      severity: summary.recommendations.length ? 'Medium' : 'Healthy',
+      source: 'Hybrid evidence',
+      evidence: [`AI recommendations: ${summary.recommendations.length}`, `Low-stock priorities: ${summary.lowStockRecommendations}`, `EOL replacements: ${summary.eolRecommendations}`, `Maintenance-driven signals: ${summary.maintenanceRecommendations}`],
+      actions: [{ label: 'AI Recommendations', action: 'recommendations' }],
+    }),
+    procurement360Card({
+      title: 'Next Best Action',
+      value: nextAction ? '1' : 'Clear',
+      subtitle: nextAction ? `${nextAction.title}: ${nextAction.reason}` : 'No immediate workflow blocker from loaded procurement evidence.',
+      severity: nextAction ? 'Medium' : 'Healthy',
+      evidence: nextAction ? [nextAction.reason] : ['No pending approval, quote, PO, or receiving blocker detected.'],
+      actions: [{ label: nextAction ? nextAction.title : 'Create Request', action: nextAction ? 'continue' : 'create', reason: nextAction?.evidenceReason || '' }, { label: 'Explain', action: 'explain' }],
+    }),
+  ].join('');
+}
+
+function renderBoard() {
+  const board = state.board;
+  const summaryEl = document.getElementById('procBoardSummary');
+  if (!board) {
+    if (summaryEl) summaryEl.textContent = 'Procurement board data is unavailable.';
+    return;
+  }
+
+  const requests = getBoardRequests();
+  const recommendations = getBoardRecommendations();
+  const statusCounts = board.statusCounts && typeof board.statusCounts === 'object' ? board.statusCounts : {};
+  const analytics = board.analytics || {};
+  const priorities = board.priorities || {};
+
+  if (summaryEl) summaryEl.textContent = String(board.summary || 'Procurement board loaded.');
+  renderProcurement360();
+  renderKanbanBoard(requests);
+  renderRequestPriorityBoard(requests);
+  renderVendorBattleCards(requests);
+  applyRequestViewMode();
+
+  const openCount = requests.filter((row) => ['Draft', 'Submitted', 'Under Review'].includes(String(row.status || ''))).length;
+  const pendingApprovals = requests.filter((row) => ['Submitted', 'Under Review'].includes(String(row.status || ''))).length;
+  const orderedCount = requests.filter((row) => ['Ordered', 'Partially Received'].includes(String(row.status || ''))).length;
+  const summaryOpen = document.getElementById('procSummaryOpen');
+  const summaryApprovals = document.getElementById('procSummaryApprovals');
+  const summaryOrdered = document.getElementById('procSummaryOrdered');
+  const summaryRecs = document.getElementById('procSummaryRecommendations');
+  setKpiValue(summaryOpen, openCount);
+  setKpiValue(summaryApprovals, pendingApprovals);
+  setKpiValue(summaryOrdered, orderedCount);
+  setKpiValue(summaryRecs, recommendations.length);
+
+  const badgesEl = document.getElementById('procStatusBadges');
+  if (badgesEl) {
+    badgesEl.innerHTML = PROCUREMENT_STATUSES.map((status) => {
+      const count = Number(statusCounts[status] || 0);
+      return `<span class="badge ${statusBadgeClass(status)}">${escapeHtml(status)}: ${escapeHtml(String(count))}</span>`;
+    }).join('');
+  }
+
+  const quickSummary = document.getElementById('procAnalyticsQuickSummary');
+  if (quickSummary) {
+    quickSummary.textContent = [
+      `Monthly spend: ${formatCurrency(analytics.monthlySpendingEstimate)}`,
+      `Open POs: ${Number(analytics.openPurchaseOrders || 0)}`,
+      `Aging requests: ${Number(analytics.agingApprovedRequests || 0)}`,
+      `EOL-driven: ${Number(analytics.eolDrivenCandidates || 0)}`,
+    ].join(' | ');
+  }
+  renderProcurementAnalyticsBuilder();
+
+  const priorityRows = [];
+  (Array.isArray(priorities.urgentReplacements) ? priorities.urgentReplacements.slice(0, 8) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Urgent Replacements',
+      item: row.assetName || row.assetId || '-',
+      need: `Window: ${row.procurementWindowMonths ?? '-'} month(s)`,
+      reason: row.reason || row.status || '-',
+    });
+  });
+  (Array.isArray(priorities.highRiskAssets) ? priorities.highRiskAssets.slice(0, 8) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'High Risk',
+      item: row.assetName || row.assetId || '-',
+      need: `${String(row.riskLevel || '-').toUpperCase()} (${row.riskScore ?? '-'})`,
+      reason: row.reason || '-',
+    });
+  });
+  (Array.isArray(priorities.lowStockItems) ? priorities.lowStockItems.slice(0, 8) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Low Stock',
+      item: row.itemName || '-',
+      need: `Current ${row.currentQuantity ?? '-'} / Reorder ${row.reorderPoint ?? '-'}`,
+      reason: row.reason || '-',
+    });
+  });
+  (Array.isArray(priorities.auditNeeds) ? priorities.auditNeeds.slice(0, 8) : []).forEach((row) => {
+    priorityRows.push({
+      stream: 'Audit Needs',
+      item: row.assetName || row.assetId || '-',
+      need: String(row.eventType || '-').replace(/_/g, ' '),
+      reason: row.reason || '-',
+    });
+  });
+  const priorityBody = document.getElementById('procPriorityTableBody');
+  if (priorityBody) {
+    priorityBody.innerHTML = priorityRows.map((row) => `
+      <tr>
+        <td><span class="ops-attention-pill ${urgencyClass(row.stream)}">${escapeHtml(row.stream)}</span></td>
+        <td>${escapeHtml(row.item)}</td>
+        <td>${escapeHtml(row.need)}</td>
+        <td>${escapeHtml(row.reason)}</td>
+      </tr>
+    `).join('') || emptyStateRow(4, 'No urgent procurement priorities', 'Inventory currently has no critical low-stock, audit, or EOL procurement alerts.');
+  }
+
+  const recBody = document.getElementById('procRecommendationsTableBody');
+  if (recBody) {
+    recBody.innerHTML = recommendations.map((row, index) => {
+      const priority = String(row.priority || row.urgency || 'medium');
+      const affectedAssets = Array.isArray(row.affectedAssets) ? row.affectedAssets : [];
+      const affectedDepartments = Array.isArray(row.affectedDepartments) ? row.affectedDepartments : [];
+      const affectedBuildings = Array.isArray(row.affectedBuildings) ? row.affectedBuildings : [];
+      const evidenceText = row.evidenceSummary || row.evidence || row.reason || 'Evidence is generated from inventory signals.';
+      return `
+      <tr class="proc-ai-rec-row">
+        <td colspan="7">
+          <div class="proc-ai-rec-card ${urgencyClass(priority)}">
+            <div class="proc-ai-rec-main">
+              <div class="proc-ai-rec-kicker">
+                <span class="ops-attention-pill ${urgencyClass(priority)}">${escapeHtml(priority.toUpperCase())}</span>
+                <span class="ops-attention-pill is-info">Source: ${escapeHtml(sourceLabel(row))}${sourceInfoIcon(row)}</span>
+                ${row.evidenceLevel || row.dataQuality ? `<span class="ops-attention-pill is-review">Evidence: ${escapeHtml(String(row.evidenceLevel || row.dataQuality))}</span>` : ''}
+              </div>
+              <div class="proc-ai-rec-title">${escapeHtml(row.itemName || row.title || 'Procurement recommendation')}</div>
+              <div class="proc-ai-rec-meta">
+                <span>${escapeHtml(row.type || row.category || 'Inventory need')}</span>
+                <span>Qty ${escapeHtml(String(row.recommendedQuantity ?? row.quantity ?? '-'))}</span>
+                ${row.estimatedBudget ? `<span>${escapeHtml(formatCurrency(row.estimatedBudget))}</span>` : ''}
+              </div>
+              <div class="proc-ai-rec-reason">${escapeHtml(row.reason || 'Review this recommendation against inventory evidence.')}</div>
+              <details class="proc-ai-rec-evidence">
+                <summary>View evidence</summary>
+                <div>${escapeHtml(String(evidenceText))}</div>
+                ${affectedAssets.length ? `<div>Affected assets: ${escapeHtml(affectedAssets.slice(0, 6).join(', '))}</div>` : ''}
+                ${affectedDepartments.length ? `<div>Departments: ${escapeHtml(affectedDepartments.slice(0, 6).join(', '))}</div>` : ''}
+                ${affectedBuildings.length ? `<div>Buildings: ${escapeHtml(affectedBuildings.slice(0, 6).join(', '))}</div>` : ''}
+              </details>
+            </div>
+            <div class="proc-ai-rec-actions">
+              <button type="button" class="btn btn-sm btn-primary" data-proc-create-from-rec="${escapeHtml(String(index))}">Create Request</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-view-rec="${escapeHtml(String(index))}">View Evidence</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-review-rec="${escapeHtml(String(index))}">Reviewed</button>
+              <button type="button" class="btn btn-sm btn-outline-danger" data-proc-ignore-rec="${escapeHtml(String(index))}">Ignore</button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
+    }).join('') || emptyStateRow(7, 'No urgent AI recommendations', 'Inventory currently has no critical low-stock or EOL procurement alerts.', '<button type="button" class="btn btn-sm btn-outline-primary" id="procRefreshRecommendationsEmptyBtn">Refresh</button>');
+  }
+
+  const requestsBody = document.getElementById('procRequestsTableBody');
+  if (requestsBody) {
+    requestsBody.innerHTML = requests.map((row) => {
+      const selectedQuote = Array.isArray(row.vendorQuotes) ? row.vendorQuotes.find((quote) => quote.selected) : null;
+      const next = getNextProcurementAction({ requests: [row] });
+      const evidenceReason = next?.evidenceReason || workflowEvidenceReason(row, next || {});
+      return `
+        <tr class="${String(row.requestId || '') === state.recentlyUpdatedRequestId ? 'proc-row-updated' : ''}">
+          <td>
+            <div class="fw-semibold">${escapeHtml(row.requestId || '-')}</div>
+            <div class="small text-muted">${escapeHtml(row.title || '-')}</div>
+          </td>
+          <td>
+            <div>${escapeHtml(String(row.quantity || 1))} x ${escapeHtml(row.itemType || '-')}</div>
+            <div class="small text-muted">${escapeHtml(row.reason || '-')}</div>
+          </td>
+          <td>
+            <div>${escapeHtml(row.requestedBy || '-')}</div>
+            <div class="small text-muted">${escapeHtml(row.linkedDepartment || 'Unassigned')} | ${escapeHtml(row.linkedLocation || '-')}</div>
+            ${selectedQuote ? `<div class="small text-muted">Selected quote: ${escapeHtml(selectedQuote.vendorName || '-')} (${formatCurrency(selectedQuote.totalPrice)})</div>` : ''}
+          </td>
+          <td>
+            <span class="badge ${statusBadgeClass(row.status)}">${escapeHtml(row.status || '-')}</span>
+            ${buildLifecycleStepper(row.status)}
+          </td>
+          <td>${escapeHtml(formatDate(row.updatedAt))}</td>
+          <td class="text-end">
+            <div class="d-flex flex-wrap justify-content-end gap-1">
+              <div class="proc-workflow-next">
+                <button type="button" class="btn btn-sm btn-primary" data-proc-continue-request="${escapeHtml(row.requestId || '')}" data-role-required="procurement">Continue</button>
+                <span class="proc-workflow-evidence-reason">${escapeHtml(evidenceReason)}</span>
+              </div>
+              <button type="button" class="btn btn-sm btn-outline-primary" data-proc-view-request="${escapeHtml(row.requestId || '')}">Details</button>
+              <div class="dropdown">
+                <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">More</button>
+                <div class="dropdown-menu dropdown-menu-end">
+                  <button type="button" class="dropdown-item" data-proc-update-status="${escapeHtml(row.requestId || '')}">Status</button>
+                  <button type="button" class="dropdown-item" data-proc-add-quote="${escapeHtml(row.requestId || '')}">Add Quote</button>
+                  <button type="button" class="dropdown-item" data-proc-create-po="${escapeHtml(row.requestId || '')}">Create PO</button>
+                  <button type="button" class="dropdown-item" data-proc-receive="${escapeHtml(row.requestId || '')}">Receive</button>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('') || emptyStateRow(6, 'No procurement requests yet', 'Create a request from a low-stock, EOL, audit, maintenance, or manual procurement need.', '<button type="button" class="btn btn-sm btn-primary" id="procCreateRequestEmptyBtn">Create Request</button>');
+  }
+
+  const quotes = [];
+  requests.forEach((request) => {
+    (Array.isArray(request.vendorQuotes) ? request.vendorQuotes : []).forEach((quote) => {
+      quotes.push({ request, quote });
+    });
+  });
+  const quotesBody = document.getElementById('procQuotesTableBody');
+  if (quotesBody) {
+    quotesBody.innerHTML = quotes.map(({ request, quote }) => `
+      <tr>
+        <td>
+          <div class="fw-semibold">${escapeHtml(request.requestId || '-')}</div>
+          <div class="small text-muted">${escapeHtml(request.title || '-')}</div>
+        </td>
+        <td>${escapeHtml(quote.vendorName || '-')}</td>
+        <td>${escapeHtml(quote.quotedItem || '-')}</td>
+        <td>${escapeHtml(formatCurrency(quote.totalPrice))}</td>
+        <td>${escapeHtml(String(quote.warrantyMonths ?? '-'))}</td>
+        <td>${escapeHtml(String(quote.deliveryDays ?? '-'))}</td>
+        <td>
+          <span class="badge ${statusBadgeClass(quote.status || (quote.selected ? 'selected' : 'pending'))}">${escapeHtml(String(quote.status || (quote.selected ? 'selected' : 'pending')).replace(/_/g, ' '))}</span>
+          ${quote.selected ? '<span class="badge bg-success-subtle text-success-emphasis border ms-1">Best Value</span>' : ''}
+        </td>
+        <td class="text-end">
+          <div class="d-flex justify-content-end gap-1">
+            <button type="button" class="btn btn-sm btn-outline-success" data-proc-quote-select="${escapeHtml(request.requestId || '')}" data-proc-quote-id="${escapeHtml(quote.quoteId || '')}">Select</button>
+            <button type="button" class="btn btn-sm btn-outline-danger" data-proc-quote-reject="${escapeHtml(request.requestId || '')}" data-proc-quote-id="${escapeHtml(quote.quoteId || '')}">Reject</button>
+          </div>
+        </td>
+      </tr>
+    `).join('') || emptyStateRow(8, 'No vendor quotes yet', 'Add quotes to approved or submitted requests so price, warranty, delivery, and reliability can be compared.');
+  }
+
+  const poRows = [];
+  requests.forEach((request) => {
+    const purchaseOrders = Array.isArray(request.purchaseOrders)
+      ? request.purchaseOrders
+      : (request.purchaseOrder ? [request.purchaseOrder] : []);
+    purchaseOrders.forEach((po) => poRows.push({ request, po }));
+  });
+  const poBody = document.getElementById('procPurchaseOrdersTableBody');
+  if (poBody) {
+    poBody.innerHTML = poRows.map(({ request, po }) => `
+      <tr>
+        <td>${escapeHtml(po.poNumber || '-')}</td>
+        <td>${escapeHtml(request.requestId || '-')}</td>
+        <td>${escapeHtml(po.vendorName || '-')}</td>
+        <td><span class="badge ${statusBadgeClass(po.status || '-')}">${escapeHtml(String(po.status || '-').replace(/_/g, ' '))}</span></td>
+        <td>${escapeHtml(formatDate(po.expectedDelivery))}</td>
+        <td>${escapeHtml(formatDate(po.updatedAt || po.createdAt))}</td>
+        <td class="text-end">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-proc-export-po="${escapeHtml(request.requestId || '')}" data-proc-po-number="${escapeHtml(po.poNumber || '')}">
+            <i class="bi bi-file-earmark-pdf me-1"></i>Export
+          </button>
+        </td>
+      </tr>
+    `).join('') || emptyStateRow(7, 'No purchase orders yet', 'Create a PO from an approved request after vendor quote review.');
+  }
+
+  const receivingRows = [];
+  requests.forEach((request) => {
+    const records = Array.isArray(request.receivingRecords)
+      ? request.receivingRecords
+      : (Array.isArray(request.receipts) ? request.receipts : []);
+    records.forEach((record) => receivingRows.push({ request, record }));
+  });
+  const receivingBody = document.getElementById('procReceivingTableBody');
+  if (receivingBody) {
+    receivingBody.innerHTML = receivingRows.map(({ request, record }) => {
+      const impact = record.applyTarget === 'spare_stock'
+        ? `Spare stock updated (${record.spareStockItemId || 'n/a'})`
+        : 'Recorded only';
+      return `
+        <tr>
+          <td>${escapeHtml(request.requestId || '-')}</td>
+          <td>${escapeHtml(record.receivedBy || '-')}</td>
+          <td>${escapeHtml(formatDateTime(record.receivedAt))}</td>
+          <td>${escapeHtml(String(record.receivedQuantity || 0))}</td>
+          <td>${escapeHtml(String(record.condition || 'good').replace(/_/g, ' '))}</td>
+          <td>${escapeHtml(impact)}</td>
+        </tr>
+      `;
+    }).join('') || emptyStateRow(6, 'No receiving records yet', 'Receiving history appears after a request or purchase order is reviewed and confirmed.');
+  }
+
+  const spend = document.getElementById('procAnalyticsSpend');
+  const openPo = document.getElementById('procAnalyticsOpenPo');
+  const aging = document.getElementById('procAnalyticsAging');
+  const topItems = document.getElementById('procTopItemsList');
+  if (spend) spend.textContent = formatCurrency(analytics.monthlySpendingEstimate);
+  if (openPo) openPo.textContent = String(Number(analytics.openPurchaseOrders || 0));
+  if (aging) aging.textContent = String(Number(analytics.agingApprovedRequests || 0));
+  if (topItems) {
+    const rows = Array.isArray(analytics.topRequestedItems) ? analytics.topRequestedItems : [];
+    topItems.innerHTML = rows.length
+      ? rows.map((row) => `<span class="badge text-bg-light me-1 mb-1">${escapeHtml(row.item || '-')}: ${escapeHtml(String(row.count || 0))}</span>`).join('')
+      : 'No analytics data yet.';
+  }
+}
+
+function renderAbcPanel() {
+  const summaryEl = document.getElementById('procAbcSummary');
+  const tbody = document.getElementById('procAbcTableBody');
+  const filterEl = document.getElementById('procAbcClassFilter');
+  const payload = state.abcAnalysis;
+  if (!summaryEl || !tbody) return;
+  if (!payload) {
+    summaryEl.textContent = 'ABC analysis unavailable.';
+    tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No data.</td></tr>';
+    return;
+  }
+  const filter = String(filterEl?.value || 'ALL').toUpperCase();
+  const rows = (Array.isArray(payload.rows) ? payload.rows : [])
+    .filter((row) => (['A', 'B', 'C'].includes(filter) ? String(row.abcClass || '').toUpperCase() === filter : true));
+  const allRows = Array.isArray(payload.rows) ? payload.rows : [];
+  const classCounts = ['A', 'B', 'C'].reduce((acc, klass) => {
+    acc[klass] = allRows.filter((row) => String(row.abcClass || '').toUpperCase() === klass).length;
+    return acc;
+  }, {});
+  summaryEl.innerHTML = `
+    <div class="proc-decision-card-grid">
+      <div class="proc-decision-card is-urgent">
+        <div class="proc-decision-label">Class A</div>
+        <div class="proc-decision-value">${escapeHtml(String(classCounts.A || 0))}</div>
+        <div class="proc-decision-copy">Strict control, high value or high service impact.</div>
+      </div>
+      <div class="proc-decision-card is-review">
+        <div class="proc-decision-label">Class B</div>
+        <div class="proc-decision-value">${escapeHtml(String(classCounts.B || 0))}</div>
+        <div class="proc-decision-copy">Moderate control with periodic review.</div>
+      </div>
+      <div class="proc-decision-card is-healthy">
+        <div class="proc-decision-label">Class C</div>
+        <div class="proc-decision-value">${escapeHtml(String(classCounts.C || 0))}</div>
+        <div class="proc-decision-copy">Simple control, bulk reorder where appropriate.</div>
+      </div>
+    </div>
+    <div class="small text-muted mt-2">${escapeHtml(payload.summary || 'ABC analysis loaded.')} Showing ${escapeHtml(String(rows.length))} row(s).</div>
+  `;
+  tbody.innerHTML = rows.slice(0, 240).map((row) => `
+    <tr>
+      <td><div class="fw-semibold">${escapeHtml(row.itemName || '-')}</div><div class="small text-muted">${escapeHtml(row.itemId || '-')}</div></td>
+      <td>${escapeHtml(row.category || '-')}</td>
+      <td><span class="badge ${row.abcClass === 'A' ? 'bg-danger' : (row.abcClass === 'B' ? 'bg-warning text-dark' : 'bg-secondary')}">${escapeHtml(row.abcClass || '-')}</span></td>
+      <td>${escapeHtml(String(row.score ?? '-'))}</td>
+      <td class="small">${escapeHtml(row.reason || '-')}</td>
+      <td class="small">${escapeHtml(row.recommendedControlLevel || '-')}</td>
+    </tr>
+  `).join('') || emptyStateRow(6, 'No ABC rows for this class', 'Add cost, risk, maintenance, usage, or shortage evidence to improve ABC classification.');
+}
+
+function renderEoqPanel() {
+  const summaryEl = document.getElementById('procEoqSummary');
+  const tbody = document.getElementById('procEoqTableBody');
+  const payload = state.eoqMoq;
+  if (!summaryEl || !tbody) return;
+  if (!payload) {
+    summaryEl.textContent = 'EOQ/MOQ insights unavailable.';
+    tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No data.</td></tr>';
+    return;
+  }
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const calculable = rows.filter((row) => row.eoq !== null && typeof row.eoq !== 'undefined').length;
+  const missing = Math.max(0, rows.length - calculable);
+  const overstockWarnings = rows.filter((row) => String(row.warning || '').toLowerCase().includes('overstock')).length;
+  summaryEl.innerHTML = `
+    <div class="proc-decision-card-grid">
+      <div class="proc-decision-card is-info">
+        <div class="proc-decision-label">Calculable EOQ</div>
+        <div class="proc-decision-value">${escapeHtml(String(calculable))}</div>
+        <div class="proc-decision-copy">Items with enough demand and cost evidence.</div>
+      </div>
+      <div class="proc-decision-card is-review">
+        <div class="proc-decision-label">Missing data</div>
+        <div class="proc-decision-value">${escapeHtml(String(missing))}</div>
+        <div class="proc-decision-copy">Annual demand, ordering cost, or holding cost needed.</div>
+      </div>
+      <div class="proc-decision-card ${overstockWarnings ? 'is-urgent' : 'is-healthy'}">
+        <div class="proc-decision-label">MOQ risk</div>
+        <div class="proc-decision-value">${escapeHtml(String(overstockWarnings))}</div>
+        <div class="proc-decision-copy">Rows warning about overstock or ordering mismatch.</div>
+      </div>
+    </div>
+    <div class="small text-muted mt-2">${escapeHtml(payload.summary || `Loaded ${rows.length} EOQ/MOQ row(s).`)}</div>
+  `;
+  tbody.innerHTML = rows.slice(0, 240).map((row) => `
+    <tr>
+      <td><div class="fw-semibold">${escapeHtml(row.itemName || '-')}</div><div class="small text-muted">${escapeHtml(row.componentType || '-')}</div></td>
+      <td class="small">${escapeHtml(String(row.annualDemand ?? '-'))} / ${escapeHtml(String(row.orderingCost ?? '-'))} / ${escapeHtml(String(row.holdingCost ?? '-'))}</td>
+      <td>${escapeHtml(row.eoq === null ? '-' : String(row.eoq))}</td>
+      <td>${escapeHtml(row.moq === null ? '-' : String(row.moq))}</td>
+      <td>${escapeHtml(row.recommendedOrderQuantity === null ? '-' : String(row.recommendedOrderQuantity))}</td>
+      <td><span class="badge ${row.dataQuality === 'high' ? 'bg-success' : (row.dataQuality === 'medium' ? 'bg-warning text-dark' : 'bg-secondary')}">${escapeHtml(String(row.dataQuality || '-'))}</span></td>
+      <td class="small">${escapeHtml(row.warning || '-')}</td>
+    </tr>
+  `).join('') || emptyStateRow(7, 'No EOQ/MOQ rows yet', 'Add annual demand, ordering cost, holding cost, MOQ, pack size, and lead time to calculate order guidance.');
+}
+
+function renderFifoPanel() {
+  const summaryEl = document.getElementById('procFifoSummary');
+  const cardsEl = document.getElementById('procFifoQueueCards');
+  const tbody = document.getElementById('procFifoTableBody');
+  const payload = state.fifo;
+  if (!summaryEl || !tbody) return;
+  if (!payload) {
+    summaryEl.textContent = 'FIFO data unavailable.';
+    if (cardsEl) cardsEl.innerHTML = '';
+    tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No data.</td></tr>';
+    return;
+  }
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const oldest = rows
+    .filter((row) => row?.receivedAt)
+    .slice()
+    .sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime())[0];
+  summaryEl.innerHTML = `
+    <div class="proc-decision-card-grid">
+      <div class="proc-decision-card is-info">
+        <div class="proc-decision-label">FIFO batches</div>
+        <div class="proc-decision-value">${escapeHtml(String(rows.length))}</div>
+        <div class="proc-decision-copy">Oldest available batch should be issued first.</div>
+      </div>
+      <div class="proc-decision-card is-healthy">
+        <div class="proc-decision-label">Use first</div>
+        <div class="proc-decision-value">${escapeHtml(oldest?.batchCode || oldest?.itemName || '-')}</div>
+        <div class="proc-decision-copy">${escapeHtml(oldest?.receivedAt ? `Received ${formatDate(oldest.receivedAt)}` : 'Receive stock to create FIFO batches.')}</div>
+      </div>
+      <div class="proc-decision-card is-review">
+        <div class="proc-decision-label">Override rule</div>
+        <div class="proc-decision-value">Reason</div>
+        <div class="proc-decision-copy">Use a newer batch only with a recorded reason.</div>
+      </div>
+    </div>
+  `;
+  if (cardsEl) {
+    const sorted = rows
+      .filter((row) => Number(row?.quantityAvailable ?? 0) > 0)
+      .slice()
+      .sort((a, b) => new Date(a.receivedAt || 0).getTime() - new Date(b.receivedAt || 0).getTime())
+      .slice(0, 6);
+    cardsEl.innerHTML = sorted.length ? sorted.map((row, index) => {
+      const ageDays = row?.receivedAt ? Math.max(0, Math.floor((Date.now() - new Date(row.receivedAt).getTime()) / (1000 * 60 * 60 * 24))) : null;
+      return `
+        <article class="proc-fifo-queue-card ${index === 0 ? 'is-use-first' : ''}">
+          <div class="proc-fifo-queue-head">
+            <span class="ops-attention-pill ${index === 0 ? 'is-healthy' : 'is-info'}">${index === 0 ? 'Use First' : `Batch ${index + 1}`}</span>
+            <strong>${escapeHtml(row.batchCode || row.id || 'FIFO batch')}</strong>
+          </div>
+          <div class="proc-fifo-queue-item">${escapeHtml(row.itemName || '-')}</div>
+          <div class="proc-fifo-queue-meta">
+            <span>Received ${escapeHtml(formatDate(row.receivedAt))}</span>
+            <span>Age ${escapeHtml(ageDays === null ? '-' : `${ageDays}d`)}</span>
+            <span>${escapeHtml(String(row.quantityAvailable ?? '-'))} available</span>
+            <span>Source ${escapeHtml(row.sourcePurchaseOrderId || row.sourceRequestId || '-')}</span>
+          </div>
+          <div class="proc-fifo-queue-note">${index === 0 ? 'Oldest available stock should be issued first unless an override reason is recorded.' : 'Use after older available batches are consumed.'}</div>
+        </article>
+      `;
+    }).join('') : `
+      <div class="ops-empty-state-card">
+        <div>
+          <div class="ops-empty-state-title">No FIFO batches yet</div>
+          <div class="ops-empty-state-copy">Receive spare stock or consumables to create FIFO batches, then OpsMind will suggest oldest stock first.</div>
+        </div>
+      </div>
+    `;
+  }
+  tbody.innerHTML = rows.slice(0, 240).map((row) => {
+    const ageDays = row?.receivedAt ? Math.max(0, Math.floor((Date.now() - new Date(row.receivedAt).getTime()) / (1000 * 60 * 60 * 24))) : null;
+    return `
+      <tr>
+        <td><div class="fw-semibold">${escapeHtml(row.batchCode || row.id || '-')}</div><div class="small text-muted">${escapeHtml(row.id || '-')}</div></td>
+        <td>${escapeHtml(row.itemName || '-')}${oldest && (row.id === oldest.id || row.batchCode === oldest.batchCode) ? ' <span class="badge bg-success-subtle text-success-emphasis border ms-1">Use First</span>' : ''}</td>
+        <td>${escapeHtml(formatDate(row.receivedAt))}</td>
+        <td>${escapeHtml(ageDays === null ? '-' : `${ageDays}d`)}</td>
+        <td>${escapeHtml(String(row.quantityAvailable ?? '-'))}</td>
+        <td class="small">${escapeHtml(row.sourcePurchaseOrderId || row.sourceRequestId || '-')}</td>
+      </tr>
+    `;
+  }).join('') || emptyStateRow(6, 'No FIFO batches yet', 'Receive spare stock or consumables to create FIFO batches and issue oldest stock first.');
+}
+
+function renderBudgetThermometer(totals = {}) {
+  const el = document.getElementById('procBudgetThermometer');
+  if (!el) return;
+  const allocated = Number(totals.allocated || 0);
+  const reserved = Number(totals.reserved || 0);
+  const committed = Number(totals.committed || 0);
+  const spent = Number(totals.spent || 0);
+  const available = Number(totals.available || 0);
+  const used = reserved + committed + spent;
+  const hasAllocation = Number.isFinite(allocated) && allocated > 0;
+  const percent = hasAllocation ? Math.round((used / allocated) * 100) : null;
+  const filled = percent === null ? 0 : Math.max(0, Math.min(10, Math.ceil(percent / 10)));
+  const level = percent === null ? 'is-info' : (percent >= 100 || available < 0 ? 'is-urgent' : (percent >= 75 ? 'is-review' : 'is-healthy'));
+  el.innerHTML = `
+    <div class="proc-budget-thermometer ${level}">
+      <div class="proc-budget-thermo-copy">
+        <div class="proc-budget-thermo-kicker">Budget pressure</div>
+        <h6>${percent === null ? 'Budget allocation missing' : `${escapeHtml(String(percent))}% allocated budget used`}</h6>
+        <p>${percent === null ? 'Add budget allocations to preview finance impact before approvals and purchase orders.' : 'Reserved, committed, and spent values are combined for pressure visibility.'}</p>
+      </div>
+      <div class="proc-budget-thermo-meter" aria-label="Budget pressure ${escapeHtml(percent === null ? 'unknown' : `${percent}%`)}">
+        ${Array.from({ length: 10 }).map((_, index) => `<span class="${index < filled ? 'is-filled' : ''}"></span>`).join('')}
+      </div>
+      <div class="proc-budget-thermo-values">
+        <span>Allocated ${escapeHtml(formatCurrency(allocated))}</span>
+        <span>Reserved ${escapeHtml(formatCurrency(reserved))}</span>
+        <span>Committed ${escapeHtml(formatCurrency(committed))}</span>
+        <span>Spent ${escapeHtml(formatCurrency(spent))}</span>
+        <span>Available ${escapeHtml(formatCurrency(available))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderFinancePanel() {
+  const summaryEl = document.getElementById('procFinanceSummary');
+  const totalsEl = document.getElementById('procFinanceTotals');
+  const tbody = document.getElementById('procFinanceTableBody');
+  const payload = state.finance;
+  if (!summaryEl || !totalsEl || !tbody) return;
+  if (!payload) {
+    summaryEl.textContent = 'Finance summary unavailable.';
+    totalsEl.textContent = '';
+    renderBudgetThermometer({});
+    tbody.innerHTML = '<tr><td colspan="7" class="text-muted">No finance data.</td></tr>';
+    return;
+  }
+  const totals = payload.totals || {};
+  summaryEl.textContent = payload.summary || 'Finance summary loaded.';
+  renderBudgetThermometer(totals);
+  totalsEl.innerHTML = `
+    <span class="badge text-bg-light me-1 mb-1">Allocated: ${escapeHtml(formatCurrency(totals.allocated))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Reserved: ${escapeHtml(formatCurrency(totals.reserved))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Committed: ${escapeHtml(formatCurrency(totals.committed))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Spent: ${escapeHtml(formatCurrency(totals.spent))}</span>
+    <span class="badge text-bg-light me-1 mb-1">Available: ${escapeHtml(formatCurrency(totals.available))}</span>
+  `;
+  const rows = Array.isArray(payload.allocations) ? payload.allocations : [];
+  const byDepartment = new Map();
+  rows.forEach((row) => {
+    const department = String(row.department || 'Unassigned').trim() || 'Unassigned';
+    if (!byDepartment.has(department)) {
+      byDepartment.set(department, { department, allocated: 0, committed: 0, spent: 0, reserved: 0, available: 0 });
+    }
+    const entry = byDepartment.get(department);
+    entry.allocated += Number(row.allocatedAmount || 0);
+    entry.committed += Number(row.committedAmount || 0);
+    entry.spent += Number(row.spentAmount || 0);
+    entry.reserved += Number(row.reservedAmount || 0);
+    entry.available += Number(row.availableAmount || 0);
+  });
+  const departmentCards = Array.from(byDepartment.values())
+    .sort((a, b) => (b.committed + b.spent + b.reserved) - (a.committed + a.spent + a.reserved))
+    .slice(0, 8);
+  tbody.innerHTML = rows.slice(0, 200).map((row) => `
+    <tr>
+      <td><div class="fw-semibold">${escapeHtml(row.costCenter || '-')}</div><div class="small text-muted">${escapeHtml(row.period || '-')}</div></td>
+      <td>${escapeHtml(`${row.department || 'Unassigned'} / ${row.building || '-'}`)}</td>
+      <td>${escapeHtml(formatCurrency(row.allocatedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.reservedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.committedAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.spentAmount))}</td>
+      <td>${escapeHtml(formatCurrency(row.availableAmount))}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="text-muted">No budget allocations yet.</td></tr>';
+  if (departmentCards.length) {
+    totalsEl.innerHTML += `
+      <div class="proc-dept-budget-grid">
+        ${departmentCards.map((row) => {
+          const used = row.reserved + row.committed + row.spent;
+          const percent = row.allocated > 0 ? Math.round((used / row.allocated) * 100) : null;
+          const severity = percent === null ? 'is-info' : (percent >= 100 ? 'is-urgent' : (percent >= 80 ? 'is-review' : 'is-healthy'));
+          const bucket = percent === null ? 0 : Math.max(0, Math.min(100, Math.ceil(percent / 10) * 10));
+          return `
+            <article class="proc-dept-budget-card ${severity}">
+              <div class="proc-dept-budget-head">
+                <strong>${escapeHtml(row.department)}</strong>
+                <span class="ops-attention-pill ${severity}">${escapeHtml(percent === null ? 'Budget missing' : `${percent}% used`)}</span>
+              </div>
+              <div class="proc-dept-budget-bar"><span class="progress-${escapeHtml(String(bucket))}"></span></div>
+              <div class="proc-dept-budget-values">
+                <span>Allocated ${escapeHtml(row.allocated ? formatCurrency(row.allocated) : 'Budget data missing')}</span>
+                <span>Committed ${escapeHtml(formatCurrency(row.committed))}</span>
+                <span>Spent ${escapeHtml(formatCurrency(row.spent))}</span>
+                <span>Remaining ${escapeHtml(formatCurrency(row.available))}</span>
+              </div>
+            </article>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+}
+
+function renderSuppliersPanel() {
+  const summaryEl = document.getElementById('procSuppliersSummary');
+  const suppliersBody = document.getElementById('procSuppliersTableBody');
+  const catalogBody = document.getElementById('procCatalogTableBody');
+  const suppliers = Array.isArray(state.suppliers?.suppliers) ? state.suppliers.suppliers : [];
+  const catalog = Array.isArray(state.supplierCatalog?.items) ? state.supplierCatalog.items : [];
+  if (!summaryEl || !suppliersBody || !catalogBody) return;
+  summaryEl.textContent = `Loaded ${suppliers.length} supplier(s) and ${catalog.length} catalog item(s).`;
+  suppliersBody.innerHTML = suppliers.slice(0, 180).map((row) => `
+    <tr>
+      <td><div class="fw-semibold">${escapeHtml(row.name || '-')}</div><div class="small text-muted">${escapeHtml(row.id || '-')}</div></td>
+      <td>${escapeHtml(row.reliabilityScore === null || typeof row.reliabilityScore === 'undefined' ? '-' : String(row.reliabilityScore))}</td>
+      <td>${escapeHtml(row.leadTimeAverageDays === null || typeof row.leadTimeAverageDays === 'undefined' ? '-' : `${row.leadTimeAverageDays}d`)}</td>
+      <td><span class="badge ${row.active ? 'bg-success' : 'bg-secondary'}">${row.active ? 'Active' : 'Inactive'}</span></td>
+      <td class="small">${escapeHtml(row.contactName || row.email || row.phone || '-')}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="text-muted">No suppliers yet.</td></tr>';
+  catalogBody.innerHTML = catalog.slice(0, 220).map((row) => `
+    <tr>
+      <td><div class="fw-semibold">${escapeHtml(row.itemName || '-')}</div><div class="small text-muted">${escapeHtml(row.category || '-')}</div></td>
+      <td>${escapeHtml(row.vendor?.name || row.vendorName || '-')}</td>
+      <td>${escapeHtml(row.unitPrice === null || typeof row.unitPrice === 'undefined' ? '-' : formatCurrency(row.unitPrice))}</td>
+      <td>${escapeHtml(`${row.minimumOrderQuantity || '-'} / ${row.packSize || '-'}`)}</td>
+      <td>${escapeHtml(`${row.leadTimeDays || '-'}d / ${row.warrantyMonths || '-'}m`)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="text-muted">No supplier catalog items yet.</td></tr>';
+}
+
+async function loadBoard(options = {}) {
+  const background = Boolean(options.background);
+  const statusFilterEl = document.getElementById('procStatusFilter');
+  state.statusFilter = String(statusFilterEl?.value || 'all').trim() || 'all';
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  setLoadingState(true, background ? 'Refreshing...' : 'Loading procurement board...');
+  if (!background) setProcurementSkeletonState();
+  try {
+    state.board = await readJson(`/inventory/procurement/board?status=${encodeURIComponent(state.statusFilter)}`);
+    state.loadedAt = Date.now();
+    renderBoard();
+    await loadErpFoundationPanels();
+    setLoadingState(false);
+  } catch (error) {
+    console.error(error);
+    setLoadError(background ? 'Refresh failed' : (error.message || 'Failed to load board'));
+    if (!background) notify(error.message || 'Failed to load procurement board.', 'error');
+  } finally {
+    state.loading = false;
+    if (background) requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
+  }
+}
+
+async function loadErpFoundationPanels() {
+  const abcClassFilter = String(document.getElementById('procAbcClassFilter')?.value || 'ALL').toUpperCase();
+  const abcPath = abcClassFilter === 'ALL'
+    ? '/inventory/procurement/abc-analysis'
+    : `/inventory/procurement/abc-analysis?class=${encodeURIComponent(abcClassFilter)}`;
+
+  const [abcRes, eoqRes, fifoRes, financeRes, suppliersRes, catalogRes] = await Promise.allSettled([
+    readJson(abcPath),
+    readJson('/inventory/procurement/eoq-moq'),
+    readJson('/inventory/procurement/fifo/batches?itemKind=spare_stock'),
+    readJson('/inventory/procurement/finance/summary'),
+    readJson('/inventory/procurement/suppliers'),
+    readJson('/inventory/procurement/suppliers/catalog'),
+  ]);
+
+  state.abcAnalysis = abcRes.status === 'fulfilled' ? abcRes.value : null;
+  state.eoqMoq = eoqRes.status === 'fulfilled' ? eoqRes.value : null;
+  state.fifo = fifoRes.status === 'fulfilled' ? fifoRes.value : null;
+  state.finance = financeRes.status === 'fulfilled' ? financeRes.value : null;
+  state.suppliers = suppliersRes.status === 'fulfilled' ? suppliersRes.value : null;
+  state.supplierCatalog = catalogRes.status === 'fulfilled' ? catalogRes.value : null;
+
+  renderAbcPanel();
+  renderEoqPanel();
+  renderFifoPanel();
+  renderFinancePanel();
+  renderSuppliersPanel();
+  renderProcurement360();
+}
+
+async function createManualRequest() {
+  const costCenterOptions = Array.isArray(state.finance?.costCenters)
+    ? state.finance.costCenters.map((row) => ({ value: row.id, label: `${row.code} - ${row.name}` }))
+    : [];
+  const allocationOptions = Array.isArray(state.finance?.allocations)
+    ? state.finance.allocations.map((row) => ({ value: row.id, label: `${row.costCenter} / ${row.period}` }))
+    : [];
+  const form = await showFormModal({
+    title: 'Create Procurement Request',
+    message: 'Create a request linked to stock, EOL, audit, maintenance, or replacement need.',
+    confirmText: 'Create Request',
+    confirmClass: 'btn-primary',
+    fields: [
+      { name: 'title', label: 'Title', type: 'text', required: true },
+      { name: 'itemCategory', label: 'Request Type', type: 'select', required: true, options: ['replacement', 'spare_stock', 'consumable', 'license', 'new_asset', 'maintenance_related', 'audit_related', 'other'], value: 'replacement' },
+      { name: 'itemType', label: 'Item / Type', type: 'text', required: true },
+      { name: 'quantity', label: 'Quantity', type: 'number', min: 1, value: 1, required: true },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high', 'critical'], value: 'medium', required: true },
+      { name: 'reason', label: 'Reason', type: 'textarea', rows: 3, required: true },
+      { name: 'linkedDepartment', label: 'Department', type: 'select', options: STANDARD_MIU_DEPARTMENTS, value: 'Unassigned' },
+      { name: 'linkedLocation', label: 'Building/Location', type: 'select', options: KNOWN_LOCATIONS, required: false },
+      { name: 'room', label: 'Room', type: 'text', placeholder: 'Rooms will be configured later' },
+      { name: 'linkedAssetIds', label: 'Linked Asset Tags/IDs (comma separated)', type: 'text', required: false },
+      { name: 'requestedBy', label: 'Requested By', type: 'text', value: 'Inventory Team', required: true },
+      { name: 'requiredDate', label: 'Needed By Date', type: 'date' },
+      { name: 'estimatedBudget', label: 'Estimated Budget', type: 'number', min: 0, step: 0.01 },
+      { name: 'costCenterId', label: 'Cost Center (optional)', type: 'select', options: costCenterOptions, placeholder: 'Select cost center...' },
+      { name: 'budgetAllocationId', label: 'Budget Allocation (optional)', type: 'select', options: allocationOptions, placeholder: 'Select budget allocation...' },
+      { name: 'financeStatus', label: 'Finance Status', type: 'select', options: ['not_submitted', 'pending_budget_review', 'budget_approved', 'budget_rejected', 'invoiced', 'payment_pending', 'paid', 'cancelled'], value: 'not_submitted' },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  const linkedAssetIds = String(form.values.linkedAssetIds || '')
+    .split(',')
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  try {
+    const created = await sendJson('/inventory/procurement/requests', {
+      title: form.values.title,
+      itemCategory: form.values.itemCategory,
+      itemType: form.values.itemType,
+      quantity: Number(form.values.quantity || 1),
+      priority: form.values.priority,
+      reason: form.values.reason,
+      linkedAssetIds,
+      linkedDepartment: form.values.linkedDepartment || null,
+      linkedLocation: form.values.linkedLocation || null,
+      room: form.values.room || null,
+      requestedBy: form.values.requestedBy || 'Inventory Team',
+      requiredDate: form.values.requiredDate || null,
+      estimatedBudget: form.values.estimatedBudget,
+      costCenterId: form.values.costCenterId || null,
+      budgetAllocationId: form.values.budgetAllocationId || null,
+      financeStatus: form.values.financeStatus || 'not_submitted',
+      notes: form.values.notes || '',
+      source: 'manual_request',
+    });
+    markProcurementUpdated(created?.requestId || created?.request?.requestId || '');
+    notify('Procurement request created.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to create request.', 'error');
+  }
+}
+
+async function createCostCenter() {
+  const form = await showFormModal({
+    title: 'Create Cost Center',
+    confirmText: 'Create',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'code', label: 'Code', type: 'text', required: true, placeholder: 'IT-CS-LABS' },
+      { name: 'name', label: 'Name', type: 'text', required: true, placeholder: 'Computer Science Labs' },
+      { name: 'department', label: 'Department', type: 'select', options: STANDARD_MIU_DEPARTMENTS, value: 'Computer Science' },
+      { name: 'owner', label: 'Owner', type: 'text', placeholder: 'Department Admin' },
+      { name: 'annualBudget', label: 'Annual Budget', type: 'number', min: 0, step: 0.01 },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await sendJson('/inventory/procurement/finance/cost-centers', form.values);
+    notify('Cost center created.', 'success');
+    await loadErpFoundationPanels();
+  } catch (error) {
+    notify(error.message || 'Failed to create cost center.', 'error');
+  }
+}
+
+async function createSupplier() {
+  const form = await showFormModal({
+    title: 'Create Supplier',
+    confirmText: 'Create Supplier',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'name', label: 'Supplier Name', type: 'text', required: true },
+      { name: 'contactName', label: 'Contact Name', type: 'text' },
+      { name: 'email', label: 'Email', type: 'email' },
+      { name: 'phone', label: 'Phone', type: 'text' },
+      { name: 'leadTimeAverageDays', label: 'Avg Lead Time (days)', type: 'number', min: 0 },
+      { name: 'reliabilityScore', label: 'Reliability Score (0-10)', type: 'number', min: 0, max: 10, step: 0.1 },
+      { name: 'warrantyQualityScore', label: 'Warranty Quality (0-10)', type: 'number', min: 0, max: 10, step: 0.1 },
+      { name: 'categoriesSupplied', label: 'Categories Supplied (comma separated)', type: 'text', placeholder: 'spare_stock,consumable,license' },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    const payload = {
+      ...form.values,
+      categoriesSupplied: String(form.values.categoriesSupplied || '')
+        .split(',')
+        .map((row) => String(row || '').trim())
+        .filter(Boolean),
+    };
+    await sendJson('/inventory/procurement/suppliers', payload);
+    notify('Supplier created.', 'success');
+    await loadErpFoundationPanels();
+  } catch (error) {
+    notify(error.message || 'Failed to create supplier.', 'error');
+  }
+}
+
+async function createSupplierCatalogItem() {
+  const suppliers = Array.isArray(state.suppliers?.suppliers) ? state.suppliers.suppliers : [];
+  if (!suppliers.length) {
+    notify('Create a supplier first.', 'warning');
+    return;
+  }
+  const form = await showFormModal({
+    title: 'Create Supplier Catalog Item',
+    confirmText: 'Create Item',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'vendorId', label: 'Supplier', type: 'select', required: true, options: suppliers.map((row) => ({ value: row.id, label: row.name })) },
+      { name: 'itemName', label: 'Item Name', type: 'text', required: true },
+      { name: 'category', label: 'Category', type: 'select', options: ['spare_stock', 'consumable', 'license', 'replacement', 'other'], value: 'spare_stock' },
+      { name: 'assetType', label: 'Asset/Component Type', type: 'text' },
+      { name: 'unitPrice', label: 'Unit Price', type: 'number', min: 0, step: 0.01 },
+      { name: 'minimumOrderQuantity', label: 'MOQ', type: 'number', min: 1 },
+      { name: 'packSize', label: 'Pack Size', type: 'number', min: 1 },
+      { name: 'leadTimeDays', label: 'Lead Time (days)', type: 'number', min: 0 },
+      { name: 'warrantyMonths', label: 'Warranty (months)', type: 'number', min: 0 },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  try {
+    await sendJson('/inventory/procurement/suppliers/catalog', form.values);
+    notify('Supplier catalog item created.', 'success');
+    await loadErpFoundationPanels();
+  } catch (error) {
+    notify(error.message || 'Failed to create supplier catalog item.', 'error');
+  }
+}
+
+async function createRequestFromRecommendation(index) {
+  const recs = getBoardRecommendations();
+  const row = recs[index];
+  if (!row) {
+    notify('Recommendation not found.', 'warning');
+    return;
+  }
+
+  const form = await showFormModal({
+    title: 'Create Request From AI Recommendation',
+    message: 'Review details before creating the request.',
+    confirmText: 'Create Request',
+    confirmClass: 'btn-primary',
+    fields: [
+      { name: 'title', label: 'Title', type: 'text', required: true, value: `Procure ${row.itemName || 'item'}` },
+      { name: 'itemCategory', label: 'Request Type', type: 'select', required: true, options: ['replacement', 'spare_stock', 'consumable', 'license', 'new_asset', 'maintenance_related', 'audit_related', 'other'], value: row.type || row.category || 'spare_stock' },
+      { name: 'itemType', label: 'Item / Type', type: 'text', required: true, value: row.itemName || row.type || '' },
+      { name: 'quantity', label: 'Quantity', type: 'number', min: 1, required: true, value: row.recommendedQuantity || 1 },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high', 'critical'], value: String(row.priority || 'medium').toLowerCase(), required: true },
+      { name: 'reason', label: 'Reason', type: 'textarea', rows: 3, required: true, value: row.reason || '' },
+      { name: 'requestedBy', label: 'Requested By', type: 'text', value: 'Inventory AI Copilot', required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, value: 'Generated from AI procurement recommendation. Review before approval.', required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  try {
+    const created = await sendJson('/inventory/procurement/requests', {
+      title: form.values.title,
+      itemCategory: form.values.itemCategory,
+      itemType: form.values.itemType,
+      quantity: Number(form.values.quantity || 1),
+      priority: form.values.priority,
+      reason: form.values.reason,
+      requestedBy: form.values.requestedBy || 'Inventory AI Copilot',
+      notes: form.values.notes || '',
+      source: 'ai_recommendation',
+      aiRecommendationId: row.recommendationKey || null,
+      metadata: {
+        recommendationKey: row.recommendationKey || null,
+        recommendationSource: row.source || null,
+        recommendationEvidence: row.evidence || null,
+      },
+      aiContext: {
+        llmUsed: true,
+        sourceLabel: String(row.sourceLabel || row.source || 'gemma_generated'),
+        confidence: String(row.confidence || row.priority || 'medium').toLowerCase(),
+      },
+    });
+    markProcurementUpdated(created?.requestId || created?.request?.requestId || '');
+    if (row.recommendationKey) {
+      await sendJson(`/inventory/procurement/recommendations/${encodeURIComponent(row.recommendationKey)}/status`, {
+        status: 'converted',
+        reviewedBy: 'Inventory AI Copilot',
+        itemName: row.itemName || row.type || 'Recommended item',
+        source: row.source || 'ai_recommendation',
+        priority: row.priority || 'medium',
+        evidence: row.evidence || null,
+      }, 'PATCH');
+    }
+    notify('Procurement request created from AI recommendation.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to create request from AI recommendation.', 'error');
+  }
+}
+
+async function markRecommendation(index, status) {
+  const recs = getBoardRecommendations();
+  const row = recs[index];
+  if (!row || !row.recommendationKey) {
+    notify('Recommendation not found.', 'warning');
+    return;
+  }
+  try {
+    await sendJson(`/inventory/procurement/recommendations/${encodeURIComponent(row.recommendationKey)}/status`, {
+      status,
+      reviewedBy: 'Inventory Team',
+      itemName: row.itemName || row.type || 'Recommended item',
+      source: row.source || 'ai_recommendation',
+      priority: row.priority || 'medium',
+      reviewNote: status === 'ignored' ? 'Ignored after review.' : 'Reviewed by team.',
+      evidence: row.evidence || null,
+    }, 'PATCH');
+    notify(`Recommendation marked as ${status}.`, 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to update recommendation status.', 'error');
+  }
+}
+
+function renderMiniList(rows = [], renderRow, emptyCopy = 'No records yet.') {
+  const items = Array.isArray(rows) ? rows : [];
+  if (!items.length) return `<div class="proc-detail-empty">${escapeHtml(emptyCopy)}</div>`;
+  return `<div class="proc-detail-list">${items.map(renderRow).join('')}</div>`;
+}
+
+async function openRequestDetails(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  const quotes = Array.isArray(request.vendorQuotes) ? request.vendorQuotes : [];
+  const purchaseOrders = Array.isArray(request.purchaseOrders)
+    ? request.purchaseOrders
+    : (request.purchaseOrder ? [request.purchaseOrder] : []);
+  const receivingRecords = Array.isArray(request.receivingRecords)
+    ? request.receivingRecords
+    : (Array.isArray(request.receipts) ? request.receipts : []);
+  const approvals = Array.isArray(request.approvals)
+    ? request.approvals
+    : (Array.isArray(request.approvalHistory) ? request.approvalHistory : []);
+  const linkedAssets = Array.isArray(request.linkedAssetIds)
+    ? request.linkedAssetIds.map((row) => (row && typeof row === 'object' ? (row.assetTag || row.assetId || row.id) : row)).filter(Boolean)
+    : (Array.isArray(request.linkedAssets) ? request.linkedAssets.map((row) => row.assetTag || row.assetId || row.id).filter(Boolean) : []);
+  const selectedQuote = quotes.find((quote) => quote.selected);
+  const cost = requestDisplayCost(request);
+  const estimate = numericOrNull(request.estimatedBudget);
+  const actualOrQuote = numericOrNull(request.actualCost) ?? numericOrNull(selectedQuote?.totalPrice);
+  const budgetVariance = estimate !== null && actualOrQuote !== null ? actualOrQuote - estimate : null;
+  const nextStep = getNextProcurementAction({ requests: [request] });
+  const aiEvidence = request.aiContext || request.metadata?.aiContext || request.metadata || {};
+
+  await showFormModal({
+    title: `Request 360 - ${request.requestId || ''}`.trim(),
+    messageHtml: `
+      <div class="proc-detail-drawer">
+        <header class="proc-detail-hero">
+          <div>
+            <div class="proc-detail-kicker">Request 360 | ${escapeHtml(request.source || 'Manual / Inventory')}</div>
+            <h3>${escapeHtml(request.title || request.itemType || 'Procurement request')}</h3>
+            <p>${escapeHtml(request.reason || 'No reason recorded.')}</p>
+          </div>
+          <div class="proc-detail-badge-stack">
+            <span class="badge ${statusBadgeClass(request.status)}">${escapeHtml(request.status || 'Draft')}</span>
+            <span class="ops-attention-pill ${urgencyClass(request.priority)}">${escapeHtml(request.priority || 'Medium')}</span>
+            <span class="ops-attention-pill is-info">${cost !== null ? escapeHtml(formatCurrency(cost)) : 'Budget TBD'}</span>
+          </div>
+        </header>
+        <section class="proc-detail-section">
+          <h4>Lifecycle</h4>
+          ${buildLifecycleStepper(request.status || 'Draft')}
+        </section>
+        <section class="proc-detail-grid">
+          <div class="proc-detail-section">
+            <h4>Need & Scope</h4>
+            <dl class="proc-detail-definition-list">
+              <div><dt>Item</dt><dd>${escapeHtml(request.itemType || '-')}</dd></div>
+              <div><dt>Quantity</dt><dd>${escapeHtml(String(request.quantity ?? 1))}</dd></div>
+              <div><dt>Department</dt><dd>${escapeHtml(request.linkedDepartment || 'Unassigned')}</dd></div>
+              <div><dt>Building</dt><dd>${escapeHtml(request.linkedLocation || '-')}</dd></div>
+              <div><dt>Requested by</dt><dd>${escapeHtml(request.requestedBy || '-')}</dd></div>
+              <div><dt>Needed by</dt><dd>${escapeHtml(formatDate(request.requiredDate || request.neededByDate))}</dd></div>
+            </dl>
+          </div>
+          <div class="proc-detail-section">
+            <h4>Linked Evidence</h4>
+            ${renderMiniList(linkedAssets, (asset) => `<div class="proc-detail-list-row"><span>Asset</span><strong>${escapeHtml(asset)}</strong></div>`, 'No linked asset tags were provided.')}
+          </div>
+        </section>
+        <section class="proc-detail-grid">
+          <div class="proc-detail-section">
+            <h4>Vendor Quotes</h4>
+            ${renderMiniList(quotes, (quote) => `
+              <div class="proc-detail-list-row">
+                <span>${escapeHtml(quote.vendorName || 'Vendor')}</span>
+                <strong>${escapeHtml(formatCurrency(quote.totalPrice))}</strong>
+                <small>${quote.selected ? 'Selected quote' : escapeHtml(String(quote.status || 'pending'))}</small>
+              </div>
+            `, 'No vendor quotes yet.')}
+          </div>
+          <div class="proc-detail-section">
+            <h4>Purchase Orders</h4>
+            ${renderMiniList(purchaseOrders, (po) => `
+              <div class="proc-detail-list-row">
+                <span>${escapeHtml(po.poNumber || 'PO')}</span>
+                <strong>${escapeHtml(po.vendorName || selectedQuote?.vendorName || '-')}</strong>
+                <small>${escapeHtml(String(po.status || '-').replace(/_/g, ' '))}</small>
+              </div>
+            `, 'No purchase order created yet.')}
+          </div>
+        </section>
+        <section class="proc-detail-grid">
+          <div class="proc-detail-section">
+            <h4>Receiving</h4>
+            ${renderMiniList(receivingRecords, (record) => `
+              <div class="proc-detail-list-row">
+                <span>${escapeHtml(formatDateTime(record.receivedAt || record.createdAt))}</span>
+                <strong>${escapeHtml(String(record.receivedQuantity || 0))} received</strong>
+                <small>${escapeHtml(String(record.condition || 'good').replace(/_/g, ' '))}</small>
+              </div>
+            `, 'No receiving records yet.')}
+          </div>
+          <div class="proc-detail-section">
+            <h4>Approvals / Decisions</h4>
+            ${renderMiniList(approvals, (approval) => `
+              <div class="proc-detail-list-row">
+                <span>${escapeHtml(approval.decision || approval.toStatus || 'Decision')}</span>
+                <strong>${escapeHtml(approval.decidedBy || approval.approver || '-')}</strong>
+                <small>${escapeHtml(formatDateTime(approval.createdAt || approval.date))}</small>
+              </div>
+            `, 'Status decisions appear here when approval history is returned by the API.')}
+          </div>
+        </section>
+        <section class="proc-detail-section">
+          <h4>Finance / Budget</h4>
+          <div class="proc-budget-mini">
+            <span>Estimated</span><strong>${escapeHtml(formatCurrency(request.estimatedBudget))}</strong>
+            <span>Actual</span><strong>${escapeHtml(formatCurrency(request.actualCost))}</strong>
+            <span>Selected Quote</span><strong>${escapeHtml(formatCurrency(selectedQuote?.totalPrice))}</strong>
+            <span>Variance</span><strong>${budgetVariance === null ? 'Missing' : escapeHtml(formatCurrency(budgetVariance))}</strong>
+            <span>Finance</span><strong>${escapeHtml(String(request.financeStatus || 'not submitted').replace(/_/g, ' '))}</strong>
+          </div>
+        </section>
+        <section class="proc-detail-grid">
+          <div class="proc-detail-section">
+            <h4>Next Best Action</h4>
+            <div class="proc-detail-next-action">
+              <strong>${escapeHtml(nextStep?.title || 'No immediate blocker')}</strong>
+              <p>${escapeHtml(nextStep?.evidenceReason || nextStep?.reason || 'No pending approval, quote, PO, or receiving blocker was detected from this request status.')}</p>
+            </div>
+          </div>
+          <div class="proc-detail-section">
+            <h4>AI / Evidence</h4>
+            <div class="proc-detail-next-action">
+              <strong>${escapeHtml(sourceLabel(aiEvidence))}${sourceInfoIcon(aiEvidence)}</strong>
+              <p>${escapeHtml(String(aiEvidence.recommendationEvidence || aiEvidence.evidence || aiEvidence.reason || 'No AI evidence metadata was returned for this request.'))}</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    `,
+    confirmText: 'Close',
+    cancelText: 'Dismiss',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-xl',
+    fields: [],
+  });
+}
+
+async function updateRequestStatus(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  const form = await showFormModal({
+    title: `Update Status - ${requestId}`,
+    message: request.title || '',
+    messageHtml: `
+      <div class="proc-status-review-card">
+        <div class="proc-status-review-title">Current lifecycle</div>
+        ${buildLifecycleStepper(request.status || 'Draft')}
+      </div>
+    `,
+    confirmText: 'Update',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'status', label: 'Status', type: 'select', options: PROCUREMENT_STATUSES, value: request.status || 'Draft', required: true },
+      { name: 'decision', label: 'Decision', type: 'select', options: ['update', 'submit', 'approve', 'reject', 'order', 'receive', 'close', 'cancel'], value: 'update', required: true },
+      { name: 'approver', label: 'Approver', type: 'text', value: 'Inventory Team', required: true },
+      { name: 'reason', label: 'Reason', type: 'textarea', rows: 3, required: false },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2, required: false },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const currentStatus = normalizeValue(request.status || '');
+  const nextStatus = normalizeValue(form.values.status || '');
+  if (['rejected', 'cancelled'].includes(currentStatus) && !['draft', 'submitted', 'underreview'].includes(nextStatus)) {
+    notify('Rejected or cancelled requests must be reopened to Draft, Submitted, or Under Review before later lifecycle actions.', 'warning');
+    return;
+  }
+
+  try {
+    await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/status`, {
+      status: form.values.status,
+      decision: form.values.decision,
+      approver: form.values.approver,
+      reason: form.values.reason || '',
+      notes: form.values.notes || '',
+    }, 'PATCH');
+    markProcurementUpdated(requestId);
+    notify('Request status updated.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to update status.', 'error');
+  }
+}
+
+async function viewRecommendationEvidence(index) {
+  const recs = getBoardRecommendations();
+  const row = recs[index];
+  if (!row) {
+    notify('Recommendation not found.', 'warning');
+    return;
+  }
+  const affectedAssets = Array.isArray(row.affectedAssets) ? row.affectedAssets : [];
+  const affectedDepartments = Array.isArray(row.affectedDepartments) ? row.affectedDepartments : [];
+  const affectedBuildings = Array.isArray(row.affectedBuildings) ? row.affectedBuildings : [];
+  await showFormModal({
+    title: 'Recommendation Evidence',
+    messageHtml: `
+      <div class="proc-evidence-card">
+        <div class="proc-evidence-title">${escapeHtml(row.itemName || 'Recommended item')}</div>
+        <div class="proc-evidence-grid">
+          <div><strong>Priority</strong><span>${escapeHtml(String(row.priority || row.urgency || '-'))}</span></div>
+          <div><strong>Quantity</strong><span>${escapeHtml(String(row.recommendedQuantity ?? row.quantity ?? '-'))}</span></div>
+          <div><strong>Source</strong><span>${escapeHtml(sourceLabel(row))}${sourceInfoIcon(row)}</span></div>
+          <div><strong>Evidence</strong><span>${escapeHtml(String(row.evidenceLevel || row.dataQuality || '-'))}</span></div>
+        </div>
+        <div class="proc-evidence-copy">${escapeHtml(String(row.evidenceSummary || row.evidence || row.reason || 'No additional evidence text was provided.'))}</div>
+        ${affectedAssets.length ? `<div class="proc-evidence-copy"><strong>Affected assets:</strong> ${escapeHtml(affectedAssets.slice(0, 10).join(', '))}</div>` : ''}
+        ${affectedDepartments.length ? `<div class="proc-evidence-copy"><strong>Departments:</strong> ${escapeHtml(affectedDepartments.slice(0, 10).join(', '))}</div>` : ''}
+        ${affectedBuildings.length ? `<div class="proc-evidence-copy"><strong>Buildings:</strong> ${escapeHtml(affectedBuildings.slice(0, 10).join(', '))}</div>` : ''}
+      </div>
+    `,
+    confirmText: 'Close',
+    cancelText: 'Dismiss',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [],
+  });
+}
+
+async function addVendorQuote(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  const form = await showFormModal({
+    title: `Add Vendor Quote - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Save Quote',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'vendorName', label: 'Vendor Name', type: 'text', required: true },
+      { name: 'quotedItem', label: 'Quoted Item', type: 'text', value: request.itemType || request.title || '', required: true },
+      { name: 'unitPrice', label: 'Unit Price', type: 'number', min: 0, step: 0.01 },
+      { name: 'quantity', label: 'Quantity', type: 'number', value: request.quantity || 1, required: true, min: 1 },
+      { name: 'minimumOrderQuantity', label: 'MOQ', type: 'number', min: 1 },
+      { name: 'minimumOrderValue', label: 'Minimum Order Value', type: 'number', min: 0, step: 0.01 },
+      { name: 'packSize', label: 'Pack Size', type: 'number', min: 1 },
+      { name: 'leadTimeDays', label: 'Lead Time (days)', type: 'number', min: 0 },
+      { name: 'bulkDiscountAvailable', label: 'Bulk discount available', type: 'checkbox', value: false },
+      { name: 'warrantyMonths', label: 'Warranty (months)', type: 'number', min: 0 },
+      { name: 'deliveryDays', label: 'Delivery Time (days)', type: 'number', min: 0 },
+      { name: 'selected', label: 'Select this quote', type: 'checkbox', value: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  try {
+    await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/vendor-quotes`, {
+      vendorName: form.values.vendorName,
+      quotedItem: form.values.quotedItem,
+      unitPrice: form.values.unitPrice !== null ? Number(form.values.unitPrice) : null,
+      quantity: Number(form.values.quantity || request.quantity || 1),
+      minimumOrderQuantity: form.values.minimumOrderQuantity !== null ? Number(form.values.minimumOrderQuantity) : null,
+      minimumOrderValue: form.values.minimumOrderValue !== null ? Number(form.values.minimumOrderValue) : null,
+      packSize: form.values.packSize !== null ? Number(form.values.packSize) : null,
+      leadTimeDays: form.values.leadTimeDays !== null ? Number(form.values.leadTimeDays) : null,
+      bulkDiscountAvailable: Boolean(form.values.bulkDiscountAvailable),
+      warrantyMonths: form.values.warrantyMonths !== null ? Number(form.values.warrantyMonths) : null,
+      deliveryDays: form.values.deliveryDays !== null ? Number(form.values.deliveryDays) : null,
+      selected: Boolean(form.values.selected),
+      notes: form.values.notes || '',
+    });
+    markProcurementUpdated(requestId);
+    notify('Vendor quote added.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to add vendor quote.', 'error');
+  }
+}
+
+async function updateQuoteStatus(requestId, quoteId, action) {
+  if (!requestId || !quoteId) return;
+  const request = getRequestById(requestId);
+  const quote = Array.isArray(request?.vendorQuotes)
+    ? request.vendorQuotes.find((row) => String(row.quoteId || '') === String(quoteId || ''))
+    : null;
+  if (action === 'select' && (!quote || !quote.vendorName || !Number.isFinite(Number(quote.totalPrice)))) {
+    notify('Add vendor name and total price before selecting a quote.', 'warning');
+    return;
+  }
+  const isReject = action === 'reject';
+  let rejectionReason = '';
+  if (isReject) {
+    const form = await showFormModal({
+      title: 'Reject Vendor Quote',
+      message: 'Provide a reason for rejecting this quote.',
+      confirmText: 'Reject Quote',
+      confirmClass: 'btn-danger',
+      dialogClass: 'modal-md',
+      fields: [
+        { name: 'reason', label: 'Rejection Reason', type: 'textarea', rows: 3, required: true },
+      ],
+    });
+    if (!form?.confirmed) return;
+    rejectionReason = String(form.values.reason || '').trim();
+  } else {
+    const confirmed = await UI.confirm({
+      title: 'Select Vendor Quote',
+      message: 'Set this quote as selected for the request?',
+      confirmText: 'Select Quote',
+      confirmClass: 'btn-success',
+    });
+    if (!confirmed) return;
+  }
+
+  try {
+    await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/vendor-quotes/${encodeURIComponent(quoteId)}`, {
+      action,
+      selected: action === 'select',
+      rejectionReason: rejectionReason || null,
+      approver: 'Inventory Team',
+    }, 'PATCH');
+    markProcurementUpdated(requestId);
+    notify(`Quote ${action === 'select' ? 'selected' : 'rejected'}.`, 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to update quote.', 'error');
+  }
+}
+
+async function createPurchaseOrder(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  if (normalizeValue(request.status || '') !== 'approved') {
+    notify('Purchase orders can be created only after the request is Approved.', 'warning');
+    return;
+  }
+  const selectedVendor = Array.isArray(request.vendorQuotes)
+    ? (request.vendorQuotes.find((row) => row.selected)?.vendorName || '')
+    : '';
+  const form = await showFormModal({
+    title: `Create Purchase Order - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Create PO',
+    confirmClass: 'btn-outline-primary',
+    dialogClass: 'modal-md',
+    fields: [
+      { name: 'poNumber', label: 'PO Number', type: 'text', value: `PO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(requestId).slice(-4)}`, required: true },
+      { name: 'vendorName', label: 'Vendor', type: 'text', value: selectedVendor, required: true },
+      { name: 'expectedDelivery', label: 'Expected Delivery', type: 'date' },
+      { name: 'status', label: 'PO Status', type: 'select', options: ['ordered', 'processing', 'partial_delivery'], value: 'ordered', required: true },
+      { name: 'notes', label: 'Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+
+  try {
+    await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/purchase-order`, {
+      poNumber: form.values.poNumber,
+      vendorName: form.values.vendorName,
+      expectedDelivery: form.values.expectedDelivery || null,
+      status: form.values.status,
+      notes: form.values.notes || '',
+    });
+    markProcurementUpdated(requestId);
+    notify('Purchase order created.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to create purchase order.', 'error');
+  }
+}
+
+async function receiveRequest(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  if (!['ordered', 'partiallyreceived'].includes(normalizeValue(request.status || ''))) {
+    notify('Receiving is available only for Ordered or Partially Received requests.', 'warning');
+    return;
+  }
+  const alreadyReceived = Number(request.quantityReceived || request.receivedQuantity || 0);
+  const orderedQty = Number(request.quantityOrdered || request.quantity || 0);
+  const remainingQty = orderedQty > 0 ? Math.max(0, orderedQty - alreadyReceived) : Number(request.quantity || 1);
+  const form = await showFormModal({
+    title: `Receive Request - ${requestId}`,
+    message: request.title || '',
+    confirmText: 'Preview Impact',
+    confirmClass: 'btn-success',
+    dialogClass: 'modal-lg',
+    fields: [
+      { name: 'receivedQuantity', label: 'Received Quantity', type: 'number', value: remainingQty || 1, required: true, min: 1, max: remainingQty || undefined },
+      { name: 'receivedBy', label: 'Received By', type: 'text', value: 'inventory-receiving', required: true },
+      { name: 'condition', label: 'Condition', type: 'select', options: ['good', 'partial', 'damaged', 'needs_inspection'], value: 'good', required: true },
+      { name: 'applyTarget', label: 'Apply Receiving To', type: 'select', options: [{ value: 'none', label: 'Record only (no stock update)' }, { value: 'spare_stock', label: 'Spare stock quantity update' }], value: 'none', required: true },
+      { name: 'spareStockItemId', label: 'Spare Stock Item ID', type: 'text', placeholder: 'Required if apply target is spare stock' },
+      { name: 'notes', label: 'Receiving Notes', type: 'textarea', rows: 2 },
+    ],
+  });
+  if (!form?.confirmed) return;
+  const receiveQty = Number(form.values.receivedQuantity || 0);
+  if (!Number.isFinite(receiveQty) || receiveQty <= 0) {
+    notify('Enter a valid received quantity before continuing.', 'warning');
+    return;
+  }
+  if (remainingQty && receiveQty > remainingQty) {
+    notify(`Received quantity cannot exceed the remaining ordered quantity (${remainingQty}).`, 'warning');
+    return;
+  }
+  if (String(form.values.applyTarget || '') === 'spare_stock' && !String(form.values.spareStockItemId || '').trim()) {
+    notify('Spare stock item ID is required when apply target is spare stock.', 'warning');
+    return;
+  }
+
+  const payload = {
+    receivedQuantity: Number(form.values.receivedQuantity || 1),
+    receivedBy: form.values.receivedBy || 'inventory-receiving',
+    condition: form.values.condition || 'good',
+    applyTarget: form.values.applyTarget || 'none',
+    spareStockItemId: form.values.spareStockItemId || null,
+    notes: form.values.notes || '',
+  };
+
+  try {
+    const preview = await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/receive`, {
+      ...payload,
+      previewOnly: true,
+    });
+    const impact = preview?.impactPreview || {};
+    const diffRows = [
+      ['Stock level', impact.applyTarget === 'spare_stock' ? (impact.spareStockBefore ?? '-') : 'No stock update', impact.applyTarget === 'spare_stock' ? (impact.spareStockAfter ?? '-') : 'No stock update'],
+      ['FIFO batch', impact.fifoBatchBefore || 'None', impact.fifoBatchAfter ? 'Batch created on confirm' : 'No batch'],
+      ['Request status', impact.requestStatusBefore || request.status || '-', impact.requestStatusAfter || '-'],
+      ['PO status', impact.purchaseOrderStatusBefore || '-', impact.purchaseOrderStatusAfter || '-'],
+      ['Last received date', impact.lastReceivedDateBefore ? formatDate(impact.lastReceivedDateBefore) : 'None recorded', impact.lastReceivedDateAfter ? formatDate(impact.lastReceivedDateAfter) : 'Today'],
+      ['Cost impact', impact.costImpact ? formatCurrency(impact.costImpact) : 'Cost data missing', impact.costImpact ? formatCurrency(impact.costImpact) : 'Cost data missing'],
+    ];
+    const confirmMessageHtml = `
+      <div class="proc-receiving-impact-card ${impact.applyTarget === 'spare_stock' ? 'has-inventory-impact' : ''}">
+        <div class="proc-receiving-impact-label">Preview before confirmation</div>
+        <div class="proc-receiving-impact-title">${escapeHtml(impact.itemName || request.itemType || 'Receiving impact')}</div>
+        <div class="proc-impact-summary-row">
+          <span>Request ${escapeHtml(impact.requestId || requestId)}</span>
+          <span>Quantity ${escapeHtml(String(impact.receivedQuantity || payload.receivedQuantity))}</span>
+          <span>Target ${escapeHtml(String(impact.applyTarget || payload.applyTarget).replace(/_/g, ' '))}</span>
+        </div>
+        <div class="proc-receiving-diff-table">
+          <div class="proc-receiving-diff-header"><span>Impact</span><strong>Before</strong><strong>After</strong></div>
+          ${diffRows.map(([label, before, after]) => `
+            <div class="proc-receiving-diff-row ${String(before) === String(after) ? 'is-unchanged' : 'is-changed'}">
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(String(before))}</strong>
+              <strong>${escapeHtml(String(after))}</strong>
+            </div>
+          `).join('')}
+        </div>
+        <ul class="proc-impact-list">
+          <li><span>History</span><strong>Procurement receiving event</strong></li>
+          <li><span>Inventory impact</span><strong>${escapeHtml(impact.applyTarget === 'spare_stock' ? 'Spare stock + FIFO batch' : (impact.assetDraftRecommended ? 'Asset receiving review required' : 'Record only'))}</strong></li>
+        </ul>
+        <div class="proc-impact-note">${escapeHtml(impact.summary || 'Review receiving impact before applying.')}</div>
+      </div>
+    `;
+    const confirmForm = await showFormModal({
+      title: 'Confirm Receiving Impact',
+      messageHtml: confirmMessageHtml,
+      confirmText: 'Apply Receiving',
+      confirmClass: 'btn-success',
+      dialogClass: 'modal-md',
+      fields: [
+        {
+          name: 'confirmImpact',
+          label: 'I reviewed and approve this receiving impact',
+          type: 'checkbox',
+          value: false,
+          required: true,
+          validate: (value) => (value ? '' : 'You must confirm inventory impact to continue.'),
+        },
+      ],
+    });
+    if (!confirmForm?.confirmed) return;
+
+    const result = await sendJson(`/inventory/procurement/requests/${encodeURIComponent(requestId)}/receive`, {
+      ...payload,
+      confirmInventoryImpact: true,
+      previewOnly: false,
+    });
+    markProcurementUpdated(requestId);
+    notify(result?.followUp || 'Receiving recorded.', 'success');
+    await loadBoard();
+  } catch (error) {
+    notify(error.message || 'Failed to record receiving.', 'error');
+  }
+}
+
+function openProcurementCopilot(prompt = '') {
+  const value = String(prompt || 'What should we buy next?').trim();
+  if (typeof window.openInventoryAiChatWithPrompt === 'function') {
+    window.openInventoryAiChatWithPrompt(value);
+    return;
+  }
+  if (value) sessionStorage.setItem('inventory_copilot_prefill', value);
+  window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
+}
+
+async function openProcurementGuidedTour() {
+  await showFormModal({
+    title: 'Procurement Guided Tour',
+    message: 'A read-only walkthrough of the real procurement workspace. It does not create, approve, order, or receive anything.',
+    messageHtml: `
+      <div class="ops-guided-tour-panel">
+        <ol class="ops-guided-tour-list">
+          <li><strong>Dashboard:</strong> review open requests, approvals, ordered items, receiving, spend, and AI recommendation signals.</li>
+          <li><strong>AI Recommendations:</strong> inspect evidence before converting any recommendation into a reviewed request.</li>
+          <li><strong>Requests:</strong> follow lifecycle status and use Continue Workflow only after reading the evidence reason.</li>
+          <li><strong>Vendor Quotes and Orders:</strong> compare quote price, delivery, warranty, reliability, then create a PO after review.</li>
+          <li><strong>Receiving:</strong> preview inventory impact before applying stock, batch, license, or asset updates.</li>
+          <li><strong>Analysis and Business tabs:</strong> use ABC, EOQ/MOQ, FIFO, Finance, and Suppliers as decision support, not automatic approvals.</li>
+        </ol>
+        <div class="ops-guided-tour-note">Phase 1 can add anchored tooltip overlays; Phase 0 exposes the tour as a clear guided panel using live page data.</div>
+      </div>
+    `,
+    confirmText: 'Close',
+    cancelText: 'Dismiss',
+    confirmClass: 'btn-primary',
+    dialogClass: 'modal-lg',
+    fields: [],
+  });
+}
+
+function procurementCopilotContext() {
+  const summary = buildProcurement360Summary();
+  return {
+    page: 'procurement',
+    procurement: {
+      openRequests: summary.openRequests,
+      pendingApprovals: summary.pendingApprovals,
+      orderedTransit: summary.orderedTransit,
+      approvedNoPo: summary.approvedNoPo,
+      missingQuotes: summary.missingQuotes,
+      quotesNeedReview: summary.quotesNeedReview,
+      moqConflicts: summary.moqConflicts,
+      estimatedSpend: summary.estimatedSpend,
+      actualSpend: summary.actualSpend,
+      recommendations: summary.recommendations.length,
+      receivingPending: summary.receivingPending,
+    },
+    freshness: state.loadedAt,
+    source: 'procurement_loaded_board',
+  };
+}
+
+function showProcurementTab(tabName = 'dashboard') {
+  const map = {
+    dashboard: 'proc-dashboard-tab',
+    requests: 'proc-requests-tab',
+    recommendations: 'proc-recommendations-tab',
+    quotes: 'proc-quotes-tab',
+    orders: 'proc-po-tab',
+    receiving: 'proc-receiving-tab',
+    abc: 'proc-abc-tab',
+    eoq: 'proc-eoq-tab',
+    fifo: 'proc-fifo-tab',
+    finance: 'proc-finance-tab',
+    suppliers: 'proc-suppliers-tab',
+    analytics: 'proc-analytics-tab',
+  };
+  const btn = document.getElementById(map[tabName] || map.dashboard);
+  if (btn && window.bootstrap?.Tab) bootstrap.Tab.getOrCreateInstance(btn).show();
+}
+
+function applyInitialProcurementHash() {
+  const hash = String(window.location.hash || '').replace('#', '').trim().toLowerCase();
+  if (!hash) return;
+  const aliases = {
+    dashboard: 'dashboard',
+    requests: 'requests',
+    recommendations: 'recommendations',
+    'ai-recommendations': 'recommendations',
+    ai: 'recommendations',
+    quotes: 'quotes',
+    'vendor-quotes': 'quotes',
+    vendors: 'quotes',
+    orders: 'orders',
+    'purchase-orders': 'orders',
+    po: 'orders',
+    receiving: 'receiving',
+    abc: 'abc',
+    'abc-analysis': 'abc',
+    eoq: 'eoq',
+    'eoq-moq': 'eoq',
+    fifo: 'fifo',
+    finance: 'finance',
+    budgets: 'finance',
+    suppliers: 'suppliers',
+    supplier: 'suppliers',
+    rfq: 'suppliers',
+    analytics: 'analytics',
+    graphs: 'analytics',
+  };
+  const tabName = aliases[hash];
+  if (tabName) showProcurementTab(tabName);
+}
+
+function continueProcurementWorkflow() {
+  const next = getNextProcurementAction();
+  if (!next) {
+    notify('No urgent procurement workflow blocker was found. You can create a new request or review recommendations.', 'info');
+    showProcurementTab('recommendations');
+    return;
+  }
+  if (next.type === 'status') updateRequestStatus(next.requestId);
+  else if (next.type === 'quote') addVendorQuote(next.requestId);
+  else if (next.type === 'po') createPurchaseOrder(next.requestId);
+  else if (next.type === 'receive') receiveRequest(next.requestId);
+}
+
+function continueRequestWorkflow(requestId) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found.', 'warning');
+    return;
+  }
+  const next = getNextProcurementAction({ requests: [request] });
+  if (!next) {
+    openRequestDetails(requestId);
+    return;
+  }
+  if (next.type === 'status') updateRequestStatus(requestId);
+  else if (next.type === 'quote') addVendorQuote(requestId);
+  else if (next.type === 'po') createPurchaseOrder(requestId);
+  else if (next.type === 'receive') receiveRequest(requestId);
+}
+
+function exportPurchaseOrderDocument(requestId, poNumber) {
+  const request = getRequestById(requestId);
+  if (!request) {
+    notify('Request not found for PO export.', 'warning');
+    return;
+  }
+  const purchaseOrders = getRequestPurchaseOrders(request);
+  const po = purchaseOrders.find((entry) => String(entry.poNumber || '') === String(poNumber || '')) || purchaseOrders[0];
+  if (!po) {
+    notify('Purchase order not found.', 'warning');
+    return;
+  }
+  const items = Array.isArray(po.items) && po.items.length ? po.items : (Array.isArray(request.items) ? request.items : []);
+  const total = items.reduce((sum, item) => sum + Number(item.totalPrice || item.totalCost || (Number(item.quantityOrdered || item.quantityRequested || 0) * Number(item.unitPrice || item.unitEstimatedCost || 0)) || 0), 0);
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <title>${escapeHtml(po.poNumber || 'Purchase Order')}</title>
+        <link href="/assets/css/main.css?v=6" rel="stylesheet">
+      </head>
+      <body class="proc-po-print-body">
+        <button class="proc-po-print-button" onclick="window.print()">Print / Save as PDF</button>
+        <div class="proc-po-print-head">
+          <div>
+            <h1>Purchase Order</h1>
+            <div class="proc-po-print-muted">OpsMind internal procurement document. Not a payment record.</div>
+          </div>
+          <div>
+            <strong>${escapeHtml(po.poNumber || '-')}</strong><br>
+            <span class="proc-po-print-muted">Request ${escapeHtml(request.requestId || request.requestNumber || '-')}</span>
+          </div>
+        </div>
+        <div class="proc-po-print-grid">
+          <div class="proc-po-print-box"><strong>Vendor</strong><br>${escapeHtml(po.vendorName || 'Vendor not specified')}</div>
+          <div class="proc-po-print-box"><strong>Status</strong><br>${escapeHtml(String(po.status || '-').replace(/_/g, ' '))}</div>
+          <div class="proc-po-print-box"><strong>Expected Delivery</strong><br>${escapeHtml(formatDate(po.expectedDeliveryDate || po.expectedDelivery))}</div>
+          <div class="proc-po-print-box"><strong>Department / Building</strong><br>${escapeHtml(request.department || 'Unassigned')} / ${escapeHtml(request.building || '-')}</div>
+        </div>
+        <h2>Items</h2>
+        <table class="proc-po-print-table">
+          <thead><tr><th>Item</th><th>Qty</th><th>Unit Cost</th><th>Total</th><th>Notes</th></tr></thead>
+          <tbody>
+            ${items.map((item) => {
+              const qty = Number(item.quantityOrdered || item.quantityRequested || 0);
+              const unit = Number(item.unitPrice || item.unitEstimatedCost || 0);
+              const lineTotal = Number(item.totalPrice || item.totalCost || (qty * unit) || 0);
+              return `<tr><td>${escapeHtml(item.itemName || item.name || 'Item')}</td><td>${escapeHtml(String(qty || '-'))}</td><td>${escapeHtml(unit ? formatCurrency(unit) : '-')}</td><td>${escapeHtml(lineTotal ? formatCurrency(lineTotal) : '-')}</td><td>${escapeHtml(item.notes || '')}</td></tr>`;
+            }).join('') || '<tr><td colspan="5">No item rows stored.</td></tr>'}
+          </tbody>
+        </table>
+        <p class="proc-po-print-total">Estimated PO Total: ${escapeHtml(total ? formatCurrency(total) : 'Not calculated')}</p>
+        <p class="proc-po-print-muted">Generated ${escapeHtml(new Date().toLocaleString())}. Prices, vendors, and quantities come only from stored procurement data.</p>
+      </body>
+    </html>
+  `;
+  const printWindow = window.open('', '', 'width=960,height=720');
+  if (!printWindow) {
+    notify('Please allow popups to export/print this purchase order.', 'warning');
+    return;
+  }
+  printWindow.document.write(html);
+  printWindow.document.close();
+  notify(`Opened export view for ${po.poNumber || 'purchase order'}.`, 'success');
+}
+
+function procurementGemmaFeatureRows(aiReady, diagnostics = {}) {
+  const source = aiReady ? 'AI insight ready' : 'System data available';
+  const model = diagnostics?.llm_model || diagnostics?.model || 'local AI model';
+  return [
+    ['AI purchase recommendations', 'Estimated', source, 'Recommendations are grounded in stock, EOL, audit, maintenance, and request evidence.'],
+    ['Procurement 360 explanation', 'Estimated', source, 'System board metrics first; AI insight explains priorities.'],
+    ['Vendor quote comparison', 'Estimated', source, 'Quote facts are system-calculated; AI insight explains best-value tradeoffs.'],
+    ['Budget impact explanation', 'Estimated', source, 'Budget math remains system-calculated; AI insight summarizes risk and actions.'],
+    ['FIFO explanation', 'Estimated', source, 'FIFO queue is system-calculated; AI insight explains oldest-batch reasoning.'],
+    ['EOQ/MOQ explanation', 'Estimated', source, 'Formula results stay system-calculated; AI insight explains missing data/conflicts.'],
+    ['Procurement Copilot prompt', 'Yes/Estimated', source, `Routes through Inventory AI service when ${model} is available.`],
+  ];
+}
+
+async function fetchProcurementGemmaDiagnostics() {
+  const startedAt = performance.now();
+  const [healthRes, diagnosticsRes, backendRes, testRes] = await Promise.allSettled([
+    fetch(`${INVENTORY_AI_URL}/health`).then((response) => response.json()),
+    fetch(`${INVENTORY_AI_URL}/ai/diagnostics`).then((response) => response.json()),
+    readJson('/inventory/ai/diagnostics'),
+    sendJson('/inventory/ai/test-gemma', {}),
+  ]);
+  return {
+    health: healthRes.status === 'fulfilled' ? healthRes.value : { error: healthRes.reason?.message || 'Inventory AI health unavailable' },
+    diagnostics: diagnosticsRes.status === 'fulfilled' ? diagnosticsRes.value : { error: diagnosticsRes.reason?.message || 'Inventory AI diagnostics unavailable' },
+    backend: backendRes.status === 'fulfilled' ? backendRes.value : { error: backendRes.reason?.message || 'Backend diagnostics unavailable' },
+    test: testRes.status === 'fulfilled' ? testRes.value : { error: testRes.reason?.message || 'Backend AI test unavailable' },
+    latencyMs: Math.round(performance.now() - startedAt),
+  };
+}
+
+function renderProcurementGemmaDiagnosticsBody(result = {}) {
+  const health = result.health || {};
+  const diagnostics = result.diagnostics || {};
+  const backend = result.backend || {};
+  const test = result.test || {};
+  const aiReady = String(health.llm_status || diagnostics.llm_status || '').toLowerCase() === 'ready'
+    || Boolean(test.llmUsed || test.usedGemma || test.gemmaUsed);
+  const model = health.llm_model || diagnostics.llm_model || diagnostics.model || test.model || 'Unknown';
+  const provider = health.llm_provider || diagnostics.llm_provider || 'Unknown';
+  const lastError = health.llm_last_error || diagnostics.llm_last_error || backend.error || test.error || '';
+  const rows = procurementGemmaFeatureRows(aiReady, diagnostics);
+  return `
+    <div class="ops-gemma-diagnostics">
+      <div class="ops-gemma-summary ${aiReady ? 'is-ready' : 'is-fallback'}">
+        <div>
+          <div class="ops-gemma-kicker">Procurement AI diagnostics</div>
+          <h3>${escapeHtml(aiReady ? 'AI insight is ready for Procurement' : 'Procurement system data is available')}</h3>
+          <p>${escapeHtml(aiReady ? 'Procurement calculations remain system-calculated; AI insight is available for explanation and narrative recommendations.' : 'OpsMind will continue showing system procurement evidence until AI insight is available.')}</p>
+        </div>
+        <span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(aiReady ? 'AI insight ready' : 'System data mode')}</span>
+      </div>
+      <div class="ops-gemma-metrics">
+        <div><strong>Provider</strong><span>${escapeHtml(provider)}</span></div>
+        <div><strong>Model</strong><span>${escapeHtml(model)}</span></div>
+        <div><strong>Latency</strong><span>${escapeHtml(`${result.latencyMs ?? '-'} ms`)}</span></div>
+        <div><strong>Timeout</strong><span>${escapeHtml(String(diagnostics.timeout_seconds ?? diagnostics.timeoutSeconds ?? 'Unknown'))}</span></div>
+        <div><strong>Selected model</strong><span>${escapeHtml(String(diagnostics.selected_model_present ?? diagnostics.modelPresent ?? 'Unknown'))}</span></div>
+        <div><strong>Backend bridge</strong><span>${escapeHtml(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
+      </div>
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle ops-gemma-table">
+          <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map(([feature, requires, source, note]) => `
+              <tr>
+                <td>${escapeHtml(feature)}</td>
+                <td>${escapeHtml(requires)}</td>
+                <td><span class="ops-attention-pill ${aiReady ? 'is-healthy' : 'is-review'}">${escapeHtml(source)}</span></td>
+                <td>${escapeHtml(note)}</td>
+                <td class="text-end">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" data-proc-gemma-retest>Test</button>
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-proc-gemma-ask="${escapeHtml(feature)}">Ask AI</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function openProcurementGemmaDiagnostics() {
+  const modalId = 'procGemmaDiagnosticsModal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    document.body.insertAdjacentHTML('beforeend', `
+      <div class="modal fade" id="${modalId}" tabindex="-1" aria-labelledby="${modalId}Title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content ops-diagnostics-modal">
+            <div class="modal-header">
+              <div>
+                <h5 class="modal-title" id="${modalId}Title">AI diagnostics</h5>
+                <div class="modal-subtitle">Read-only checks for Procurement AI readiness, source labels, and system-data safety.</div>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close AI diagnostics"></button>
+            </div>
+            <div class="modal-body" id="${modalId}Body">
+              <div class="ops-loading-stack">
+                <span class="ops-skeleton-line lg"></span>
+                <span class="ops-skeleton-line md"></span>
+                <span class="ops-skeleton-card"></span>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button type="button" class="btn btn-primary" id="${modalId}RetestBtn">Retest AI</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+    modalEl = document.getElementById(modalId);
+    modalEl.addEventListener('click', (event) => {
+      if (event.target?.closest('[data-proc-gemma-retest]')) openProcurementGemmaDiagnostics();
+      const askBtn = event.target?.closest('[data-proc-gemma-ask]');
+      if (askBtn) {
+        const feature = askBtn.getAttribute('data-proc-gemma-ask') || 'Procurement AI';
+        sessionStorage.setItem('inventory_copilot_prefill', `Test ${feature} with AI insight. Use real procurement evidence only and state whether AI insight, estimated, or system data was used.`);
+        window.location.href = '/pages/inventory.html?ai=copilot&focus=procurement';
+      }
+    });
+    document.getElementById(`${modalId}RetestBtn`)?.addEventListener('click', () => openProcurementGemmaDiagnostics());
+  }
+  const body = document.getElementById(`${modalId}Body`);
+  if (body) {
+    body.innerHTML = `
+      <div class="ops-loading-stack">
+        <span class="ops-skeleton-line lg"></span>
+        <span class="ops-skeleton-line md"></span>
+        <span class="ops-skeleton-card"></span>
+      </div>
+    `;
+  }
+  bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  try {
+    const result = await fetchProcurementGemmaDiagnostics();
+    if (body) body.innerHTML = renderProcurementGemmaDiagnosticsBody(result);
+  } catch (error) {
+    if (body) {
+      body.innerHTML = `
+        <div class="ops-empty-state-card ops-empty-state-card-danger">
+          <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
+          <div>
+            <div class="ops-empty-state-title">Diagnostics unavailable</div>
+            <div class="ops-empty-state-copy">${escapeHtml(error.message || 'Could not complete read-only AI diagnostics.')}</div>
+          </div>
+        </div>
+      `;
+    }
+  }
+}
+
+function setupProcurementAutoRefresh() {
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(() => {
+    if (state.loading) return;
+    if (!autoRefreshEnabled() || shouldPauseProcurementAutoRefresh()) {
+      setLoadingState(false);
+      return;
+    }
+    loadBoard({ background: true }).catch((error) => {
+      console.warn('[Procurement] Auto refresh failed:', error?.message || error);
+      setLoadError('Refresh failed');
+    });
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
+function handleProcurement360Action(action = '') {
+  const value = String(action || '').trim();
+  if (value === 'gemma-diagnostics') {
+    openProcurementGemmaDiagnostics();
+    return;
+  }
+  if (value === 'continue') {
+    continueProcurementWorkflow();
+    return;
+  }
+  if (value === 'create') {
+    createManualRequest();
+    return;
+  }
+  if (value === 'requests') showProcurementTab('requests');
+  else if (value === 'recommendations') showProcurementTab('recommendations');
+  else if (value === 'quotes') showProcurementTab('quotes');
+  else if (value === 'orders') showProcurementTab('orders');
+  else if (value === 'receiving') showProcurementTab('receiving');
+  else if (value === 'finance') showProcurementTab('finance');
+  else if (value === 'suppliers') showProcurementTab('suppliers');
+  else if (value === 'explain-cost') openProcurementCopilot('Explain Procurement 360 cost and budget impact using real procurement evidence only. Do not invent costs, prices, invoices, vendors, or budgets.');
+  else if (value === 'explain') openProcurementCopilot('Explain Procurement 360 and what I should do next using real request, quote, PO, receiving, finance, and recommendation evidence only.');
+}
+
+function bindActions() {
+  const refreshBtn = document.getElementById('procRefreshBtn');
+  const createBtn = document.getElementById('procCreateRequestBtn');
+  const statusFilter = document.getElementById('procStatusFilter');
+  const abcRefreshBtn = document.getElementById('procAbcRefreshBtn');
+  const abcClassFilter = document.getElementById('procAbcClassFilter');
+  const eoqRefreshBtn = document.getElementById('procEoqRefreshBtn');
+  const fifoRefreshBtn = document.getElementById('procFifoRefreshBtn');
+  const financeRefreshBtn = document.getElementById('procFinanceRefreshBtn');
+  const financeCreateCenterBtn = document.getElementById('procFinanceCreateCenterBtn');
+  const suppliersRefreshBtn = document.getElementById('procSuppliersRefreshBtn');
+  const supplierCreateBtn = document.getElementById('procSupplierCreateBtn');
+  const catalogCreateBtn = document.getElementById('procCatalogCreateBtn');
+  const openInventoryBtn = document.getElementById('procOpenInventoryBtn');
+  const askCopilotBtn = document.getElementById('procAskCopilotBtn');
+  const guidedTourBtn = document.getElementById('procGuidedTourBtn');
+  const kanbanBoard = document.getElementById('procKanbanBoard');
+  const priorityBoard = document.getElementById('procRequestPriorityBoard');
+  const vendorBattleCards = document.getElementById('procVendorBattleCards');
+  const requestViewButtons = Array.from(document.querySelectorAll('[data-proc-request-view]'));
+  const analyticsDimension = document.getElementById('procAnalyticsDimension');
+  const analyticsChartType = document.getElementById('procAnalyticsChartType');
+  const analyticsRenderBtn = document.getElementById('procAnalyticsRenderBtn');
+
+  if (refreshBtn) refreshBtn.addEventListener('click', () => loadBoard());
+  if (createBtn) createBtn.addEventListener('click', () => createManualRequest());
+  if (statusFilter) statusFilter.addEventListener('change', () => loadBoard());
+  if (abcRefreshBtn) abcRefreshBtn.addEventListener('click', () => loadErpFoundationPanels());
+  if (abcClassFilter) abcClassFilter.addEventListener('change', () => renderAbcPanel());
+  if (eoqRefreshBtn) eoqRefreshBtn.addEventListener('click', () => loadErpFoundationPanels());
+  if (fifoRefreshBtn) fifoRefreshBtn.addEventListener('click', () => loadErpFoundationPanels());
+  if (financeRefreshBtn) financeRefreshBtn.addEventListener('click', () => loadErpFoundationPanels());
+  if (financeCreateCenterBtn) financeCreateCenterBtn.addEventListener('click', () => createCostCenter());
+  if (suppliersRefreshBtn) suppliersRefreshBtn.addEventListener('click', () => loadErpFoundationPanels());
+  if (supplierCreateBtn) supplierCreateBtn.addEventListener('click', () => createSupplier());
+  if (catalogCreateBtn) catalogCreateBtn.addEventListener('click', () => createSupplierCatalogItem());
+  if (openInventoryBtn) openInventoryBtn.addEventListener('click', () => { window.location.href = '/pages/inventory.html'; });
+  if (guidedTourBtn) guidedTourBtn.addEventListener('click', () => openProcurementGuidedTour());
+  if (askCopilotBtn) {
+    askCopilotBtn.addEventListener('click', () => {
+      openProcurementCopilot('What should we buy next? Use this Procurement page evidence only.');
+    });
+  }
+  document.querySelectorAll('[data-proc-open-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button.getAttribute('data-proc-open-tab') || 'dashboard';
+      showProcurementTab(target);
+      window.location.hash = target;
+    });
+  });
+  if (analyticsDimension) analyticsDimension.addEventListener('change', renderProcurementAnalyticsBuilder);
+  if (analyticsChartType) analyticsChartType.addEventListener('change', renderProcurementAnalyticsBuilder);
+  if (analyticsRenderBtn) analyticsRenderBtn.addEventListener('click', renderProcurementAnalyticsBuilder);
+  window.addEventListener('hashchange', applyInitialProcurementHash);
+  requestViewButtons.forEach((button) => {
+    button.addEventListener('click', () => setRequestViewMode(button.getAttribute('data-proc-request-view') || 'table'));
+  });
+  document.addEventListener('click', (event) => {
+    const actionBtn = event.target?.closest('[data-proc-360-action]');
+    if (actionBtn) handleProcurement360Action(actionBtn.getAttribute('data-proc-360-action'));
+  });
+  applyRequestViewMode();
+
+  const recBody = document.getElementById('procRecommendationsTableBody');
+  if (recBody) {
+    recBody.addEventListener('click', (event) => {
+      const createBtnEl = event.target?.closest('[data-proc-create-from-rec]');
+      if (createBtnEl) {
+        const index = Number(createBtnEl.getAttribute('data-proc-create-from-rec'));
+        if (Number.isFinite(index)) createRequestFromRecommendation(index);
+        return;
+      }
+      const viewBtn = event.target?.closest('[data-proc-view-rec]');
+      if (viewBtn) {
+        const index = Number(viewBtn.getAttribute('data-proc-view-rec'));
+        if (Number.isFinite(index)) viewRecommendationEvidence(index);
+        return;
+      }
+      const reviewBtn = event.target?.closest('[data-proc-review-rec]');
+      if (reviewBtn) {
+        const index = Number(reviewBtn.getAttribute('data-proc-review-rec'));
+        if (Number.isFinite(index)) markRecommendation(index, 'reviewed');
+        return;
+      }
+      const ignoreBtn = event.target?.closest('[data-proc-ignore-rec]');
+      if (ignoreBtn) {
+        const index = Number(ignoreBtn.getAttribute('data-proc-ignore-rec'));
+        if (Number.isFinite(index)) markRecommendation(index, 'ignored');
+        return;
+      }
+      const refreshEmptyBtn = event.target?.closest('#procRefreshRecommendationsEmptyBtn');
+      if (refreshEmptyBtn) {
+        loadBoard();
+      }
+    });
+  }
+
+  if (kanbanBoard) {
+    kanbanBoard.addEventListener('click', (event) => {
+      const detailBtn = event.target?.closest('[data-proc-view-request]');
+      if (detailBtn) {
+        const requestId = String(detailBtn.getAttribute('data-proc-view-request') || '').trim();
+        if (requestId) openRequestDetails(requestId);
+        return;
+      }
+      const statusBtn = event.target?.closest('[data-proc-update-status]');
+      if (statusBtn) {
+        const requestId = String(statusBtn.getAttribute('data-proc-update-status') || '').trim();
+        if (requestId) updateRequestStatus(requestId);
+        return;
+      }
+      const quoteBtn = event.target?.closest('[data-proc-add-quote]');
+      if (quoteBtn) {
+        const requestId = String(quoteBtn.getAttribute('data-proc-add-quote') || '').trim();
+        if (requestId) addVendorQuote(requestId);
+        return;
+      }
+      if (event.target?.closest('#procCreateKanbanEmptyBtn')) {
+        createManualRequest();
+      }
+    });
+  }
+
+  if (priorityBoard) {
+    priorityBoard.addEventListener('click', (event) => {
+      const detailBtn = event.target?.closest('[data-proc-view-request]');
+      if (detailBtn) {
+        const requestId = String(detailBtn.getAttribute('data-proc-view-request') || '').trim();
+        if (requestId) openRequestDetails(requestId);
+        return;
+      }
+      const statusBtn = event.target?.closest('[data-proc-update-status]');
+      if (statusBtn) {
+        const requestId = String(statusBtn.getAttribute('data-proc-update-status') || '').trim();
+        if (requestId) updateRequestStatus(requestId);
+      }
+    });
+  }
+
+  const requestsBody = document.getElementById('procRequestsTableBody');
+  if (requestsBody) {
+    requestsBody.addEventListener('click', (event) => {
+      const continueBtn = event.target?.closest('[data-proc-continue-request]');
+      if (continueBtn) {
+        const requestId = String(continueBtn.getAttribute('data-proc-continue-request') || '').trim();
+        if (requestId) continueRequestWorkflow(requestId);
+        return;
+      }
+      const detailBtn = event.target?.closest('[data-proc-view-request]');
+      if (detailBtn) {
+        const requestId = String(detailBtn.getAttribute('data-proc-view-request') || '').trim();
+        if (requestId) openRequestDetails(requestId);
+        return;
+      }
+      const statusBtn = event.target?.closest('[data-proc-update-status]');
+      if (statusBtn) {
+        const requestId = String(statusBtn.getAttribute('data-proc-update-status') || '').trim();
+        if (requestId) updateRequestStatus(requestId);
+        return;
+      }
+      const quoteBtn = event.target?.closest('[data-proc-add-quote]');
+      if (quoteBtn) {
+        const requestId = String(quoteBtn.getAttribute('data-proc-add-quote') || '').trim();
+        if (requestId) addVendorQuote(requestId);
+        return;
+      }
+      const poBtn = event.target?.closest('[data-proc-create-po]');
+      if (poBtn) {
+        const requestId = String(poBtn.getAttribute('data-proc-create-po') || '').trim();
+        if (requestId) createPurchaseOrder(requestId);
+        return;
+      }
+      const receiveBtn = event.target?.closest('[data-proc-receive]');
+      if (receiveBtn) {
+        const requestId = String(receiveBtn.getAttribute('data-proc-receive') || '').trim();
+        if (requestId) receiveRequest(requestId);
+        return;
+      }
+      const createEmptyBtn = event.target?.closest('#procCreateRequestEmptyBtn');
+      if (createEmptyBtn) {
+        createManualRequest();
+      }
+    });
+  }
+
+  const quotesBody = document.getElementById('procQuotesTableBody');
+  if (quotesBody) {
+    quotesBody.addEventListener('click', (event) => {
+      const selectBtn = event.target?.closest('[data-proc-quote-select]');
+      if (selectBtn) {
+        const requestId = String(selectBtn.getAttribute('data-proc-quote-select') || '').trim();
+        const quoteId = String(selectBtn.getAttribute('data-proc-quote-id') || '').trim();
+        if (requestId && quoteId) updateQuoteStatus(requestId, quoteId, 'select');
+        return;
+      }
+      const rejectBtn = event.target?.closest('[data-proc-quote-reject]');
+      if (rejectBtn) {
+        const requestId = String(rejectBtn.getAttribute('data-proc-quote-reject') || '').trim();
+        const quoteId = String(rejectBtn.getAttribute('data-proc-quote-id') || '').trim();
+        if (requestId && quoteId) updateQuoteStatus(requestId, quoteId, 'reject');
+      }
+    });
+  }
+
+  const poBody = document.getElementById('procPurchaseOrdersTableBody');
+  if (poBody) {
+    poBody.addEventListener('click', (event) => {
+      const exportBtn = event.target?.closest('[data-proc-export-po]');
+      if (exportBtn) {
+        const requestId = String(exportBtn.getAttribute('data-proc-export-po') || '').trim();
+        const poNumber = String(exportBtn.getAttribute('data-proc-po-number') || '').trim();
+        if (requestId) exportPurchaseOrderDocument(requestId, poNumber);
+      }
+    });
+  }
+
+  if (vendorBattleCards) {
+    vendorBattleCards.addEventListener('click', (event) => {
+      const selectBtn = event.target?.closest('[data-proc-quote-select]');
+      if (selectBtn) {
+        const requestId = String(selectBtn.getAttribute('data-proc-quote-select') || '').trim();
+        const quoteId = String(selectBtn.getAttribute('data-proc-quote-id') || '').trim();
+        if (requestId && quoteId) updateQuoteStatus(requestId, quoteId, 'select');
+        return;
+      }
+      const rejectBtn = event.target?.closest('[data-proc-quote-reject]');
+      if (rejectBtn) {
+        const requestId = String(rejectBtn.getAttribute('data-proc-quote-reject') || '').trim();
+        const quoteId = String(rejectBtn.getAttribute('data-proc-quote-id') || '').trim();
+        if (requestId && quoteId) updateQuoteStatus(requestId, quoteId, 'reject');
+      }
+    });
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!ensureAccess()) return;
+  initInventoryAiCopilot({
+    pageKey: 'procurement',
+    pageLabel: 'Procurement',
+    contextProvider: procurementCopilotContext,
+    prompts: [
+      { label: 'What should we buy?', prompt: 'What should we buy next? Use this Procurement page evidence only.' },
+      { label: 'Urgent priorities', prompt: 'Show urgent procurement priorities and why they matter.' },
+      { label: 'Budget impact', prompt: 'What is the budget impact of current procurement requests?' },
+      { label: 'Vendor tradeoffs', prompt: 'Which vendor quote is best and what evidence supports it?' },
+    ],
+    quickActions: [
+      { label: 'Open Procurement 360', url: '/pages/procurement.html#procurement360' },
+      { label: 'Create Request', prompt: 'Help me prepare a procurement request. Do not create it without review.' },
+    ],
+  });
+  bindActions();
+  setupProcurementAutoRefresh();
+  await loadBoard();
+  applyInitialProcurementHash();
+});

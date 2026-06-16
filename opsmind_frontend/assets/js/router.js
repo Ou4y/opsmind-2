@@ -181,7 +181,15 @@ const Router = {
             return context.dashboardType === 'supervisor';
         }
 
+        if (this.currentPage === 'inventory-command-center.html') {
+            return this.canAccessInventoryWithContext(context);
+        }
+
         if (this.currentPage === 'inventory.html') {
+            return this.canAccessInventoryWithContext(context);
+        }
+
+        if (this.currentPage === 'procurement.html') {
             return this.canAccessInventoryWithContext(context);
         }
 
@@ -305,7 +313,17 @@ const Router = {
             return AuthService.isAdmin();
         }
 
+        if (pageName === 'inventory-command-center.html') {
+            const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+            return this.canAccessInventoryWithContext(context);
+        }
+
         if (pageName === 'inventory.html') {
+            const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+            return this.canAccessInventoryWithContext(context);
+        }
+
+        if (pageName === 'procurement.html') {
             const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
             return this.canAccessInventoryWithContext(context);
         }

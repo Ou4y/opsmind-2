@@ -17,8 +17,12 @@ services:
     container_name: reporting-service
     ports:
       - "3006:3000"
-    env_file:
-      - .env
+    environment:
+      PORT: "3000"
+      MONGO_URI: mongodb://mongo:27017/reporting
+      TICKET_SERVICE_URL: http://ticket-service:3000
+      AUTH_SERVICE_URL: http://auth-service:3002
+      REPORT_SYNC_URL: http://127.0.0.1:3000/analytics/sync
     depends_on:
       - mongo
     networks:

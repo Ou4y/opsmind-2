@@ -87,7 +87,8 @@ def extract_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """Extract ``created_hour`` and ``created_weekday`` from ``created_at``."""
     df = df.copy(deep=True)
     created_at = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
-    df.loc[:, "created_at"] = created_at
+    # Avoid strict-string dtype assignment errors in newer pandas versions.
+    df["created_at"] = created_at
     df.loc[:, "created_hour"] = created_at.dt.hour
     df.loc[:, "created_weekday"] = created_at.dt.weekday
     return df
@@ -98,8 +99,9 @@ def compute_resolution_time(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy(deep=True)
     created_at = pd.to_datetime(df["created_at"], dayfirst=True, errors="coerce")
     closed_at = pd.to_datetime(df["closed_at"], dayfirst=True, errors="coerce")
-    df.loc[:, "created_at"] = created_at
-    df.loc[:, "closed_at"] = closed_at
+    # Use direct column assignment so pandas can safely upcast dtypes.
+    df["created_at"] = created_at
+    df["closed_at"] = closed_at
     df.loc[:, "resolution_time_hours"] = (
         (closed_at - created_at).dt.total_seconds() / 3600.0
     )

@@ -1,1 +1,77 @@
-{}
+{
+  "macbook | macbook pro | laptop": {
+    "corrected_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD"
+    },
+    "predicted_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD"
+    },
+    "source_urls": [],
+    "lookup_mode": "verified_feedback_cache",
+    "updated_at": "2026-05-22T23:27:27.991000+00:00"
+  },
+  "dell | dell latitude 5420 | laptop": {
+    "corrected_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD",
+      "CPU Vendor": "Intel",
+      "Storage Type": "SSD"
+    },
+    "predicted_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD",
+      "CPU Vendor": "Intel",
+      "Storage Type": "SSD"
+    },
+    "source_urls": [],
+    "lookup_mode": "verified_feedback_cache",
+    "updated_at": "2026-05-22T22:39:18.364000+00:00"
+  },
+  "macbook | macbook air | laptop": {
+    "corrected_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD"
+    },
+    "predicted_specifications": {
+      "OS": "Windows 11 Pro",
+      "RAM": "16GB",
+      "Storage": "512GB SSD"
+    },
+    "source_urls": [],
+    "lookup_mode": "heuristic_fallback",
+    "updated_at": "2026-05-21T12:13:33.604000+00:00"
+  },
+  "apple | macbook pro 16-inch 2019 | laptop": {
+    "corrected_specifications": {
+      "OS": "macOS",
+      "brand": "Apple",
+      "Memory": "32GB",
+      "Display": "64 inch (1",
+      "Storage": "1TB",
+      "version": "MacBook Pro 16-inch 2019",
+      "Processor/Chip": "Processor 2",
+      "inferredQuality": "rugged",
+      "telemetryEnabled": "false",
+      "specVerificationConfirmedOnCreate": "false"
+    },
+    "predicted_specifications": {
+      "OS": "macOS",
+      "Memory": "16GB",
+      "Display": "64 inch (1",
+      "Storage": "1TB",
+      "Processor/Chip": "Processor 2"
+    },
+    "source_urls": [
+      "https://support.apple.com/en-us/111932"
+    ],
+    "lookup_mode": "source_lookup_cache_hit",
+    "updated_at": "2026-05-23T04:11:19.298000+00:00"
+  }
+}
