@@ -486,17 +486,18 @@ function renderMyTicketActions(ticket) {
             `;
         }
 
+        if (ticket.status !== 'RESOLVED') {
             actions += `
-              <button
-                 class="btn btn-sm btn-info"
-                 onclick="window.searchSimilarIssue('${ticket.id}')">
+                <button
+                        class="btn btn-sm btn-info"
+                        onclick="window.searchSimilarIssue('${ticket.id}')">
 
-                  <i class="bi bi-search me-1"></i>
-                  Search Similar
+                        <i class="bi bi-search me-1"></i>
+                        Search Similar
 
-              </button>
+                </button>
             `;
-
+        }
 
     }
     
