@@ -485,6 +485,19 @@ function renderMyTicketActions(ticket) {
                 </button>
             `;
         }
+
+            actions += `
+              <button
+                 class="btn btn-sm btn-info"
+                 onclick="window.searchSimilarIssue('${ticket.id}')">
+
+                  <i class="bi bi-search me-1"></i>
+                  Search Similar
+
+              </button>
+            `;
+
+
     }
     
     // Escalate button - visible for TECHNICIAN, SENIOR, and SUPERVISOR
@@ -700,6 +713,41 @@ window.escalateTicket = async function(ticketId) {
     } catch (error) {
         console.error('Error escalating ticket:', error);
         UI.showToast(error.message || 'Failed to escalate ticket', 'error');
+    }
+};
+
+
+window.searchSimilarIssue = async function(ticketId) {
+
+    const ticket = state.myTickets.find(
+        t => String(t.id) === String(ticketId)
+    );
+
+    if (!ticket) {
+        UI.showToast('Ticket not found', 'error');
+        return;
+    }
+
+    const response = await fetch(
+        'http://localhost:3004/analytics/check-similar-issue',
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                title: ticket.title,
+                description: ticket.description
+            })
+        }
+    );
+
+    const data = await response.json();
+
+    if (data.found) {
+        alert(data.solution);
+    } else {
+        alert('No Similar Tickets Found');
     }
 };
 
