@@ -720,38 +720,95 @@ window.escalateTicket = async function(ticketId) {
 
 window.searchSimilarIssue = async function(ticketId) {
 
-    const ticket = state.myTickets.find(
-        t => String(t.id) === String(ticketId)
-    );
+    try {
 
-    if (!ticket) {
-        UI.showToast('Ticket not found', 'error');
-        return;
-    }
+        const ticket = state.myTickets.find(
+            t => String(t.id) === String(ticketId)
+        );
 
-    const response = await fetch(
-        'http://localhost:3006/analytics/check-similar-issue',
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                title: ticket.title,
-                description: ticket.description
-            })
+        if (!ticket) {
+            UI.showToast('Ticket not found', 'error');
+            return;
         }
-    );
 
-    const data = await response.json();
+        document.getElementById("similarityModalBody").innerHTML = `
+            <div class="text-center">
+                <div class="spinner-border text-primary"></div>
+                <p class="mt-3">Searching Similar Issues...</p>
+            </div>
+        `;
 
-    if (data.found) {
-        alert(data.solution);
-    } else {
-        alert('No Similar Tickets Found');
+        const modal = new bootstrap.Modal(
+            document.getElementById("similarityModal")
+        );
+
+        modal.show();
+
+        const response = await fetch(
+            'http://localhost:3006/analytics/check-similar-issue',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    title: ticket.title,
+                    description: ticket.description
+                })
+            }
+        );
+
+        const data = await response.json();
+
+        if (data.found) {
+
+            document.getElementById("similarityModalBody").innerHTML = `
+                <div class="alert alert-success">
+
+                    <h5 class="mb-3">
+                        <i class="bi bi-check-circle-fill"></i>
+                        Suggested Solution
+                    </h5>
+
+                    <hr>
+
+                    <p class="mb-0">
+                        ${data.solution}
+                    </p>
+
+                </div>
+            `;
+
+        } else {
+
+            document.getElementById("similarityModalBody").innerHTML = `
+                <div class="alert alert-warning">
+
+                    <h5>
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        No Similar Tickets Found
+                    </h5>
+
+                </div>
+            `;
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById("similarityModalBody").innerHTML = `
+            <div class="alert alert-danger">
+
+                <h5>
+                    <i class="bi bi-x-circle-fill"></i>
+                    Error Searching Similar Tickets
+                </h5>
+
+            </div>
+        `;
     }
 };
-
 /**
  * View ticket details
  */
