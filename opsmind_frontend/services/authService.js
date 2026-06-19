@@ -546,7 +546,7 @@ const AuthService = {
         const user = this.getUser();
         const roles = Array.isArray(user?.roles) ? user.roles : [];
         const technicianLevel = this.getTechnicianLevel();
-        const isTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(technicianLevel || '');
+        const isTechnicianLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF', 'ADMIN'].includes(technicianLevel || '');
         return user?.role === 'TECHNICIAN' || roles.includes('TECHNICIAN') || isTechnicianLevel;
     },
 
@@ -609,7 +609,7 @@ const AuthService = {
         }
 
         const role = String(user?.role || '').toUpperCase();
-        if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+        if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF', 'ADMIN'].includes(role)) {
             return role;
         }
 
@@ -647,7 +647,10 @@ const AuthService = {
             L1: 'JUNIOR',
             L2: 'SENIOR',
             L3: 'SUPERVISOR',
-            L4: 'ADMIN'
+            L4: 'ADMIN',
+            BUILDING_SUPERVISOR: 'BUILDING_SUPERVISOR',
+            SUPERVISOR_CHIEF: 'SUPERVISOR_CHIEF',
+            CHIEF: 'SUPERVISOR_CHIEF'
         };
 
         let technicianLevel = rawLevel ? String(rawLevel).toUpperCase() : null;
@@ -656,10 +659,10 @@ const AuthService = {
         }
 
         if (!technicianLevel) {
-            if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+            if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF', 'ADMIN'].includes(role)) {
                 technicianLevel = role;
             } else {
-                const roleMatch = roles.find((entry) => ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(entry));
+                const roleMatch = roles.find((entry) => ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF', 'ADMIN'].includes(entry));
                 technicianLevel = roleMatch || null;
             }
         }
@@ -691,7 +694,10 @@ const AuthService = {
             dashboardPath = '/pages/dashboard.html';
         } else if (hasTechnicianRole) {
             roleCategory = 'TECHNICIAN';
-            if (technicianLevel === 'SUPERVISOR') {
+            if (technicianLevel === 'SUPERVISOR_CHIEF' || technicianLevel === 'CHIEF' || technicianLevel === 'ADMIN') {
+                dashboardType = 'supervisor';
+                dashboardPath = '/pages/supervisor-dashboard.html';
+            } else if (technicianLevel === 'SUPERVISOR' || technicianLevel === 'BUILDING_SUPERVISOR') {
                 dashboardType = 'supervisor';
                 dashboardPath = '/pages/supervisor-dashboard.html';
             } else if (technicianLevel === 'SENIOR') {
@@ -703,7 +709,8 @@ const AuthService = {
             }
         }
 
-        if (['junior', 'senior', 'supervisor'].includes(dashboardType) && !workflowUserId) {
+        const inventoryHierarchyLevel = ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF'].includes(technicianLevel || '');
+        if (['junior', 'senior', 'supervisor'].includes(dashboardType) && !workflowUserId && !inventoryHierarchyLevel) {
             dashboardType = 'unknown';
         }
 
@@ -723,6 +730,123 @@ const AuthService = {
     getUserBuilding() {
         const user = this.getUser();
         return user?.building || null;
+    },
+
+    /**
+     * Resolve the Inventory/Procurement hierarchy role for the current user.
+     * Unknown roles intentionally return null instead of elevating privileges.
+     * @param {Object|null} currentUser
+     * @returns {'ADMIN'|'SUPERVISOR_CHIEF'|'BUILDING_SUPERVISOR'|'SENIOR'|'JUNIOR'|null}
+     */
+    resolveInventoryRole(currentUser = null) {
+        const user = currentUser || this.getUser();
+        if (!user) return null;
+
+        const email = String(user.email || '').trim().toLowerCase();
+        const qaRoleMap = {
+            'qa.junior@opsmind.local': 'JUNIOR',
+            'qa.senior@opsmind.local': 'SENIOR',
+            'qa.supervisor@opsmind.local': 'BUILDING_SUPERVISOR',
+            'qa.chief@opsmind.local': 'SUPERVISOR_CHIEF',
+            'qa.admin@opsmind.local': 'ADMIN'
+        };
+        if (qaRoleMap[email]) return qaRoleMap[email];
+
+        const roles = Array.isArray(user.roles) ? user.roles.map((entry) => String(entry).toUpperCase()) : [];
+        const role = String(user.role || roles[0] || '').toUpperCase();
+        const level = String(
+            user.inventoryRole ||
+            user.inventory_role ||
+            user.technicianLevel ||
+            user.technician_level ||
+            user.level ||
+            user.supportLevel ||
+            user.support_level ||
+            ''
+        ).toUpperCase();
+        const values = [level, role, ...roles].filter(Boolean);
+        const has = (target) => values.includes(target);
+
+        if (has('ADMIN')) return 'ADMIN';
+        if (has('SUPERVISOR_CHIEF') || has('CHIEF')) return 'SUPERVISOR_CHIEF';
+        if (has('BUILDING_SUPERVISOR') || has('SUPERVISOR')) return 'BUILDING_SUPERVISOR';
+        if (has('SENIOR')) return 'SENIOR';
+        if (has('JUNIOR')) return 'JUNIOR';
+        if (role === 'TECHNICIAN' || roles.includes('TECHNICIAN')) return 'JUNIOR';
+
+        return null;
+    },
+
+    /**
+     * Resolve Inventory/Procurement building scope for the current user.
+     * @param {Object|null} currentUser
+     * @returns {string|null}
+     */
+    resolveInventoryBuilding(currentUser = null) {
+        const user = currentUser || this.getUser();
+        if (!user) return null;
+
+        const email = String(user.email || '').trim().toLowerCase();
+        const qaBuildingMap = {
+            'qa.junior@opsmind.local': 'MAIN',
+            'qa.senior@opsmind.local': 'MAIN',
+            'qa.supervisor@opsmind.local': 'MAIN',
+            'qa.chief@opsmind.local': 'GLOBAL',
+            'qa.admin@opsmind.local': 'GLOBAL'
+        };
+        if (qaBuildingMap[email]) return qaBuildingMap[email];
+
+        const building =
+            user.buildingCode ||
+            user.building_code ||
+            user.primaryBuilding ||
+            user.primary_building ||
+            user.building ||
+            user.location ||
+            (Array.isArray(user.buildings) && user.buildings.length > 0
+                ? (user.buildings[0].buildingCode || user.buildings[0].code || user.buildings[0].name || user.buildings[0])
+                : null);
+
+        if (building) return String(building).trim().toUpperCase();
+
+        const role = this.resolveInventoryRole(user);
+        if (role === 'ADMIN' || role === 'SUPERVISOR_CHIEF') return 'GLOBAL';
+        return null;
+    },
+
+    /**
+     * Build authenticated headers for Inventory/Procurement APIs.
+     * These services accept bearer auth and, in local/dev, dynamic identity
+     * headers derived from the persisted login session.
+     * @param {Object} extra
+     * @returns {Object}
+     */
+    getInventoryAuthHeaders(extra = {}) {
+        const headers = this.getAuthHeaders();
+        const user = this.getUser();
+        if (!user) {
+            return { ...headers, ...extra };
+        }
+
+        const role = this.resolveInventoryRole(user);
+        const building = this.resolveInventoryBuilding(user);
+        const userId = user.userId || user.id || user._id || user.sub || user.workflowUserId || user.workflow_user_id || user.email;
+        const displayName =
+            user.displayName ||
+            user.name ||
+            [user.firstName, user.lastName].filter(Boolean).join(' ') ||
+            user.email;
+
+        if (userId) headers['x-user-id'] = String(userId);
+        if (user.email) headers['x-user-email'] = String(user.email);
+        if (displayName) headers['x-user-name'] = String(displayName);
+        if (role) headers['x-user-role'] = role;
+        if (building) headers['x-user-building'] = building;
+        if (user.reportsToUserId || user.reports_to_user_id) {
+            headers['x-reports-to-user-id'] = String(user.reportsToUserId || user.reports_to_user_id);
+        }
+
+        return { ...headers, ...extra };
     },
 
     /**

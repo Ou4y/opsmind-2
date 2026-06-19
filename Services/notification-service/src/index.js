@@ -13,6 +13,7 @@ process.on("uncaughtException", (err) => {
 const express = require("express");
 const connectRabbitMQ = require("./config/rabbitmq");
 const consumeTicketNotifications = require("./consumers/ticketNotification.consumer");
+const consumeInventoryNotifications = require("./consumers/inventoryNotification.consumer");
 const createNotificationAPI = require("./api/notification.api");
 
 (async () => {
@@ -30,6 +31,7 @@ const createNotificationAPI = require("./api/notification.api");
 
     const { channel, EXCHANGE_NAME } = await connectRabbitMQ();
     await consumeTicketNotifications(channel, EXCHANGE_NAME);
+    await consumeInventoryNotifications(channel, EXCHANGE_NAME);
 
     app.use("/api/notifications", createNotificationAPI(channel, EXCHANGE_NAME));
 

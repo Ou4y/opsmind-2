@@ -4,7 +4,7 @@ import { initInventoryAiCopilot } from '/assets/js/components/inventoryAiCopilot
 
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
 const INVENTORY_AI_URL = window.OPSMIND_INVENTORY_AI_API_URL || 'http://localhost:8002';
-const ALLOWED_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
+const ALLOWED_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF']);
 const PAGE_SIZE = 500;
 const MAX_ASSET_PAGES = 12;
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
@@ -56,7 +56,7 @@ function ensureAccess() {
 
 function authHeaders(extra = {}) {
   return {
-    ...AuthService.getAuthHeaders(),
+    ...AuthService.getInventoryAuthHeaders(),
     ...extra,
   };
 }
@@ -1684,7 +1684,14 @@ function eolRowField(row = {}, field = '') {
 }
 
 function eolFilterOptions(rows = [], field = '') {
-  return Array.from(new Set(rows.map((row) => eolRowField(row, field)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const rowOptions = rows.map((row) => eolRowField(row, field)).filter(Boolean);
+  const assetOptions = state.assets.map((asset) => {
+    if (field === 'department') return displayDepartment(asset.department || 'Unassigned');
+    if (field === 'building') return displayLocation(asset.location || 'Unassigned');
+    if (field === 'category') return toTitle(asset.category || 'asset');
+    return '';
+  }).filter(Boolean);
+  return Array.from(new Set([...rowOptions, ...assetOptions])).sort((a, b) => a.localeCompare(b));
 }
 
 function renderEolFilterSelect(id, label, field, rows) {

@@ -64,6 +64,8 @@ const state = {
   finance: null,
   suppliers: null,
   supplierCatalog: null,
+  approvals: null,
+  approvalsMode: 'assigned',
   loadedAt: 0,
   refreshTimer: null,
   requestView: localStorage.getItem('opsmind_procurement_request_view') || 'table',
@@ -82,7 +84,7 @@ function ensureAccess() {
 
 function authHeaders(extra = {}) {
   return {
-    ...AuthService.getAuthHeaders(),
+    ...AuthService.getInventoryAuthHeaders(),
     ...extra,
   };
 }
@@ -117,6 +119,19 @@ async function sendJson(path, body = {}, method = 'POST') {
     body: JSON.stringify(body || {}),
   });
   const payload = await response.json().catch(() => ({}));
+  if (payload?.approvalRequired) {
+    const approver = String(payload.approverRole || 'approver').replace(/_/g, ' ');
+    const requestInfo = payload.requestCode || payload.approvalRequestId
+      ? ` Request: ${payload.requestCode || payload.approvalRequestId}.`
+      : '';
+    const err = new Error(payload.message || `Approval required. Request sent to ${approver}.${requestInfo}`);
+    err.approvalRequired = true;
+    err.approvalRequestId = payload.approvalRequestId;
+    err.requestCode = payload.requestCode;
+    err.approverRole = payload.approverRole;
+    err.payload = payload;
+    throw err;
+  }
   if (!response.ok) throw new Error(payload?.message || `Request failed (${response.status})`);
   return payload;
 }
@@ -127,6 +142,12 @@ function notify(message, type = 'info') {
   else if (safeType === 'warning') UI.warning(message);
   else if (safeType === 'error') UI.error(message);
   else UI.info(message);
+}
+
+function notifyApprovalRequired(error) {
+  if (!error?.approvalRequired) return false;
+  notify(error.message || 'Approval required. Request sent to the required approver.', 'warning');
+  return true;
 }
 
 function escapeHtml(value) {
@@ -252,6 +273,142 @@ function buildLifecycleStepper(status) {
       }).join('')}
     </div>
   `;
+}
+
+function approvalStatusClass(status) {
+  const normalized = normalizeValue(status);
+  if (normalized === 'approved') return 'is-healthy';
+  if (normalized === 'rejected' || normalized === 'cancelled') return 'is-urgent';
+  if (normalized === 'pending') return 'is-review';
+  return 'is-info';
+}
+
+function renderApprovalCenter() {
+  const body = document.getElementById('procApprovalCenterBody');
+  if (!body) return;
+  const payload = state.approvals;
+  if (!payload) {
+    body.innerHTML = `
+      <div class="ops-loading-stack">
+        <span class="ops-skeleton-row"></span>
+        <span class="ops-skeleton-row"></span>
+      </div>
+    `;
+    return;
+  }
+  if (payload.error) {
+    body.innerHTML = `
+      <div class="proc-empty-state">
+        <div class="proc-empty-title">Approval workflow not available yet</div>
+        <p>${escapeHtml(payload.error)}</p>
+      </div>
+    `;
+    return;
+  }
+  const approvals = Array.isArray(payload.approvals) ? payload.approvals : [];
+  if (!approvals.length) {
+    body.innerHTML = `
+      <div class="proc-empty-state">
+        <div class="proc-empty-title">No pending approvals</div>
+        <p>${state.approvalsMode === 'mine' ? 'You have not submitted approval requests yet.' : 'No actions are waiting for your role/building approval.'}</p>
+      </div>
+    `;
+    return;
+  }
+  body.innerHTML = approvals.slice(0, 8).map((row) => {
+    const status = String(row.status || 'PENDING');
+    const requestedBy = [row.requestedByName, row.requestedByRole].filter(Boolean).join(' / ') || row.requestedByUserId || '-';
+    const amount = row.amount === null || typeof row.amount === 'undefined' ? '' : formatCurrency(row.amount);
+    return `
+      <article class="proc-approval-card">
+        <div class="proc-approval-main">
+          <div class="proc-approval-kicker">
+            <span class="ops-attention-pill ${approvalStatusClass(status)}">${escapeHtml(status.replace(/_/g, ' '))}</span>
+            <span class="ops-attention-pill is-info">${escapeHtml(row.riskLevel || 'Risk not set')}</span>
+            ${row.approverRole ? `<span class="ops-attention-pill is-review">Approver: ${escapeHtml(String(row.approverRole).replace(/_/g, ' '))}</span>` : ''}
+          </div>
+          <div class="proc-approval-title">${escapeHtml(row.requestCode || row.id)} - ${escapeHtml(row.entityLabel || row.actionType || 'Inventory action')}</div>
+          <div class="proc-approval-meta">
+            <span>Requested by ${escapeHtml(requestedBy)}</span>
+            <span>${escapeHtml(row.buildingCode || 'Global scope')}</span>
+            ${row.targetBuildingCode ? `<span>Target ${escapeHtml(row.targetBuildingCode)}</span>` : ''}
+            ${amount ? `<span>${escapeHtml(amount)}</span>` : ''}
+          </div>
+          <p class="proc-approval-reason">${escapeHtml(row.reason || 'Review approval context before deciding.')}</p>
+        </div>
+        <div class="proc-approval-actions">
+          <button type="button" class="btn btn-sm btn-outline-primary" data-proc-approval-details="${escapeHtml(row.id)}">Details</button>
+          ${status === 'PENDING' ? `
+            <button type="button" class="btn btn-sm btn-success" data-proc-approval-approve="${escapeHtml(row.id)}">Approve</button>
+            <button type="button" class="btn btn-sm btn-outline-danger" data-proc-approval-reject="${escapeHtml(row.id)}">Reject</button>
+          ` : ''}
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+async function loadApprovals(mode = state.approvalsMode) {
+  state.approvalsMode = mode;
+  try {
+    const query = mode === 'mine'
+      ? '/inventory/approvals?mine=true&status=all'
+      : '/inventory/approvals?assignedToMe=true&status=PENDING';
+    state.approvals = await readJson(query);
+  } catch (error) {
+    state.approvals = { error: error.message || 'Approval endpoints are not reachable.' };
+  }
+  renderApprovalCenter();
+}
+
+async function decideApproval(approvalId, decision) {
+  const isApprove = decision === 'approve';
+  const confirmed = await UI.confirm({
+    title: isApprove ? 'Approve Inventory Action?' : 'Reject Inventory Action?',
+    message: isApprove
+      ? 'Approval does not execute the original action automatically. The requester must retry the reviewed action with the approval request ID.'
+      : 'Rejecting this request blocks the pending action until it is resubmitted.',
+    confirmText: isApprove ? 'Approve' : 'Reject',
+    confirmClass: isApprove ? 'btn-success' : 'btn-danger',
+  });
+  if (!confirmed) return;
+  try {
+    await sendJson(`/inventory/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
+      reason: isApprove ? 'Approved from Procurement Approval Center.' : 'Rejected from Procurement Approval Center.',
+    });
+    notify(isApprove ? 'Approval granted. Requester can retry the action safely.' : 'Approval rejected.', isApprove ? 'success' : 'warning');
+    await loadApprovals();
+  } catch (error) {
+    notify(error.message || 'Failed to update approval.', 'error');
+  }
+}
+
+async function showApprovalDetails(approvalId) {
+  try {
+    const row = await readJson(`/inventory/approvals/${encodeURIComponent(approvalId)}`);
+    await showFormModal({
+      title: `Approval ${row.requestCode || row.id}`,
+      messageHtml: `
+        <div class="proc-approval-detail">
+          <div><strong>Action:</strong> ${escapeHtml(row.actionType || '-')}</div>
+          <div><strong>Entity:</strong> ${escapeHtml(row.entityLabel || row.entityId || '-')}</div>
+          <div><strong>Risk:</strong> ${escapeHtml(row.riskLevel || '-')}</div>
+          <div><strong>Status:</strong> ${escapeHtml(row.status || '-')}</div>
+          <div><strong>Requester:</strong> ${escapeHtml(row.requestedByName || row.requestedByUserId || '-')} (${escapeHtml(row.requestedByRole || '-')})</div>
+          <div><strong>Approver Role:</strong> ${escapeHtml(row.approverRole || '-')}</div>
+          <div><strong>Reason:</strong> ${escapeHtml(row.reason || '-')}</div>
+          <div><strong>Decisions:</strong> ${escapeHtml((row.decisions || []).map((entry) => `${entry.decision} by ${entry.decidedByRole}`).join(', ') || 'None yet')}</div>
+        </div>
+      `,
+      confirmText: 'Close',
+      cancelText: 'Close',
+      confirmClass: 'btn-primary',
+      dialogClass: 'modal-lg',
+      fields: [],
+    });
+  } catch (error) {
+    notify(error.message || 'Failed to load approval details.', 'error');
+  }
 }
 
 function emptyStateRow(colspan, title, message, actionHtml = '') {
@@ -1982,9 +2139,18 @@ async function loadBoard(options = {}) {
   setLoadingState(true, background ? 'Refreshing...' : 'Loading procurement board...');
   if (!background) setProcurementSkeletonState();
   try {
-    state.board = await readJson(`/inventory/procurement/board?status=${encodeURIComponent(state.statusFilter)}`);
+    const [boardResult, approvalResult] = await Promise.allSettled([
+      readJson(`/inventory/procurement/board?status=${encodeURIComponent(state.statusFilter)}`),
+      readJson('/inventory/approvals?assignedToMe=true&status=PENDING'),
+    ]);
+    if (boardResult.status !== 'fulfilled') throw boardResult.reason;
+    state.board = boardResult.value;
+    state.approvals = approvalResult.status === 'fulfilled'
+      ? approvalResult.value
+      : { error: approvalResult.reason?.message || 'Approval workflow not available yet.' };
     state.loadedAt = Date.now();
     renderBoard();
+    renderApprovalCenter();
     await loadErpFoundationPanels();
     setLoadingState(false);
   } catch (error) {
@@ -2091,6 +2257,10 @@ async function createManualRequest() {
     notify('Procurement request created.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to create request.', 'error');
   }
 }
@@ -2252,6 +2422,10 @@ async function createRequestFromRecommendation(index) {
     notify('Procurement request created from AI recommendation.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to create request from AI recommendation.', 'error');
   }
 }
@@ -2476,6 +2650,10 @@ async function updateRequestStatus(requestId) {
     notify('Request status updated.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to update status.', 'error');
   }
 }
@@ -2565,6 +2743,10 @@ async function addVendorQuote(requestId) {
     notify('Vendor quote added.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to add vendor quote.', 'error');
   }
 }
@@ -2615,6 +2797,10 @@ async function updateQuoteStatus(requestId, quoteId, action) {
     notify(`Quote ${action === 'select' ? 'selected' : 'rejected'}.`, 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to update quote.', 'error');
   }
 }
@@ -2660,6 +2846,10 @@ async function createPurchaseOrder(requestId) {
     notify('Purchase order created.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to create purchase order.', 'error');
   }
 }
@@ -2784,6 +2974,10 @@ async function receiveRequest(requestId) {
     notify(result?.followUp || 'Receiving recorded.', 'success');
     await loadBoard();
   } catch (error) {
+    if (notifyApprovalRequired(error)) {
+      await loadBoard();
+      return;
+    }
     notify(error.message || 'Failed to record receiving.', 'error');
   }
 }
@@ -3211,6 +3405,9 @@ function bindActions() {
   const analyticsDimension = document.getElementById('procAnalyticsDimension');
   const analyticsChartType = document.getElementById('procAnalyticsChartType');
   const analyticsRenderBtn = document.getElementById('procAnalyticsRenderBtn');
+  const approvalRefreshBtn = document.getElementById('procApprovalRefreshBtn');
+  const myApprovalRequestsBtn = document.getElementById('procMyApprovalRequestsBtn');
+  const approvalCenterBody = document.getElementById('procApprovalCenterBody');
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => loadBoard());
   if (createBtn) createBtn.addEventListener('click', () => createManualRequest());
@@ -3241,6 +3438,26 @@ function bindActions() {
   if (analyticsDimension) analyticsDimension.addEventListener('change', renderProcurementAnalyticsBuilder);
   if (analyticsChartType) analyticsChartType.addEventListener('change', renderProcurementAnalyticsBuilder);
   if (analyticsRenderBtn) analyticsRenderBtn.addEventListener('click', renderProcurementAnalyticsBuilder);
+  if (approvalRefreshBtn) approvalRefreshBtn.addEventListener('click', () => loadApprovals('assigned'));
+  if (myApprovalRequestsBtn) myApprovalRequestsBtn.addEventListener('click', () => loadApprovals('mine'));
+  if (approvalCenterBody) {
+    approvalCenterBody.addEventListener('click', (event) => {
+      const detailsBtn = event.target?.closest('[data-proc-approval-details]');
+      if (detailsBtn) {
+        showApprovalDetails(String(detailsBtn.getAttribute('data-proc-approval-details') || '').trim());
+        return;
+      }
+      const approveBtn = event.target?.closest('[data-proc-approval-approve]');
+      if (approveBtn) {
+        decideApproval(String(approveBtn.getAttribute('data-proc-approval-approve') || '').trim(), 'approve');
+        return;
+      }
+      const rejectBtn = event.target?.closest('[data-proc-approval-reject]');
+      if (rejectBtn) {
+        decideApproval(String(rejectBtn.getAttribute('data-proc-approval-reject') || '').trim(), 'reject');
+      }
+    });
+  }
   window.addEventListener('hashchange', applyInitialProcurementHash);
   requestViewButtons.forEach((button) => {
     button.addEventListener('click', () => setRequestViewMode(button.getAttribute('data-proc-request-view') || 'table'));

@@ -35,6 +35,14 @@ export interface UserResponse {
   isActive: boolean;
   role?: string; // Single role name for display
   technicianLevel?: TechnicianLevel;
+  building?: string;
+  buildingCode?: string;
+  buildings?: Array<{
+    id: string;
+    name: string;
+    code: string;
+    isPrimary?: boolean;
+  }>;
   roles: string[];
   createdAt: Date;
 }

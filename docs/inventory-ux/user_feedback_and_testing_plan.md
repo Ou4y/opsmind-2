@@ -5,6 +5,7 @@
 - Measure error prevention effectiveness in import flow.
 - Confirm discoverability of CMDB, related transfers, map, and AI report actions.
 - Assess confidence/trust in AI assistive workflows and fallback messaging.
+- Confirm that approval-required Inventory/Procurement actions explain who must approve, why approval is needed, and what the requester should do next.
 
 ## 2) Target Testers
 - 2 Inventory Admin users.
@@ -28,6 +29,8 @@
 5. Open Asset Map and verify location marker context.
 6. Ask Inventory AI for Daily Brief.
 7. Generate Executive Dashboard summary.
+8. Submit a controlled procurement or stock action and confirm the approval-required response is understandable.
+9. Approve/reject a request from the Procurement Approval Center if the tester role allows it.
 
 ## 5) Measures to Record
 - Task completion time (per task).
@@ -36,6 +39,10 @@
 - Recovery count (how many retries/fixes needed).
 - User confidence and satisfaction comments.
 - SUS score.
+- Approval-flow comprehension:
+  - Did the user understand why approval was needed?
+  - Did the user understand who was notified?
+  - Did the user understand that approved actions require explicit retry/execution?
 
 ## 6) Pass/Fail Heuristics
 - Critical tasks (1-4) should pass for at least 85 percent of participants.
@@ -64,3 +71,32 @@ Future recurring metrics:
 
 ## 9) Lightweight Logging Guidance
 Before adding new tracking systems, reuse existing inventory lifecycle and workflow events from backend routes to compute aggregate UX metrics. Keep data minimal and avoid personal-data-heavy instrumentation.
+
+## 10) Inventory/Procurement Approval Test Coverage
+These are backend approval-policy scenarios that should remain aligned with browser QA and thesis evaluation:
+
+| Test case | Expected result | Current evidence |
+| --- | --- | --- |
+| Junior QR scan | Auto-approved, audit only | Automated approval test |
+| Junior damage report | Senior approval | Automated approval test |
+| Junior missing asset report | Senior approval | Automated approval test |
+| Junior repair request | Senior approval | Automated approval test |
+| Junior audit discrepancy | Senior approval | Automated approval test |
+| Senior medium procurement | Building Supervisor approval | Automated approval test |
+| Building Supervisor cross-building transfer | Supervisor Chief approval | Automated approval test |
+| Supervisor Chief write-off/delete | Admin approval | Automated approval test |
+| Admin destructive action | Allowed with audit | Automated approval test |
+| Warehouse small dispatch | Central Warehouse Senior approval | Automated approval test |
+| Warehouse large dispatch | Building Supervisor or Supervisor Chief depending value/criticality | Automated approval test |
+| Warehouse receiving confirmation | Central Warehouse Building Supervisor approval when inventory impact exists | Automated approval test |
+| Procurement request worth EGP 30,000 | Admin approval | Automated approval test |
+| Junior/Senior cross-building execution | Direct execution blocked | Automated approval test |
+| Approval notification payload | Correct role/scope event emitted | Automated notification test |
+| Approved retry guard | Matching approved `approvalRequestId` required | Automated approval test |
+
+Latest local validation reported the targeted Inventory approval/import suite passing 19 tests. This number should be cited only as targeted backend validation, not as full production performance or full browser QA coverage.
+
+## 11) Evaluation Honesty
+- Do not report response-time benchmarks unless measured in a controlled run.
+- Do not report participant counts, SUS scores, or satisfaction percentages unless collected.
+- If no user study data is available, describe the user evaluation as planned and list the test protocol above.

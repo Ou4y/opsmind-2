@@ -1,6 +1,6 @@
 # Inventory and Procurement Roadmap Status
 
-_Last updated: June 5, 2026_
+_Last updated: June 14, 2026_
 
 This document tracks the final OpsMind Inventory / Procurement / Inventory AI roadmap against the current implementation. It is intentionally evidence-based: items are marked complete only where code or documented backend/frontend behavior exists.
 
@@ -13,6 +13,7 @@ This document tracks the final OpsMind Inventory / Procurement / Inventory AI ro
 | Data Quality inline fix flow | Implemented | Command Center opens an in-app editable table for missing serial, department, location, purchase date, warranty end, and purchase cost. Saves use `/api/assets/:id/details`, which already records asset lifecycle/history updates. |
 | Asset 360 maintenance tab | Existing | CMDB / Asset 360 already has Maintenance tab, add-maintenance modal, maintenance records, cost fields, and backend `AssetMaintenanceRecord`. |
 | Custody chain / transfer history | Existing | Backend has `AssetCustodyEvent`; transfer, bulk checkout, check-in, loaner checkout/return write lifecycle/custody events. CMDB shows custody history. |
+| Inventory/Procurement approval governance | Implemented foundation | `InventoryApprovalPolicy`, `InventoryApprovalRequest`, `InventoryApprovalDecision`, and `InventoryAuditLog` support role/scope/action-risk approval, notification-service events, and explicit approved-action retry with `approvalRequestId`. Workflow-service generic Inventory approval tasks and concrete auth approver lookup remain future work. |
 
 ## Stage 2: Control and Lifecycle
 
