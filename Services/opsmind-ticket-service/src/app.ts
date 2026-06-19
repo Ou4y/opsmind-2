@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import ticketRouter from "./routes/ticket.routes";
 import aiRouter from "./routes/ai.routes";
 import { errorMiddleware } from "./middleware/error.middleware";
@@ -11,13 +12,18 @@ import { logger } from "./config/logger";
 import { requesterAiOllamaService } from "./services/requesterAiOllama.service";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./docs/swagger";
+import { buildStrictCorsOptions } from "./utils/cors";
 //import { setupGracefulShutdown } from "./utils/gracefulShutdown";
 
 export const app = express();
+const enableApiDocs =
+  process.env.ENABLE_API_DOCS === "true" ||
+  (process.env.ENABLE_API_DOCS !== "false" && config.env === "development");
 
 // Middleware
-app.use(cors({ origin: config.cors.origins }));
-app.use(express.json());
+app.use(helmet());
+app.use(cors(buildStrictCorsOptions(process.env)));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
 app.use(requestIdMiddleware);
 
 /**
@@ -30,19 +36,21 @@ app.use(requestIdMiddleware);
  *       200:
  *         description: OpenAPI specification
  */
-app.get("/openapi.json", (_req, res) => {
-  res.json(swaggerSpec);
-});
+if (enableApiDocs) {
+  app.get("/openapi.json", (_req, res) => {
+    res.json(swaggerSpec);
+  });
 
-// Swagger UI
-app.use(
-  "/docs",
-  swaggerUi.serve,
-  swaggerUi.setup(swaggerSpec, {
-    explorer: true,
-    customSiteTitle: "Ticket Service API Docs",
-  })
-);
+  // Swagger UI
+  app.use(
+    "/docs",
+    swaggerUi.serve,
+    swaggerUi.setup(swaggerSpec, {
+      explorer: true,
+      customSiteTitle: "Ticket Service API Docs",
+    })
+  );
+}
 
 // Health check (basic)
 /**

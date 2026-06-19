@@ -12,25 +12,34 @@ import { ExternalTicket, ExternalUser } from '../interfaces/types';
 const AUTH_SERVICE_URL: string = process.env.AUTH_SERVICE_URL || 'http://opsmind-auth-service:3002';
 const TICKET_SERVICE_URL: string = process.env.TICKET_SERVICE_URL || 'http://opsmind-ticket-service:3001';
 const SLA_SERVICE_URL: string = process.env.SLA_SERVICE_URL || 'http://opsmind-sla-service:3004';
+const INTERNAL_API_TOKEN: string = String(process.env.INTERNAL_API_TOKEN || '').trim();
+
+function buildServiceHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (INTERNAL_API_TOKEN) {
+    headers['x-internal-token'] = INTERNAL_API_TOKEN;
+  }
+  return headers;
+}
 
 // ---------- Axios Instances ----------
 
 export const authServiceClient: AxiosInstance = axios.create({
   baseURL: AUTH_SERVICE_URL,
   timeout: 5000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: buildServiceHeaders(),
 });
 
 export const ticketServiceClient: AxiosInstance = axios.create({
   baseURL: TICKET_SERVICE_URL,
   timeout: 5000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: buildServiceHeaders(),
 });
 
 export const slaServiceClient: AxiosInstance = axios.create({
   baseURL: SLA_SERVICE_URL,
   timeout: 5000,
-  headers: { 'Content-Type': 'application/json' },
+  headers: buildServiceHeaders(),
 });
 
 export interface ExternalCallContext {

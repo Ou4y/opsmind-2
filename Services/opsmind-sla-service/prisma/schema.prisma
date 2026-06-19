@@ -23,6 +23,25 @@ enum TicketSLAStatus {
   CLOSED
 }
 
+enum PauseReason {
+  WAITING_FOR_USER
+  WAITING_FOR_ASSET
+  PENDING_VENDOR
+  APPROVAL_REQUIRED
+  OUT_OF_STOCK
+  OTHER
+}
+
+enum PauseSource {
+  USER_RELATED
+  INVENTORY_RELATED
+  VENDOR_RELATED
+  APPROVAL
+  SYSTEM
+  MANUAL
+  OTHER
+}
+
 enum SlaActionType {
   SLA_STARTED
   STATUS_UPDATED
@@ -70,9 +89,15 @@ model TicketSLA {
   ticketTitle               String?
   technicianName            String?
   technicianEmail           String?
+  technicianWorkflowUserId  String?
+  technicianAuthUserId      String?
+  technicianLevel           String?
   supervisorId              String?
   supervisorName            String?
   supervisorEmail           String?
+  supervisorWorkflowUserId  String?
+  supervisorAuthUserId      String?
+  supervisorLevel           String?
   createdAt                 DateTime
   responseDueAt             DateTime
   resolutionDueAt           DateTime
@@ -80,6 +105,9 @@ model TicketSLA {
   resolvedAt                DateTime?
   closedAt                  DateTime?
   pausedAt                  DateTime?
+  pauseReason               PauseReason?
+  pauseSource               PauseSource?
+  pauseNotes                String?         @db.Text
   totalPausedMinutes        Int             @default(0)
   responseWarning1Sent      Boolean         @default(false)
   responseWarning2Sent      Boolean         @default(false)

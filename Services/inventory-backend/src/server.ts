@@ -3,6 +3,7 @@ dotenv.config();
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
@@ -90,7 +91,7 @@ const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
 const LIFESPAN_IMPACT_MIN_HOURS = Math.max(0.5, Number(process.env.LIFESPAN_IMPACT_MIN_HOURS || 2));
 const LIFESPAN_IMPACT_MIN_YEAR_DELTA = Math.max(0.05, Number(process.env.LIFESPAN_IMPACT_MIN_YEAR_DELTA || 0.1));
 const LIFESPAN_IMPACT_MIN_RISK_DELTA = Math.max(0.01, Number(process.env.LIFESPAN_IMPACT_MIN_RISK_DELTA || 0.03));
-const INVENTORY_ENFORCE_AUTH = String(process.env.INVENTORY_ENFORCE_AUTH || 'false').toLowerCase() === 'true';
+const INVENTORY_ENFORCE_AUTH = String(process.env.INVENTORY_ENFORCE_AUTH || 'true').toLowerCase() === 'true';
 
 class RequestValidationError extends Error {}
 

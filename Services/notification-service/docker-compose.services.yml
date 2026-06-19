@@ -9,13 +9,15 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - RABBITMQ_URL=amqp://opsmind:opsmind@opsmind-rabbitmq:5672
+      - RABBITMQ_URL=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@opsmind-rabbitmq:5672
       - MONGO_URI=mongodb://mongodb:27017/notificationDB
       - EMAIL_HOST=mailhog
       - EMAIL_PORT=1025
       - EMAIL_USER=noreply@opsmind.local
       - EMAIL_PASS=
-      - INTERNAL_SECRET=supersecret
+      - INTERNAL_SECRET=${INTERNAL_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:8085}
     networks:
       - opsmind-net
     restart: unless-stopped

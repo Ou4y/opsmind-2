@@ -2,11 +2,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Requires admin privilege
     requireRole(['ADMIN']);
 
-    const AUTH_API_BASE = (
+    const AUTH_API_BASE = String(
         window.APP_CONFIG?.services?.auth ||
         window.OPSMIND_API_URL ||
-        'http://localhost:3002'
+        ''
     ).replace(/\/$/, '');
+    if (!AUTH_API_BASE) {
+        console.error('Auth API URL is not configured.');
+        return;
+    }
     
     // UI Elements
     const elements = {

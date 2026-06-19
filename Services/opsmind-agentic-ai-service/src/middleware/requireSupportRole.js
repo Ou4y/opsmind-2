@@ -1,5 +1,4 @@
 const ALLOWED_SUPPORT_ROLES = new Set([
-  // Required by this phase
   "ADMIN",
   "SUPERVISOR",
   "TECHNICIAN",
@@ -13,8 +12,6 @@ const ALLOWED_SUPPORT_ROLES = new Set([
   "L2",
   "L3",
   "L4",
-
-  // Existing OpsMind role variants used in frontend/auth
   "JUNIOR",
   "SENIOR",
   "SYSTEM_ADMIN",
@@ -58,33 +55,34 @@ function createAuthError(code, statusCode, message) {
   return error;
 }
 
-function toObjectPayload(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
+function resolveSupportActor(auth) {
+  const userId = toOptionalString(auth?.userId);
+  const normalizedRoles = Array.isArray(auth?.roles)
+    ? auth.roles.map((role) => normalizeRole(role)).filter(Boolean)
+    : [];
 
-  return value;
+  const matchingRole = normalizedRoles.find((role) => ALLOWED_SUPPORT_ROLES.has(role)) || null;
+
+  return {
+    userId,
+    role: matchingRole,
+  };
 }
 
 function requireSupportRole(req, _res, next) {
-  const body = toObjectPayload(req.body);
-  const actorPayload =
-    body.actor && typeof body.actor === "object" && !Array.isArray(body.actor) ? body.actor : {};
+  const actor = resolveSupportActor(req.auth);
 
-  const userId = toOptionalString(actorPayload.userId ?? req.headers["x-user-id"]);
-  const role = normalizeRole(actorPayload.role ?? req.headers["x-user-role"]);
-
-  if (!userId) {
+  if (!actor.userId) {
     return next(
       createAuthError(
         "ACTOR_REQUIRED",
-        400,
-        "Actor userId is required for approving or rejecting AI remediation plans."
+        401,
+        "Authentication is required for approving or rejecting AI remediation plans."
       )
     );
   }
 
-  if (!role || !ALLOWED_SUPPORT_ROLES.has(role)) {
+  if (!actor.role) {
     return next(
       createAuthError(
         "AUTH_FORBIDDEN",
@@ -94,11 +92,7 @@ function requireSupportRole(req, _res, next) {
     );
   }
 
-  req.supportActor = {
-    userId,
-    role,
-  };
-
+  req.supportActor = actor;
   return next();
 }
 

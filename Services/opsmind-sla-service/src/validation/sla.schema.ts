@@ -1,6 +1,23 @@
 import { z } from "zod";
 
 const priorityEnum = z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+const pauseReasonEnum = z.enum([
+  "WAITING_FOR_USER",
+  "WAITING_FOR_ASSET",
+  "PENDING_VENDOR",
+  "APPROVAL_REQUIRED",
+  "OUT_OF_STOCK",
+  "OTHER",
+]);
+const pauseSourceEnum = z.enum([
+  "USER_RELATED",
+  "INVENTORY_RELATED",
+  "VENDOR_RELATED",
+  "APPROVAL",
+  "SYSTEM",
+  "MANUAL",
+  "OTHER",
+]);
 const contactSchema = z.object({
   id: z.union([z.string(), z.number()]).transform(String),
   name: z.string().optional().nullable(),
@@ -67,7 +84,9 @@ export const updateTicketSlaStatusSchema = z.object({
 
 export const pauseTicketSlaSchema = z.object({
   body: z.object({
-    reason: z.string().optional(),
+    reason: pauseReasonEnum.optional(),
+    source: pauseSourceEnum.optional(),
+    notes: z.string().max(2000).optional().nullable(),
   }).optional(),
   params: z.object({
     ticketId: z.string().min(1),
@@ -131,4 +150,10 @@ export const complianceReportQuerySchema = z.object({
     start_date: z.string().optional(),
     end_date: z.string().optional(),
   }),
+});
+
+export const pauseAnalyticsQuerySchema = z.object({
+  body: z.any().optional(),
+  params: z.object({}),
+  query: z.object({}),
 });

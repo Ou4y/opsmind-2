@@ -59,8 +59,18 @@ const getBuildingId = async (buildingCode: string): Promise<string | null> => {
 };
 
 const seedAdminUser = async (adminRoleId: string): Promise<void> => {
-  const adminEmail = 'admin@opsmind.com';
-  const adminPassword = 'Admin@123456';
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  const adminEmail = process.env.ADMIN_SEED_EMAIL || 'admin@opsmind.com';
+  const adminPassword =
+    process.env.ADMIN_SEED_PASSWORD || (nodeEnv === 'development' ? 'Admin@123456' : '');
+
+  if (!adminPassword) {
+    throw new Error('ADMIN_SEED_PASSWORD is required for non-development environments');
+  }
+
+  if (nodeEnv !== 'development' && adminPassword === 'Admin@123456') {
+    throw new Error('Refusing to seed non-development environment with default admin password');
+  }
 
   // Check if admin exists
   const existingAdmin = await query<any[]>(
@@ -89,7 +99,7 @@ const seedAdminUser = async (adminRoleId: string): Promise<void> => {
   );
 
   logger.info(`Admin user created: ${adminEmail}`);
-  logger.info('Default admin password: Admin@123456 (CHANGE THIS IN PRODUCTION!)');
+  logger.info('Admin user seeded successfully');
 };
 
 const seedBuildings = async (): Promise<void> => {

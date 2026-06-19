@@ -10,11 +10,9 @@
  * Backend API: http://localhost:3002
  */
 
-// API base URL - can be configured for different environments via config.js
-const API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_API_URL) ? window.OPSMIND_API_URL :
-    'http://localhost:3002'
-);
+import { AUTH_API_BASE_URL } from './apiConfig.js';
+
+const API_BASE_URL = AUTH_API_BASE_URL;
 
 // Storage keys
 const TOKEN_KEY = 'opsmind_token';
@@ -23,6 +21,8 @@ const REMEMBER_KEY = 'opsmind_remember';
 const PENDING_VERIFICATION_KEY = 'opsmind_pending_verification';
 const ALLOWED_DOMAINS_CACHE_KEY = 'opsmind_allowed_domains_cache';
 const ALLOWED_DOMAINS_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEBUG_LOGS = Boolean(typeof window !== 'undefined' && window.OPSMIND_DEBUG_LOGS === true);
+function debugLog(...args) { if (DEBUG_LOGS) console.log(...args); }
 
 /**
  * AuthService - Singleton service for authentication operations
@@ -108,20 +108,20 @@ const AuthService = {
                 if (data.data.token && data.data.user) {
                     const userData = data.data.user;
                     
-                    console.log('[AuthService] Login OTP verified, user data from backend:', userData);
+                    debugLog('[AuthService] Login OTP verified, user data from backend:', userData);
                     
                     // Handle both 'role' (string) and 'roles' (array) from backend
                     if (userData.roles && Array.isArray(userData.roles)) {
-                        console.log('[AuthService] Roles array from backend:', userData.roles);
+                        debugLog('[AuthService] Roles array from backend:', userData.roles);
                         // Keep roles array as-is, but also set single role for backward compatibility
                         if (userData.roles.length > 0) {
                             userData.role = userData.roles[0]; // Set primary role
                         }
                     } else if (userData.role) {
                         // If backend sends single role, convert to uppercase
-                        console.log('[AuthService] Original role:', userData.role);
+                        debugLog('[AuthService] Original role:', userData.role);
                         userData.role = userData.role.toUpperCase();
-                        console.log('[AuthService] Role after uppercase:', userData.role);
+                        debugLog('[AuthService] Role after uppercase:', userData.role);
                     }
                     
                     // Combine firstName and lastName into name property for easy access
@@ -129,7 +129,7 @@ const AuthService = {
                         userData.name = `${userData.firstName} ${userData.lastName}`;
                     }
                     
-                    console.log('[AuthService] Final user data to store:', userData);
+                    debugLog('[AuthService] Final user data to store:', userData);
                     
                     this.setToken(data.data.token);
                     this.setUser(userData);
@@ -512,7 +512,7 @@ const AuthService = {
         const isAdmin = user?.role === 'ADMIN' || 
                        (Array.isArray(user?.roles) && user.roles.includes('ADMIN')) ||
                        technicianLevel === 'ADMIN';
-        console.log('[AuthService] isAdmin check - user:', user, 'role:', user?.role, 'roles:', user?.roles, 'technicianLevel:', technicianLevel, 'isAdmin:', isAdmin);
+        debugLog('[AuthService] isAdmin check - user:', user, 'role:', user?.role, 'roles:', user?.roles, 'technicianLevel:', technicianLevel, 'isAdmin:', isAdmin);
         return isAdmin;
     },
 

@@ -11,7 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function fetchAssets() {
   // You may want to filter or select specific assets
-  const res = await fetch('http://localhost:5000/api/assets');
+  const inventoryApiBase = String(window.OPSMIND_INVENTORY_API_URL || '').replace(/\/+$/, '');
+  if (!inventoryApiBase) throw new Error('Inventory API URL is not configured');
+  const res = await fetch(`${inventoryApiBase}/assets`);
   if (!res.ok) throw new Error('Failed to fetch assets');
   return res.json();
 }

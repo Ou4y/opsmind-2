@@ -7,10 +7,13 @@ export class EventBusService {
 
   async connect() {
     try {
-      // 1. Get the URI from the environment (.env file), or fall back to Docker default
-      const rabbitURI = process.env.RABBITMQ_URI || 'amqp://opsmind:opsmind@opsmind-rabbitmq:5672';
-      
-      console.log(`🔌 Attempting to connect to RabbitMQ at: ${rabbitURI}`);
+      const rabbitURI = String(process.env.RABBITMQ_URI || '').trim();
+      if (!rabbitURI) {
+        throw new Error('RABBITMQ_URI is required');
+      }
+
+      const safeUri = rabbitURI.replace(/\/\/.*@/, '//***@');
+      console.log(`🔌 Attempting to connect to RabbitMQ at: ${safeUri}`);
 
       this.connection = await amqp.connect(rabbitURI);
       this.channel = await this.connection.createChannel();
@@ -20,14 +23,14 @@ export class EventBusService {
     } catch (error) {
       console.error('❌ RabbitMQ Connection Failed.');
       console.error('Error Details:', error);
-      throw error; // Let server.ts handle the error
+      throw error;
     }
   }
 
   async publish(topic: string, data: any) {
     if (!this.channel) {
-        console.warn(`[EVENT BUS] ⚠️ Cannot publish: No channel established for ${topic}`);
-        return;
+      console.warn(`[EVENT BUS] ⚠️ Cannot publish: No channel established for ${topic}`);
+      return;
     }
     try {
       const message = JSON.stringify(data);

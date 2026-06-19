@@ -18,10 +18,14 @@ class InventoryAiJobQueueService {
   private consumerChannels = new Set<Channel>();
   private topologyAsserted = false;
 
-  private readonly rabbitUri = process.env.RABBITMQ_URI || 'amqp://opsmind:opsmind@rabbitmq:5672';
+  private readonly rabbitUri = String(process.env.RABBITMQ_URI || '').trim();
 
   async connect() {
     if (this.connection && this.publisherChannel) return;
+
+    if (!this.rabbitUri) {
+      throw new Error('RABBITMQ_URI is required for inventory AI job queue');
+    }
 
     this.connection = await amqp.connect(this.rabbitUri);
     this.publisherChannel = await this.connection.createChannel();

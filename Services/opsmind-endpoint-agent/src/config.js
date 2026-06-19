@@ -31,6 +31,7 @@ function loadConfig() {
   const config = {
     agenticAiBaseUrl: normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL),
     opsmindJwt: String(process.env.OPSMIND_JWT || "").trim(),
+    endpointAgentSharedSecret: String(process.env.ENDPOINT_AGENT_SHARED_SECRET || "").trim(),
     deviceName: String(process.env.DEVICE_NAME || "OpsMind Endpoint Device").trim(),
     deviceOs: normalizeDeviceOs(process.env.DEVICE_OS),
     heartbeatIntervalMs: toPositiveInt(process.env.HEARTBEAT_INTERVAL_MS, 30000, 2000),

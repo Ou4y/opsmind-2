@@ -8,11 +8,9 @@
  */
 
 import AuthService from './authService.js';
+import { SLA_API_BASE_URL } from './apiConfig.js';
 
-const API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_SLA_URL) ? window.OPSMIND_SLA_URL :
-    'http://localhost:3004'
-);
+const API_BASE_URL = SLA_API_BASE_URL;
 
 async function handleResponse(response) {
     if (response.status === 401) {
@@ -98,13 +96,24 @@ const SLAService = {
         return handleResponse(response);
     },
 
-    async pauseTicket(ticketId, reason = 'Paused from frontend') {
+    async pauseTicket(ticketId, pauseData = {}) {
+        const payload = (pauseData && typeof pauseData === 'object')
+            ? {
+                reason: pauseData.reason || 'OTHER',
+                source: pauseData.source || 'MANUAL',
+                notes: pauseData.notes || null,
+            }
+            : {
+                reason: 'OTHER',
+                source: 'MANUAL',
+                notes: null,
+            };
         const response = await fetch(`${API_BASE_URL}/sla/tickets/${encodeURIComponent(ticketId)}/pause`, {
             method: 'POST',
             headers: {
                 ...AuthService.getAuthHeaders()
             },
-            body: JSON.stringify({ reason })
+            body: JSON.stringify(payload)
         });
 
         return handleResponse(response);
@@ -123,6 +132,17 @@ const SLAService = {
 
     async getReadiness() {
         const response = await fetch(`${API_BASE_URL}/health/ready`, {
+            method: 'GET',
+            headers: {
+                ...AuthService.getAuthHeaders()
+            }
+        });
+
+        return handleResponse(response);
+    },
+
+    async getPauseAnalytics() {
+        const response = await fetch(`${API_BASE_URL}/sla/reports/pause-analytics`, {
             method: 'GET',
             headers: {
                 ...AuthService.getAuthHeaders()

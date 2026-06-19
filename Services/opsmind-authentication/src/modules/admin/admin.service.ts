@@ -113,6 +113,9 @@ export class AdminService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(config.workflow.internalApiToken
+            ? { 'x-internal-token': config.workflow.internalApiToken }
+            : {}),
         },
         body: JSON.stringify(data),
         signal: abortController.signal,

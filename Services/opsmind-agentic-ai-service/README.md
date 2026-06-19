@@ -56,7 +56,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma3:4b
 NODE_ENV=development
 DATABASE_URL=mysql://opsmind:opsmind@localhost:3307/agentic_ai_db
-JWT_SECRET=opsmind-local-jwt
+JWT_SECRET=change-me-jwt-secret
 ```
 
 Inside Docker (main compose):

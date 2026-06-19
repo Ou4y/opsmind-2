@@ -4,12 +4,12 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './config/swagger';
+import { buildStrictCorsOptions } from './config/cors';
 
 import workflowRoutes from './routes/workflowRoutes';
 import adminRoutes from './routes/adminRoutes';
 import { errorHandler, notFoundHandler } from './middlewares/errorHandler';
 import { requestLogger } from './middlewares/requestLogger';
-import { optionalAuth } from './middlewares/auth';
 
 /**
  * Express Application Factory (TypeScript)
@@ -18,13 +18,16 @@ import { optionalAuth } from './middlewares/auth';
  */
 export function createApp(): Application {
   const app: Application = express();
+  const enableApiDocs =
+    process.env.ENABLE_API_DOCS === 'true' ||
+    (process.env.ENABLE_API_DOCS !== 'false' && (process.env.NODE_ENV || 'development') === 'development');
 
   // ── Security ──
   app.use(helmet());
-  app.use(cors());
+  app.use(cors(buildStrictCorsOptions(process.env)));
 
   // ── Parsing ──
-  app.use(express.json());
+  app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
   app.use(express.urlencoded({ extended: true }));
 
   // ── Logging ──
@@ -55,20 +58,22 @@ export function createApp(): Application {
   });
 
   // ── Routes ──
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-    customCss: '.swagger-ui .topbar { display: none }',
-    customSiteTitle: 'OpsMind Workflow API Docs',
-  }));
-  app.get('/api-docs.json', (_req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.send(swaggerSpec);
-  });
+  if (enableApiDocs) {
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+      customCss: '.swagger-ui .topbar { display: none }',
+      customSiteTitle: 'OpsMind Workflow API Docs',
+    }));
+    app.get('/api-docs.json', (_req: Request, res: Response) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(swaggerSpec);
+    });
+  }
 
   // Workflow routes at /workflow (includes /workflow/health, /workflow/logs, etc.)
   app.use('/workflow', workflowRoutes);
 
   // Admin routes at /workflow/admin (frontend calls /workflow/admin/support-groups/*)
-  app.use('/workflow/admin', optionalAuth, adminRoutes);
+  app.use('/workflow/admin', adminRoutes);
 
   // ── Error Handling ──
   app.use(notFoundHandler);

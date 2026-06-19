@@ -17,6 +17,21 @@ export interface StreamRequesterAiParams {
   onChunk: (chunk: string) => boolean | void;
 }
 
+export class RequesterAiUpstreamError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode: number,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = "RequesterAiUpstreamError";
+  }
+}
+
+export function isRequesterAiUpstreamError(error: unknown): error is RequesterAiUpstreamError {
+  return error instanceof RequesterAiUpstreamError;
+}
+
 interface OllamaStreamMessage {
   response?: string;
   done?: boolean;
@@ -50,6 +65,30 @@ function safeJsonParse(raw: string): OllamaStreamMessage | null {
   } catch {
     return null;
   }
+}
+
+function normalizeRequesterAiError(error: unknown): Error {
+  if (isRequesterAiUpstreamError(error)) {
+    return error;
+  }
+
+  if (error instanceof Error && error.name === "AbortError") {
+    return new RequesterAiUpstreamError(
+      "Ollama request timed out",
+      504,
+      "OLLAMA_TIMEOUT",
+    );
+  }
+
+  if (error instanceof Error && /fetch failed/i.test(error.message)) {
+    return new RequesterAiUpstreamError(
+      "Ollama service is unavailable",
+      503,
+      "OLLAMA_UNAVAILABLE",
+    );
+  }
+
+  return error instanceof Error ? error : new Error("Requester AI stream failed");
 }
 
 async function readStreamBody(
@@ -154,11 +193,19 @@ class RequesterAiOllamaService {
 
       if (!response.ok) {
         const errorBody = await response.text().catch(() => "");
-        throw new Error(`Ollama request failed (${response.status}): ${errorBody || response.statusText}`);
+        throw new RequesterAiUpstreamError(
+          `Ollama request failed (${response.status}): ${errorBody || response.statusText}`,
+          502,
+          "OLLAMA_BAD_RESPONSE",
+        );
       }
 
       if (!response.body) {
-        throw new Error("Ollama stream body is unavailable");
+        throw new RequesterAiUpstreamError(
+          "Ollama stream body is unavailable",
+          502,
+          "OLLAMA_STREAM_UNAVAILABLE",
+        );
       }
 
       await readStreamBody(response.body, params.featureName, (message) => {
@@ -184,15 +231,17 @@ class RequesterAiOllamaService {
       };
     } catch (error) {
       const elapsedMs = Date.now() - startedAt;
-      const message = error instanceof Error ? error.message : "Requester AI stream failed";
+      const normalizedError = normalizeRequesterAiError(error);
+      const message = normalizedError.message;
       logger.error("Requester AI stream failed", {
         featureName: params.featureName,
         model: this.model,
         elapsedTimeMs: elapsedMs,
         outputChars: fullText.length,
         error: message,
+        code: isRequesterAiUpstreamError(normalizedError) ? normalizedError.code : undefined,
       });
-      throw error;
+      throw normalizedError;
     } finally {
       clearTimeout(timeout);
     }

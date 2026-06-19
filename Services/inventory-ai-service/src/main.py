@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -33,6 +34,36 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _split_csv(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
+def _resolve_allowed_origins() -> list[str]:
+    origins = []
+    origins.extend(_split_csv(os.getenv("ALLOWED_ORIGINS")))
+    origins.extend(_split_csv(os.getenv("FRONTEND_ORIGIN")))
+    origins.extend(_split_csv(os.getenv("CORS_ORIGINS")))
+    unique_origins = sorted(set(origins))
+    if unique_origins:
+        return unique_origins
+
+    if os.getenv("NODE_ENV", "development") == "development":
+        return ["http://localhost:8085", "http://localhost:5173", "http://127.0.0.1:5173"]
+
+    return []
+
+
+def _should_enable_api_docs() -> bool:
+    toggle = os.getenv("ENABLE_API_DOCS")
+    if toggle == "true":
+        return True
+    if toggle == "false":
+        return False
+    return os.getenv("NODE_ENV", "development") == "development"
 
 
 def _build_llm_client(settings: AppSettings) -> LLMClientProtocol:
@@ -132,16 +163,21 @@ app = FastAPI(
     ),
     version=settings.app_version,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if _should_enable_api_docs() else None,
+    redoc_url="/redoc" if _should_enable_api_docs() else None,
+)
+
+allowed_origins = _resolve_allowed_origins()
+allow_credentials = (
+    os.getenv("CORS_ALLOW_CREDENTIALS", "false") == "true" and len(allowed_origins) > 0
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-Id"],
 )
 
 app.state.settings = settings

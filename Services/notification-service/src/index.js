@@ -1,5 +1,7 @@
 const cors = require("cors");
+const helmet = require("helmet");
 const connectMongoDB = require("./config/db");
+const { buildStrictCorsOptions } = require("./config/cors");
 require("dotenv").config();
 
 process.on("unhandledRejection", (err) => {
@@ -19,10 +21,11 @@ const createNotificationAPI = require("./api/notification.api");
 (async () => {
   try {
     const app = express();
-    app.use(cors());
-    app.use(express.json());
+    app.use(helmet());
+    app.use(cors(buildStrictCorsOptions(process.env)));
+    app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
 
-    //  MongoDB (skip when running in NO_DB test mode)
+    // MongoDB (skip when running in NO_DB test mode)
     if (process.env.NO_DB !== "true") {
       await connectMongoDB();
     } else {
@@ -43,7 +46,6 @@ const createNotificationAPI = require("./api/notification.api");
 
     // REQUIRED for Railway Docker (keep service alive)
     setInterval(() => {}, 1000);
-
   } catch (err) {
     console.error("Fatal startup error:", err);
   }

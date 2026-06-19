@@ -1,9 +1,13 @@
 import { Request, Response, Router } from "express";
 import { logger } from "../config/logger";
 import { config } from "../config";
+import { requireAuthOrInternal } from "../middleware/auth.middleware";
 import { buildPrompt, ClassificationPromptPayload, TicketContext } from "../services/aiPromptBuilder.service";
 import { ollamaClient } from "../services/ollamaClient.service";
-import { requesterAiOllamaService } from "../services/requesterAiOllama.service";
+import {
+  isRequesterAiUpstreamError,
+  requesterAiOllamaService,
+} from "../services/requesterAiOllama.service";
 import {
   getTechnicianAnalysisFallback,
   getUserAiHelpFallback,
@@ -16,6 +20,7 @@ import {
 } from "../services/aiOutputSanitizer.service";
 
 const router = Router();
+router.use(requireAuthOrInternal);
 
 function normalizeTicketContext(input: unknown): TicketContext {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
@@ -167,6 +172,36 @@ function buildDescriptionEnhancementStreamPrompt(input: {
 function writeSseEvent(res: Response, event: string, payload: Record<string, unknown>) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function startSseStream(res: Response): void {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+}
+
+function getRequesterAiErrorStatus(error: unknown): number {
+  if (isRequesterAiUpstreamError(error)) {
+    return error.statusCode;
+  }
+
+  return 502;
+}
+
+function sendRequesterAiErrorResponse(
+  res: Response,
+  statusCode: number,
+  message: string,
+): void {
+  res.status(statusCode).json({
+    success: false,
+    error: "AI troubleshooting suggestions are unavailable",
+    details: message,
+  });
 }
 
 async function generateUserAiHelp(ticket: TicketContext) {
@@ -451,14 +486,8 @@ router.post("/help/stream", async (req, res) => {
     deviceType,
   });
 
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  if (typeof res.flushHeaders === "function") {
-    res.flushHeaders();
-  }
-
   let emittedText = "";
+  let streamStarted = false;
 
   try {
     await requesterAiOllamaService.stream({
@@ -470,12 +499,33 @@ router.post("/help/stream", async (req, res) => {
         emittedText = nextText;
 
         if (delta) {
-          res.write(delta);
+          if (!streamStarted) {
+            streamStarted = true;
+            startSseStream(res);
+            writeSseEvent(res, "start", { message: "AI Help started" });
+          }
+
+          writeSseEvent(res, "chunk", { text: delta });
         }
 
         return !reachedLimit;
       },
     });
+
+    if (!emittedText.trim()) {
+      const message = "Ollama returned an empty AI Help response";
+      if (!streamStarted) {
+        sendRequesterAiErrorResponse(res, 502, message);
+        return;
+      }
+
+      writeSseEvent(res, "error", { message });
+    } else if (streamStarted) {
+      writeSseEvent(res, "done", {
+        message: "completed",
+        outputWords: countWords(emittedText),
+      });
+    }
 
     logger.info("Requester AI Help stream sent", {
       featureName,
@@ -485,14 +535,25 @@ router.post("/help/stream", async (req, res) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Requester AI Help stream failed";
+    const statusCode = getRequesterAiErrorStatus(error);
     logger.error("Requester AI Help stream failed", {
       featureName,
       modelName: ollamaClient.getModel(),
       elapsedTimeMs: Date.now() - startedAt,
       outputWords: countWords(emittedText),
       error: message,
+      statusCode,
     });
-  } finally {
+
+    if (!res.headersSent) {
+      sendRequesterAiErrorResponse(res, statusCode, message);
+      return;
+    }
+
+    writeSseEvent(res, "error", { message });
+  }
+
+  if (!res.writableEnded) {
     res.end();
   }
 });

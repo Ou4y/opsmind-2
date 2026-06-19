@@ -1,8 +1,8 @@
 import axios from 'axios';
 
 export class NotificationService {
-  private notificationApiUrl = process.env.NOTIFICATION_API_URL || 'http://localhost:3000/api/notifications';
-  private internalSecret = process.env.INTERNAL_SECRET || 'supersecret';
+  private notificationApiUrl = process.env.NOTIFICATION_API_URL || 'http://notification-service:3000/api/notifications';
+  private internalSecret = String(process.env.INTERNAL_SECRET || '').trim();
 
   /**
    * Send low stock notification to admin
@@ -16,10 +16,20 @@ export class NotificationService {
     assetId: string,
     assetName: string,
     remainingQuantity: number,
-    adminId: string = 'admin1',
-    adminEmail: string = 'admin@email.com'
+    adminId: string = '',
+    adminEmail: string = ''
   ): Promise<void> {
     try {
+      if (!this.internalSecret) {
+        console.warn('[NOTIFICATION] Skipping low-stock notification because INTERNAL_SECRET is not configured.');
+        return;
+      }
+
+      if (!String(adminId || '').trim() || !String(adminEmail || '').trim()) {
+        console.warn('[NOTIFICATION] Skipping low-stock notification because admin recipient is missing.');
+        return;
+      }
+
       const payload = {
         type: 'LOW_STOCK',
         payload: {

@@ -157,6 +157,45 @@ export const slaRepository = {
     });
   },
 
+  getPauseEvents() {
+    return prisma.sLAEventLog.findMany({
+      where: {
+        eventType: {
+          in: [SlaActionType.PAUSED, SlaActionType.RESUMED],
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        ticketId: true,
+        eventType: true,
+        message: true,
+        payloadJson: true,
+        createdAt: true,
+      },
+    });
+  },
+
+  getCurrentlyPausedTickets() {
+    return prisma.ticketSLA.findMany({
+      where: {
+        status: TicketSLAStatus.PAUSED,
+      },
+      select: {
+        ticketId: true,
+        priority: true,
+        status: true,
+        pausedAt: true,
+        pauseReason: true,
+        pauseSource: true,
+        pauseNotes: true,
+        totalPausedMinutes: true,
+        ticketTitle: true,
+      } as any,
+      orderBy: [{ pausedAt: "asc" }, { updatedRowAt: "desc" }],
+    });
+  },
+
   createEventLog(
     ticketSlaId: string,
     ticketId: string,

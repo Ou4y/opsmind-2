@@ -1,5 +1,6 @@
 #!/bin/sh
 set -e
 
+npx prisma generate
 npx prisma db push --skip-generate
-node dist/server.js
+exec node dist/server.js

@@ -17,6 +17,10 @@ const {
 const { requireSupportRole, isSupportOrAdminRole } = require("../middleware/requireSupportRole");
 const { authenticateRequest } = require("../middleware/authenticateRequest");
 const {
+  aiPlanningLimiter,
+  aiApprovalActionLimiter,
+} = require("../middleware/rateLimiters");
+const {
   registerEndpointDevice,
   heartbeatEndpointDevice,
   getEndpointDeviceById,
@@ -69,12 +73,12 @@ function resolveTicketPayload(req) {
 }
 
 function resolveActor(req, bodyActor) {
-  const actorPayload =
-    bodyActor && typeof bodyActor === "object" && !Array.isArray(bodyActor) ? bodyActor : {};
+  const authRoles = Array.isArray(req.auth?.roles) ? req.auth.roles : [];
+  const primaryRole = authRoles.length > 0 ? authRoles[0] : null;
 
   return {
-    userId: toOptionalString(actorPayload.userId ?? req.headers["x-user-id"]),
-    role: toOptionalString(actorPayload.role ?? req.headers["x-user-role"]),
+    userId: toOptionalString(req.auth?.userId),
+    role: toOptionalString(primaryRole),
   };
 }
 
@@ -371,20 +375,56 @@ async function handleEnableEndpointDevice(req, res, next) {
   }
 }
 
-router.post("/api/agentic-ai/remediation-plan/test", handleTestRemediationPlan);
-router.post("/api/agentic-ai/remediation-plan", handleCreateRemediationPlan);
-router.get("/api/agentic-ai/remediation-plans/:planId", handleGetRemediationPlanById);
-router.get("/api/agentic-ai/tickets/:ticketId/remediation-plans", handleListRemediationPlansByTicket);
-router.post("/api/agentic-ai/remediation-plans/:planId/approve", requireSupportRole, handleApproveRemediationPlan);
-router.post("/api/agentic-ai/remediation-plans/:planId/reject", requireSupportRole, handleRejectRemediationPlan);
+router.post(
+  "/api/agentic-ai/remediation-plan/test",
+  aiPlanningLimiter,
+  authenticateRequest,
+  handleTestRemediationPlan
+);
+router.post(
+  "/api/agentic-ai/remediation-plan",
+  aiPlanningLimiter,
+  authenticateRequest,
+  handleCreateRemediationPlan
+);
+router.get("/api/agentic-ai/remediation-plans/:planId", authenticateRequest, handleGetRemediationPlanById);
+router.get(
+  "/api/agentic-ai/tickets/:ticketId/remediation-plans",
+  authenticateRequest,
+  handleListRemediationPlansByTicket
+);
+router.post(
+  "/api/agentic-ai/remediation-plans/:planId/approve",
+  aiApprovalActionLimiter,
+  authenticateRequest,
+  requireSupportRole,
+  handleApproveRemediationPlan
+);
+router.post(
+  "/api/agentic-ai/remediation-plans/:planId/reject",
+  aiApprovalActionLimiter,
+  authenticateRequest,
+  requireSupportRole,
+  handleRejectRemediationPlan
+);
 router.post(
   "/api/agentic-ai/remediation-plans/:planId/mock-execute",
+  aiApprovalActionLimiter,
+  authenticateRequest,
   requireSupportRole,
   handleStartMockExecution
 );
-router.get("/api/agentic-ai/executions/:executionId", handleGetExecutionById);
-router.get("/api/agentic-ai/remediation-plans/:planId/executions", handleListExecutionsByPlan);
-router.get("/api/agentic-ai/tickets/:ticketId/executions", handleListExecutionsByTicket);
+router.get("/api/agentic-ai/executions/:executionId", authenticateRequest, handleGetExecutionById);
+router.get(
+  "/api/agentic-ai/remediation-plans/:planId/executions",
+  authenticateRequest,
+  handleListExecutionsByPlan
+);
+router.get(
+  "/api/agentic-ai/tickets/:ticketId/executions",
+  authenticateRequest,
+  handleListExecutionsByTicket
+);
 router.post(
   "/api/agentic-ai/endpoint-devices/register",
   authenticateRequest,

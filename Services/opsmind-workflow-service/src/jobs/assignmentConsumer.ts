@@ -2,7 +2,7 @@ import amqplib, { ChannelModel, Channel, ConsumeMessage } from 'amqplib';
 import { AssignmentService, isAssignmentPendingError } from '../services/AssignmentService';
 import { TicketCreatedEvent } from '../interfaces/types';
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://opsmind:opsmind@localhost:5672';
+const RABBITMQ_URL = String(process.env.RABBITMQ_URL || '').trim();
 const TICKET_EVENTS_EXCHANGE = 'ticket.events';
 const TICKET_CREATED_ROUTING_KEY = 'ticket.created';
 const TICKET_CREATED_QUEUE = 'workflow.ticket.created';
@@ -30,6 +30,10 @@ function parseCoordinate(value: unknown): number {
 
 export async function startAssignmentConsumer(): Promise<void> {
   try {
+    if (!RABBITMQ_URL) {
+      throw new Error('RABBITMQ_URL is required');
+    }
+
     const conn = await amqplib.connect(RABBITMQ_URL);
     const ch = await conn.createChannel();
     connection = conn;
