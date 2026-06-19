@@ -16,8 +16,7 @@
     "express": "^4.19.2",
     "mongoose": "^8.2.1",
     "pdfkit": "^0.18.0",
-    "helmet": "^7.1.0",
-    "jsonwebtoken": "^9.0.2"
+    "string-similarity": "^4.0.4"
   },
   "devDependencies": {
     "jest": "^29.7.0",

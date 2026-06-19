@@ -6,6 +6,7 @@ import {
   bulkTicketStatusSchema,
   complianceReportQuerySchema,
   pauseTicketSlaSchema,
+  pauseAnalyticsQuerySchema,
   startSlaSchema,
   ticketIdParamsSchema,
   updateTicketSlaDeadlinesSchema,
@@ -22,25 +23,11 @@ slaRoutes.get("/", slaController.health);
 slaRoutes.post("/sla/start", requireAuthOrInternal, validate(startSlaSchema), slaController.start);
 slaRoutes.post("/sla/calculate", requireAuthOrInternal, validate(startSlaSchema), slaController.start);
 
-slaRoutes.get("/sla/tickets", requireAuthOrInternal, slaController.listTickets);
-slaRoutes.get(
-  "/sla/tickets/:ticketId",
-  requireAuthOrInternal,
-  validate(ticketIdParamsSchema),
-  slaController.getByTicketId
-);
-slaRoutes.post(
-  "/sla/tickets/status",
-  requireAuthOrInternal,
-  validate(bulkTicketStatusSchema),
-  slaController.getBulkTicketStatus
-);
-slaRoutes.get(
-  "/sla/reports/compliance",
-  requireAuth,
-  validate(complianceReportQuerySchema),
-  slaController.getComplianceReport
-);
+slaRoutes.get("/sla/tickets", slaController.listTickets);
+slaRoutes.get("/sla/tickets/:ticketId", validate(ticketIdParamsSchema), slaController.getByTicketId);
+slaRoutes.post("/sla/tickets/status", validate(bulkTicketStatusSchema), slaController.getBulkTicketStatus);
+slaRoutes.get("/sla/reports/compliance", validate(complianceReportQuerySchema), slaController.getComplianceReport);
+slaRoutes.get("/sla/reports/pause-analytics", validate(pauseAnalyticsQuerySchema), slaController.getPauseAnalytics);
 
 slaRoutes.get("/sla/policies", requireAuth, requireRole("ADMIN"), slaController.getPolicies);
 slaRoutes.post(

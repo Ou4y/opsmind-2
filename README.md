@@ -34,11 +34,11 @@ At a high level, the platform follows a microservice architecture:
 - Workflow service handles assignment logic and technician hierarchy.
 - SLA service tracks deadlines and emits warning/breach events.
 - Notification service consumes events and stores/sends notifications.
-- Inventory service manages assets and inventory tickets.
+- Inventory service manages assets, CMDB, Inventory AI workflows, Procurement, ITAM traceability, stock, audits, telemetry, and lifecycle records.
 - AI service provides priority and resolution-time predictions.
 - Inventory AI service provides inventory-focused asset lifespan predictions.
 
-Shared infrastructure includes MySQL, MongoDB, RabbitMQ, MailHog, and phpMyAdmin.
+Shared infrastructure includes MySQL, PostgreSQL for Inventory/Procurement, MongoDB for notification/reporting-style services, RabbitMQ, MailHog, and phpMyAdmin.
 
 ## Repository Structure
 
@@ -54,7 +54,7 @@ opsmind/
 |  |- opsmind-workflow-service/       # Workflow service (TypeScript)
 |  |- opsmind-sla-service/            # SLA service (TypeScript + Prisma)
 |  |- notification-service/           # Notification service (Node.js)
-|  |- inventory-backend/              # Inventory service (TypeScript + MongoDB)
+|  |- inventory-backend/              # Inventory/CMDB/Procurement service (TypeScript + Prisma/PostgreSQL)
 |  |- ai-service/                     # AI service (FastAPI/Python)
 |  |- reportandanalysis-service/      # Reporting service (Node.js, standalone compose)
 |- UNIT_TESTING_GUIDE.md              # Cross-service unit test guide
@@ -72,16 +72,16 @@ opsmind/
 | Workflow | `Services/opsmind-workflow-service` | Node.js + TypeScript + MySQL + RabbitMQ | 3003 | Assignment + hierarchy |
 | SLA | `Services/opsmind-sla-service` | Node.js + TypeScript + Prisma/MySQL + RabbitMQ | 3004 | SLA timer tracking |
 | Notification | `Services/notification-service` | Node.js + MongoDB + RabbitMQ | 3005 | Notification storage + delivery |
-| Inventory | `Services/inventory-backend` | Node.js + TypeScript + MongoDB + RabbitMQ | 5000 | Asset/inventory APIs |
+| Inventory / Procurement | `Services/inventory-backend` | Node.js + TypeScript + Prisma/PostgreSQL + RabbitMQ | 5000 | Asset, CMDB, ITAM, procurement, stock, audit, telemetry APIs |
 | AI | `Services/ai-service` | Python + FastAPI | 8000 | Priority and ETA predictions |
-| Inventory AI | `Services/inventory-ai-service` | Python + FastAPI | 8002 | Asset lifespan predictions for inventory |
+| Inventory AI | `Services/inventory-ai-service` | Python + FastAPI + optional Ollama/Gemma | 8002 | Asset lifespan, AI repair, procurement/CMDB reasoning, deterministic fallbacks |
 | Inventory AI Scheduler | `Services/inventory-ai-service` | Python worker | - | Daily spec-learning jobs + monthly lifespan recalibration |
 | Reporting (optional) | `Services/reportandanalysis-service` | Node.js + MongoDB | 3004* | Standalone compose, not in root stack |
 
 Infrastructure in root compose:
 - MySQL: `3306`
 - MongoDB (notifications): `27017`
-- MongoDB (inventory): `27018`
+- PostgreSQL (inventory/procurement): `5433` host-mapped to the inventory Postgres container when configured by compose
 - RabbitMQ AMQP: `5672`
 - RabbitMQ Management UI: `15672`
 - MailHog SMTP/UI: `1025` / `8025`
@@ -111,6 +111,8 @@ Edit `.env` as needed. At minimum, review:
 - `OPSMIND_AI_API_URL`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
+- `OPSMIND_INVENTORY_API_URL`
+- `OPSMIND_INVENTORY_AI_API_URL`
 - `OLLAMA_TIMEOUT_MS`
 
 ### 2. Build and start everything
@@ -356,3 +358,7 @@ If you want, this README can be extended next with:
 - endpoint-level API map across all services,
 - sequence diagrams for ticket lifecycle,
 - production deployment profile (security-hardening checklist + env matrix).
+
+## Azure Student Staging
+
+Azure staging guidance is available in `docs/deployment/azure-student-staging-plan.md`. Use `.env.azure.example` as a safe placeholder template only; store real values in Azure Key Vault or Container App secrets.

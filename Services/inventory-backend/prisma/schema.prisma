@@ -54,6 +54,35 @@ enum AssetStatus {
   MAINTENANCE @map("maintenance")
 }
 
+enum AssetCategory {
+  ASSET      @map("asset")
+  COMPONENT  @map("component")
+  ACCESSORY  @map("accessory")
+  CONSUMABLE @map("consumable")
+  LICENSE    @map("license")
+  SPARE_PART @map("spare_part")
+}
+
+enum AssetLifecycleStatus {
+  IN_STOCK          @map("in_stock")
+  ASSIGNED          @map("assigned")
+  IN_USE            @map("in_use")
+  UNDER_MAINTENANCE @map("under_maintenance")
+  PENDING_REPAIR    @map("pending_repair")
+  IN_TRANSIT        @map("in_transit")
+  RESERVED          @map("reserved")
+  RETIRED           @map("retired")
+  DISPOSED          @map("disposed")
+  LOST_STOLEN       @map("lost_stolen")
+  EOL_EXPIRED       @map("eol_expired")
+}
+
+enum AssetCustodyStatus {
+  UNASSIGNED @map("unassigned")
+  CHECKED_OUT @map("checked_out")
+  RETURNED   @map("returned")
+}
+
 enum AssetLocation {
   CENTRAL_WAREHOUSE @map("Central Warehouse")
   MAIN_BUILDING     @map("Main Building")
@@ -99,17 +128,154 @@ enum TicketType {
   OTHER    @map("Other")
 }
 
+enum ProcurementRequestType {
+  REPLACEMENT         @map("replacement")
+  SPARE_STOCK         @map("spare_stock")
+  CONSUMABLE_RESTOCK  @map("consumable_restock")
+  LICENSE_RENEWAL     @map("license_renewal")
+  NEW_PURCHASE        @map("new_purchase")
+  MAINTENANCE_RELATED @map("maintenance_related")
+  AUDIT_RELATED       @map("audit_related")
+  OTHER               @map("other")
+}
+
+enum ProcurementRequestPriority {
+  LOW      @map("low")
+  MEDIUM   @map("medium")
+  HIGH     @map("high")
+  CRITICAL @map("critical")
+}
+
+enum ProcurementRequestStatus {
+  DRAFT              @map("draft")
+  SUBMITTED          @map("submitted")
+  UNDER_REVIEW       @map("under_review")
+  APPROVED           @map("approved")
+  REJECTED           @map("rejected")
+  ORDERED            @map("ordered")
+  PARTIALLY_RECEIVED @map("partially_received")
+  RECEIVED           @map("received")
+  CLOSED             @map("closed")
+  CANCELLED          @map("cancelled")
+}
+
+enum ProcurementRequestSource {
+  MANUAL            @map("manual")
+  AI_RECOMMENDATION @map("ai_recommendation")
+  LOW_STOCK         @map("low_stock")
+  EOL               @map("eol")
+  AUDIT             @map("audit")
+  MAINTENANCE       @map("maintenance")
+  IMPORT            @map("import")
+}
+
+enum ProcurementApprovalDecision {
+  SUBMIT        @map("submit")
+  APPROVE       @map("approve")
+  REJECT        @map("reject")
+  CANCEL        @map("cancel")
+  REOPEN        @map("reopen")
+  MARK_ORDERED  @map("mark_ordered")
+  MARK_RECEIVED @map("mark_received")
+  CLOSE         @map("close")
+  UPDATE        @map("update")
+}
+
+enum VendorQuoteStatus {
+  PENDING  @map("pending")
+  SELECTED @map("selected")
+  REJECTED @map("rejected")
+}
+
+enum PurchaseOrderStatus {
+  DRAFT              @map("draft")
+  ISSUED             @map("issued")
+  PARTIALLY_RECEIVED @map("partially_received")
+  RECEIVED           @map("received")
+  CANCELLED          @map("cancelled")
+}
+
+enum ReceivingCondition {
+  GOOD             @map("good")
+  DAMAGED          @map("damaged")
+  PARTIAL          @map("partial")
+  NEEDS_INSPECTION @map("needs_inspection")
+}
+
+enum ProcurementAssetRelationshipType {
+  REPLACES          @map("replaces")
+  REQUESTED_FOR     @map("requested_for")
+  RELATED_TO        @map("related_to")
+  CAUSED_BY_AUDIT   @map("caused_by_audit")
+  CAUSED_BY_MAINTENANCE @map("caused_by_maintenance")
+  EOL_REPLACEMENT   @map("eol_replacement")
+  LOW_STOCK_RESTOCK @map("low_stock_restock")
+  LICENSE_RENEWAL   @map("license_renewal")
+}
+
+enum ProcurementRecommendationReviewStatus {
+  NEW       @map("new")
+  REVIEWED  @map("reviewed")
+  CONVERTED @map("converted")
+  IGNORED   @map("ignored")
+}
+
+enum InventoryAbcClass {
+  A            @map("a")
+  B            @map("b")
+  C            @map("c")
+  UNCLASSIFIED @map("unclassified")
+}
+
+enum ProcurementFinanceStatus {
+  NOT_SUBMITTED        @map("not_submitted")
+  PENDING_BUDGET_REVIEW @map("pending_budget_review")
+  BUDGET_APPROVED      @map("budget_approved")
+  BUDGET_REJECTED      @map("budget_rejected")
+  INVOICED             @map("invoiced")
+  PAYMENT_PENDING      @map("payment_pending")
+  PAID                 @map("paid")
+  CANCELLED            @map("cancelled")
+}
+
+enum ProcurementRfqStatus {
+  DRAFT     @map("draft")
+  SENT      @map("sent")
+  CLOSED    @map("closed")
+  CANCELLED @map("cancelled")
+}
+
 model Asset {
   id             String          @id @default(uuid())
   customId       String          @unique
   name           String
   type           AssetType
   status         AssetStatus     @default(ACTIVE)
+  lifecycleStatus AssetLifecycleStatus @default(IN_STOCK)
+  category       AssetCategory   @default(ASSET)
   value          Decimal         @default(0)
   quantity       Int             @default(1)
   assignedUser   String?
+  serialNumber   String?
+  assetTag       String?
+  manufacturerPartNumber String?
   location       AssetLocation
   department     AssetDepartment
+  assignedToName String?
+  assignedToUserId String?
+  assignedDepartment String?
+  checkoutDate DateTime?
+  expectedReturnDate DateTime?
+  returnedDate DateTime?
+  custodyStatus AssetCustodyStatus @default(UNASSIGNED)
+  purchaseDate DateTime?
+  vendor String?
+  purchaseCost Decimal?
+  invoiceNumber String?
+  purchaseOrderNumber String?
+  warrantyStartDate DateTime?
+  warrantyEndDate DateTime?
+  replacementCost Decimal?
   specifications Json            @default("{}")
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
@@ -126,8 +292,172 @@ model Asset {
   eolAssessments        AssetEolAssessment[]
   procurementCandidates AssetProcurementCandidate[]
   aiJobs                InventoryAiJob[]
+  componentsAsParent    AssetComponent[]      @relation("AssetComponentParent")
+  componentsAsChild     AssetComponent[]      @relation("AssetComponentChildAsset")
+  lifecycleEvents       AssetLifecycleEvent[]
+  maintenanceRecords    AssetMaintenanceRecord[]
+  custodyEvents         AssetCustodyEvent[]
+  relationshipsFrom     AssetRelationship[]   @relation("AssetRelationshipFrom")
+  relationshipsTo       AssetRelationship[]   @relation("AssetRelationshipTo")
 
   @@map("assets")
+}
+
+model AssetComponent {
+  id                     String   @id @default(uuid())
+  parentAssetId          String
+  childAssetId           String?
+  componentName          String
+  componentType          String
+  brand                  String?
+  model                  String?
+  serialNumber           String?
+  partNumber             String?
+  status                 String   @default("installed")
+  condition              String?
+  installedAt            DateTime?
+  removedAt              DateTime?
+  reason                 String?
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  parentAsset            Asset    @relation("AssetComponentParent", fields: [parentAssetId], references: [customId], onDelete: Cascade)
+  childAsset             Asset?   @relation("AssetComponentChildAsset", fields: [childAssetId], references: [customId], onDelete: SetNull)
+  lifecycleEvents        AssetLifecycleEvent[]
+  maintenanceRecords     AssetMaintenanceRecord[]
+
+  @@index([parentAssetId, status])
+  @@index([childAssetId])
+  @@index([serialNumber])
+  @@map("asset_components")
+}
+
+model AssetLifecycleEvent {
+  id            String   @id @default(uuid())
+  assetId       String
+  componentId   String?
+  eventType     String
+  oldValue      Json?
+  newValue      Json?
+  reason        String?
+  notes         String?
+  actor         String?
+  createdAt     DateTime @default(now())
+
+  asset         Asset          @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  component     AssetComponent? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, createdAt])
+  @@index([componentId, createdAt])
+  @@index([eventType, createdAt])
+  @@map("asset_lifecycle_events")
+}
+
+model AssetMaintenanceRecord {
+  id                  String   @id @default(uuid())
+  assetId             String
+  componentId         String?
+  maintenanceType     String
+  status              String   @default("completed")
+  performedBy         String?
+  performedAt         DateTime?
+  nextMaintenanceDate DateTime?
+  cost                Decimal?
+  reason              String?
+  notes               String?
+  linkedTicketId      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  asset               Asset          @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+  component           AssetComponent? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, createdAt])
+  @@index([componentId, createdAt])
+  @@index([status, nextMaintenanceDate])
+  @@map("asset_maintenance_records")
+}
+
+model AssetCustodyEvent {
+  id                String   @id @default(uuid())
+  assetId           String
+  action            String
+  assignedToName    String?
+  assignedToUserId  String?
+  assignedDepartment String?
+  checkoutDate      DateTime?
+  expectedReturnDate DateTime?
+  returnedDate      DateTime?
+  conditionOut      String?
+  conditionIn       String?
+  reason            String?
+  notes             String?
+  actor             String?
+  createdAt         DateTime @default(now())
+
+  asset             Asset    @relation(fields: [assetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, createdAt])
+  @@index([action, createdAt])
+  @@map("asset_custody_events")
+}
+
+model AssetRelationship {
+  id             String   @id @default(uuid())
+  assetId        String
+  relatedAssetId String
+  relationshipType String
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  asset          Asset    @relation("AssetRelationshipFrom", fields: [assetId], references: [customId], onDelete: Cascade)
+  relatedAsset   Asset    @relation("AssetRelationshipTo", fields: [relatedAssetId], references: [customId], onDelete: Cascade)
+
+  @@index([assetId, relationshipType])
+  @@index([relatedAssetId, relationshipType])
+  @@unique([assetId, relatedAssetId, relationshipType])
+  @@map("asset_relationships")
+}
+
+model SpareStockItem {
+  id                     String   @id @default(uuid())
+  partName               String
+  componentType          String
+  category               String?
+  brand                  String?
+  model                  String?
+  partNumber             String?
+  quantityAvailable      Int      @default(0)
+  minimumStockLevel      Int      @default(0)
+  reorderPoint           Int?
+  safetyStock            Int?
+  annualDemand           Int?
+  orderingCost           Decimal?
+  holdingCost            Decimal?
+  minimumOrderQuantity   Int?
+  minimumOrderValue      Decimal?
+  packSize               Int?
+  leadTimeDays           Int?
+  abcClass               InventoryAbcClass @default(UNCLASSIFIED)
+  abcReason              String?
+  location               String?
+  vendor                 String?
+  unitCost               Decimal?
+  compatibleAssetTypes   Json?
+  compatibleBrandsModels Json?
+  notes                  String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  stockBatches           InventoryStockBatch[]
+
+  @@index([componentType])
+  @@index([partNumber])
+  @@index([quantityAvailable, minimumStockLevel])
+  @@index([abcClass])
+  @@map("spare_stock_items")
 }
 
 model AssetSpecSnapshot {
@@ -301,6 +631,572 @@ model AssetProcurementCandidate {
   @@map("asset_procurement_candidates")
 }
 
+model ProcurementRequest {
+  id                 String                     @id @default(uuid())
+  requestNumber      String                     @unique
+  title              String
+  description        String?
+  requestType        ProcurementRequestType     @default(OTHER)
+  priority           ProcurementRequestPriority @default(MEDIUM)
+  status             ProcurementRequestStatus   @default(DRAFT)
+  reason             String
+  requestedBy        String
+  department         String?
+  building           String?
+  room               String?
+  neededByDate       DateTime?
+  estimatedBudget    Decimal?
+  actualCost         Decimal?
+  abcClass           InventoryAbcClass          @default(UNCLASSIFIED)
+  abcReason          String?
+  controlLevel       String?
+  financeStatus      ProcurementFinanceStatus   @default(NOT_SUBMITTED)
+  costCenterId       String?
+  budgetAllocationId String?
+  budgetAmountReserved Decimal?
+  financeNotes       String?
+  financeMetadata    Json?
+  source             ProcurementRequestSource   @default(MANUAL)
+  aiRecommendationId String?
+  metadata           Json?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  items              ProcurementRequestItem[]
+  approvals          ProcurementApproval[]
+  vendorQuotes       VendorQuote[]
+  purchaseOrders     PurchaseOrder[]
+  receivingRecords   ReceivingRecord[]
+  assetLinks         ProcurementAssetLink[]
+  recommendationReviews ProcurementRecommendationReview[]
+  costCenter         CostCenter?                @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+  budgetAllocation   BudgetAllocation?          @relation(fields: [budgetAllocationId], references: [id], onDelete: SetNull)
+  rfqs               ProcurementRfq[]
+  invoices           ProcurementInvoice[]
+
+  @@index([status, createdAt])
+  @@index([priority, createdAt])
+  @@index([source, createdAt])
+  @@index([department])
+  @@index([building])
+  @@index([abcClass])
+  @@index([financeStatus])
+  @@index([costCenterId])
+  @@index([budgetAllocationId])
+  @@map("procurement_requests")
+}
+
+model ProcurementRequestItem {
+  id                String   @id @default(uuid())
+  requestId         String
+  itemName          String
+  category          String?
+  assetType         String?
+  brand             String?
+  model             String?
+  specifications    Json?
+  quantityRequested Int
+  quantityApproved  Int?
+  quantityOrdered   Int?
+  quantityReceived  Int      @default(0)
+  unitEstimatedCost Decimal?
+  unitActualCost    Decimal?
+  annualDemand      Int?
+  orderingCost      Decimal?
+  holdingCost       Decimal?
+  calculatedEoq     Decimal?
+  recommendedOrderQuantity Int?
+  reorderPointValue Int?
+  safetyStock       Int?
+  demandSource      String?
+  dataQuality       String?
+  minimumOrderQuantity Int?
+  minimumOrderValue Decimal?
+  packSize          Int?
+  leadTimeDays      Int?
+  abcClass          InventoryAbcClass @default(UNCLASSIFIED)
+  abcReason         String?
+  linkedAssetTag    String?
+  linkedSpareStockId String?
+  linkedConsumableId String?
+  linkedLicenseId   String?
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  request           ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  purchaseOrderItems PurchaseOrderItem[]
+  receivingItems    ReceivingRecordItem[]
+  invoiceLines      ProcurementInvoiceLine[]
+
+  @@index([requestId, createdAt])
+  @@index([linkedAssetTag])
+  @@index([linkedSpareStockId])
+  @@index([category])
+  @@index([abcClass])
+  @@map("procurement_request_items")
+}
+
+model ProcurementApproval {
+  id          String                     @id @default(uuid())
+  requestId   String
+  fromStatus  ProcurementRequestStatus?
+  toStatus    ProcurementRequestStatus
+  decision    ProcurementApprovalDecision
+  decidedBy   String
+  decisionNote String?
+  createdAt   DateTime                   @default(now())
+
+  request     ProcurementRequest         @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@index([toStatus, createdAt])
+  @@map("procurement_approvals")
+}
+
+model Vendor {
+  id               String   @id @default(uuid())
+  name             String
+  contactName      String?
+  email            String?
+  phone            String?
+  address          String?
+  categoriesSupplied Json?
+  leadTimeAverageDays Int?
+  warrantyQualityScore Float?
+  active           Boolean  @default(true)
+  reliabilityScore Float?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  quotes           VendorQuote[]
+  purchaseOrders   PurchaseOrder[]
+  catalogItems     SupplierCatalogItem[]
+  rfqInvitations   ProcurementRfqInvitation[]
+  invoices         ProcurementInvoice[]
+
+  @@index([name])
+  @@index([active])
+  @@map("procurement_vendors")
+}
+
+model VendorQuote {
+  id              String           @id @default(uuid())
+  requestId       String
+  vendorId        String?
+  vendorName      String
+  quotedItem      String
+  quantity        Int
+  unitPrice       Decimal?
+  totalPrice      Decimal?
+  currency        String           @default("USD")
+  minimumOrderQuantity Int?
+  minimumOrderValue Decimal?
+  packSize        Int?
+  leadTimeDays    Int?
+  bulkDiscountAvailable Boolean?
+  warrantyMonths  Int?
+  deliveryDays    Int?
+  validUntil      DateTime?
+  status          VendorQuoteStatus @default(PENDING)
+  rejectionReason String?
+  notes           String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  request         ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  vendor          Vendor?            @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([requestId, status])
+  @@index([vendorId])
+  @@index([createdAt])
+  @@map("procurement_vendor_quotes")
+}
+
+model PurchaseOrder {
+  id                  String             @id @default(uuid())
+  poNumber            String             @unique
+  requestId           String
+  vendorId            String?
+  vendorName          String
+  status              PurchaseOrderStatus @default(DRAFT)
+  expectedDeliveryDate DateTime?
+  issuedAt            DateTime?
+  notes               String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  request             ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  vendor              Vendor?            @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  items               PurchaseOrderItem[]
+  receivingRecords    ReceivingRecord[]
+  invoices            ProcurementInvoice[]
+
+  @@index([requestId, status])
+  @@index([vendorId])
+  @@index([createdAt])
+  @@map("procurement_purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id               String   @id @default(uuid())
+  purchaseOrderId  String
+  requestItemId    String?
+  itemName         String
+  quantityOrdered  Int
+  quantityReceived Int      @default(0)
+  unitPrice        Decimal?
+  totalPrice       Decimal?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  purchaseOrder    PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  requestItem      ProcurementRequestItem? @relation(fields: [requestItemId], references: [id], onDelete: SetNull)
+  receivingItems   ReceivingRecordItem[]
+  invoiceLines     ProcurementInvoiceLine[]
+
+  @@index([purchaseOrderId])
+  @@index([requestItemId])
+  @@map("procurement_purchase_order_items")
+}
+
+model InventoryStockBatch {
+  id                  String   @id @default(uuid())
+  itemKind            String
+  spareStockItemId    String?
+  consumableAssetId   String?
+  itemName            String
+  batchCode           String?
+  receivedAt          DateTime @default(now())
+  quantityReceived    Int
+  quantityAvailable   Int
+  unitCost            Decimal?
+  vendor              String?
+  location            String?
+  warrantyEndDate     DateTime?
+  expiryDate          DateTime?
+  sourceRequestId     String?
+  sourcePurchaseOrderId String?
+  notes               String?
+  metadata            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  spareStockItem      SpareStockItem?         @relation(fields: [spareStockItemId], references: [id], onDelete: SetNull)
+  movements           InventoryStockMovement[]
+
+  @@index([itemKind, receivedAt])
+  @@index([spareStockItemId, receivedAt])
+  @@index([consumableAssetId, receivedAt])
+  @@index([quantityAvailable])
+  @@map("inventory_stock_batches")
+}
+
+model InventoryStockMovement {
+  id                String   @id @default(uuid())
+  batchId           String
+  movementType      String
+  quantity          Int
+  reason            String?
+  referenceType     String?
+  referenceId       String?
+  actor             String?
+  createdAt         DateTime @default(now())
+
+  batch             InventoryStockBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, createdAt])
+  @@index([movementType, createdAt])
+  @@map("inventory_stock_movements")
+}
+
+model ReceivingRecord {
+  id             String             @id @default(uuid())
+  requestId      String
+  purchaseOrderId String?
+  receivedBy     String
+  receivedAt     DateTime           @default(now())
+  condition      ReceivingCondition @default(GOOD)
+  notes          String?
+  createdAt      DateTime           @default(now())
+
+  request        ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  purchaseOrder  PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  items          ReceivingRecordItem[]
+
+  @@index([requestId, receivedAt])
+  @@index([purchaseOrderId, receivedAt])
+  @@map("procurement_receiving_records")
+}
+
+model ReceivingRecordItem {
+  id                     String   @id @default(uuid())
+  receivingRecordId      String
+  purchaseOrderItemId    String?
+  requestItemId          String?
+  itemName               String
+  quantityReceived       Int
+  createdAssetIds        Json?
+  spareStockUpdated      Boolean  @default(false)
+  spareStockId           String?
+  consumableUpdated      Boolean  @default(false)
+  consumableId           String?
+  licenseCreatedOrUpdated Boolean @default(false)
+  licenseId              String?
+  notes                  String?
+  createdAt              DateTime @default(now())
+
+  receivingRecord        ReceivingRecord      @relation(fields: [receivingRecordId], references: [id], onDelete: Cascade)
+  purchaseOrderItem      PurchaseOrderItem?   @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  requestItem            ProcurementRequestItem? @relation(fields: [requestItemId], references: [id], onDelete: SetNull)
+
+  @@index([receivingRecordId])
+  @@index([purchaseOrderItemId])
+  @@index([requestItemId])
+  @@map("procurement_receiving_record_items")
+}
+
+model ProcurementAssetLink {
+  id               String                           @id @default(uuid())
+  requestId        String
+  assetId          String?
+  assetTag         String?
+  relationshipType ProcurementAssetRelationshipType @default(RELATED_TO)
+  createdAt        DateTime                         @default(now())
+
+  request          ProcurementRequest               @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([assetId])
+  @@index([assetTag])
+  @@index([relationshipType])
+  @@map("procurement_asset_links")
+}
+
+model ProcurementRecommendationReview {
+  id                 String                              @id @default(uuid())
+  recommendationKey  String
+  itemName           String
+  source             String
+  priority           String
+  evidence           Json?
+  status             ProcurementRecommendationReviewStatus @default(NEW)
+  convertedRequestId String?
+  reviewedBy         String?
+  reviewNote         String?
+  createdAt          DateTime                           @default(now())
+  updatedAt          DateTime                           @updatedAt
+
+  convertedRequest   ProcurementRequest?                @relation(fields: [convertedRequestId], references: [id], onDelete: SetNull)
+
+  @@unique([recommendationKey])
+  @@index([status, createdAt])
+  @@index([source])
+  @@map("procurement_recommendation_reviews")
+}
+
+model CostCenter {
+  id               String   @id @default(uuid())
+  code             String   @unique
+  name             String
+  department       String?
+  owner            String?
+  annualBudget     Decimal?
+  notes            String?
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  allocations      BudgetAllocation[]
+  procurementRequests ProcurementRequest[]
+
+  @@index([active])
+  @@index([department])
+  @@map("finance_cost_centers")
+}
+
+model BudgetPeriod {
+  id               String   @id @default(uuid())
+  label            String   @unique
+  startDate        DateTime
+  endDate          DateTime
+  status           String   @default("open")
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  allocations      BudgetAllocation[]
+
+  @@index([status])
+  @@map("finance_budget_periods")
+}
+
+model BudgetAllocation {
+  id               String   @id @default(uuid())
+  periodId         String
+  costCenterId     String
+  department       String?
+  building         String?
+  allocatedAmount  Decimal
+  reservedAmount   Decimal  @default(0)
+  committedAmount  Decimal  @default(0)
+  spentAmount      Decimal  @default(0)
+  currency         String   @default("USD")
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  period           BudgetPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  costCenter       CostCenter   @relation(fields: [costCenterId], references: [id], onDelete: Cascade)
+  usages           BudgetUsage[]
+  procurementRequests ProcurementRequest[]
+
+  @@index([periodId, costCenterId])
+  @@index([department, building])
+  @@map("finance_budget_allocations")
+}
+
+model BudgetUsage {
+  id               String   @id @default(uuid())
+  allocationId     String
+  requestId        String?
+  usageType        String
+  amount           Decimal
+  note             String?
+  actor            String?
+  createdAt        DateTime @default(now())
+
+  allocation       BudgetAllocation @relation(fields: [allocationId], references: [id], onDelete: Cascade)
+
+  @@index([allocationId, createdAt])
+  @@index([usageType])
+  @@map("finance_budget_usages")
+}
+
+model ProcurementInvoice {
+  id               String   @id @default(uuid())
+  invoiceNumber    String   @unique
+  requestId        String
+  purchaseOrderId  String?
+  vendorId         String?
+  vendorName       String
+  invoiceDate      DateTime?
+  dueDate          DateTime?
+  status           String   @default("draft")
+  totalAmount      Decimal?
+  currency         String   @default("USD")
+  paymentStatus    String   @default("not_submitted")
+  notes            String?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  request          ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  purchaseOrder    PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  vendor           Vendor?            @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  lines            ProcurementInvoiceLine[]
+
+  @@index([requestId])
+  @@index([purchaseOrderId])
+  @@index([vendorId])
+  @@index([paymentStatus])
+  @@map("procurement_invoices")
+}
+
+model ProcurementInvoiceLine {
+  id               String   @id @default(uuid())
+  invoiceId        String
+  requestItemId    String?
+  purchaseOrderItemId String?
+  itemName         String
+  quantity         Int      @default(1)
+  unitPrice        Decimal?
+  totalPrice       Decimal?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  invoice          ProcurementInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  requestItem      ProcurementRequestItem? @relation(fields: [requestItemId], references: [id], onDelete: SetNull)
+  purchaseOrderItem PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@index([requestItemId])
+  @@index([purchaseOrderItemId])
+  @@map("procurement_invoice_lines")
+}
+
+model SupplierCatalogItem {
+  id               String   @id @default(uuid())
+  vendorId         String
+  itemName         String
+  category         String?
+  assetType        String?
+  brand            String?
+  model            String?
+  specifications   Json?
+  unitPrice        Decimal?
+  currency         String   @default("USD")
+  minimumOrderQuantity Int?
+  minimumOrderValue Decimal?
+  packSize         Int?
+  leadTimeDays     Int?
+  warrantyMonths   Int?
+  active           Boolean  @default(true)
+  lastUpdatedAt    DateTime @default(now())
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  vendor           Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, active])
+  @@index([category, itemName])
+  @@map("procurement_supplier_catalog_items")
+}
+
+model ProcurementRfq {
+  id               String   @id @default(uuid())
+  rfqNumber        String   @unique
+  requestId        String
+  title            String
+  description      String?
+  quoteDueDate     DateTime?
+  status           ProcurementRfqStatus @default(DRAFT)
+  createdBy        String
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  request          ProcurementRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  invitations      ProcurementRfqInvitation[]
+
+  @@index([requestId, status])
+  @@map("procurement_rfqs")
+}
+
+model ProcurementRfqInvitation {
+  id               String   @id @default(uuid())
+  rfqId            String
+  vendorId         String?
+  vendorName       String
+  invitedAt        DateTime @default(now())
+  responseStatus   String   @default("pending")
+  submittedQuoteId String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  rfq              ProcurementRfq @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  vendor           Vendor?        @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+
+  @@index([rfqId, responseStatus])
+  @@index([vendorId])
+  @@map("procurement_rfq_invitations")
+}
+
 model InventoryAiJob {
   id             String    @id @default(uuid())
   jobType        String
@@ -361,6 +1257,106 @@ model AssetHistory {
   asset Asset @relation(fields: [assetId], references: [customId], onDelete: Cascade)
 
   @@map("asset_embedded_history")
+}
+
+model InventoryAuditSession {
+  id          String    @id @default(uuid())
+  sessionNumber String  @unique
+  title       String
+  status      String    @default("open")
+  building    String?
+  room        String?
+  department  String?
+  category    String?
+  assetType   String?
+  auditor     String?
+  notes       String?
+  summary     Json?
+  startedAt   DateTime  @default(now())
+  closedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  items       InventoryAuditSessionItem[]
+
+  @@index([status, startedAt])
+  @@index([building, department])
+  @@index([category, assetType])
+  @@map("inventory_audit_sessions")
+}
+
+model InventoryAuditSessionItem {
+  id                 String    @id @default(uuid())
+  sessionId          String
+  assetId            String
+  assetTag           String?
+  serialNumber       String?
+  assetName          String?
+  expectedLocation   String?
+  expectedDepartment String?
+  expectedStatus     String?
+  auditStatus        String    @default("pending")
+  observedLocation   String?
+  condition          String?
+  notes              String?
+  auditor            String?
+  checkedAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  session            InventoryAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, assetId])
+  @@index([assetId])
+  @@index([assetTag])
+  @@index([auditStatus])
+  @@map("inventory_audit_session_items")
+}
+
+model InventoryAlertRule {
+  id              String    @id @default(uuid())
+  ruleKey         String    @unique
+  name            String
+  alertType       String
+  enabled         Boolean   @default(true)
+  severity        String    @default("medium")
+  threshold       Json?
+  recipientRole   String?
+  cooldownHours   Int       @default(24)
+  lastTriggeredAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  events          InventoryAlertEvent[]
+
+  @@index([enabled, alertType])
+  @@map("inventory_alert_rules")
+}
+
+model InventoryAlertEvent {
+  id           String    @id @default(uuid())
+  ruleId       String?
+  ruleKey      String
+  alertType    String
+  severity     String
+  title        String
+  message      String
+  entityType   String?
+  entityId     String?
+  dedupeKey    String    @unique
+  status       String    @default("open")
+  triggeredAt  DateTime  @default(now())
+  resolvedAt   DateTime?
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  rule         InventoryAlertRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  @@index([status, severity, triggeredAt])
+  @@index([ruleKey, triggeredAt])
+  @@index([entityType, entityId])
+  @@map("inventory_alert_events")
 }
 
 model Ticket {

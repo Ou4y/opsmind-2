@@ -2,7 +2,7 @@ const Ticket = require("../models/ticket.model");
 const { getResolvedTickets } = require("../services/ticket.service");
 const PDFDocument = require("pdfkit");
 const axios = require("axios");
-const { isSupportOrAdmin } = require("../middleware/auth");
+const stringSimilarity = require("string-similarity");
 
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || "http://auth-service:3002";
 const INTERNAL_API_TOKEN = String(process.env.INTERNAL_API_TOKEN || "").trim();
@@ -125,6 +125,94 @@ exports.addSolution = async (req, res) => {
   }
 };
 
+
+// check similar issue
+exports.checkSimilarIssue = async (req, res) => {
+  try {
+
+    const { title, description } = req.body;
+
+    if (!title && !description) {
+      return res.status(400).json({
+        found: false,
+        message: "Title or description is required"
+      });
+    }
+
+    const currentText =
+      `${title || ""} ${description || ""}`
+        .toLowerCase()
+        .trim();
+
+    const solvedTickets = await Ticket.find({
+      technician_solution: {
+        $exists: true,
+        $ne: ""
+      }
+    });
+
+    let bestMatch = null;
+    let bestScore = 0;
+
+    for (const ticket of solvedTickets) {
+
+        const oldText =
+           `${ticket.title || ""} ${ticket.description || ""}`
+             .toLowerCase()
+             .trim();
+
+      const score =
+        stringSimilarity.compareTwoStrings(
+          currentText,
+          oldText
+        );
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = ticket;
+      }
+    }
+
+    console.log(
+      "Best Similarity Score:",
+      bestScore
+    );
+
+    if (bestMatch && bestScore >= 0.25) {
+
+      return res.json({
+        found: true,
+        similarityScore: bestScore,
+        solution:
+          bestMatch.technician_solution,
+        matchedTicketId:
+          bestMatch.id
+      });
+    }
+
+    return res.json({
+      found: false,
+      similarityScore: bestScore,
+      message:
+        "No similar tickets found"
+    });
+
+  } catch (error) {
+
+    console.error(
+      "Similarity Search Error:",
+      error
+    );
+
+    return res.status(500).json({
+      found: false,
+      message:
+        "Internal Server Error"
+    });
+  }
+};
+
+// generate PDF
 exports.generatePDF = async (req, res) => {
   try {
     const { ticketId } = req.params;

@@ -7,103 +7,12 @@
     
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/assets/css/main.css?v=4" rel="stylesheet">
-    <style>
-        .inventory-create-modal-dialog {
-            max-width: 880px;
-        }
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
 
-        .inventory-create-modal-content {
-            max-height: min(92vh, 980px);
-        }
-
-        .inventory-create-form {
-            min-height: 0;
-            display: flex;
-            flex-direction: column;
-            flex: 1 1 auto;
-        }
-
-        .inventory-create-modal-body {
-            overflow-y: auto;
-            padding: 1rem 1.1rem 0.75rem;
-        }
-
-        .inventory-create-panel {
-            border: 1px solid rgba(15, 23, 42, 0.08);
-            border-radius: 0.7rem;
-            padding: 0.85rem;
-            background: #fff;
-        }
-
-        .inventory-create-panel-title {
-            font-size: 0.78rem;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            color: #64748b;
-            font-weight: 700;
-            margin-bottom: 0.65rem;
-        }
-
-        .inventory-create-modal-body .form-label {
-            font-size: 0.8rem;
-            font-weight: 700;
-            margin-bottom: 0.25rem;
-        }
-
-        .inventory-spec-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-        }
-
-        #assetSpecs {
-            min-height: 170px;
-            max-height: 240px;
-            resize: vertical;
-            overflow-y: auto;
-            font-size: 0.9rem;
-        }
-
-        .inventory-telemetry-card {
-            margin-bottom: 0;
-            padding: 0.65rem 0.75rem;
-        }
-
-        .inventory-telemetry-card.telemetry-compact-info {
-            background: #f8fafc;
-            border-color: rgba(148, 163, 184, 0.38);
-            padding: 0.5rem 0.65rem;
-        }
-
-        .inventory-create-modal-footer {
-            position: sticky;
-            bottom: 0;
-            z-index: 2;
-            background: #fff;
-            border-top: 1px solid rgba(15, 23, 42, 0.09);
-            padding: 0.75rem 1rem;
-        }
-
-        @media (max-width: 991.98px) {
-            .inventory-create-modal-dialog {
-                max-width: 96vw;
-                margin: 0.75rem auto;
-            }
-
-            .inventory-create-modal-body {
-                padding: 0.9rem 0.9rem 0.6rem;
-            }
-
-            .inventory-spec-actions {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
     
     <script src="/assets/js/config.js?v=2"></script>
 </head>
-<body class="app-body">
+<body class="app-body inventory-page">
     <nav class="navbar-main" id="navbar-container"></nav>
     
     <div class="app-wrapper">
@@ -114,41 +23,173 @@
             <div id="eolAlertBanner" class="d-none"></div>
 
             <div class="inventory-toolbar d-flex justify-content-between align-items-center mb-4">
-                <div>
+                <div class="inventory-toolbar-heading">
                     <h2 class="h3 fw-bold mb-1">University Inventory</h2>
                     <p class="text-muted small mb-0">Grouped View</p>
                 </div>
                 
-                <div class="inventory-toolbar-actions d-flex gap-2 align-items-start">
-                    <div class="input-group input-group-sm inventory-search-group">
+                <div class="inventory-toolbar-actions inventory-toolbar-actions-refined d-flex gap-2 align-items-start">
+                    <div class="input-group input-group-sm inventory-search-group inventory-toolbar-search">
                         <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
                         <input type="text" id="searchInput" class="form-control border-start-0" placeholder="Search Name or ID..." onkeyup="filterGroupTable()" onkeypress="handleSearchKeyPress(event)">
+                        <button class="btn btn-outline-primary inventory-ai-search-btn" type="button" id="inventoryAiSearchBtn" aria-label="Search inventory with AI">
+                            <i class="bi bi-stars me-1"></i>AI
+                        </button>
+                    </div>
+                    <div class="inventory-ai-search-mode" aria-label="Inventory search mode">
+                        <label class="form-check form-switch mb-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="inventoryAiSearchModeToggle">
+                            <span class="form-check-label">Search with AI</span>
+                        </label>
+                        <div id="inventoryAiSearchAppliedChips" class="inventory-ai-search-chip-row" aria-live="polite"></div>
+                        <div id="inventoryAiSearchState" class="inventory-ai-search-state d-none" aria-live="polite"></div>
                     </div>
 
-                    <button class="btn btn-outline-dark mb-3" onclick="printSelectedLabels()">
-                        <i class="bi bi-qr-code"></i> Print Labels
-                    </button>
+                    <div class="inventory-toolbar-cluster inventory-toolbar-primary">
+                        <button class="btn btn-primary inventory-action-primary" id="openImportAssetsBtn" data-role-required="technician">
+                            <i class="bi bi-upload"></i> Import Assets
+                        </button>
+                        <button class="btn btn-primary inventory-action-primary d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal" data-role-required="technician">
+                            <i class="bi bi-plus-lg"></i> Create Asset
+                        </button>
+                    </div>
 
-                    <button class="btn btn-outline-success mb-3" onclick="exportAssetsToDetailedPDF()">
-                        <i class="bi bi-file-pdf"></i> Export PDF with QR & Specs
-                    </button>
+                    <div class="inventory-toolbar-cluster inventory-toolbar-shortcuts">
+                        <button class="btn btn-outline-info inventory-action-shortcut" id="openProcurementBoardBtn">
+                            <i class="bi bi-bag-check"></i> Procurement Workspace
+                        </button>
+                        <button class="btn btn-outline-primary inventory-action-shortcut" id="openAssetMapBtn">
+                            <i class="bi bi-geo-alt-fill"></i> Asset Map
+                        </button>
+                    </div>
 
-                    <button class="btn btn-outline-danger mb-3" onclick="generateEOLReport()">
-                        <i class="bi bi-graph-up-arrow"></i> Predictive EOL Budget
-                    </button>
-
-                    <button class="btn btn-outline-danger mb-3 inventory-delete-all-btn" id="deleteAllAssetsBtn" onclick="window.deleteAllAssets()" disabled>
-                        <i class="bi bi-trash3"></i> Delete All
-                    </button>
-
-                    <button class="btn btn-primary btn-sm d-flex align-items-center gap-2 inventory-create-btn" data-bs-toggle="modal" data-bs-target="#receiveOrderModal">
-                        <i class="bi bi-plus-lg"></i> Create Asset
-                    </button>
+                    <div class="dropdown inventory-toolbar-more">
+                        <button class="btn btn-outline-secondary dropdown-toggle inventory-action-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-grid-3x3-gap me-1"></i> More Actions
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end inventory-more-actions-menu">
+                            <div class="inventory-dropdown-section-label">Documents</div>
+                            <button class="dropdown-item" type="button" onclick="printSelectedLabels()">
+                                <i class="bi bi-qr-code me-2"></i>Print Labels
+                            </button>
+                            <button class="dropdown-item" type="button" onclick="exportAssetsToDetailedPDF()">
+                                <i class="bi bi-file-pdf me-2"></i>Export PDF with QR & Specs
+                            </button>
+                            <button class="dropdown-item" type="button" id="openInventoryReportsPanelBtn">
+                                <i class="bi bi-table me-2"></i>Export Reports (CSV)
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label">Planning</div>
+                            <button class="dropdown-item" type="button" onclick="generateEOLReport()">
+                                <i class="bi bi-graph-up-arrow me-2"></i>Predictive EOL Budget
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label">Operations</div>
+                            <button class="dropdown-item" type="button" id="openBulkCheckoutBtn">
+                                <i class="bi bi-upc-scan me-2"></i>Bulk Checkout
+                            </button>
+                            <button class="dropdown-item" type="button" id="openLoanerBoardBtn">
+                                <i class="bi bi-laptop me-2"></i>Loaners
+                            </button>
+                            <button class="dropdown-item" type="button" id="openAuditBoardBtn">
+                                <i class="bi bi-clipboard-check me-2"></i>Audit Board
+                            </button>
+                            <div class="dropdown-divider"></div>
+                            <div class="inventory-dropdown-section-label is-danger">Danger Zone</div>
+                            <button class="dropdown-item inventory-delete-all-btn" type="button" id="deleteAllAssetsBtn" onclick="window.deleteAllAssets()" data-role-required="admin" disabled>
+                                <i class="bi bi-trash3 me-2"></i>Delete Parent Assets
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
+            <section class="ops-360-section inventory-360-section" aria-labelledby="inventory360Title">
+                <div class="ops-360-header">
+                    <div>
+                        <div class="ops-360-eyebrow">Portfolio intelligence</div>
+                        <h2 id="inventory360Title">Inventory 360 Analytics</h2>
+                        <p>Portfolio-level visibility across assets, stock, risk, cost, data quality, and procurement impact.</p>
+                    </div>
+                    <div class="ops-360-header-actions">
+                        <span class="ops-freshness-pill" id="inventoryFreshnessBadge" aria-live="polite">
+                            <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+                            <span>Auto-refreshes every 60s</span>
+                        </span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-360-action="gemma-diagnostics">
+                            <i class="bi bi-cpu me-1"></i>AI Diagnostics
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-inventory-360-action="guided-tour">
+                            <i class="bi bi-question-circle me-1"></i>Guided Tour
+                        </button>
+                        <button type="button" class="btn btn-sm btn-primary" data-inventory-360-action="next-best">
+                            <i class="bi bi-bullseye me-1"></i>Next Best Action
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-inventory-360-action="explain">
+                            <i class="bi bi-stars me-1"></i>Explain Inventory 360
+                        </button>
+                    </div>
+                </div>
+                <div class="ops-definition-strip" aria-label="Inventory analytics definitions">
+                    <span title="Inventory 360 summarizes the full asset and stock portfolio.">Inventory 360 = full portfolio</span>
+                    <span title="Asset 360 is the drill-down for one selected asset.">Asset 360 = one asset drill-down</span>
+                    <span title="Data Quality measures missing identity, location, warranty, cost, and relationship evidence.">Data Quality</span>
+                    <span title="Cost Impact uses only stored purchase, replacement, quote, invoice, stock, or maintenance cost fields.">Cost Impact</span>
+                    <span title="Internal source details are available in evidence tooltips.">AI insight / System data</span>
+                </div>
+                <div id="inventory360Totals" class="ops-total-strip" aria-live="polite"></div>
+                <div id="inventory360Grid" class="ops-360-grid" aria-live="polite">
+                    <div class="ops-skeleton-card"></div>
+                    <div class="ops-skeleton-card"></div>
+                    <div class="ops-skeleton-card"></div>
+                </div>
+            </section>
+
             <div class="card border-0 bg-light mb-4 inventory-filter-card">
                 <div class="card-body py-3">
+                    <div class="inventory-table-freshness mb-3" id="inventoryTableFreshness" aria-live="polite">
+                        <span class="ops-freshness-pill is-muted">
+                            <i class="bi bi-clock-history" aria-hidden="true"></i>
+                            <span>Assets table waiting for first load.</span>
+                        </span>
+                    </div>
+                    <div class="d-flex gap-2 mb-3">
+                        <button class="btn btn-sm btn-primary" id="inventoryParentAssetsViewBtn">
+                            <i class="bi bi-hdd-network me-1"></i> Parent Assets
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="inventoryComponentsViewBtn">
+                            <i class="bi bi-cpu me-1"></i> Components
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="inventoryAccessoriesViewBtn">
+                            <i class="bi bi-usb-symbol me-1"></i> Accessories
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="inventoryConsumablesViewBtn">
+                            <i class="bi bi-droplet-half me-1"></i> Consumables
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="inventorySpareStockViewBtn">
+                            <i class="bi bi-box-seam me-1"></i> Spare Stock
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" id="inventoryLicensesViewBtn">
+                            <i class="bi bi-key me-1"></i> Licenses
+                        </button>
+                    </div>
+                    <div class="inventory-saved-view-bar" aria-label="Saved inventory views and active filters">
+                        <div class="inventory-saved-view-control">
+                            <label for="inventorySavedViewSelect" class="form-label form-label-sm mb-1">Saved View</label>
+                            <select id="inventorySavedViewSelect" class="form-select form-select-sm">
+                                <option value="all">All Assets</option>
+                                <option value="low_stock">Low Stock</option>
+                                <option value="needs_review">Needs Review</option>
+                                <option value="high_risk">High Risk</option>
+                                <option value="missing_data">Missing Data</option>
+                                <option value="recently_imported">Recently Imported</option>
+                                <option value="eol_soon">EOL Soon</option>
+                                <option value="unassigned">Unassigned</option>
+                                <option value="linked_component_issues">Linked Components Issues</option>
+                            </select>
+                        </div>
+                        <div id="inventoryActiveFilterChips" class="inventory-filter-chip-row" aria-live="polite"></div>
+                    </div>
                     <div class="row g-3 align-items-center">
                         <div class="col-auto">
                             <span class="fw-bold text-muted small"><i class="bi bi-funnel-fill me-1"></i> FILTERS:</span>
@@ -169,13 +210,29 @@
                             </select>
                         </div>
                         <div class="col-md-2">
+                            <select id="filterLifecycle" class="form-select form-select-sm" onchange="syncFilters()">
+                                <option value="all">All Lifecycle</option>
+                                <option value="in_stock">In Stock</option>
+                                <option value="assigned">Assigned</option>
+                                <option value="in_use">In Use</option>
+                                <option value="under_maintenance">Under Maintenance</option>
+                                <option value="pending_repair">Pending Repair</option>
+                                <option value="in_transit">In Transit</option>
+                                <option value="reserved">Reserved</option>
+                                <option value="retired">Retired</option>
+                                <option value="disposed">Disposed</option>
+                                <option value="lost_stolen">Lost/Stolen</option>
+                                <option value="eol_expired">EOL / Expired</option>
+                            </select>
+                        </div>
+                        <div class="col-md-1">
                             <button class="btn btn-outline-secondary btn-sm w-100" onclick="resetFilters()">Reset</button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div class="card border-0 shadow-sm mb-4">
+            <div class="card border-0 shadow-sm mb-4 inventory-spec-insight-card">
                 <div class="card-body py-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
                     <div>
                         <div class="fw-bold small text-uppercase text-muted">AI Spec Verification</div>
@@ -191,25 +248,859 @@
                     </div>
                 </div>
             </div>
+            <section class="inventory-analytics-strip mb-4" aria-labelledby="inventoryAnalyticsTitle">
+                <div class="inventory-analytics-strip-head">
+                    <div>
+                        <div class="inventory-section-kicker">Visual analytics</div>
+                        <h2 id="inventoryAnalyticsTitle">Inventory Graph Snapshot</h2>
+                        <p>Current loaded asset view: category mix, health signals, cost coverage, and EOL planning.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="inventoryVisualAnalytics" class="inventory-analytics-grid"></div>
+            </section>
             <div class="card border shadow-sm inventory-table-card">
                 <div class="card-body p-0">
                     <div class="table-responsive inventory-table-wrap">
                         <table class="table table-hover align-middle mb-0" id="groupTable">
                             <thead class="bg-light">
                                 <tr class="text-uppercase small text-muted">
-                                    <th class="ps-4 py-3">Asset Name</th>
-                                    <th>Type</th>
-                                    <th>Total Quantity</th>
-                                    <th>Locations Found</th>
+                                    <th class="ps-4 py-3" id="groupTableHeaderName">Asset Group</th>
+                                    <th id="groupTableHeaderType">Asset Type</th>
+                                    <th id="groupTableHeaderQty">Total Quantity</th>
+                                    <th id="groupTableHeaderLocation">Locations Found</th>
                                     <th class="text-end pe-4">Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="inventoryTableBody"></tbody>
                         </table>
                     </div>
+                    <div id="inventoryGroupPager" class="border-top p-3 d-none"></div>
                 </div>
             </div>
         </main>
+    </div>
+
+    <div class="modal fade" id="importAssetsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">Import Assets (CSV)</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info py-2">
+                        <div class="fw-semibold">Template columns</div>
+                        <div class="small">Record Type, Asset Name, Category, Asset Type, Brand, Model, Serial Number, Asset Tag, Manufacturer Part Number, Location, Department, Status, Lifecycle Status, Parent Asset Tag, Component Type, Condition, Quantity, Minimum Stock Level, Reorder Point, Vendor, Purchase Date, Warranty Start Date, Warranty End Date, Purchase Cost, Assigned To, Notes.</div>
+                        <div class="small mt-1">
+                            Supported record types: <code>parent_asset</code>, <code>component</code> (alias for embedded component), <code>component_asset</code>, <code>accessory</code>, <code>consumable</code>, <code>spare_stock</code>, <code>license</code>.
+                        </div>
+                        <div class="small">
+                            Use <strong>Parent Asset Tag</strong> to link components, accessories, and licenses to the parent asset.
+                        </div>
+                    </div>
+                    <div class="alert alert-secondary py-2 small">
+                        PDF assisted import coming later. PDF imports will require AI extraction and manual review before committing.
+                    </div>
+                    <div class="alert alert-light border py-2 small">
+                        <strong>Import steps:</strong> Step 1 Upload CSV, Step 2 Preview, Step 3 AI Fix Errors (optional), Step 4 Confirm Import.
+                    </div>
+                    <div id="importDropZone" class="border border-2 border-dashed rounded-3 p-3 text-center mb-3 bg-light-subtle">
+                        <div class="fw-semibold mb-1">Drag & drop CSV file here, or click to browse</div>
+                        <div class="small text-muted mb-2">CSV is supported now. XLSX coming later.</div>
+                        <input type="file" id="importAssetsFile" class="form-control" accept=".csv" />
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6 d-flex gap-2">
+                            <button type="button" class="btn btn-outline-secondary w-100" id="downloadImportTemplateBtn">Copy Template</button>
+                            <button type="button" class="btn btn-outline-primary w-100" id="aiMapColumnsBtn">AI Map Columns</button>
+                            <button type="button" class="btn btn-primary w-100" id="previewImportBtn">Preview</button>
+                        </div>
+                        <div class="col-md-6">
+                            <div id="importDropZoneHint" class="small text-muted py-2">No file selected.</div>
+                        </div>
+                    </div>
+                    <div id="importAiMappingSummary" class="small text-muted mb-2">No AI mapping yet.</div>
+                    <div class="d-flex flex-wrap gap-2 mb-2">
+                        <button type="button" class="btn btn-outline-warning btn-sm" id="aiRepairImportBtn">
+                            <i class="bi bi-magic me-1"></i>AI Fix Import Errors
+                        </button>
+                        <button type="button" class="btn btn-outline-info btn-sm" id="aiMatchInvoiceBtn">
+                            <i class="bi bi-link-45deg me-1"></i>Match to Existing Assets
+                        </button>
+                    </div>
+                    <div id="importAiRepairSummary" class="small text-muted mb-2">No AI repair run yet.</div>
+                    <div id="importAiRepairPanel" class="border rounded-3 p-2 mb-3 d-none bg-light-subtle">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                            <div class="fw-semibold">AI Repair Suggestions</div>
+                            <div id="importAiRepairMeta" class="small text-muted">No suggestions loaded.</div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button type="button" class="btn btn-outline-success btn-sm" id="importAiRepairApplySafeBtn">Apply All Safe Fixes</button>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="importAiRepairApplySelectedBtn">Apply Selected Fixes</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="importAiRepairIgnoreAllBtn">Ignore All</button>
+                            <button type="button" class="btn btn-outline-dark btn-sm" id="importAiRepairRerunPreviewBtn">Re-run Preview</button>
+                        </div>
+                        <div id="importAiRepairApplySummary" class="small text-muted mb-2">No fixes applied yet.</div>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-1">
+                                <thead>
+                                    <tr>
+                                        <th class="inventory-import-col-select">Sel</th>
+                                        <th class="inventory-import-col-row">Row</th>
+                                        <th class="inventory-import-col-field">Field</th>
+                                        <th>Old Value</th>
+                                        <th>Suggested Value</th>
+                                        <th>Reason</th>
+                                        <th class="inventory-import-col-confidence">Confidence</th>
+                                        <th class="inventory-import-col-status">Status</th>
+                                        <th class="inventory-import-col-actions">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="importAiRepairTableBody">
+                                    <tr><td colspan="9" class="text-muted text-center py-3">Run AI Fix Import Errors to generate suggestions.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="mb-2">
+                        <div class="fw-semibold">PDF / Invoice Assisted Import</div>
+                        <div class="small text-muted mb-2">Paste extracted text from PDF/invoice/warranty docs, then generate candidate import rows for review.</div>
+                        <textarea id="importDocumentText" class="form-control mb-2" rows="4" placeholder="Paste invoice or warranty document text here..."></textarea>
+                        <button type="button" class="btn btn-outline-dark btn-sm" id="previewDocumentImportBtn">
+                            <i class="bi bi-file-earmark-text me-1"></i>AI Extract Candidate Rows
+                        </button>
+                        <div id="importDocumentSummary" class="small text-muted mt-2">No document extraction run yet.</div>
+                    </div>
+                    <div id="importPreviewSummary" class="small text-muted mb-2">No preview yet.</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Row</th>
+                                    <th>Record Type</th>
+                                    <th>Name</th>
+                                    <th>Serial</th>
+                                    <th>Asset Tag</th>
+                                    <th>Parent Asset Tag</th>
+                                    <th>Proposed Action</th>
+                                    <th>Status</th>
+                                    <th>Message</th>
+                                </tr>
+                            </thead>
+                            <tbody id="importPreviewTableBody">
+                                <tr><td colspan="9" class="text-muted text-center py-4">Upload a file and click Preview.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="importCommitSummary" class="small mt-2"></div>
+                    <div id="importPostCommitActions" class="d-none mt-2">
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="importViewAssetsBtn">View Imported Assets</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="importAnotherFileBtn">Import Another File</button>
+                            <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-success" id="commitImportBtn" disabled>Confirm Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-map-modal" id="inventoryAssetMapModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-geo-alt-fill me-2"></i>MIU Inventory Asset Map</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body pt-2 pb-2">
+                    <div class="inventory-map-layout">
+                        <div class="inventory-map-main">
+                            <div class="inventory-map-controls">
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-md-2">
+                                        <label for="assetMapSearchInput" class="form-label form-label-sm mb-1">Search</label>
+                                        <input type="text" id="assetMapSearchInput" class="form-control form-control-sm" placeholder="Name / ID / Serial / Tag" />
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapViewFilter" class="form-label form-label-sm mb-1">Category</label>
+                                        <select id="assetMapViewFilter" class="form-select form-select-sm">
+                                            <option value="all">All</option>
+                                            <option value="parents">Parent Assets</option>
+                                            <option value="components">Components</option>
+                                            <option value="accessories">Accessories</option>
+                                            <option value="consumables">Consumables</option>
+                                            <option value="spare_stock">Spare Stock</option>
+                                            <option value="licenses">Licenses</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapTypeFilter" class="form-label form-label-sm mb-1">Type</label>
+                                        <select id="assetMapTypeFilter" class="form-select form-select-sm" aria-label="Filter map by type">
+                                            <option value="all">All Types</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapLocationFilter" class="form-label form-label-sm mb-1">Location</label>
+                                        <select id="assetMapLocationFilter" class="form-select form-select-sm" aria-label="Filter map by location">
+                                            <option value="all">All Locations</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label for="assetMapDepartmentFilter" class="form-label form-label-sm mb-1">Department</label>
+                                        <select id="assetMapDepartmentFilter" class="form-select form-select-sm" aria-label="Filter map by department">
+                                            <option value="all">All Departments</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2 d-flex gap-2">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary w-100" id="assetMapResetFiltersBtn">Reset</button>
+                                        <button type="button" class="btn btn-sm btn-outline-dark w-100" data-bs-toggle="collapse" data-bs-target="#assetMapAdvancedFilters" aria-expanded="false">
+                                            More
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="assetMapRefreshBtn">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-warning" id="assetMapCalibrateToggleBtn">
+                                        <i class="bi bi-crosshair2"></i> Calibrate
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-dark" id="assetMapCopyCoordsBtn" disabled>
+                                        <i class="bi bi-clipboard"></i> Copy Coords
+                                    </button>
+                                    <span class="small text-muted">Calibration uses final horizontal display coordinates.</span>
+                                </div>
+                                <div class="collapse mt-1" id="assetMapAdvancedFilters">
+                                <div class="row g-2 align-items-center">
+                                    <div class="col-md-3">
+                                        <label for="assetMapLifecycleFilter" class="form-label form-label-sm mb-1">Lifecycle</label>
+                                        <select id="assetMapLifecycleFilter" class="form-select form-select-sm">
+                                            <option value="all">All</option>
+                                            <option value="in_use">In Use</option>
+                                            <option value="assigned">Assigned</option>
+                                            <option value="under_maintenance">Under Maintenance</option>
+                                            <option value="pending_repair">Pending Repair</option>
+                                            <option value="in_transit">In Transit</option>
+                                            <option value="reserved">Reserved</option>
+                                            <option value="retired">Retired</option>
+                                            <option value="disposed">Disposed</option>
+                                            <option value="eol_expired">EOL / Expired</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-7 d-flex flex-wrap gap-2 pt-4 pt-md-0">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapTelemetryOnly" />
+                                            <label class="form-check-label small" for="assetMapTelemetryOnly">Telemetry enabled</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapNearEolOnly" />
+                                            <label class="form-check-label small" for="assetMapNearEolOnly">Near EOL</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapHighRiskOnly" />
+                                            <label class="form-check-label small" for="assetMapHighRiskOnly">High risk</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="assetMapMaintenanceOnly" />
+                                            <label class="form-check-label small" for="assetMapMaintenanceOnly">Needs maintenance</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-2"></div>
+                                </div>
+                                </div>
+                                <div class="small text-muted mt-2" id="assetMapCountsSummary">Ready.</div>
+                                <div id="assetMapCalibrationPanel" class="inventory-map-calibration-panel d-none">
+                                    Calibration mode is ON. Step 1 drag yellow markers to building centers. Step 2 click Copy Coords.
+                                </div>
+                            </div>
+                            <div class="inventory-map-canvas-wrap">
+                                <div class="inventory-map-canvas" id="inventoryAssetMapCanvas">
+                                    <img id="inventoryAssetMapImage" src="/assets/images/miu-campus-map.png" alt="MIU Campus Map">
+                                    <div class="inventory-map-marker-layer" id="inventoryAssetMapMarkers"></div>
+                                    <div class="inventory-map-calibration-layer" id="inventoryAssetMapCalibrationMarkers"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <aside class="inventory-map-side">
+                            <div class="inventory-map-side-header">
+                                <div class="fw-semibold small mb-1">Location Assets</div>
+                                <div class="small text-muted" id="assetMapLocationTitle">Select a marker to view assets</div>
+                            </div>
+                            <div class="inventory-map-side-body">
+                                <div id="assetMapLocationAssets" class="small text-muted">No location selected.</div>
+                                <div class="inventory-map-unmapped">
+                                    <div class="fw-semibold small mb-1">Unmapped Locations</div>
+                                    <div id="assetMapUnmappedList" class="small text-muted">No unmapped assets.</div>
+                                </div>
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <div class="inventory-map-legend me-auto">
+                        <span class="inventory-map-legend-item parents"><span class="inventory-map-legend-dot"></span>Parent</span>
+                        <span class="inventory-map-legend-item components"><span class="inventory-map-legend-dot"></span>Component</span>
+                        <span class="inventory-map-legend-item accessories"><span class="inventory-map-legend-dot"></span>Accessory</span>
+                        <span class="inventory-map-legend-item stock"><span class="inventory-map-legend-dot"></span>Consumable/Stock</span>
+                        <span class="inventory-map-legend-item licenses"><span class="inventory-map-legend-dot"></span>License</span>
+                        <span class="inventory-map-legend-item maintenance"><span class="inventory-map-legend-dot"></span>Maintenance</span>
+                        <span class="inventory-map-legend-item risk"><span class="inventory-map-legend-dot"></span>High Risk / Near EOL</span>
+                        <span class="inventory-map-legend-item telemetry"><span class="inventory-map-legend-dot"></span>Telemetry Enabled</span>
+                    </div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="bulkCheckoutModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-upc-scan me-2"></i>Bulk Checkout / Kiosk Mode</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">Scan or paste one asset customId/tag per line. Nothing is transferred until you click Confirm Checkout.</div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-5">
+                            <label for="bulkCheckoutAssetCodes" class="form-label form-label-sm">Asset IDs / Tags</label>
+                            <textarea id="bulkCheckoutAssetCodes" class="form-control form-control-sm" rows="8" placeholder="UNI-PC-LAB-A-001&#10;UNI-PC-LAB-A-002"></textarea>
+                        </div>
+                        <div class="col-md-7">
+                            <div class="alert alert-light border py-2 px-3 small mb-2">
+                                Building = physical location, Department = organizational owner, Room = specific location inside the building, Assigned To = responsible person/role.
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutBuilding" class="form-label form-label-sm">1. Building</label>
+                                    <select id="bulkCheckoutBuilding" class="form-select form-select-sm" aria-label="Bulk checkout building">
+                                        <option value="">Select Building</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutDepartment" class="form-label form-label-sm">2. Department</label>
+                                    <select id="bulkCheckoutDepartment" class="form-select form-select-sm" aria-label="Bulk checkout department">
+                                        <option value="">Select Department</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutRoom" class="form-label form-label-sm">3. Room</label>
+                                    <input id="bulkCheckoutRoom" class="form-control form-control-sm" placeholder="Rooms will be configured later">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutAssigneeRole" class="form-label form-label-sm">4. Assigned To Role</label>
+                                    <select id="bulkCheckoutAssigneeRole" class="form-select form-select-sm" aria-label="Bulk checkout assignee role">
+                                        <option value="">Select Role</option>
+                                        <option value="Lab Supervisor">Lab Supervisor</option>
+                                        <option value="Senior">Senior</option>
+                                        <option value="Junior">Junior</option>
+                                        <option value="Professor">Professor</option>
+                                        <option value="Technician">Technician</option>
+                                        <option value="Department Admin">Department Admin</option>
+                                        <option value="Student Worker">Student Worker</option>
+                                        <option value="Other">Other</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutAssignedTo" class="form-label form-label-sm">5. Assignee Name (Optional)</label>
+                                    <input id="bulkCheckoutAssignedTo" class="form-control form-control-sm" placeholder="Dr. Ahmed / Lab Supervisor">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="bulkCheckoutExpectedReturnDate" class="form-label form-label-sm">Expected Return (Optional)</label>
+                                    <input id="bulkCheckoutExpectedReturnDate" type="date" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-12">
+                                    <label for="bulkCheckoutReason" class="form-label form-label-sm">6. Reason / Notes</label>
+                                    <textarea id="bulkCheckoutReason" class="form-control form-control-sm" rows="2" placeholder="Reason for checkout / class / audit / deployment"></textarea>
+                                </div>
+                                <div class="col-md-6 d-flex flex-column justify-content-end">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="bulkCheckoutIncludeRelated" checked>
+                                        <label class="form-check-label small" for="bulkCheckoutIncludeRelated">Transfer related items with parent</label>
+                                    </div>
+                                    <div class="d-flex gap-2 mt-1">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="bulkCheckoutValidateBtn">Validate</button>
+                                        <button type="button" class="btn btn-sm btn-outline-success" id="bulkCheckoutConfirmBtn">Confirm Checkout</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="bulkCheckoutDestinationSummary" class="small text-muted mt-2">
+                                Checkout summary will appear here.
+                            </div>
+                            <div id="bulkCheckoutValidationSummary" class="small text-muted mt-2">Ready.</div>
+                            <div class="table-responsive mt-2">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Asset</th>
+                                            <th>Status</th>
+                                            <th>Message</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bulkCheckoutValidationTableBody">
+                                        <tr><td colspan="3" class="text-muted">No validation yet.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="bulkCheckoutReceipt" class="small"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="loanerBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-laptop me-2"></i>Loaner Checkout Board</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">Smart locker integrations are future work. This MVP tracks loaner checkout/return in software.</div>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="input-group input-group-sm inventory-modal-search-wide">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input id="loanerSearchInput" class="form-control" placeholder="Search by name/id/user">
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="loanerRefreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th>Loaner Status</th>
+                                    <th>Loaned To</th>
+                                    <th>Expected Return</th>
+                                    <th>Location</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="loanerTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="loanerSummaryText" class="small text-muted"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="auditBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-clipboard-check me-2"></i>Audit / Bounty Board</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">This MVP tracks verification, stale checks, missing assets, and location mismatches. Full gamification leaderboard is future work.</div>
+                    <section class="inventory-audit-session-panel" aria-labelledby="auditSessionTitle">
+                        <div class="inventory-audit-session-head">
+                            <div>
+                                <div class="inventory-section-kicker">Cycle-count sessions</div>
+                                <h6 id="auditSessionTitle" class="mb-1">Named Physical Audit Sessions</h6>
+                                <p class="small text-muted mb-0">Create a scoped checklist from live inventory records, then reconcile confirmed, missing, damaged, and location mismatch items.</p>
+                            </div>
+                            <div class="inventory-audit-session-actions">
+                                <button type="button" class="btn btn-sm btn-primary" id="auditCreateSessionBtn"><i class="bi bi-plus-lg me-1"></i>New Session</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" id="auditSessionsRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Sessions</button>
+                            </div>
+                        </div>
+                        <div id="auditSessionSummary" class="inventory-audit-session-summary">Loading audit sessions...</div>
+                        <div class="inventory-audit-session-grid">
+                            <div>
+                                <div class="fw-semibold small mb-1">Recent Sessions</div>
+                                <div id="auditSessionsList" class="inventory-audit-session-list">
+                                    <div class="ops-loading-stack"><span class="ops-skeleton-row"></span><span class="ops-skeleton-row"></span></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="fw-semibold small mb-1">Checklist</div>
+                                <div id="auditSessionDetails" class="inventory-audit-session-details">
+                                    <div class="ops-empty-state-card">
+                                        <div>
+                                            <div class="ops-empty-state-title">No session selected</div>
+                                            <div class="ops-empty-state-copy">Create or open an audit session to review its expected asset checklist.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="input-group input-group-sm inventory-modal-input-compact">
+                            <span class="input-group-text">Stale After</span>
+                            <input id="auditStaleDaysInput" type="number" min="1" max="3650" class="form-control" value="90">
+                            <span class="input-group-text">days</span>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="auditBoardRefreshBtn"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                    </div>
+                    <div id="auditBoardSummary" class="small text-muted mb-2">Loading...</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th>Status</th>
+                                    <th>Location</th>
+                                    <th>Verified</th>
+                                    <th>Verifier</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="auditBoardTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="auditBoardVerifierPoints" class="small text-muted mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="inventoryReportsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title fw-bold"><i class="bi bi-table me-2"></i>Inventory Reporting / Export Foundation</h5>
+                        <div class="small text-muted">CSV-first export using live Inventory, Procurement, EOL, Data Quality, and Audit evidence.</div>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="inventory-report-panel">
+                        <div class="inventory-report-controls">
+                            <label for="inventoryReportTypeSelect" class="form-label">Report Type</label>
+                            <select id="inventoryReportTypeSelect" class="form-select">
+                                <option value="asset_inventory">Asset inventory export</option>
+                                <option value="procurement_spend">Procurement spend export</option>
+                                <option value="warranty_expiry">Warranty expiry export</option>
+                                <option value="eol_forecast">EOL forecast export</option>
+                                <option value="data_quality">Data quality export</option>
+                                <option value="audit_reconciliation">Audit reconciliation export</option>
+                            </select>
+                            <div class="form-text">Exports use available local/API data and label missing evidence clearly. PDF/Excel server generation remains Phase 2.</div>
+                        </div>
+                        <div id="inventoryReportStatus" class="inventory-report-status">
+                            Choose a report type, then generate a CSV download.
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="inventoryGenerateReportBtn"><i class="bi bi-download me-1"></i>Generate CSV</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade inventory-action-modal" id="procurementBoardModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-bag-check me-2"></i>Procurement Management</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="small text-muted mb-2">
+                        ITIL/ITAM aligned workflow foundation: request -> review/approve -> order -> receive -> lifecycle trace.
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <label for="procurementStatusFilter" class="small text-muted mb-0">Request Status</label>
+                            <select id="procurementStatusFilter" class="form-select form-select-sm">
+                                <option value="all">All Statuses</option>
+                                <option value="Draft">Draft</option>
+                                <option value="Submitted">Submitted</option>
+                                <option value="Under Review">Under Review</option>
+                                <option value="Approved">Approved</option>
+                                <option value="Rejected">Rejected</option>
+                                <option value="Ordered">Ordered</option>
+                                <option value="Partially Received">Partially Received</option>
+                                <option value="Received">Received</option>
+                                <option value="Closed">Closed</option>
+                                <option value="Cancelled">Cancelled</option>
+                            </select>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-primary" id="procurementCreateRequestBtn"><i class="bi bi-plus-lg me-1"></i>New Request</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="procurementBoardRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                        </div>
+                    </div>
+                    <div id="procurementBoardSummary" class="small text-muted mb-2">Loading procurement board...</div>
+                    <div id="procurementStatusBadges" class="d-flex flex-wrap gap-1 mb-2"></div>
+                    <div id="procurementAnalyticsSummary" class="small text-muted mb-3"></div>
+
+                    <div class="fw-semibold small mb-1">Priority Board</div>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Priority Stream</th>
+                                    <th>Item</th>
+                                    <th>Need</th>
+                                    <th>Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementPriorityTableBody">
+                                <tr><td colspan="4" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="fw-semibold small mb-1">AI Purchase Recommendations</div>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Type</th>
+                                    <th>Qty</th>
+                                    <th>Priority</th>
+                                    <th>Reason</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementRecommendationsTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="fw-semibold small mb-1">Procurement Requests</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Request</th>
+                                    <th>Need</th>
+                                    <th>Owner</th>
+                                    <th>Status</th>
+                                    <th>Updated</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="procurementRequestsTableBody">
+                                <tr><td colspan="6" class="text-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="inventoryAiModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold" id="inventoryAiModalTitle">Inventory AI</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="inventoryAiInputSection" class="mb-3">
+                        <label for="inventoryAiQueryInput" class="form-label fw-semibold">Query</label>
+                        <div class="input-group">
+                            <input type="text" id="inventoryAiQueryInput" class="form-control" placeholder="Ask about inventory..." />
+                            <button class="btn btn-primary" type="button" id="inventoryAiRunBtn">Run</button>
+                        </div>
+                        <div class="form-text">Use natural language for assistant/search, or run global analysis actions.</div>
+                    </div>
+                    <div id="inventoryAiStatus" class="small text-muted mb-2">Ready.</div>
+                    <div id="inventoryAiResult" class="border rounded p-3 bg-light-subtle small">
+                        Select an Inventory AI action to begin.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" id="inventoryAiChatLauncher" class="inventory-ai-chat-launcher inventory-ai-chat-launcher--robot" title="Inventory AI" aria-label="Open Inventory AI assistant">
+        <span class="ai-floating-button__pulse" aria-hidden="true"></span>
+        <span class="ai-floating-button__icon"><i class="bi bi-robot"></i></span>
+        <span class="inventory-ai-chat-launcher-label">Inventory AI</span>
+    </button>
+
+    <section id="inventoryAiChatPanel" class="inventory-ai-chat-panel" aria-label="Inventory AI Chat">
+        <div class="inventory-ai-chat-header">
+            <div>
+                <div class="inventory-ai-chat-title"><span class="ai-chat-header__icon"><i class="bi bi-robot"></i></span>Inventory AI Copilot <span class="inventory-ai-chat-title-badge">AI insight</span></div>
+                <div class="inventory-ai-chat-subtitle">Ask about CMDB health, missing data, maintenance, EOL risk, and procurement.</div>
+                <div class="inventory-ai-chat-context-chip">Assets page context</div>
+                <div class="inventory-ai-chat-status" id="inventoryAiChatStatusBadge" title="LLM assistant status">
+                    <span class="inventory-ai-chat-status-label">Status</span>
+                    <span id="inventoryAiChatStatusDot" class="inventory-ai-status-dot"></span>
+                    <span id="inventoryAiChatStatusText">AI ready</span>
+                </div>
+            </div>
+            <div class="d-flex gap-1">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatMinimizeBtn" title="Minimize" aria-label="Minimize Inventory AI chat">
+                    <i class="bi bi-dash-lg"></i>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="inventoryAiChatCloseBtn" title="Close" aria-label="Close Inventory AI chat">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+        </div>
+        <div class="inventory-ai-quick-prompts" id="inventoryAiQuickPrompts">
+            <div class="inventory-ai-prompt-header">
+                <div class="inventory-ai-prompt-group-title mb-0">Quick Prompts</div>
+                <button type="button" class="btn btn-outline-secondary btn-sm inventory-ai-prompt-toggle" id="inventoryAiPromptToggleBtn" aria-label="Collapse quick prompts">Collapse</button>
+            </div>
+            <div class="inventory-ai-prompt-cards w-100">
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="missing_data">Find Issues</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-action="procurement">Plan Purchases</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-prompt="Explain Inventory 360 and what I should do next.">Inventory 360</button>
+                <button type="button" class="inventory-ai-prompt-card" data-ai-prompt="Summarize the health of UXKIT Main CS Desktop PC 001">Asset Health</button>
+            </div>
+            <details class="inventory-ai-prompt-more w-100">
+                <summary><i class="bi bi-chevron-down me-1"></i>More prompts</summary>
+                <div class="inventory-ai-prompt-more-body">
+                    <span class="inventory-ai-prompt-group-title w-100">Find Issues</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What needs attention today?">Attention today</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which building is highest risk?">Highest-risk building</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are missing serial numbers?">Missing serial numbers</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="risk_scores">Risk scores</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Find possible duplicate assets.">Find duplicate assets</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets need maintenance?">Assets needing maintenance</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show low stock spare items.">Low stock items</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Plan Purchases</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which licenses expire soon?">Licenses expiring soon</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should we procure next?">Procurement suggestions</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Why is this item recommended?">Why recommended?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Compare vendor quotes.">Compare vendor quotes</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What is the budget impact?">Budget impact</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain Procurement 360 and the next best procurement action.">Procurement 360</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What is the cost impact across inventory and procurement? Use real cost evidence only.">Cost impact</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="replacement_priority">Replacement priorities</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="spare_stock_forecast">Spare stock forecast</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Asset Health</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What components are linked to UX260531-MAIN-PC-001?">Linked components</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain Asset 360 for this asset.">Explain Asset 360</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which assets are near EOL?">Assets near EOL</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Which components were recently replaced?">Recently replaced components</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show digital twin for this asset.">Digital Twin (selected asset)</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show black box timeline for this asset.">Black Box Timeline (selected asset)</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Reports</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What changed today?">What changed today?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Give me the daily briefing.">Daily briefing</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate monthly inventory report.">Monthly report</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Generate executive inventory dashboard summary.">Executive dashboard summary</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="What should I do next? Use real OpsMind evidence only.">What should I do next?</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Prepare my thesis demo steps.">Thesis demo steps</button>
+
+                    <span class="inventory-ai-prompt-group-title w-100 mt-1">Advanced</span>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="search">AI inventory search</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="maintenance">Maintenance AI</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="duplicates">Duplicate check</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="data_corrections">Data corrections</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="reallocation">Tech Exchange</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="relationship_suggestions">Suggest relationships</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="ticket_draft">Draft inventory ticket</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-action="plan_action">Plan inventory action</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Show me dead stock.">Dead stock</button>
+                    <button type="button" class="btn btn-outline-primary inventory-ai-quick-btn" data-ai-prompt="Explain FIFO recommendation.">Explain FIFO</button>
+                </div>
+            </details>
+        </div>
+        <div class="inventory-ai-chat-body" id="inventoryAiChatMessages"></div>
+        <div class="inventory-ai-chat-input">
+            <div class="input-group input-group-sm">
+                <textarea id="inventoryAiChatInput" class="form-control" rows="2" placeholder="Ask about inventory, stock, maintenance, EOL..." aria-label="Inventory AI Assistant message"></textarea>
+                <button type="button" class="btn btn-primary" id="inventoryAiChatSendBtn" aria-label="Send message to Inventory AI assistant">
+                    <i class="bi bi-send"></i>
+                </button>
+            </div>
+            <div class="small text-muted mt-1">Press Enter to send. Shift+Enter for a new line.</div>
+        </div>
+    </section>
+
+    <div class="modal fade" id="spareStockModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold">Spare Stock</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+                        <div class="input-group input-group-sm inventory-modal-search-wide">
+                            <span class="input-group-text"><i class="bi bi-search"></i></span>
+                            <input type="text" id="spareStockSearchInput" class="form-control" placeholder="Search part/type/part no..." />
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-warning" id="spareStockLowOnlyBtn">
+                                <i class="bi bi-exclamation-triangle"></i> Low Stock
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="spareStockRefreshBtn">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                            <button type="button" class="btn btn-sm btn-primary" id="spareStockAddBtn">
+                                <i class="bi bi-plus-lg"></i> Add Stock Item
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Part Name</th>
+                                    <th>Type</th>
+                                    <th>Brand/Model</th>
+                                    <th>Part No.</th>
+                                    <th>Quantity</th>
+                                    <th>Min Stock</th>
+                                    <th>Location</th>
+                                    <th>Compatible With</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="spareStockTableBody">
+                                <tr><td colspan="9" class="text-muted text-center py-4">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="modal fade" id="receiveOrderModal" tabindex="-1" aria-hidden="true">
@@ -217,7 +1108,7 @@
             <div class="modal-content inventory-create-modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Create New Asset</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <form id="addAssetForm" class="inventory-create-form">
                     <div class="modal-body inventory-create-modal-body">
@@ -232,6 +1123,25 @@
                                     <div class="mb-2">
                                         <label for="assetQuantity" class="form-label">Quantity</label>
                                         <input type="number" id="assetQuantity" placeholder="1" class="form-control" min="1" required />
+                                    </div>
+                                    <div class="mb-2">
+                                        <label for="assetSerialNumber" class="form-label">Serial Number</label>
+                                        <input type="text" id="assetSerialNumber" placeholder="Manufacturer serial number" class="form-control" />
+                                        <div class="form-text small">For quantity > 1, use the multi-serial field below.</div>
+                                    </div>
+                                    <div class="mb-2">
+                                        <label for="assetSerialNumbers" class="form-label">Serial Numbers (Bulk)</label>
+                                        <textarea id="assetSerialNumbers" class="form-control" rows="3" placeholder="One serial per line for bulk create"></textarea>
+                                    </div>
+                                    <div class="row g-2 mb-2">
+                                        <div class="col-md-6">
+                                            <label for="assetTag" class="form-label">Asset Tag</label>
+                                            <input type="text" id="assetTag" placeholder="Optional internal asset tag" class="form-control" />
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="assetManufacturerPartNumber" class="form-label">Manufacturer Part Number</label>
+                                            <input type="text" id="assetManufacturerPartNumber" placeholder="Optional part number" class="form-control" />
+                                        </div>
                                     </div>
                                     <div class="row g-2 mb-2">
                                         <div class="col-md-6">
@@ -363,6 +1273,82 @@
                                         </div>
                                         <div id="assetTrackHoursHint" class="form-text small text-muted mb-0">When enabled, telemetry starts in waiting-for-signal mode until a real signal arrives.</div>
                                     </div>
+                                    <div class="accordion mt-3" id="assetAdvancedAccordion">
+                                        <div class="accordion-item">
+                                            <h2 class="accordion-header" id="assetPurchaseHeading">
+                                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#assetPurchaseCollapse" aria-expanded="false" aria-controls="assetPurchaseCollapse">
+                                                    Purchase & Warranty
+                                                </button>
+                                            </h2>
+                                            <div id="assetPurchaseCollapse" class="accordion-collapse collapse" aria-labelledby="assetPurchaseHeading" data-bs-parent="#assetAdvancedAccordion">
+                                                <div class="accordion-body p-2">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <label for="assetVendor" class="form-label">Vendor</label>
+                                                            <input type="text" id="assetVendor" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseDate" class="form-label">Purchase Date</label>
+                                                            <input type="date" id="assetPurchaseDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseCost" class="form-label">Purchase Cost</label>
+                                                            <input type="number" id="assetPurchaseCost" class="form-control" min="0" step="0.01" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetInvoiceNumber" class="form-label">Invoice Number</label>
+                                                            <input type="text" id="assetInvoiceNumber" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetPurchaseOrderNumber" class="form-label">PO Number</label>
+                                                            <input type="text" id="assetPurchaseOrderNumber" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetWarrantyStartDate" class="form-label">Warranty Start</label>
+                                                            <input type="date" id="assetWarrantyStartDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetWarrantyEndDate" class="form-label">Warranty End</label>
+                                                            <input type="date" id="assetWarrantyEndDate" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetReplacementCost" class="form-label">Replacement Cost</label>
+                                                            <input type="number" id="assetReplacementCost" class="form-control" min="0" step="0.01" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="accordion-item">
+                                            <h2 class="accordion-header" id="assetAssignmentHeading">
+                                                <button class="accordion-button collapsed py-2" type="button" data-bs-toggle="collapse" data-bs-target="#assetAssignmentCollapse" aria-expanded="false" aria-controls="assetAssignmentCollapse">
+                                                    Assignment & Custody
+                                                </button>
+                                            </h2>
+                                            <div id="assetAssignmentCollapse" class="accordion-collapse collapse" aria-labelledby="assetAssignmentHeading" data-bs-parent="#assetAdvancedAccordion">
+                                                <div class="accordion-body p-2">
+                                                    <div class="row g-2">
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedToName" class="form-label">Assigned To</label>
+                                                            <input type="text" id="assetAssignedToName" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedToUserId" class="form-label">Assigned User ID</label>
+                                                            <input type="text" id="assetAssignedToUserId" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetAssignedDepartment" class="form-label">Assigned Department</label>
+                                                            <input type="text" id="assetAssignedDepartment" class="form-control" />
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="assetExpectedReturnDate" class="form-label">Expected Return Date</label>
+                                                            <input type="date" id="assetExpectedReturnDate" class="form-control" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -381,7 +1367,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-warning text-dark">
                     <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i>Edit Technical Specs</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-secondary py-2 mb-3 small">
@@ -390,6 +1376,10 @@
                     <form id="editSpecsForm">
                         <input type="hidden" id="editSpecTargetId">
                         <div class="mb-3">
+                            <label class="form-label fw-bold small">Serial Number</label>
+                            <input id="editSpecSerialNumber" class="form-control mb-2" placeholder="Update serial number (single asset edit)" />
+                            <label class="form-label fw-bold small">Asset Tag</label>
+                            <input id="editSpecAssetTag" class="form-control mb-2" placeholder="Update asset tag (single asset edit)" />
                             <label class="form-label fw-bold small">Specifications (Key: Value)</label>
                             <textarea id="editSpecTextArea" class="form-control font-monospace" rows="6" placeholder="RAM: 16GB&#10;Processor: i7-12th Gen"></textarea>
                             <div class="form-text small">Update details one per line. Format: <strong>Key: Value</strong></div>
@@ -409,7 +1399,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-dark text-white">
                     <h5 class="modal-title fw-bold"><i class="bi bi-cpu me-2"></i>Asset Specifications</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="specTargetHeader" class="mb-3 p-3 bg-light rounded border"></div>
@@ -419,48 +1409,78 @@
         </div>
     </div>
 
-    <div class="modal fade" id="detailsModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header bg-light">
-                    <div>
-                        <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Details</h5>
-                        <small class="text-muted" id="detailModalSubtitle">Manage individual items</small>
+    <div class="modal fade inventory-group-360-modal" id="detailsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content inventory-group-360-shell">
+                <div class="modal-header inventory-group-360-header">
+                    <div class="inventory-group-360-title-wrap">
+                        <div class="inventory-group-360-eyebrow">Group 360 workspace</div>
+                        <h5 class="modal-title fw-bold" id="detailModalTitle">Asset Group Details</h5>
+                        <small id="detailModalSubtitle">Manage individual items</small>
                     </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                
-                <div class="bulk-header d-flex flex-wrap justify-content-between align-items-center gap-3">
-                    <div class="input-group input-group-sm inventory-inner-search-group">
-                        <span class="input-group-text bg-white"><i class="bi bi-filter"></i></span>
-                        <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter IDs in this group..." onkeyup="filterDetailsTable()">
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-warning text-dark d-none" id="bulkSpecReviewBtn" title="Review pending AI-detected specs in this group">
-                            <i class="bi bi-patch-check me-1"></i> Review Specs (0)
-                        </button>
-                        <button class="btn btn-sm btn-warning" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i> Bulk Transfer</button>
-                        <button class="btn btn-sm btn-danger" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i> Bulk Delete Group</button>
+                    <div class="inventory-group-360-header-actions">
+                        <span class="inventory-group-count-pill" id="detailModalCountPill">0 units</span>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                 </div>
 
-                <div class="modal-body p-0">
-                    <div class="table-responsive inventory-details-scroll">
-                        <table class="table table-striped table-hover mb-0">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th class="ps-4">Unique ID</th>
-                                    <th>Status</th>
-                                    <th>Location</th>
-                                    <th>Department</th>
-                                    <th>EOL Status</th> 
-                                    <th class="text-end pe-4">Individual Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="detailsTableBody"></tbody>
-                        </table>
+                <div class="modal-body inventory-group-360-body">
+                    <div id="assetGroupInsight" class="inventory-group-ai-card" aria-live="polite"></div>
+                    <div id="assetGroupSummary" class="inventory-group-summary-grid" aria-label="Asset group summary"></div>
+
+                    <div class="bulk-header inventory-group-toolbar">
+                        <div class="inventory-group-search-block">
+                            <label class="inventory-group-section-label" for="innerSearchInput">Search/filter units</label>
+                            <div class="input-group input-group-sm inventory-inner-search-group">
+                                <span class="input-group-text"><i class="bi bi-filter"></i></span>
+                                <input type="text" id="innerSearchInput" class="form-control" placeholder="Filter ID, serial, location, department..." onkeyup="filterDetailsTable()">
+                            </div>
+                        </div>
+
+                        <div class="inventory-group-bulk-actions" aria-label="Group actions">
+                            <div class="inventory-group-action-label">Primary actions</div>
+                            <button class="btn btn-sm btn-outline-success" id="bulkGroupCmdbBtn"><i class="bi bi-diagram-3 me-1"></i>Open Group CMDB</button>
+                            <button class="btn btn-sm btn-warning text-dark d-none" id="bulkSpecReviewBtn" title="Review pending AI-detected specs in this group">
+                                <i class="bi bi-patch-check me-1"></i>Review Specs (0)
+                            </button>
+                            <button class="btn btn-sm btn-warning" id="bulkTransferBtn"><i class="bi bi-truck me-1"></i>Bulk Transfer</button>
+                            <button class="btn btn-sm btn-outline-info" id="bulkPrintLabelsBtn"><i class="bi bi-printer me-1"></i>Print Labels</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="bulkEditSpecsBtn"><i class="bi bi-pencil me-1"></i>Edit Specs</button>
+                            <button class="btn btn-sm btn-danger inventory-group-danger-action" id="bulkDeleteBtn"><i class="bi bi-trash-fill me-1"></i>Bulk Delete Group</button>
+                        </div>
                     </div>
+
+                    <section class="inventory-group-units-panel" aria-labelledby="inventoryGroupUnitsTitle">
+                        <div class="inventory-group-section-header">
+                            <div>
+                                <h6 id="inventoryGroupUnitsTitle">Units in this group</h6>
+                                <p>Open each unit in Asset 360, transfer it, or use More Actions for lower-frequency work.</p>
+                            </div>
+                            <span class="inventory-group-step-pill">1-click Open 360</span>
+                        </div>
+                        <div class="table-responsive inventory-details-scroll">
+                            <table class="table table-hover align-middle mb-0 inventory-group-table">
+                                <thead>
+                                    <tr>
+                                        <th>Unique ID</th>
+                                        <th>Serial</th>
+                                        <th>Status</th>
+                                        <th>Location</th>
+                                        <th>Department</th>
+                                        <th>Health</th>
+                                        <th>EOL Status</th>
+                                        <th class="text-end">Individual Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="detailsTableBody"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="modal-footer inventory-group-360-footer">
+                    <div class="small text-muted">Destructive group actions require an in-app confirmation before anything changes.</div>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -471,7 +1491,7 @@
             <div class="modal-content border-0 shadow">
                 <div class="modal-header">
                     <h5 class="modal-title fw-bold">Transfer Asset(s)</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-info py-2 mb-3 small">
@@ -505,6 +1525,44 @@
                             <label class="form-label fw-bold">Quantity to Move:</label>
                             <input type="number" id="transferQty" class="form-control" value="1" min="1">
                             <div class="form-text text-muted small">Max available: <span id="maxTransferQty">0</span></div>
+                        </div>
+
+                        <div class="border rounded p-2 bg-light-subtle">
+                            <div class="form-check mb-1">
+                                <input type="checkbox" class="form-check-input" id="transferIncludeRelated" checked>
+                                <label class="form-check-label fw-semibold" for="transferIncludeRelated">
+                                    Also transfer related installed/assigned items
+                                </label>
+                            </div>
+                            <div class="row g-2 small ps-1">
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="transferIncludeComponents" checked>
+                                        <label class="form-check-label" for="transferIncludeComponents">Components</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="transferIncludeAccessories" checked>
+                                        <label class="form-check-label" for="transferIncludeAccessories">Accessories</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="transferIncludeLicenses">
+                                        <label class="form-check-label" for="transferIncludeLicenses">Licenses</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="transferIncludeConsumables">
+                                        <label class="form-check-label" for="transferIncludeConsumables">Linked Consumables</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="transferRelatedCounts" class="small text-muted mt-2">
+                                Related items: calculating...
+                            </div>
                         </div>
                     </form>
                 </div>
@@ -545,9 +1603,18 @@
             <div class="modal-content">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold">Audit Trail</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body history-scrollable" id="historyContent"></div>
+                <div class="modal-body">
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                        <div class="form-check form-switch m-0">
+                            <input class="form-check-input" type="checkbox" role="switch" id="historyIncludeRelated" checked>
+                            <label class="form-check-label small" for="historyIncludeRelated">Include related item history</label>
+                        </div>
+                        <div class="small text-muted d-flex flex-wrap gap-1" id="historyLegendBadges"></div>
+                    </div>
+                    <div class="history-scrollable" id="historyContent"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -557,7 +1624,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold"><i class="bi bi-patch-check me-2"></i>Spec Verification Review</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <input type="hidden" id="specVerificationAssetId">
@@ -591,7 +1658,7 @@
             <div class="modal-content border-0 shadow-lg">
                 <div class="modal-header bg-light">
                     <h5 class="modal-title fw-bold"><i class="bi bi-collection-check me-2"></i>Bulk Spec Verification Review</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="alert alert-secondary py-2 mb-3 small">
@@ -638,7 +1705,7 @@
             ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
 
         if (!AuthService.isAuthenticated() || !canAccessInventory) {
-            sessionStorage.setItem('opsmind_error', '⚠️ Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
+            sessionStorage.setItem('opsmind_error', 'Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
             window.location.href = context.dashboardPath || '/pages/dashboard.html';
         }
     </script>

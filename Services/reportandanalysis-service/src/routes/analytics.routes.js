@@ -8,10 +8,11 @@ const {
   requireSelfOrSupport,
 } = require("../middleware/auth");
 
-router.get("/sync", requireInternalToken, controller.syncTickets);
-router.get("/admin/reports", requireAuthOrInternal, requireSupportRole, controller.getAllReports);
-router.get("/technician/:technicianId", requireAuthOrInternal, requireSelfOrSupport("technicianId"), controller.getMyTickets);
-router.get("/report/:ticketId", requireAuthOrInternal, controller.generatePDF);
-router.post("/solution/:ticketId", requireAuthOrInternal, controller.addSolution);
+router.get("/sync", controller.syncTickets);
+router.get("/admin/reports", controller.getAllReports);
+router.get("/technician/:technicianId", controller.getMyTickets);
+router.get("/report/:ticketId", controller.generatePDF);
+router.post("/solution/:ticketId", controller.addSolution);
+router.post("/check-similar-issue",controller.checkSimilarIssue);
 
 module.exports = router;

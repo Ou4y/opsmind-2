@@ -157,6 +157,15 @@ export const slaController = {
     }
   },
 
+  async getPauseAnalytics(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await slaService.getPauseAnalytics();
+      res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async updateDeadlines(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await slaService.updateDeadlines(getSingleParam(req.params.ticketId, "ticketId"), {
@@ -172,7 +181,11 @@ export const slaController = {
 
   async pause(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await slaService.pause(getSingleParam(req.params.ticketId, "ticketId"), req.body?.reason);
+      const result = await slaService.pause(getSingleParam(req.params.ticketId, "ticketId"), {
+        reason: req.body?.reason,
+        source: req.body?.source,
+        notes: req.body?.notes,
+      });
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       next(error);

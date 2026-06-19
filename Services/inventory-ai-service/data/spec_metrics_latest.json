@@ -1,6 +1,18 @@
 {
-  "evaluated_records": 0,
-  "precision_by_field": {},
-  "recall_by_field": {},
-  "generated_at_utc": "2026-05-22T01:00:14.591975+00:00"
+  "evaluated_records": 50,
+  "precision_by_field": {
+    "RAM": 0.9643,
+    "CPU": 0.0,
+    "Storage": 0.9706,
+    "Display": 1.0,
+    "OS": 1.0
+  },
+  "recall_by_field": {
+    "RAM": 1.0,
+    "CPU": 0.0,
+    "Storage": 0.75,
+    "Display": 0.3529,
+    "OS": 0.7727
+  },
+  "generated_at_utc": "2026-05-24T01:00:00.319631+00:00"
 }

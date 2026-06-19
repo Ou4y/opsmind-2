@@ -7,6 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import anyio
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +74,8 @@ def _build_llm_client(settings: AppSettings) -> LLMClientProtocol:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             timeout_seconds=settings.ollama_timeout_seconds,
+            keep_alive=settings.ollama_keep_alive,
+            retry_attempts=settings.ollama_retry_attempts,
         )
     if provider == "gemini":
         logger.info("Using Gemini as LLM provider (%s)", settings.gemini_model)
@@ -116,6 +119,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         else:
             logger.warning("No trained models loaded. Ticket /predict disabled; lifespan endpoint will use fallback.")
+        if (
+            settings.llm_provider == "ollama"
+            and settings.ollama_warmup_enabled
+            and hasattr(llm_client, "warmup")
+            and llm_client.enabled
+        ):
+            try:
+                logger.info(
+                    "Starting Ollama warm-up model=%s keep_alive=%s timeout=%ss retry=%s",
+                    settings.ollama_model,
+                    settings.ollama_keep_alive,
+                    settings.ollama_timeout_seconds,
+                    settings.ollama_retry_attempts,
+                )
+                warmed = await anyio.to_thread.run_sync(llm_client.warmup, settings.ollama_warmup_prompt)  # type: ignore[attr-defined]
+                if warmed:
+                    logger.info("Ollama warm-up completed successfully.")
+                else:
+                    logger.warning(
+                        "Ollama warm-up failed; service will continue and use fallback when needed. last_error=%s",
+                        getattr(llm_client, "last_error", ""),
+                    )
+            except Exception as warmup_exc:
+                logger.warning("Ollama warm-up failed unexpectedly: %s", warmup_exc)
     except Exception as exc:
         logger.error("Model loading failed: %s", exc)
         logger.warning("Service starting with fallback-only behavior.")

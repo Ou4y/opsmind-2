@@ -263,6 +263,350 @@ class EolExplanationResponse(BaseModel):
     llm_used: bool = False
 
 
+class AssetHealthSummaryRequest(BaseModel):
+    asset: dict = Field(default_factory=dict)
+    eol_assessment: dict = Field(default_factory=dict, validation_alias=AliasChoices("eol_assessment", "eolAssessment"))
+    include_related: bool = Field(True, validation_alias=AliasChoices("include_related", "includeRelated"))
+    history_events: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("history_events", "historyEvents"))
+    components: list[dict] = Field(default_factory=list)
+    maintenance_count: int = Field(0, ge=0, validation_alias=AliasChoices("maintenance_count", "maintenanceCount"))
+
+    model_config = {"extra": "allow"}
+
+
+class AssetHealthSummaryResponse(BaseModel):
+    summary: str
+    risks: list[str] = Field(default_factory=list)
+    recent_changes: list[str] = Field(default_factory=list)
+    component_issues: list[str] = Field(default_factory=list)
+    warranty_eol_concerns: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = Field("disabled")
+    fallback_reason: Optional[str] = None
+
+
+class InventoryAssistantRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    deterministic_result: dict = Field(default_factory=dict, validation_alias=AliasChoices("deterministic_result", "deterministicResult"))
+    context_summary: dict = Field(default_factory=dict, validation_alias=AliasChoices("context_summary", "contextSummary"))
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryAssistantResponse(BaseModel):
+    answer: str
+    suggested_actions: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = Field("disabled")
+    fallback_reason: Optional[str] = None
+
+
+class ImportColumnMappingRequest(BaseModel):
+    filename: Optional[str] = None
+    headers: list[str] = Field(default_factory=list)
+    sample_rows: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("sample_rows", "sampleRows"))
+    expected_fields: list[str] = Field(default_factory=list, validation_alias=AliasChoices("expected_fields", "expectedFields"))
+    deterministic_mappings: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("deterministic_mappings", "deterministicMappings"))
+
+    model_config = {"extra": "allow"}
+
+
+class ImportColumnMappingResponse(BaseModel):
+    mappings: list[dict] = Field(default_factory=list)
+    unmapped_columns: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+
+
+class MissingDataDetectorRequest(BaseModel):
+    report: dict = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+class MissingDataDetectorResponse(BaseModel):
+    summary: str
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class MaintenanceRecommendationRequest(BaseModel):
+    recommendations: list[dict] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
+class MaintenanceRecommendationResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class ProcurementRecommendationRequest(BaseModel):
+    recommended_purchases: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("recommended_purchases", "recommendedPurchases"))
+
+    model_config = {"extra": "allow"}
+
+
+class ProcurementRecommendationResponse(BaseModel):
+    summary: str
+    missing_data: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class DuplicateExplanationRequest(BaseModel):
+    duplicate_groups: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("duplicate_groups", "duplicateGroups"))
+    summary: str = ""
+
+    model_config = {"extra": "allow"}
+
+
+class DuplicateExplanationResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class NaturalLanguageInventorySearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    interpreted_filters: dict = Field(default_factory=dict, validation_alias=AliasChoices("interpreted_filters", "interpretedFilters"))
+    candidate_results: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("candidate_results", "candidateResults"))
+    fallback_answer: str = Field("", validation_alias=AliasChoices("fallback_answer", "fallbackAnswer"))
+
+    model_config = {"extra": "allow"}
+
+
+class NaturalLanguageInventorySearchResponse(BaseModel):
+    answer: str
+    confidence: str = Field("low")
+    llm_used: bool = False
+
+
+class DocumentExtractionRequest(BaseModel):
+    filename: Optional[str] = None
+    document_text: str = Field("", validation_alias=AliasChoices("document_text", "documentText"))
+    deterministic_rows: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("deterministic_rows", "deterministicRows"))
+
+    model_config = {"extra": "allow"}
+
+
+class DocumentExtractionResponse(BaseModel):
+    source_document_summary: str
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    extracted_rows: list[dict] = Field(default_factory=list)
+    llm_used: bool = False
+
+
+class DataCorrectionSuggestionsRequest(BaseModel):
+    summary: str = ""
+    suggestions: list[dict] = Field(default_factory=list)
+    counts_by_severity: dict = Field(default_factory=dict, validation_alias=AliasChoices("counts_by_severity", "countsBySeverity"))
+    data_scope: Optional[str] = Field(None, validation_alias=AliasChoices("data_scope", "dataScope"))
+    confidence: str = "medium"
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+    suggested_actions: list[str] = Field(default_factory=list, validation_alias=AliasChoices("suggested_actions", "suggestedActions"))
+
+    model_config = {"extra": "allow"}
+
+
+class DataCorrectionSuggestionsResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class RiskScoreExplanationRequest(BaseModel):
+    summary: str = ""
+    risk_scores: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("risk_scores", "riskScores"))
+    data_scope: Optional[str] = Field(None, validation_alias=AliasChoices("data_scope", "dataScope"))
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+    confidence: str = "medium"
+    suggested_actions: list[str] = Field(default_factory=list, validation_alias=AliasChoices("suggested_actions", "suggestedActions"))
+
+    model_config = {"extra": "allow"}
+
+
+class RiskScoreExplanationResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class ReplacementPriorityRequest(BaseModel):
+    summary: str = ""
+    ranked_items: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("ranked_items", "rankedItems"))
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+    confidence: str = "medium"
+    suggested_actions: list[str] = Field(default_factory=list, validation_alias=AliasChoices("suggested_actions", "suggestedActions"))
+
+    model_config = {"extra": "allow"}
+
+
+class ReplacementPriorityResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class SpareStockForecastRequest(BaseModel):
+    summary: str = ""
+    forecasts: list[dict] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+    confidence: str = "medium"
+    suggested_actions: list[str] = Field(default_factory=list, validation_alias=AliasChoices("suggested_actions", "suggestedActions"))
+
+    model_config = {"extra": "allow"}
+
+
+class SpareStockForecastResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class ImportErrorRepairRequest(BaseModel):
+    summary: str = ""
+    fixes: list[dict] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: str = "medium"
+
+    model_config = {"extra": "allow"}
+
+
+class ImportErrorRepairResponse(BaseModel):
+    summary: str
+    fixes: list[dict] = Field(default_factory=list)
+    corrected_rows_preview: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("corrected_rows_preview", "correctedRowsPreview"))
+    warnings: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class RelationshipSuggestionRequest(BaseModel):
+    summary: str = ""
+    suggestions: list[dict] = Field(default_factory=list)
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+    confidence: str = "medium"
+
+    model_config = {"extra": "allow"}
+
+
+class RelationshipSuggestionResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class InvoiceAssetMatchingRequest(BaseModel):
+    summary: str = ""
+    matches: list[dict] = Field(default_factory=list)
+    unmatched_items: list[dict] = Field(default_factory=list, validation_alias=AliasChoices("unmatched_items", "unmatchedItems"))
+    warnings: list[str] = Field(default_factory=list)
+    confidence: str = "medium"
+
+    model_config = {"extra": "allow"}
+
+
+class InvoiceAssetMatchingResponse(BaseModel):
+    summary: str
+    confidence: str = Field("low")
+    warnings: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class InventoryTicketDraftRequest(BaseModel):
+    ticket_draft: dict = Field(default_factory=dict, validation_alias=AliasChoices("ticket_draft", "ticketDraft"))
+    confidence: str = "medium"
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryTicketDraftResponse(BaseModel):
+    ticket_draft: dict = Field(default_factory=dict)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class MonthlyInventoryReportRequest(BaseModel):
+    report_title: str = Field("", validation_alias=AliasChoices("report_title", "reportTitle"))
+    date_range: str = Field("", validation_alias=AliasChoices("date_range", "dateRange"))
+    executive_summary: str = Field("", validation_alias=AliasChoices("executive_summary", "executiveSummary"))
+    sections: list[dict] = Field(default_factory=list)
+    metrics: dict = Field(default_factory=dict)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = "medium"
+    missing_data: list[str] = Field(default_factory=list, validation_alias=AliasChoices("missing_data", "missingData"))
+
+    model_config = {"extra": "allow"}
+
+
+class MonthlyInventoryReportResponse(BaseModel):
+    report_title: str
+    executive_summary: str
+    sections: list[dict] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    confidence: str = Field("low")
+    missing_data: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
+class InventoryActionPlanRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    action_plan: dict = Field(default_factory=dict, validation_alias=AliasChoices("action_plan", "actionPlan"))
+    confidence: str = "medium"
+
+    model_config = {"extra": "allow"}
+
+
+class InventoryActionPlanResponse(BaseModel):
+    action_type: str = Field("", validation_alias=AliasChoices("action_type", "actionType"))
+    summary: str
+    risks: list[str] = Field(default_factory=list)
+    confirmation_instructions: str = Field("", validation_alias=AliasChoices("confirmation_instructions", "confirmationInstructions"))
+    confidence: str = Field("low")
+    llm_used: bool = False
+    llm_status: str = "disabled"
+    fallback_reason: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     """Schema for the health-check endpoint."""
 

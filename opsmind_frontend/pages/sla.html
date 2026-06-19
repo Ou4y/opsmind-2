@@ -75,6 +75,100 @@
                     </div>
                 </div>
 
+                <section class="sla-analytics-panel mb-4">
+                    <div class="sla-analytics-head">
+                        <div>
+                            <div class="sla-analytics-eyebrow">Pause Analytics</div>
+                            <h2 class="sla-analytics-title">Pause Visibility</h2>
+                            <p class="sla-analytics-subtitle">Understand why SLA timers are being paused and identify operational bottlenecks.</p>
+                        </div>
+                        <div class="sla-analytics-status">
+                            <i class="bi bi-pause-circle"></i>
+                            <span>Live pause insights</span>
+                        </div>
+                    </div>
+
+                    <div id="slaAnalyticsLoading" class="text-center py-4 d-none">
+                        <div class="spinner-border text-primary mb-3" role="status">
+                            <span class="visually-hidden">Loading analytics...</span>
+                        </div>
+                        <p class="text-muted mb-0">Loading pause analytics...</p>
+                    </div>
+
+                    <div id="slaAnalyticsError" class="alert alert-danger d-none mb-0"></div>
+
+                    <div id="slaAnalyticsContent" class="d-none">
+                        <div class="sla-analytics-kpis">
+                            <article class="sla-kpi-card is-warning">
+                                <div class="sla-kpi-icon">
+                                    <i class="bi bi-pause-fill"></i>
+                                </div>
+                                <div class="sla-kpi-copy">
+                                    <span class="sla-kpi-label">Currently Paused Tickets</span>
+                                    <strong class="sla-kpi-value" id="slaCurrentlyPausedCount">0</strong>
+                                    <span class="sla-kpi-meta">Tickets paused right now</span>
+                                </div>
+                            </article>
+
+                            <article class="sla-kpi-card is-primary">
+                                <div class="sla-kpi-icon">
+                                    <i class="bi bi-activity"></i>
+                                </div>
+                                <div class="sla-kpi-copy">
+                                    <span class="sla-kpi-label">Total Pause Events</span>
+                                    <strong class="sla-kpi-value" id="slaTotalPauseCount">0</strong>
+                                    <span class="sla-kpi-meta">All recorded pause actions</span>
+                                </div>
+                            </article>
+
+                            <article class="sla-kpi-card is-accent">
+                                <div class="sla-kpi-icon">
+                                    <i class="bi bi-bar-chart-line-fill"></i>
+                                </div>
+                                <div class="sla-kpi-copy">
+                                    <span class="sla-kpi-label">Top Pause Reason</span>
+                                    <strong class="sla-kpi-value sla-kpi-value-lg" id="slaTopPauseReason">N/A</strong>
+                                    <span class="sla-kpi-meta" id="slaTopPauseReasonMeta">No pause events yet</span>
+                                </div>
+                            </article>
+                        </div>
+
+                        <div class="sla-analytics-grid">
+                            <article class="sla-analytics-card sla-analytics-card-wide">
+                                <div class="sla-analytics-card-head">
+                                    <div>
+                                        <span class="sla-card-label">Top Pause Reasons</span>
+                                        <h3>Reason Distribution</h3>
+                                    </div>
+                                    <span class="sla-card-chip" id="slaReasonsOverviewChip">Live ranking</span>
+                                </div>
+                                <div class="sla-top-reason-highlight" id="slaTopReasonHighlight">
+                                    <div class="sla-top-reason-icon">
+                                        <i class="bi bi-exclamation-diamond-fill"></i>
+                                    </div>
+                                    <div class="sla-top-reason-copy">
+                                        <span>Most common reason</span>
+                                        <strong id="slaTopReasonHighlightTitle">N/A</strong>
+                                        <small id="slaTopReasonHighlightMeta">No pause events available yet.</small>
+                                    </div>
+                                </div>
+                                <div class="sla-reason-chart" id="slaPauseReasonsBody"></div>
+                            </article>
+
+                            <article class="sla-analytics-card">
+                                <div class="sla-analytics-card-head">
+                                    <div>
+                                        <span class="sla-card-label">Currently Paused Tickets</span>
+                                        <h3>Active Pause Queue</h3>
+                                    </div>
+                                    <span class="sla-card-chip" id="slaCurrentPausedChip">0 active</span>
+                                </div>
+                                <div class="sla-paused-ticket-list" id="slaCurrentPausedBody"></div>
+                            </article>
+                        </div>
+                    </div>
+                </section>
+
                 <div class="card">
                     <div class="card-header bg-white border-bottom">
                         <div class="d-flex align-items-center justify-content-between">
@@ -199,6 +293,53 @@
                     <div class="modal-footer">
                         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-primary" id="saveSlaTicketDeadlineBtn">Save Ticket Time</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="slaPauseModal" tabindex="-1" aria-labelledby="slaPauseModalTitle" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="slaPauseModalTitle">Pause SLA</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="slaPauseForm">
+                    <div class="modal-body">
+                        <input type="hidden" id="slaPauseTicketId">
+                        <div class="mb-3">
+                            <label class="form-label" for="slaPauseReason">Pause Reason</label>
+                            <select class="form-select" id="slaPauseReason" required>
+                                <option value="WAITING_FOR_USER">Waiting For User</option>
+                                <option value="WAITING_FOR_ASSET">Waiting For Asset</option>
+                                <option value="PENDING_VENDOR">Pending Vendor</option>
+                                <option value="APPROVAL_REQUIRED">Approval Required</option>
+                                <option value="OUT_OF_STOCK">Out Of Stock</option>
+                                <option value="OTHER">Other</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="slaPauseSource">Pause Source</label>
+                            <select class="form-select" id="slaPauseSource" required>
+                                <option value="USER_RELATED">User Related</option>
+                                <option value="INVENTORY_RELATED">Inventory Related</option>
+                                <option value="VENDOR_RELATED">Vendor Related</option>
+                                <option value="APPROVAL">Approval</option>
+                                <option value="SYSTEM">System</option>
+                                <option value="MANUAL">Manual</option>
+                                <option value="OTHER">Other</option>
+                            </select>
+                        </div>
+                        <div class="mb-0">
+                            <label class="form-label" for="slaPauseNotes">Pause Notes</label>
+                            <textarea class="form-control" id="slaPauseNotes" rows="3" maxlength="2000" placeholder="Optional notes for the pause"></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-warning" id="saveSlaPauseBtn">Pause SLA</button>
                     </div>
                 </form>
             </div>

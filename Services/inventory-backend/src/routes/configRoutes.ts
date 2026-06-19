@@ -1,5 +1,15 @@
 import express from 'express';
-import { BUILDINGS, DEPARTMENTS, ASSET_TYPES, EOL_METRICS } from '../config/constants';
+import {
+  BUILDINGS,
+  DEPARTMENTS,
+  ASSET_TYPES,
+  COMPONENT_TYPE_REGISTRY_BY_PARENT,
+  ACCESSORY_TYPES,
+  CONSUMABLE_TYPES,
+  SPARE_STOCK_TYPES,
+  LICENSE_TYPES,
+  EOL_METRICS
+} from '../config/constants';
 
 const router = express.Router();
 
@@ -10,6 +20,11 @@ router.get('/', (req, res) => {
     BUILDINGS,
     DEPARTMENTS,
     ASSET_TYPES,
+    COMPONENT_TYPE_REGISTRY_BY_PARENT,
+    ACCESSORY_TYPES,
+    CONSUMABLE_TYPES,
+    SPARE_STOCK_TYPES,
+    LICENSE_TYPES,
     EOL_METRICS
   });
 });
