@@ -13,7 +13,7 @@ Quick start (in project root):
 cd Services/notification-service
 # install deps if needed: npm ci
 # start with NO_DB to avoid MongoDB writes and set secret to match ticket service
-NO_DB=true INTERNAL_SECRET=supersecret RABBITMQ_URL=amqp://opsmind:opsmind@rabbitmq:5672 PORT=3005 node src/index.js
+NO_DB=true INTERNAL_SECRET=change-me-internal-secret RABBITMQ_URL=amqp://opsmind:opsmind@rabbitmq:5672 PORT=3005 node src/index.js
 ```
 
 2) Send a legacy notification HTTP POST (this is what the ticket service does as a safety-net):
@@ -21,7 +21,7 @@ NO_DB=true INTERNAL_SECRET=supersecret RABBITMQ_URL=amqp://opsmind:opsmind@rabbi
 ```bash
 curl -v -X POST http://localhost:3005/api/notifications \
   -H "Content-Type: application/json" \
-  -H "x-internal-secret: supersecret" \
+  -H "x-internal-secret: change-me-internal-secret" \
   -d '{
     "type":"TICKET_OPENED",
     "payload":{

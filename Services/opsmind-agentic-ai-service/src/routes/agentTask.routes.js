@@ -3,6 +3,11 @@ const express = require("express");
 const { authenticateRequest } = require("../middleware/authenticateRequest");
 const { isSupportOrAdminRole } = require("../middleware/requireSupportRole");
 const {
+  aiApprovalActionLimiter,
+  agentDeviceActionLimiter,
+} = require("../middleware/rateLimiters");
+const { getEndpointDeviceById } = require("../services/endpointDeviceRegistry.service");
+const {
   queueTaskFromApprovedPlan,
   getTaskById,
   listTasksByDevice,
@@ -56,13 +61,9 @@ function resolveRoleFromJwt(req) {
 }
 
 function resolveActor(req) {
-  const body = toObjectPayload(req.body);
-  const actorPayload =
-    body.actor && typeof body.actor === "object" && !Array.isArray(body.actor) ? body.actor : {};
-
   return {
-    userId: toOptionalString(actorPayload.userId ?? req.headers["x-user-id"] ?? req.auth?.userId),
-    role: toOptionalString(actorPayload.role ?? req.headers["x-user-role"] ?? resolveRoleFromJwt(req)),
+    userId: toOptionalString(req.auth?.userId),
+    role: resolveRoleFromJwt(req),
   };
 }
 
@@ -83,8 +84,8 @@ function requireActorForQueue(req, _res, next) {
     return next(
       createError(
         "ACTOR_REQUIRED",
-        400,
-        "Actor userId is required for queueing AI remediation plan tasks."
+        401,
+        "Authenticated actor userId is required for queueing AI remediation plan tasks."
       )
     );
   }
@@ -105,6 +106,58 @@ function requireDeviceIdHeader(req, _res, next) {
 
   req.deviceId = deviceId;
   return next();
+}
+
+function requireDeviceModeAccess(req, _res, next) {
+  const nodeEnv = String(process.env.NODE_ENV || "development");
+  const explicitlyEnabled = String(process.env.ENABLE_AGENT_DEVICE_ENDPOINTS || "false") === "true";
+  const expectedDeviceToken = String(process.env.ENDPOINT_AGENT_SHARED_SECRET || "").trim();
+  const providedDeviceToken = String(req.headers["x-device-token"] || "").trim();
+
+  if (nodeEnv !== "development" && !explicitlyEnabled) {
+    return next(
+      createAuthForbiddenError(
+        "Endpoint-agent task endpoints are disabled outside development. Set ENABLE_AGENT_DEVICE_ENDPOINTS=true to enable."
+      )
+    );
+  }
+
+  if (expectedDeviceToken) {
+    if (!providedDeviceToken || providedDeviceToken !== expectedDeviceToken) {
+      return next(createAuthForbiddenError("Invalid endpoint-agent device token."));
+    }
+  } else if (nodeEnv !== "development") {
+    return next(
+      createAuthForbiddenError(
+        "ENDPOINT_AGENT_SHARED_SECRET is required when endpoint-agent task endpoints are enabled outside development."
+      )
+    );
+  }
+
+  return next();
+}
+
+async function requireDeviceOwnerOrSupport(req, _res, next) {
+  try {
+    const resolvedDeviceId = toOptionalString(req.deviceId || resolveDeviceIdForPending(req));
+    if (!resolvedDeviceId) {
+      throw createValidationError("deviceId is required.");
+    }
+
+    const device = await getEndpointDeviceById(resolvedDeviceId);
+    const authenticatedUserId = toOptionalString(req.auth?.userId);
+    const isSupport = isSupportOrAdminRole(req.auth?.roles || []);
+    const isOwner = Boolean(authenticatedUserId && authenticatedUserId === String(device.user_id || ""));
+
+    if (!isOwner && !isSupport) {
+      throw createAuthForbiddenError("You are not allowed to operate on this endpoint device tasks.");
+    }
+
+    req.deviceId = resolvedDeviceId;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 }
 
 async function handleQueueTask(req, res, next) {
@@ -247,6 +300,7 @@ async function handleCompleteTask(req, res, next) {
 
 router.post(
   "/api/agentic-ai/remediation-plans/:planId/queue-task",
+  aiApprovalActionLimiter,
   authenticateRequest,
   requireAuthenticatedSupportRole,
   requireActorForQueue,
@@ -278,15 +332,49 @@ router.get(
   handleListTasksByDevice
 );
 
-// Development agent task endpoints. Production should replace this with device-token authentication.
-router.get("/api/agentic-ai/agent/tasks/pending", handleGetPendingTasksForDevice);
-router.post("/api/agentic-ai/agent/tasks/:taskId/claim", requireDeviceIdHeader, handleClaimTask);
-router.post("/api/agentic-ai/agent/tasks/:taskId/start", requireDeviceIdHeader, handleStartTask);
+router.get(
+  "/api/agentic-ai/agent/tasks/pending",
+  agentDeviceActionLimiter,
+  authenticateRequest,
+  requireDeviceModeAccess,
+  requireDeviceOwnerOrSupport,
+  handleGetPendingTasksForDevice
+);
+router.post(
+  "/api/agentic-ai/agent/tasks/:taskId/claim",
+  agentDeviceActionLimiter,
+  authenticateRequest,
+  requireDeviceModeAccess,
+  requireDeviceIdHeader,
+  requireDeviceOwnerOrSupport,
+  handleClaimTask
+);
+router.post(
+  "/api/agentic-ai/agent/tasks/:taskId/start",
+  agentDeviceActionLimiter,
+  authenticateRequest,
+  requireDeviceModeAccess,
+  requireDeviceIdHeader,
+  requireDeviceOwnerOrSupport,
+  handleStartTask
+);
 router.post(
   "/api/agentic-ai/agent/tasks/:taskId/steps/:stepId/result",
+  agentDeviceActionLimiter,
+  authenticateRequest,
+  requireDeviceModeAccess,
   requireDeviceIdHeader,
+  requireDeviceOwnerOrSupport,
   handleSubmitTaskStepResult
 );
-router.post("/api/agentic-ai/agent/tasks/:taskId/complete", requireDeviceIdHeader, handleCompleteTask);
+router.post(
+  "/api/agentic-ai/agent/tasks/:taskId/complete",
+  agentDeviceActionLimiter,
+  authenticateRequest,
+  requireDeviceModeAccess,
+  requireDeviceIdHeader,
+  requireDeviceOwnerOrSupport,
+  handleCompleteTask
+);
 
 module.exports = router;

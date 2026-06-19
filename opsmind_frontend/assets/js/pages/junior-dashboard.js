@@ -938,9 +938,14 @@ function requestAndSendCurrentLocation() {
  */
 async function sendLocationUpdate(technicianId, coords) {
     try {
-        const workflowApiBase = (window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003').replace(/\/+$/, '');
+        const workflowApiBase = String(window.OPSMIND_WORKFLOW_API_URL || '').replace(/\/+$/, '');
         const workflowTechnicianId = Number(technicianId);
         const token = AuthService.getToken();
+
+        if (!workflowApiBase) {
+            console.warn('Skipping location update: workflow API URL is not configured.');
+            return false;
+        }
 
         if (!Number.isFinite(workflowTechnicianId)) {
             console.warn('Skipping location update: workflow technician ID is missing or invalid.', technicianId);

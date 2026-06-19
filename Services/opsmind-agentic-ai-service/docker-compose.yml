@@ -9,12 +9,21 @@ services:
     env_file:
       - .env
     environment:
-      NODE_ENV: development
-      PORT: 4010
-      SERVICE_NAME: opsmind-agentic-ai-service
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: gemma3:4b
-      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/agentic_ai_db
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-4010}
+      SERVICE_NAME: ${SERVICE_NAME:-opsmind-agentic-ai-service}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      ENDPOINT_AGENT_SHARED_SECRET: ${ENDPOINT_AGENT_SHARED_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8085}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:8085}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8085}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-false}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+      ENABLE_AGENT_DEVICE_ENDPOINTS: ${ENABLE_AGENT_DEVICE_ENDPOINTS:-false}
     networks:
       - opsmind-net
     restart: unless-stopped

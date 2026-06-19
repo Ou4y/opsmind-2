@@ -2,7 +2,7 @@ import amqplib, { ChannelModel, Channel, ConsumeMessage } from 'amqplib';
 import { TicketRepository } from '../repositories/TicketRepository';
 import { getTicket } from '../config/externalServices';
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://opsmind:opsmind@localhost:5672';
+const RABBITMQ_URL = String(process.env.RABBITMQ_URL || '').trim();
 const TICKET_EVENTS_EXCHANGE = 'ticket.events';
 const TICKET_UPDATED_ROUTING_KEY = 'ticket.updated';
 const TICKET_CREATED_ROUTING_KEY = 'ticket.created';
@@ -29,6 +29,10 @@ async function resolveTicketSnapshot(payload: any, ticketId: string) {
 
 export async function startTicketSyncConsumer(): Promise<void> {
   try {
+    if (!RABBITMQ_URL) {
+      throw new Error('RABBITMQ_URL is required');
+    }
+
     const conn = await amqplib.connect(RABBITMQ_URL);
     const ch = await conn.createChannel();
     connection = conn;

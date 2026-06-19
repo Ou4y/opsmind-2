@@ -8,11 +8,9 @@
  */
 
 import AuthService from './authService.js';
+import { REPORT_API_BASE_URL as CENTRAL_REPORT_API_BASE_URL } from './apiConfig.js';
 
-const REPORT_API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_REPORT_API_URL) ? window.OPSMIND_REPORT_API_URL :
-    'http://localhost:3006/analytics'
-).replace(/\/+$/, '');
+const REPORT_API_BASE_URL = CENTRAL_REPORT_API_BASE_URL;
 
 function getAxios() {
     if (typeof window === 'undefined' || !window.axios) {

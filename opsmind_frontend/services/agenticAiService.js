@@ -1,23 +1,7 @@
 import AuthService from '/services/authService.js';
+import { AGENTIC_AI_API_BASE_URL } from './apiConfig.js';
 
-const RAW_AGENTIC_AI_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_AGENTIC_AI_API_URL)
-        ? window.OPSMIND_AGENTIC_AI_API_URL
-        : ((typeof process !== 'undefined' && process?.env?.OPSMIND_AGENTIC_AI_API_URL)
-            ? process.env.OPSMIND_AGENTIC_AI_API_URL
-            : 'http://localhost:4010')
-);
-
-function normalizeBaseUrl(value) {
-    const rawValue = String(value || '').trim();
-    if (!rawValue || /^\$\{.+\}$/.test(rawValue)) {
-        return 'http://localhost:4010';
-    }
-
-    return rawValue.replace(/\/+$/, '');
-}
-
-const AGENTIC_AI_BASE_URL = normalizeBaseUrl(RAW_AGENTIC_AI_BASE_URL);
+const AGENTIC_AI_BASE_URL = AGENTIC_AI_API_BASE_URL;
 
 function createServiceError(message, code, status = null, details = null) {
     const error = new Error(message);
@@ -126,22 +110,11 @@ function resolveActor(actor) {
     return resolved;
 }
 
-function buildHeaders(actor = null) {
-    const headers = {
+function buildHeaders() {
+    return {
         'Content-Type': 'application/json',
         ...AuthService.getAuthHeaders()
     };
-
-    const resolvedActor = resolveActor(actor);
-    if (resolvedActor?.userId) {
-        headers['x-user-id'] = resolvedActor.userId;
-    }
-
-    if (resolvedActor?.role) {
-        headers['x-user-role'] = resolvedActor.role;
-    }
-
-    return headers;
 }
 
 function buildJwtOnlyHeaders() {
@@ -277,16 +250,15 @@ async function requestJson(path, options = {}, defaultErrorMessage = null) {
 
 export async function generateRemediationPlan(ticket, generatedBy = null) {
     const payload = buildPlannerPayload(ticket);
-    const actor = resolveActor(generatedBy);
+    void generatedBy;
 
     return requestJson(
         '/api/agentic-ai/remediation-plan',
         {
             method: 'POST',
-            headers: buildHeaders(actor),
+            headers: buildHeaders(),
             body: JSON.stringify({
-                ticket: payload,
-                generatedBy: actor
+                ticket: payload
             })
         },
         'Failed to generate AI remediation plan.'
@@ -299,14 +271,14 @@ export async function approveRemediationPlan(planId, actor = null) {
         throw createServiceError('Plan id is required.', 'VALIDATION_ERROR', 400);
     }
 
-    const resolvedActor = resolveActor(actor);
+    void actor;
 
     return requestJson(
         `/api/agentic-ai/remediation-plans/${encodeURIComponent(normalizedPlanId)}/approve`,
         {
             method: 'POST',
-            headers: buildHeaders(resolvedActor),
-            body: JSON.stringify({ actor: resolvedActor })
+            headers: buildHeaders(),
+            body: JSON.stringify({})
         },
         'Failed to approve remediation plan.'
     );
@@ -318,15 +290,14 @@ export async function rejectRemediationPlan(planId, actor = null, reason = null)
         throw createServiceError('Plan id is required.', 'VALIDATION_ERROR', 400);
     }
 
-    const resolvedActor = resolveActor(actor);
+    void actor;
 
     return requestJson(
         `/api/agentic-ai/remediation-plans/${encodeURIComponent(normalizedPlanId)}/reject`,
         {
             method: 'POST',
-            headers: buildHeaders(resolvedActor),
+            headers: buildHeaders(),
             body: JSON.stringify({
-                actor: resolvedActor,
                 reason: toOptionalString(reason)
             })
         },
@@ -372,14 +343,14 @@ export async function startMockExecution(planId, actor = null) {
         throw createServiceError('Plan id is required.', 'VALIDATION_ERROR', 400);
     }
 
-    const resolvedActor = resolveActor(actor);
+    void actor;
 
     return requestJson(
         `/api/agentic-ai/remediation-plans/${encodeURIComponent(normalizedPlanId)}/mock-execute`,
         {
             method: 'POST',
-            headers: buildHeaders(resolvedActor),
-            body: JSON.stringify({ actor: resolvedActor })
+            headers: buildHeaders(),
+            body: JSON.stringify({})
         },
         'Failed to run mock execution.'
     );
@@ -439,16 +410,14 @@ export async function queueAgentTaskFromPlan(planId, actor = null) {
         throw createServiceError('Plan id is required.', 'VALIDATION_ERROR', 400);
     }
 
-    const resolvedActor = resolveActor(actor);
+    void actor;
 
     return requestJson(
         `/api/agentic-ai/remediation-plans/${encodeURIComponent(normalizedPlanId)}/queue-task`,
         {
             method: 'POST',
-            headers: buildHeaders(resolvedActor),
-            body: JSON.stringify({
-                actor: resolvedActor
-            })
+            headers: buildHeaders(),
+            body: JSON.stringify({})
         },
         'Failed to queue endpoint agent task.'
     );

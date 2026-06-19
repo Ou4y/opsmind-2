@@ -14,22 +14,23 @@ services:
       PORT: 3000
 
       # Prisma / MySQL (shared infrastructure)
-      DATABASE_URL: mysql://opsmind:opsmind@mysql:3306/Tickets
+      DATABASE_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/Tickets
 
       # RabbitMQ (shared infrastructure)
-      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
 
       # User Service (for technician name resolution)
       USER_SERVICE_URL: http://opsmind-auth-service:3002
 
       # Workflow Service (for supervisor details in notifications)
       WORKFLOW_SERVICE_URL: http://opsmind-workflow:3003
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-opsmind-internal-dev-token}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      JWT_SECRET: ${JWT_SECRET}
 
       # AI Service
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
       AI_SERVICE_TIMEOUT_MS: ${AI_SERVICE_TIMEOUT_MS:-3000}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_BASE_URL: ${TICKET_SERVICE_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b}
       OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-45000}
       AI_DEBUG_RAW_OUTPUT: ${AI_DEBUG_RAW_OUTPUT:-false}

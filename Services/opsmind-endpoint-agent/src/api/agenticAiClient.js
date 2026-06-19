@@ -19,7 +19,7 @@ function createApiError(error, defaultMessage) {
   return apiError;
 }
 
-function createAgenticAiClient({ baseUrl, jwt, timeoutMs }) {
+function createAgenticAiClient({ baseUrl, jwt, timeoutMs, endpointAgentSharedSecret }) {
   const httpClient = axios.create({
     baseURL: String(baseUrl || "").replace(/\/+$/, ""),
     timeout: Number(timeoutMs) || 15000,
@@ -51,9 +51,15 @@ function createAgenticAiClient({ baseUrl, jwt, timeoutMs }) {
   }
 
   function deviceHeader(deviceId) {
-    return {
+    const headers = {
       "x-device-id": String(deviceId || "").trim(),
     };
+
+    if (endpointAgentSharedSecret) {
+      headers["x-device-token"] = String(endpointAgentSharedSecret).trim();
+    }
+
+    return headers;
   }
 
   return {

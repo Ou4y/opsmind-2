@@ -8,11 +8,11 @@
  */
 
 import AuthService from './authService.js';
+import { AI_API_BASE_URL } from './apiConfig.js';
 
 // Most AI endpoints are served directly by the Python AI container.
 // Keep API_BASE_URL for backward compatibility, but prefer OPSMIND_AI_API_URL.
 const API_BASE_URL = window.OPSMIND_API_URL || '/api';
-const AI_API_BASE_URL = window.OPSMIND_AI_API_URL || 'http://localhost:8000';
 
 const NORMALIZED_AI_BASE_URL = String(AI_API_BASE_URL).replace(/\/+$/, '');
 

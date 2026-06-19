@@ -2,7 +2,7 @@
 import AuthService from '/services/authService.js';
 
 // Config is set as globals in config.js (loaded in HTML head)
-const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
+const API_URL = String(window.OPSMIND_INVENTORY_API_URL || '').replace(/\/+$/, '');
 
 // Define configuration variables globally so the rest of the script can use them
 let BUILDINGS = [];

@@ -8,11 +8,9 @@
  */
 
 import AuthService from './authService.js';
+import { SLA_API_BASE_URL } from './apiConfig.js';
 
-const API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_SLA_URL) ? window.OPSMIND_SLA_URL :
-    'http://localhost:3004'
-);
+const API_BASE_URL = SLA_API_BASE_URL;
 
 async function handleResponse(response) {
     if (response.status === 401) {

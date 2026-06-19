@@ -1,6 +1,7 @@
 import { logger } from "../config/logger";
 
 const SLA_SERVICE_URL = process.env.SLA_SERVICE_URL || "http://opsmind-sla-service:3004";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 /**
  * SLA status update payload
@@ -44,11 +45,16 @@ export async function updateSlaStatus(
       status: payload.ticketStatus,
     });
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (INTERNAL_API_TOKEN) {
+      headers["x-internal-token"] = INTERNAL_API_TOKEN;
+    }
+
     const response = await fetch(url, {
       method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(5000), // 5 second timeout
     });

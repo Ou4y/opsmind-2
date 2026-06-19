@@ -1,9 +1,7 @@
 import AuthService from './authService.js';
+import { NOTIFICATION_API_BASE_URL } from './apiConfig.js';
 
-const NOTIFICATION_API = (
-    (typeof window !== 'undefined' && window.OPSMIND_NOTIFICATION_URL) ? window.OPSMIND_NOTIFICATION_URL :
-    'http://localhost:3005/api/notifications'
-).replace(/\/+$/, '');
+const NOTIFICATION_API = NOTIFICATION_API_BASE_URL;
 
 const MIN_FETCH_INTERVAL_MS = 1500;
 const MAX_BACKOFF_MS = 60000;
@@ -77,6 +75,11 @@ const NotificationService = {
     
     async getUserNotifications(options = {}) {
         const { force = false } = options;
+        if (!AuthService.getToken()) {
+            lastNotifications = [];
+            return [];
+        }
+
         const userIds = getNotificationUserIds();
         if (userIds.length === 0) return [];
 
@@ -97,7 +100,11 @@ const NotificationService = {
             notificationsInFlightPromise = (async () => {
                 const settled = await Promise.allSettled(
                     userIds.map(async (userId) => {
-                        const response = await fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}`);
+                        const response = await fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}`, {
+                            headers: {
+                                ...AuthService.getAuthHeaders()
+                            }
+                        });
                         if (!response.ok) {
                             throw new Error(`Failed to fetch notifications for userId=${userId}`);
                         }
@@ -146,6 +153,8 @@ const NotificationService = {
 
     
     async markAllAsRead() {
+        if (!AuthService.getToken()) return;
+
         const userIds = getNotificationUserIds();
         if (userIds.length === 0) return;
 
@@ -153,7 +162,10 @@ const NotificationService = {
             await Promise.allSettled(
                 userIds.map((userId) =>
                     fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}/mark-read`, {
-                        method: 'PUT'
+                        method: 'PUT',
+                        headers: {
+                            ...AuthService.getAuthHeaders()
+                        }
                     })
                 )
             );

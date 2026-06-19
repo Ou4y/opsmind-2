@@ -1,5 +1,9 @@
 import jwt from 'jsonwebtoken';
 import { NextFunction, Request, Response } from 'express';
+
+const JWT_SECRET = 'test-jwt-secret-for-unit-tests-only-1234567890';
+process.env.JWT_SECRET = JWT_SECRET;
+
 import {
   buildInventoryAccessContext,
   canManageInventory,
@@ -7,8 +11,6 @@ import {
   requireInventoryAdminAccess,
   requireInventoryReadAccess,
 } from '../src/middlewares/inventoryAuth';
-
-const JWT_SECRET = 'opsmind-secret-key';
 
 function mockResponse(): Response {
   const res = {} as Response;

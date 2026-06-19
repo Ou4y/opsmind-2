@@ -420,7 +420,7 @@ async function loadTickets() {
         }
     } catch (error) {
         console.error('Failed to load tickets:', error);
-        showError(error?.message || 'Failed to load tickets from backend.');
+        showError(resolveTicketLoadErrorMessage(error));
     } finally {
         state.isLoading = false;
     }
@@ -459,6 +459,7 @@ function renderTickets() {
 function resolveTextValue(...values) {
     for (const value of values) {
         if (value === null || value === undefined) continue;
+        if (typeof value === 'object') continue;
         const normalized = String(value).trim();
         if (normalized) {
             return normalized;
@@ -467,14 +468,49 @@ function resolveTextValue(...values) {
     return '';
 }
 
-function resolveRequesterDisplay(ticket) {
+function resolvePersonDisplay(person) {
+    if (person === null || person === undefined) return '';
+    if (typeof person !== 'object') return resolveTextValue(person);
+
+    const firstName = resolveTextValue(person.firstName, person.first_name);
+    const lastName = resolveTextValue(person.lastName, person.last_name);
+    const combinedName = [firstName, lastName].filter(Boolean).join(' ').trim();
+
     return resolveTextValue(
+        person.fullName,
+        person.full_name,
+        combinedName,
+        person.name,
+        person.displayName,
+        person.display_name,
+        person.username,
+        person.userName,
+        person.email
+    );
+}
+
+function resolveRequesterDisplay(ticket) {
+    const requesterDisplay = resolveTextValue(
         ticket?.requester_name,
         ticket?.requesterName,
-        ticket?.requester,
+        ticket?.requester_full_name,
+        ticket?.requesterFullName,
+        ticket?.requester_display_name,
+        ticket?.requesterDisplayName,
+        resolvePersonDisplay(ticket?.requester),
+        ticket?.requester_email,
+        ticket?.requesterEmail,
+        ticket?.requester_username,
+        ticket?.requesterUsername
+    );
+
+    const requesterId = resolveTextValue(
+        ticket?.requester?.id,
         ticket?.requester_id,
         ticket?.requesterId
     );
+
+    return requesterDisplay || requesterId || 'Unknown requester';
 }
 
 function resolveAssigneeDisplay(ticket) {
@@ -3052,6 +3088,29 @@ function showDeleteConfirmation(ticketId) {
 /**
  * Show error state
  */
+function resolveTicketLoadErrorMessage(error) {
+    const status = Number(error?.status || error?.statusCode || 0);
+    const message = String(error?.message || '').trim();
+
+    if (status === 401) {
+        return 'Your session has expired. Please sign in again.';
+    }
+
+    if (status === 403) {
+        return 'You do not have permission to view these tickets.';
+    }
+
+    if (status >= 500) {
+        if (/server authentication misconfiguration/i.test(message)) {
+            return 'Ticket service authentication is misconfigured. Contact an administrator.';
+        }
+
+        return 'Ticket service returned an unexpected error. Please try again.';
+    }
+
+    return message || 'Failed to load tickets from backend.';
+}
+
 function showError(message) {
     const tableBody = document.getElementById('ticketsTableBody');
     const errorState = document.getElementById('ticketsError');

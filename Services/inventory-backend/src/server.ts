@@ -3,7 +3,9 @@ dotenv.config();
 
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import crypto from 'crypto';
+import { buildStrictCorsOptions } from './config/cors';
 import { prisma } from './lib/prisma';
 import AssetService from './models/Assets';
 import HistoryService from './models/History';
@@ -40,7 +42,7 @@ const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
 const LIFESPAN_IMPACT_MIN_HOURS = Math.max(0.5, Number(process.env.LIFESPAN_IMPACT_MIN_HOURS || 2));
 const LIFESPAN_IMPACT_MIN_YEAR_DELTA = Math.max(0.05, Number(process.env.LIFESPAN_IMPACT_MIN_YEAR_DELTA || 0.1));
 const LIFESPAN_IMPACT_MIN_RISK_DELTA = Math.max(0.01, Number(process.env.LIFESPAN_IMPACT_MIN_RISK_DELTA || 0.03));
-const INVENTORY_ENFORCE_AUTH = String(process.env.INVENTORY_ENFORCE_AUTH || 'false').toLowerCase() === 'true';
+const INVENTORY_ENFORCE_AUTH = String(process.env.INVENTORY_ENFORCE_AUTH || 'true').toLowerCase() === 'true';
 
 class RequestValidationError extends Error {}
 
@@ -58,19 +60,10 @@ const internalWorkerGuard: RequestHandler = (req, res, next) => {
     return next();
 };
 
-// ✅ FIXED: REMOVED HARDCODED OVERRIDE
-if (!process.env.RABBITMQ_URI) {
-    console.warn("⚠️ No RABBITMQ_URI found in ENV. Defaulting to localhost.");
-    process.env.RABBITMQ_URI = "amqp://admin:password123@localhost:5672";
-}
+app.use(cors(buildStrictCorsOptions(process.env)));
+app.use(helmet());
 
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }));
 
 // --- REQUEST LOGGER ---
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -1320,15 +1313,24 @@ async function publishLowStockEvent(params: {
         }
     }
 
+    const resolvedAdminId = String(admin.id || process.env.LOW_STOCK_ADMIN_ID || '').trim();
+    const resolvedAdminEmail = String(admin.email || process.env.LOW_STOCK_ADMIN_EMAIL || '').trim();
+    const resolvedAdminName = String(admin.name || process.env.LOW_STOCK_ADMIN_NAME || '').trim();
+
+    if (!resolvedAdminId || !resolvedAdminEmail) {
+        console.warn('[LowStock] Skipping low stock event because admin recipient is not configured.');
+        return;
+    }
+
     await EventBus.publish(TOPICS.ASSET_LOW_STOCK, {
         item: {
             id: params.itemId,
             name: params.itemName,
         },
         admin: {
-            id: String(admin.id || process.env.LOW_STOCK_ADMIN_ID || '456'),
-            name: String(admin.name || process.env.LOW_STOCK_ADMIN_NAME || 'Omar'),
-            email: String(admin.email || process.env.LOW_STOCK_ADMIN_EMAIL || 'omar@example.com'),
+            id: resolvedAdminId,
+            name: resolvedAdminName,
+            email: resolvedAdminEmail,
         },
     });
 }
@@ -1348,10 +1350,9 @@ type LifecycleOutcomePayload = {
 };
 
 async function readLifecycleOutcome(assetId: string): Promise<Record<string, any> | null> {
-    const rows = await prisma.$queryRawUnsafe<Record<string, any>[]>(
-        'SELECT * FROM "asset_lifecycle_outcomes" WHERE "assetId" = $1 LIMIT 1',
-        assetId
-    );
+    const rows = await prisma.$queryRaw<Record<string, any>[]>`
+        SELECT * FROM "asset_lifecycle_outcomes" WHERE "assetId" = ${assetId} LIMIT 1
+    `;
     return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
 }
 

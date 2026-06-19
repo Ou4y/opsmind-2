@@ -12,10 +12,10 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - DB_HOST=${DB_HOST:-mysql}
       - DB_PORT=${DB_PORT:-3306}
-      - DB_USER=${DB_USER:-opsmind}
-      - DB_PASSWORD=${DB_PASSWORD:-opsmind}
+      - DB_USER=${AUTH_DB_USER}
+      - DB_PASSWORD=${AUTH_DB_PASSWORD}
       - DB_NAME=${DB_NAME:-authentication}
-      - JWT_SECRET=${JWT_SECRET:-opsmind-local-jwt}
+      - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-24h}
       - OTP_EXPIRY_MINUTES=${OTP_EXPIRY_MINUTES:-5}
       - OTP_LENGTH=${OTP_LENGTH:-6}
@@ -24,7 +24,7 @@ services:
       - SMTP_USER=${SMTP_USER:-noreply@opsmind.local}
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-noreply@opsmind.local}
-      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-opsmind-internal-dev-token}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
       - WORKFLOW_SERVICE_URL=${WORKFLOW_SERVICE_URL:-http://workflow-service:3003}
       - WORKFLOW_SYNC_TIMEOUT_MS=${WORKFLOW_SYNC_TIMEOUT_MS:-5000}
     

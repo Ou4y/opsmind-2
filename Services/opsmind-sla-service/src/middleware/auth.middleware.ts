@@ -28,12 +28,23 @@ declare global {
   }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || "opsmind-secret-key";
+const JWT_SECRET = String(process.env.JWT_SECRET || "").trim();
+const INTERNAL_API_TOKEN = String(process.env.INTERNAL_API_TOKEN || "").trim();
 const SUPPORTED_HMAC_ALGS: Record<string, string> = {
   HS256: "sha256",
   HS384: "sha384",
   HS512: "sha512",
 };
+
+function isWeakSecret(secret: string): boolean {
+  const normalized = String(secret || "").trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized.length < 32) return true;
+  if (normalized.includes("set_strong")) return true;
+  if (normalized.includes("replace_with")) return true;
+  if (normalized.includes("placeholder")) return true;
+  return false;
+}
 
 function toBase64(value: string): Buffer {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -42,6 +53,10 @@ function toBase64(value: string): Buffer {
 }
 
 function parseJwt(token: string): JwtPayload {
+  if (!JWT_SECRET) {
+    throw new Error("JWT secret is not configured");
+  }
+
   const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
   if (!encodedHeader || !encodedPayload || !encodedSignature) {
     throw new Error("Malformed token");
@@ -87,6 +102,12 @@ function normalizeRoles(payload: JwtPayload): string[] {
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const nodeEnv = process.env.NODE_ENV || "development";
+  if (!JWT_SECRET || (nodeEnv !== "development" && isWeakSecret(JWT_SECRET))) {
+    res.status(500).json({ success: false, message: "Server authentication misconfiguration" });
+    return;
+  }
+
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     res.status(401).json({ success: false, message: "Authentication required" });
@@ -137,4 +158,13 @@ export function requireRole(...requiredRoles: string[]) {
 
     next();
   };
+}
+
+export function requireAuthOrInternal(req: Request, res: Response, next: NextFunction): void {
+  const internalToken = String(req.headers["x-internal-token"] || "").trim();
+  if (INTERNAL_API_TOKEN && internalToken === INTERNAL_API_TOKEN) {
+    return next();
+  }
+
+  return requireAuth(req, res, next);
 }

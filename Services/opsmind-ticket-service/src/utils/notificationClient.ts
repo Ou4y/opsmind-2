@@ -1,38 +1,43 @@
 import { logger } from "../config/logger";
 import { Ticket } from "@prisma/client";
 
-const NOTIFICATION_URL = process.env.NOTIFICATION_URL || "http://localhost:3000/api/notifications";
-// Accept either INTERNAL_SECRET or legacy NOTIFICATION_INTERNAL_SECRET
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET || process.env.NOTIFICATION_INTERNAL_SECRET || "supersecret";
+const NOTIFICATION_URL = process.env.NOTIFICATION_URL || "http://notification-service:3000/api/notifications";
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || process.env.NOTIFICATION_INTERNAL_SECRET || "";
+const NOTIFICATION_ADMIN_ID = process.env.NOTIFICATION_ADMIN_ID || "";
 
-// Static defaults as per requirements
-const STATIC_END_USER_EMAIL = "janah2202047@miuegypt.edu.eg";
-const STATIC_ADMIN_ID = "6108650d-0526-11f1-8f40-c652d68f7502";
-const STATIC_TECHNICIAN_ID = "it-1";
-const STATIC_TECHNICIAN_NAME = "ismail nasser";
+function buildLegacyPayload(ticket: Ticket, type: "TICKET_OPENED" | "TICKET_RESOLVED") {
+  const payload: Record<string, any> = {
+    ticket: {
+      id: ticket.id,
+      title: ticket.title,
+    },
+    endUser: {
+      id: ticket.requester_id,
+    },
+  };
+
+  if (NOTIFICATION_ADMIN_ID) {
+    payload.admin = { id: NOTIFICATION_ADMIN_ID };
+  }
+
+  if (ticket.assigned_to) {
+    payload.technician = { id: ticket.assigned_to };
+  }
+
+  return {
+    type,
+    payload,
+  };
+}
 
 export async function sendTicketOpenedNotification(ticket: Ticket): Promise<void> {
   try {
-    const body = {
-      type: "TICKET_OPENED",
-      payload: {
-        ticket: {
-          id: ticket.id,
-          title: ticket.title,
-        },
-        endUser: {
-          id: ticket.requester_id,
-          email: STATIC_END_USER_EMAIL,
-        },
-        admin: {
-          id: STATIC_ADMIN_ID,
-        },
-        technician: {
-          id: STATIC_TECHNICIAN_ID,
-          name: STATIC_TECHNICIAN_NAME,
-        },
-      },
-    };
+    if (!INTERNAL_SECRET) {
+      logger.warn("Skipping notification call because INTERNAL_SECRET is not configured");
+      return;
+    }
+
+    const body = buildLegacyPayload(ticket, "TICKET_OPENED");
 
     const response = await fetch(NOTIFICATION_URL, {
       method: "POST",
@@ -62,26 +67,12 @@ export async function sendTicketOpenedNotification(ticket: Ticket): Promise<void
 
 export async function sendTicketResolvedNotification(ticket: Ticket): Promise<void> {
   try {
-    const body = {
-      type: "TICKET_RESOLVED",
-      payload: {
-        ticket: {
-          id: ticket.id,
-          title: ticket.title,
-        },
-        endUser: {
-          id: ticket.requester_id,
-          email: STATIC_END_USER_EMAIL,
-        },
-        admin: {
-          id: STATIC_ADMIN_ID,
-        },
-        technician: {
-          id: STATIC_TECHNICIAN_ID,
-          name: STATIC_TECHNICIAN_NAME,
-        },
-      },
-    };
+    if (!INTERNAL_SECRET) {
+      logger.warn("Skipping notification call because INTERNAL_SECRET is not configured");
+      return;
+    }
+
+    const body = buildLegacyPayload(ticket, "TICKET_RESOLVED");
 
     const response = await fetch(NOTIFICATION_URL, {
       method: "POST",

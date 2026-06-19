@@ -1,6 +1,16 @@
 const jwt = require("jsonwebtoken");
 
-const JWT_SECRET = process.env.JWT_SECRET || "opsmind-local-jwt";
+const JWT_SECRET = String(process.env.JWT_SECRET || "").trim();
+
+function isWeakSecret(secret) {
+  const normalized = String(secret || "").trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized.length < 32) return true;
+  if (normalized.includes("set_strong")) return true;
+  if (normalized.includes("replace_with")) return true;
+  if (normalized.includes("placeholder")) return true;
+  return false;
+}
 
 function toOptionalString(value) {
   if (value === null || value === undefined) {
@@ -29,6 +39,14 @@ function resolveUserId(payload) {
 }
 
 function authenticateRequest(req, res, next) {
+  const nodeEnv = String(process.env.NODE_ENV || "development");
+  if (!JWT_SECRET || (nodeEnv !== "development" && isWeakSecret(JWT_SECRET))) {
+    return res.status(500).json({
+      success: false,
+      message: "Server authentication misconfiguration.",
+    });
+  }
+
   const authHeader = toOptionalString(req.headers.authorization);
 
   if (!authHeader) {

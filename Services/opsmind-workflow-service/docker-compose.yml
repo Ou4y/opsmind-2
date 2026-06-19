@@ -13,16 +13,17 @@ services:
       SERVICE_NAME: opsmind-workflow
       DB_HOST: opsmind-mysql
       DB_PORT: 3306
-      DB_USER: root
-      DB_PASSWORD: root
+      DB_USER: ${WORKFLOW_DB_USER}
+      DB_PASSWORD: ${WORKFLOW_DB_PASSWORD}
       DB_NAME: workflow_db
       DB_CONNECTION_LIMIT: 10
       DB_WAIT_FOR_CONNECTIONS: "true"
       AUTH_SERVICE_URL: http://opsmind-auth-service:3002
       TICKET_SERVICE_URL: http://opsmind-ticket-service:3000
       SLA_SERVICE_URL: http://opsmind-sla-service:3004
-      RABBITMQ_URL: amqp://opsmind:opsmind@rabbitmq:5672
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-opsmind-internal-dev-token}
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      JWT_SECRET: ${JWT_SECRET}
       LOG_LEVEL: info
     volumes:
       # Mount source code for development (comment out for production)

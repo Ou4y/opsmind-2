@@ -93,6 +93,7 @@ async function main() {
     baseUrl: config.agenticAiBaseUrl,
     jwt: config.opsmindJwt,
     timeoutMs: config.httpTimeoutMs,
+    endpointAgentSharedSecret: config.endpointAgentSharedSecret,
   });
 
   const identityService = createDeviceIdentityService({ logger });

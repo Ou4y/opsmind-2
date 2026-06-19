@@ -11,8 +11,18 @@ import jwt from 'jsonwebtoken';
  * via AuthService.getAuthHeaders()
  */
 
-const JWT_SECRET = process.env.JWT_SECRET || 'opsmind-secret-key';
-const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+const JWT_SECRET = String(process.env.JWT_SECRET || '').trim();
+const INTERNAL_API_TOKEN = String(process.env.INTERNAL_API_TOKEN || '').trim();
+
+function isWeakSecret(secret: string): boolean {
+  const normalized = String(secret || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized.length < 32) return true;
+  if (normalized.includes('set_strong')) return true;
+  if (normalized.includes('replace_with')) return true;
+  if (normalized.includes('placeholder')) return true;
+  return false;
+}
 
 // Extend Express Request to include user
 export interface AuthUser {
@@ -36,6 +46,12 @@ declare global {
  * Required auth — rejects with 401 if no valid token
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  if (!JWT_SECRET || (nodeEnv !== 'development' && isWeakSecret(JWT_SECRET))) {
+    res.status(500).json({ success: false, message: 'Server authentication misconfiguration' });
+    return;
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -65,9 +81,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
  * Optional auth — attaches user if token present, continues either way
  */
 export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  const jwtSecretReady = JWT_SECRET && (nodeEnv === 'development' || !isWeakSecret(JWT_SECRET));
   const authHeader = req.headers.authorization;
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
+  if (jwtSecretReady && authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as any;
@@ -92,6 +110,11 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
  */
 export function requireRole(...roles: string[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.isService) {
+      next();
+      return;
+    }
+
     if (!req.user) {
       res.status(401).json({ success: false, message: 'Authentication required' });
       return;
