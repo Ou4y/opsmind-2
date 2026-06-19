@@ -1,0 +1,574 @@
+"""Prompt templates for Gemini-driven inventory inference."""
+
+SPEC_INFERENCE_PROMPT = """You are an enterprise IT inventory intelligence engine.
+Infer accurate hardware specifications from the provided asset record.
+
+Rules:
+- Return ONLY valid JSON.
+- No markdown, no prose outside JSON, no code fences.
+- Never invent impossible specifications.
+- Prefer empty values over hallucinated values.
+- Confidence must be calibrated; lower confidence when uncertain.
+- `source_urls` must be HTTPS links when available.
+- `field_confidence` must map each inferred field name to [0,1].
+- Use canonical spec keys when possible: RAM, CPU, Storage, Display, OS, CPU Vendor, Storage Type, Chassis, Ingress Protection, Ports, WiFi, Panel, Refresh Rate, Resolution, Print Type, Duplex, Managed, Band, Throughput.
+
+Required output shape:
+{{
+  "inferred_specifications": {{ "RAM": "...", "CPU": "...", "Storage": "...", "Display": "...", "OS": "..." }},
+  "field_confidence": {{ "RAM": 0.0, "CPU": 0.0, "Storage": 0.0, "Display": 0.0, "OS": 0.0 }},
+  "confidence": 0.0,
+  "reasoning": "...",
+  "source_urls": [],
+  "lookup_mode": "llm_structured"
+}}
+
+Asset Data:
+{asset_data}
+"""
+
+
+CATEGORY_PROMPT = """Classify the IT ticket category from the description.
+Allowed labels: NETWORK, ACCESS, EMAIL, GENERAL.
+Return ONLY JSON with keys: category, confidence, reasoning.
+
+Description:
+{description}
+"""
+
+
+PRIORITY_PROMPT = """Determine ticket priority from subject and description.
+Allowed priorities: LOW, MEDIUM, HIGH.
+Return ONLY JSON with keys: suggested_priority, confidence, reasoning.
+
+Subject: {subject}
+Description: {description}
+"""
+
+
+RECOMMENDATIONS_PROMPT = """You are an ITSM assistant.
+Provide 3-5 short, actionable recommendations for the ticket.
+Return JSON only with key `recommendations` as a string array.
+
+Ticket:
+{ticket_json}
+Predicted priority: {predicted_priority}
+Estimated resolution hours: {estimated_resolution_hours}
+"""
+
+
+SUGGESTED_RESPONSES_PROMPT = """Write 3 short professional ticket response templates for an ITSM agent.
+Return JSON only with key `responses` as a string array.
+
+Ticket ID: {ticket_id}
+"""
+
+
+SPEC_NORMALIZATION_PROMPT = """You normalize inventory asset specs.
+Use only provided input data. Do not invent missing exact specs.
+If uncertain, keep values as-is and add warnings.
+
+Rules:
+- Return ONLY JSON.
+- Do not add new exact hardware facts not present in input.
+- Prefer preserving user values and normalizing field names/format.
+- Respect asset type fields. Reject not-applicable fields.
+- For suspicious contradictions (e.g., MacBook + Windows), keep value and warn.
+
+Required output:
+{{
+  "normalized_specs": {{}},
+  "invalid_fields": [],
+  "missing_important_fields": [],
+  "warnings": [],
+  "confidence": 0.0
+}}
+
+Input:
+{payload_json}
+"""
+
+
+SPEC_SANITY_PROMPT = """You are a strict inventory spec sanity checker.
+Analyze only given facts; do not invent new specs.
+
+Rules:
+- Return ONLY JSON.
+- Identify suspicious/impossible/invalid fields.
+- Suggest safe fixes (e.g., remove field, mark Unknown - verify).
+- Do not block creation by yourself; only set requires_review flag.
+
+Required output:
+{{
+  "warnings": [],
+  "suspicious_fields": [],
+  "suggested_fixes": [],
+  "requires_review": true
+}}
+
+Input:
+{payload_json}
+"""
+
+
+EOL_EXPLANATION_PROMPT = """You explain an existing backend EOL assessment to users.
+Do not change facts. Do not recompute status or confidence.
+If evidence is weak, say so clearly.
+
+Rules:
+- Return ONLY JSON.
+- Keep explanations grounded in provided data.
+- short_user_explanation: concise user-facing sentence(s).
+- technical_explanation: concise technical reason summary.
+
+Required output:
+{{
+  "short_user_explanation": "",
+  "technical_explanation": ""
+}}
+
+Input:
+{payload_json}
+"""
+
+
+ASSET_HEALTH_SUMMARY_PROMPT = """You summarize inventory asset health from compact evidence only.
+Never invent incidents, dates, or hardware details that are not in the input.
+
+Rules:
+- Return ONLY JSON.
+- Keep output concise and practical.
+- Do not claim live/real-time state; phrase lifecycle wording as recorded status from provided data.
+- summary must stay <= 420 characters.
+- risks: max 6 bullet-style strings.
+- recommendations: max 6 action-oriented strings.
+- missing_data: max 12 items.
+- confidence must be one of: low, medium, high.
+- Prefer the deterministic_draft facts when unsure.
+
+Required output:
+{{
+  "summary": "",
+  "risks": [],
+  "recommendations": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_ASSISTANT_PROMPT = """You are an inventory assistant for ITAM/CMDB operations.
+Use only the provided deterministic findings; do not invent facts.
+
+Rules:
+- Return ONLY JSON.
+- Keep answer practical and concise.
+- If no matches, explain that clearly and suggest next useful queries.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "answer": "",
+  "suggested_actions": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_ASSISTANT_STREAM_PROMPT = """You are OpsMind Inventory AI Copilot for a university ITAM/CMDB and procurement system.
+Use ONLY the provided deterministic evidence. Do not invent vendors, prices, assets, components, telemetry, budgets, or statuses.
+
+Write a concise, professional answer for the user. Prefer 3-6 short sentences or compact bullets.
+If the deterministic evidence says no matching records were found, explain what was searched and suggest a safer next query.
+If a matched asset is present, name it and include its asset tag/ID when available.
+If evidence is incomplete, say what data would improve confidence.
+
+Input:
+{payload_json}
+"""
+
+
+IMPORT_COLUMN_MAPPING_PROMPT = """You map messy import headers to expected inventory template fields.
+Use only provided headers/samples/expected fields.
+
+Rules:
+- Return ONLY JSON.
+- Do not map a source column to multiple targets.
+- Prefer high-confidence mappings only when justified.
+
+Required output:
+{{
+  "mappings": [
+    {{
+      "sourceColumn": "",
+      "targetColumn": "",
+      "confidence": 0.0,
+      "reason": ""
+    }}
+  ],
+  "unmapped_columns": [],
+  "warnings": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MISSING_DATA_DETECTOR_PROMPT = """You explain inventory data-quality findings.
+Do not invent issues; use provided deterministic report.
+
+Rules:
+- Return ONLY JSON.
+- Keep recommendations prioritized.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "recommendations": [],
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MAINTENANCE_RECOMMENDATION_PROMPT = """You summarize maintenance recommendations for inventory assets.
+Use only provided recommendation candidates.
+
+Rules:
+- Return ONLY JSON.
+- Keep output actionable and grounded.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+PROCUREMENT_RECOMMENDATION_PROMPT = """You summarize procurement recommendations for inventory management.
+Use only provided deterministic recommendation candidates.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent vendor prices when missing.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "missing_data": [],
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+DUPLICATE_EXPLANATION_PROMPT = """You explain possible duplicate inventory records.
+Use only provided duplicate groups.
+
+Rules:
+- Return ONLY JSON.
+- Do not claim duplicates outside the provided groups.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+NATURAL_LANGUAGE_SEARCH_PROMPT = """You explain natural-language inventory search results.
+Use only provided interpreted filters and candidate results.
+
+Rules:
+- Return ONLY JSON.
+- If no results, suggest better query refinement.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "answer": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+DOCUMENT_EXTRACTION_PROMPT = """Extract candidate inventory rows from provided document text.
+This is assisted import only, so keep uncertain fields empty.
+
+Rules:
+- Return ONLY JSON.
+- Never fabricate serial numbers/dates/costs.
+- recordType should be one of:
+  parent_asset, component_asset, embedded_component, spare_stock, accessory, consumable, license
+
+Required output:
+{{
+  "source_document_summary": "",
+  "confidence": 0.0,
+  "warnings": [],
+  "missing_fields": [],
+  "extracted_rows": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+DATA_CORRECTION_SUGGESTIONS_PROMPT = """You summarize deterministic inventory data-correction suggestions.
+Use only provided suggestions and counts. Do not invent assets or values.
+
+Rules:
+- Return ONLY JSON.
+- Prioritize critical issues first.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+RISK_SCORE_EXPLANATION_PROMPT = """You explain deterministic inventory risk scores.
+Use only provided risk rows and evidence.
+
+Rules:
+- Return ONLY JSON.
+- Do not alter numeric risk scores.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+REPLACEMENT_PRIORITY_PROMPT = """You summarize deterministic replacement-priority rankings.
+Use only provided ranked items and reasons.
+
+Rules:
+- Return ONLY JSON.
+- Keep recommendations practical and review-first.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+SPARE_STOCK_FORECAST_PROMPT = """You summarize deterministic spare-stock forecast outputs.
+Use only provided forecast rows and stock evidence.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent costs or quantities.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": [],
+  "suggested_actions": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+IMPORT_ERROR_REPAIR_PROMPT = """You explain deterministic import-error repair suggestions.
+Use only provided rows and fixes.
+
+Rules:
+- Return ONLY JSON.
+- Never claim a fix is safe if confidence is weak.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "warnings": [],
+  "fixes": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+RELATIONSHIP_SUGGESTION_PROMPT = """You summarize deterministic asset relationship suggestions.
+Use only provided suggestion rows.
+
+Rules:
+- Return ONLY JSON.
+- Keep language cautious where confidence is low.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVOICE_MATCHING_PROMPT = """You summarize deterministic invoice/document asset matches.
+Use only provided matches and unmatched items.
+
+Rules:
+- Return ONLY JSON.
+- Do not claim exact matches when confidence is low.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "summary": "",
+  "confidence": "low",
+  "warnings": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_TICKET_DRAFT_PROMPT = """You polish an inventory ticket draft from deterministic evidence.
+Use only provided ticket draft details.
+
+Rules:
+- Return ONLY JSON.
+- Keep title/description concise and actionable.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "ticket_draft": {{}},
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+MONTHLY_INVENTORY_REPORT_PROMPT = """You polish a monthly inventory report from deterministic metrics.
+Use only provided section keys, metrics, and deterministic recommendations.
+
+Rules:
+- Return ONLY JSON.
+- Do not invent metrics.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "executive_summary": "",
+  "recommendations": [],
+  "confidence": "low",
+  "missing_data": []
+}}
+
+Input:
+{payload_json}
+"""
+
+
+INVENTORY_ACTION_PLAN_PROMPT = """You polish an inventory action plan preview from deterministic planning data.
+No action should be executed automatically.
+
+Rules:
+- Return ONLY JSON.
+- Emphasize review-before-execute.
+- confidence must be one of: low, medium, high.
+
+Required output:
+{{
+  "action_type": "",
+  "summary": "",
+  "risks": [],
+  "confirmation_instructions": "",
+  "confidence": "low"
+}}
+
+Input:
+{payload_json}
+"""
+
+
+SPEC_SOURCE_EXTRACTION_PROMPT = """You extract asset specs from provided source text only.
+Do not invent facts that are missing from the text.
+
+Rules:
+- Return ONLY JSON.
+- Use only fields relevant to the selected asset type.
+- If exact model is unclear, keep uncertain values as \"Unknown - verify exact configuration\".
+- Never mark missing values as known values.
+- Prefer concise, normalized key/value output.
+
+Required output:
+{{
+  "normalized_specs": {{}},
+  "warnings": [],
+  "missing_important_fields": [],
+  "confidence": 0.0,
+  "exact_model_matched": false,
+  "evidence_reason": ""
+}}
+
+Input:
+{payload_json}
+"""

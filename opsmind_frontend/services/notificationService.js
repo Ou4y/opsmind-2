@@ -1,9 +1,17 @@
 import AuthService from './authService.js';
+import { NOTIFICATION_API_BASE_URL } from './apiConfig.js';
 
-const NOTIFICATION_API = (
-    (typeof window !== 'undefined' && window.OPSMIND_NOTIFICATION_URL) ? window.OPSMIND_NOTIFICATION_URL :
-    'http://localhost:3005/api/notifications'
-).replace(/\/+$/, '');
+const NOTIFICATION_API = NOTIFICATION_API_BASE_URL;
+
+const MIN_FETCH_INTERVAL_MS = 1500;
+const MAX_BACKOFF_MS = 60000;
+const INITIAL_BACKOFF_MS = 4000;
+
+let notificationsInFlightPromise = null;
+let lastNotifications = [];
+let lastFetchAtMs = 0;
+let failureCount = 0;
+let backoffUntilMs = 0;
 
 function getNotificationUserIds() {
     const user = AuthService.getUser();
@@ -65,41 +73,75 @@ function normalizeAndMergeNotifications(notificationsByIdentity) {
 const NotificationService = {
 
     
-    async getUserNotifications() {
+    async getUserNotifications(options = {}) {
+        const { force = false } = options;
+        if (!AuthService.getToken()) {
+            lastNotifications = [];
+            return [];
+        }
+
         const userIds = getNotificationUserIds();
         if (userIds.length === 0) return [];
 
+        const nowMs = Date.now();
+        if (notificationsInFlightPromise) {
+            return notificationsInFlightPromise;
+        }
+
+        if (!force && nowMs < backoffUntilMs) {
+            return lastNotifications;
+        }
+
+        if (!force && (nowMs - lastFetchAtMs) < MIN_FETCH_INTERVAL_MS) {
+            return lastNotifications;
+        }
+
         try {
-            const settled = await Promise.allSettled(
-                userIds.map(async (userId) => {
-                    const response = await fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}`);
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch notifications for userId=${userId}`);
-                    }
+            notificationsInFlightPromise = (async () => {
+                const settled = await Promise.allSettled(
+                    userIds.map(async (userId) => {
+                        const response = await fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}`, {
+                            headers: {
+                                ...AuthService.getAuthHeaders()
+                            }
+                        });
+                        if (!response.ok) {
+                            throw new Error(`Failed to fetch notifications for userId=${userId}`);
+                        }
 
-                    const data = await response.json();
-                    return {
-                        identity: userId,
-                        notifications: Array.isArray(data) ? data : []
-                    };
-                })
-            );
+                        const data = await response.json();
+                        return {
+                            identity: userId,
+                            notifications: Array.isArray(data) ? data : []
+                        };
+                    })
+                );
 
-            const successful = settled
-                .filter((entry) => entry.status === 'fulfilled')
-                .map((entry) => entry.value);
+                const successful = settled
+                    .filter((entry) => entry.status === 'fulfilled')
+                    .map((entry) => entry.value);
 
-            if (successful.length === 0) {
-                throw new Error('Failed to fetch notifications for all known identities');
-            }
+                if (successful.length === 0) {
+                    throw new Error('Failed to fetch notifications for all known identities');
+                }
 
-            const merged = normalizeAndMergeNotifications(successful);
-            console.log('Notifications from backend:', merged);
-            return merged;
+                const merged = normalizeAndMergeNotifications(successful);
+                lastNotifications = merged;
+                lastFetchAtMs = Date.now();
+                failureCount = 0;
+                backoffUntilMs = 0;
+                return merged;
+            })();
 
+            return await notificationsInFlightPromise;
         } catch (error) {
-            console.error('Notification fetch error:', error);
-            return [];
+            failureCount += 1;
+            const backoffMs = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * (2 ** Math.max(0, failureCount - 1)));
+            backoffUntilMs = Date.now() + backoffMs;
+            console.warn('Notification fetch temporarily backed off:', error?.message || error);
+            return lastNotifications;
+        } finally {
+            notificationsInFlightPromise = null;
         }
     },
 
@@ -111,6 +153,8 @@ const NotificationService = {
 
     
     async markAllAsRead() {
+        if (!AuthService.getToken()) return;
+
         const userIds = getNotificationUserIds();
         if (userIds.length === 0) return;
 
@@ -118,7 +162,10 @@ const NotificationService = {
             await Promise.allSettled(
                 userIds.map((userId) =>
                     fetch(`${NOTIFICATION_API}/${encodeURIComponent(userId)}/mark-read`, {
-                        method: 'PUT'
+                        method: 'PUT',
+                        headers: {
+                            ...AuthService.getAuthHeaders()
+                        }
                     })
                 )
             );

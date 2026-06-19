@@ -9,9 +9,10 @@ async function connectRabbitMQ(retries = 10, delay = 5000) {
     try {
       console.log(`Trying to connect to RabbitMQ (${i + 1}/${retries})...`);
 
-
-      const rabbitmqUrl =
-        process.env.RABBITMQ_URL || "amqp://opsmind:opsmind@rabbitmq:5672";
+      const rabbitmqUrl = String(process.env.RABBITMQ_URL || "").trim();
+      if (!rabbitmqUrl) {
+        throw new Error("RABBITMQ_URL is required");
+      }
 
       const sanitizedUrl = rabbitmqUrl.replace(/\/\/.*@/, "//***@");
       console.log("RABBITMQ_URL =", sanitizedUrl);

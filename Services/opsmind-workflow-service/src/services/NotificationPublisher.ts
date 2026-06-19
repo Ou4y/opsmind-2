@@ -1,6 +1,6 @@
 import amqplib, { Channel, ChannelModel } from 'amqplib';
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://opsmind:opsmind@localhost:5672';
+const RABBITMQ_URL = String(process.env.RABBITMQ_URL || '').trim();
 const TICKET_EVENTS_EXCHANGE = 'ticket.events';
 const TICKET_ASSIGNED_ROUTING_KEY = 'ticket.notification.assigned';
 
@@ -41,6 +41,10 @@ export class NotificationPublisher {
   private async ensureConnection(): Promise<void> {
     if (!connection || !channel) {
       try {
+        if (!RABBITMQ_URL) {
+          throw new Error('RABBITMQ_URL is required');
+        }
+
         connection = await amqplib.connect(RABBITMQ_URL);
         channel = await connection.createChannel();
         

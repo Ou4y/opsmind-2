@@ -229,8 +229,8 @@ function renderTickets() {
                     <span class="text-muted">${UI.formatRelativeTime(ticket.created_at || ticket.createdAt)}</span>
                 </td>
                 <td class="text-end">
-                    <button class="btn btn-primary btn-sm" data-action="analyze" data-id="${ticket.id}" title="Analyze with AI">
-                        <i class="bi bi-robot me-1"></i> Analyze
+                    <button class="btn btn-sm ai-action-btn ai-action-btn-primary" data-action="analyze" data-id="${ticket.id}" title="Analyze with AI">
+                        <i class="bi bi-cpu me-1"></i> Analyze with AI
                     </button>
                 </td>
             </tr>

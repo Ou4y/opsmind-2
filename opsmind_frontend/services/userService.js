@@ -12,12 +12,11 @@
  */
 
 import AuthService from './authService.js';
+import { AUTH_API_BASE_URL } from './apiConfig.js';
 
-// API base URL - keep in sync with authService and runtime config.js
-const API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_API_URL) ? window.OPSMIND_API_URL :
-    'http://localhost:3002'
-);
+const API_BASE_URL = AUTH_API_BASE_URL;
+const DEBUG_LOGS = Boolean(typeof window !== 'undefined' && window.OPSMIND_DEBUG_LOGS === true);
+function debugLog(...args) { if (DEBUG_LOGS) console.log(...args); }
 
 /**
  * UserService - User management operations
@@ -142,8 +141,8 @@ const UserService = {
                 backendData.technicianLevel = userData.role.toUpperCase();
             }
             
-            console.log('[UserService] Creating user - Frontend data:', userData);
-            console.log('[UserService] Creating user - Backend data:', backendData);
+            debugLog('[UserService] Creating user - Frontend data:', userData);
+            debugLog('[UserService] Creating user - Backend data:', backendData);
             
             const response = await fetch(`${API_BASE_URL}/admin/users`, {
                 method: 'POST',
@@ -189,8 +188,8 @@ const UserService = {
                 backendData.technicianLevel = updates.role.toUpperCase();
             }
             
-            console.log('[UserService] Updating user - Frontend data:', updates);
-            console.log('[UserService] Updating user - Backend data:', backendData);
+            debugLog('[UserService] Updating user - Frontend data:', updates);
+            debugLog('[UserService] Updating user - Backend data:', backendData);
             
             const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
                 method: 'PUT',
@@ -296,13 +295,13 @@ const UserService = {
     async validateUserData(userData, isUpdate = false) {
         const errors = [];
         
-        console.log('[validateUserData] Starting validation:', { userData, isUpdate });
+        debugLog('[validateUserData] Starting validation:', { userData, isUpdate });
 
         // First name
         if (!isUpdate || userData.firstName !== undefined) {
             if (!userData.firstName || userData.firstName.trim().length === 0) {
                 errors.push('First name is required');
-                console.log('[validateUserData] First name validation failed');
+                debugLog('[validateUserData] First name validation failed');
             }
         }
 
@@ -310,7 +309,7 @@ const UserService = {
         if (!isUpdate || userData.lastName !== undefined) {
             if (!userData.lastName || userData.lastName.trim().length === 0) {
                 errors.push('Last name is required');
-                console.log('[validateUserData] Last name validation failed');
+                debugLog('[validateUserData] Last name validation failed');
             }
         }
 
@@ -318,11 +317,11 @@ const UserService = {
         if (!isUpdate || userData.email !== undefined) {
             try {
                 const emailValidation = await AuthService.validateAllowedEmail(userData.email);
-                console.log('[validateUserData] Email validation:', { email: userData.email, validation: emailValidation });
+                debugLog('[validateUserData] Email validation:', { email: userData.email, validation: emailValidation });
 
                 if (!userData.email || !emailValidation.valid) {
                     errors.push(emailValidation.message || 'A valid email from an allowed domain is required');
-                    console.log('[validateUserData] Email validation failed');
+                    debugLog('[validateUserData] Email validation failed');
                 }
             } catch (error) {
                 console.error('[validateUserData] Allowed domains validation request failed:', error);
@@ -334,13 +333,13 @@ const UserService = {
         if (!isUpdate) {
             if (!userData.password || userData.password.trim().length === 0) {
                 errors.push('Password is required');
-                console.log('[validateUserData] Password is missing');
+                debugLog('[validateUserData] Password is missing');
             } else {
                 const passwordValidation = AuthService.validatePassword(userData.password);
-                console.log('[validateUserData] Password validation:', passwordValidation);
+                debugLog('[validateUserData] Password validation:', passwordValidation);
                 if (!passwordValidation.valid) {
                     errors.push(...passwordValidation.errors);
-                    console.log('[validateUserData] Password validation failed');
+                    debugLog('[validateUserData] Password validation failed');
                 }
             }
         }
@@ -349,14 +348,14 @@ const UserService = {
         if (!isUpdate || userData.role !== undefined) {
             const validRoles = ['ADMIN', 'DOCTOR', 'JUNIOR', 'SENIOR', 'SUPERVISOR', 'STUDENT'];
             const roleValid = userData.role && validRoles.includes(userData.role.toUpperCase());
-            console.log('[validateUserData] Role validation:', { role: userData.role, valid: roleValid });
+            debugLog('[validateUserData] Role validation:', { role: userData.role, valid: roleValid });
             if (!roleValid) {
                 errors.push('Valid role is required (ADMIN, DOCTOR, JUNIOR, SENIOR, SUPERVISOR, or STUDENT)');
-                console.log('[validateUserData] Role validation failed');
+                debugLog('[validateUserData] Role validation failed');
             }
         }
 
-        console.log('[validateUserData] Validation complete:', { valid: errors.length === 0, errors });
+        debugLog('[validateUserData] Validation complete:', { valid: errors.length === 0, errors });
 
         return {
             valid: errors.length === 0,

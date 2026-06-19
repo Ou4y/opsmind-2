@@ -43,6 +43,65 @@ export class UserRepository {
     return { ...users[0], roles };
   }
 
+  async findByIdsWithRoles(ids: string[]): Promise<UserWithRoles[]> {
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return [];
+
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const rows = await query<any[]>(
+      `SELECT
+         u.id,
+         u.email,
+         u.first_name,
+         u.last_name,
+         u.is_verified,
+         u.is_active,
+         u.created_at,
+         u.updated_at,
+         r.id AS role_id,
+         r.name AS role_name,
+         r.description AS role_description
+       FROM users u
+       LEFT JOIN user_roles ur ON u.id = ur.user_id
+       LEFT JOIN roles r ON ur.role_id = r.id
+       WHERE u.id IN (${placeholders})`,
+      uniqueIds
+    );
+
+    const usersById = new Map<string, UserWithRoles>();
+    for (const row of rows) {
+      const existing = usersById.get(row.id);
+      if (!existing) {
+        usersById.set(row.id, {
+          id: row.id,
+          email: row.email,
+          password_hash: '',
+          first_name: row.first_name,
+          last_name: row.last_name,
+          is_verified: row.is_verified,
+          is_active: row.is_active,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          roles: [],
+        });
+      }
+
+      if (row.role_name) {
+        usersById.get(row.id)!.roles.push({
+          id: row.role_id,
+          name: row.role_name,
+          description: row.role_description,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        });
+      }
+    }
+
+    return uniqueIds
+      .map((id) => usersById.get(id))
+      .filter((user): user is UserWithRoles => Boolean(user));
+  }
+
   async create(data: {
     email: string;
     passwordHash: string;

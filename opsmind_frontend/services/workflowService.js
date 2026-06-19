@@ -10,12 +10,13 @@
  * - ticketId is always a string (UUID)
  * - Query params use snake_case: start_date, end_date
  * - Request body fields use exact names from backend
- * - Every request includes Authorization: Bearer <token>
+ * - Authenticated requests include the stored Bearer token when available
  */
 
 import AuthService from './authService.js';
+import { WORKFLOW_API_BASE_URL } from './apiConfig.js';
 
-const WORKFLOW_API = window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003';
+const WORKFLOW_API = WORKFLOW_API_BASE_URL;
 const DEFAULT_WORKFLOW_TIMEOUT_MS = 15000;
 
 function resolveWorkflowRequestTimeoutMs() {
@@ -31,11 +32,7 @@ function resolveWorkflowRequestTimeoutMs() {
  * @returns {Object} Headers object
  */
 function getAuthHeaders() {
-    const token = AuthService.getToken();
-    return {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-    };
+    return AuthService.getAuthHeaders();
 }
 
 /**

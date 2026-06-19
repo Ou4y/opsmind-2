@@ -11,14 +11,11 @@
  */
 
 import AuthService from './authService.js';
+import { TICKET_API_BASE_URL } from './apiConfig.js';
 
-// Prefer runtime-configured base URL (set by assets/js/config.js or docker env injection).
-// Fallback to localhost for local dev, then to relative /api.
-const API_BASE_URL = (
-    (typeof window !== 'undefined' && window.OPSMIND_TICKET_URL) ? window.OPSMIND_TICKET_URL :
-    (typeof process !== 'undefined' && process?.env?.OPSMIND_TICKET_URL) ? process.env.OPSMIND_TICKET_URL :
-    'http://localhost:3001'
-);
+const API_BASE_URL = TICKET_API_BASE_URL;
+const DEBUG_LOGS = Boolean(typeof window !== 'undefined' && window.OPSMIND_DEBUG_LOGS === true);
+function debugLog(...args) { if (DEBUG_LOGS) console.log(...args); }
 
 /**
  * @typedef {Object} Ticket
@@ -82,7 +79,9 @@ async function handleResponse(response) {
         // Token expired or invalid - redirect to login
         AuthService.clearAuth();
         window.location.href = '/index.html';
-        throw new Error('Session expired');
+        const error = new Error('Session expired');
+        error.status = response.status;
+        throw error;
     }
 
     if (!response.ok) {
@@ -92,7 +91,10 @@ async function handleResponse(response) {
         if (errorBody.details) {
             console.error('[TicketService] Validation details:', errorBody.details);
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status;
+        error.body = errorBody;
+        throw error;
     }
 
     return response.json();
@@ -149,7 +151,9 @@ async function requestTicketsApi({ path = '', method = 'GET', params, body, expe
             if (response.status === 401) {
                 AuthService.clearAuth();
                 window.location.href = '/index.html';
-                throw new Error('Session expired');
+                const error = new Error('Session expired');
+                error.status = response.status;
+                throw error;
             }
 
             if (!response.ok) {
@@ -158,7 +162,10 @@ async function requestTicketsApi({ path = '', method = 'GET', params, body, expe
                 if (errorBody.details) {
                     console.error('[TicketService] Validation details:', errorBody.details);
                 }
-                throw new Error(message);
+                const error = new Error(message);
+                error.status = response.status;
+                error.body = errorBody;
+                throw error;
             }
 
             return response;
@@ -383,7 +390,7 @@ const TicketService = {
         const filteredTickets = applyTicketFilters(extractTicketsArray(data), options);
         const filteredPayload = withTicketsPayload(data, filteredTickets);
 
-        console.log('[TicketService.getTickets] Response:', data);
+        debugLog('[TicketService.getTickets] Response:', data);
         return normalizeTicketsPayload(filteredPayload);
     },
 
@@ -538,8 +545,8 @@ const TicketService = {
             ...options
         };
         
-        console.log('[TicketService.getTicketsByTechnician] Fetching tickets for technician:', technicianId);
-        console.log('[TicketService.getTicketsByTechnician] Filters:', filters);
+        debugLog('[TicketService.getTicketsByTechnician] Fetching tickets for technician:', technicianId);
+        debugLog('[TicketService.getTicketsByTechnician] Filters:', filters);
         
         return this.getTickets(filters);
     },
@@ -553,7 +560,7 @@ const TicketService = {
      * @returns {Promise<Array>} Array of assigned tickets
      */
     async getAssignedTickets(technicianId) {
-        console.log('[TicketService.getAssignedTickets] technicianId:', technicianId);
+        debugLog('[TicketService.getAssignedTickets] technicianId:', technicianId);
 
         // 1. Try the dedicated endpoint first
         try {
@@ -562,7 +569,7 @@ const TicketService = {
                 method: 'GET'
             });
             const tickets = extractTicketsArray(normalizeTicketsPayload(data));
-            console.log('[TicketService.getAssignedTickets] Dedicated endpoint returned', tickets.length, 'tickets');
+            debugLog('[TicketService.getAssignedTickets] Dedicated endpoint returned', tickets.length, 'tickets');
             return tickets;
         } catch (err) {
             console.warn('[TicketService.getAssignedTickets] Dedicated endpoint failed, falling back to client-side filter:', err.message);
@@ -573,7 +580,7 @@ const TicketService = {
             await requestTicketsApi({ method: 'GET', params: new URLSearchParams({ limit: '500', offset: '0' }) })
         );
         const all = extractTicketsArray(data);
-        console.log('[TicketService.getAssignedTickets] Fallback: fetched', all.length, 'total tickets');
+        debugLog('[TicketService.getAssignedTickets] Fallback: fetched', all.length, 'total tickets');
 
         const techId = String(technicianId);
         const assigned = all.filter((ticket) => {
@@ -589,7 +596,7 @@ const TicketService = {
             return candidates.some((v) => v !== undefined && v !== null && String(v) === techId);
         });
 
-        console.log('[TicketService.getAssignedTickets] Fallback filtered to', assigned.length, 'assigned tickets');
+        debugLog('[TicketService.getAssignedTickets] Fallback filtered to', assigned.length, 'assigned tickets');
         return assigned;
     },
 

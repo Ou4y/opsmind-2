@@ -3,31 +3,30 @@ const app = require("./app");
 const connectDB = require("./config/db");
 const axios = require("axios");
 
-const PORT = process.env.PORT || 3004;
+const PORT = Number(process.env.PORT || 3000);
+const REPORT_SYNC_URL = process.env.REPORT_SYNC_URL || `http://127.0.0.1:${PORT}/analytics/sync`;
+const INTERNAL_API_TOKEN = String(process.env.INTERNAL_API_TOKEN || "").trim();
 
 async function start() {
   try {
-    // Connect MongoDB
     await connectDB();
-    console.log("MongoDB connected ");
+    console.log("MongoDB connected");
 
-    //  Start HTTP server
     app.listen(PORT, () => {
       console.log(`Reporting Service running on ${PORT}`);
     });
 
-    // Auto Sync every 1 minute 
+    // Auto sync every minute via protected internal endpoint.
     setInterval(async () => {
       try {
-        console.log(" Auto syncing tickets...");
-        await axios.get("http://localhost:3000/analytics/sync");
+        const headers = INTERNAL_API_TOKEN ? { "x-internal-token": INTERNAL_API_TOKEN } : {};
+        await axios.get(REPORT_SYNC_URL, { headers });
       } catch (err) {
         console.error("Sync failed:", err.message);
       }
-    }, 60000); 
-
+    }, 60000);
   } catch (err) {
-    console.error("Failed to start Reporting Service ", err);
+    console.error("Failed to start Reporting Service", err);
     process.exit(1);
   }
 }

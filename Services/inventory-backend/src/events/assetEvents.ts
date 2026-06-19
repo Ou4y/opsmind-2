@@ -5,7 +5,7 @@ export const TOPICS = {
   ASSET_UPDATED: 'asset.updated',
   ASSET_DELETED: 'asset.deleted',
   ASSET_TRANSFERRED: 'asset.transferred',
-  ASSET_LOW_STOCK: 'asset.low_stock'
+  ASSET_LOW_STOCK: 'ticket.notification.lowStock'
 };
 
 // Optional: You can export interfaces here if you want strict typing later

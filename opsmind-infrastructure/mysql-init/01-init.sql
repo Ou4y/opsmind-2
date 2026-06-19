@@ -1,27 +1,18 @@
 -- Create databases
 CREATE DATABASE IF NOT EXISTS Tickets;
 CREATE DATABASE IF NOT EXISTS opsmind_ai;
+CREATE DATABASE IF NOT EXISTS agentic_ai_db;
 CREATE DATABASE IF NOT EXISTS authentication;
 CREATE DATABASE IF NOT EXISTS sla_db;
 
--- Ensure the application users exist (MySQL 8)
-CREATE USER IF NOT EXISTS 'opsmind'@'%' IDENTIFIED BY 'opsmind';
-CREATE USER IF NOT EXISTS 'opsmind'@'localhost' IDENTIFIED BY 'opsmind';
-CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root';
-
--- Grant ALL privileges to opsmind user on ALL databases (localhost)
-GRANT ALL PRIVILEGES ON *.* TO 'opsmind'@'localhost' WITH GRANT OPTION;
-
--- Grant ALL privileges to opsmind user on ALL databases (remote)
-GRANT ALL PRIVILEGES ON *.* TO 'opsmind'@'%' WITH GRANT OPTION;
-
--- Grant ALL privileges to root user on ALL databases (remote)
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-
--- Grant SUPER privilege for advanced operations
-GRANT SUPER ON *.* TO 'opsmind'@'localhost';
-GRANT SUPER ON *.* TO 'opsmind'@'%';
-GRANT SUPER ON *.* TO 'root'@'%';
+-- The opsmind account is created by MYSQL_USER/MYSQL_PASSWORD from docker-compose.
+-- Keep grants database-scoped and avoid hard-coded passwords or remote root users.
+GRANT ALL PRIVILEGES ON Tickets.* TO 'opsmind'@'%';
+GRANT ALL PRIVILEGES ON opsmind_ai.* TO 'opsmind'@'%';
+GRANT ALL PRIVILEGES ON agentic_ai_db.* TO 'opsmind'@'%';
+GRANT ALL PRIVILEGES ON authentication.* TO 'opsmind'@'%';
+GRANT ALL PRIVILEGES ON workflow_db.* TO 'opsmind'@'%';
+GRANT ALL PRIVILEGES ON sla_db.* TO 'opsmind'@'%';
 
 FLUSH PRIVILEGES;
 

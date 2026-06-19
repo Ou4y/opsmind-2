@@ -10,6 +10,7 @@ import {
   deleteRelationshipSchema,
   syncTechnicianFromAuthSchema,
 } from '../middlewares/validation';
+import { requireAuth, requireInternalToken, requireRole } from '../middlewares/auth';
 
 /**
  * Admin Routes
@@ -39,6 +40,19 @@ const groupRepo = new SupportGroupRepository();
 const memberRepo = new GroupMemberRepository();
 const ruleRepo = new EscalationRuleRepository();
 const hierarchyController = new HierarchyController();
+
+// Internal-only identity sync called by auth-service.
+router.post(
+  '/hierarchy/technicians/sync',
+  requireInternalToken,
+  validateBody(syncTechnicianFromAuthSchema),
+  (req: Request, res: Response) => {
+    hierarchyController.syncTechnicianFromAuth(req, res);
+  }
+);
+
+// All remaining admin routes require authenticated ADMIN role.
+router.use(requireAuth, requireRole('ADMIN'));
 
 // ══════════════════════════════════════
 //  Support Groups CRUD
@@ -221,18 +235,6 @@ router.get('/groups/:groupId', async (req: Request, res: Response): Promise<void
 // ══════════════════════════════════════
 //  Hierarchy Management
 // ══════════════════════════════════════
-
-/**
- * POST /workflow/admin/hierarchy/technicians/sync
- * Sync auth identity (UUID + auth role) into workflow technician model
- */
-router.post(
-  '/hierarchy/technicians/sync',
-  validateBody(syncTechnicianFromAuthSchema),
-  (req: Request, res: Response) => {
-    hierarchyController.syncTechnicianFromAuth(req, res);
-  }
-);
 
 /**
  * GET /workflow/admin/hierarchy/technicians

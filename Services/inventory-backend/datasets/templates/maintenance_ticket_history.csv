@@ -1,0 +1,2 @@
+assetId,ticketDate,ticketType,severity,resolution,repairCost,downtimeHours
+ASSET-EXAMPLE-0001,2026-04-13,hardware,high,motherboard_replaced,320,18

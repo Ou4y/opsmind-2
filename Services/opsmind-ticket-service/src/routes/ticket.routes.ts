@@ -13,10 +13,11 @@ import { AppError } from "../errors/AppError";
 import { publishTicketCreated, publishTicketUpdated, publishTicketResolvedNotification } from "../events/publishers/ticket.publisher";
 import { sendTicketOpenedNotification } from "../utils/notificationClient";
 import { validate } from "../middleware/validate.middleware";
+import { hasSupportOrAdminRole, requireAuthOrInternal } from "../middleware/auth.middleware";
 import { logger } from "../config/logger";
 import { config } from "../config";
 import { enrichTicketWithTechnicianName, enrichTicketsWithTechnicianNames } from "../utils/ticketEnrichment";
-import { fetchUserDetails } from "../utils/userServiceClient";
+import { fetchUserDetails, fetchUsersByIds, UserDisplayDetails } from "../utils/userServiceClient";
 import { fetchSupervisor, syncWorkflowTicket } from "../utils/workflowServiceClient";
 import { updateSlaStatus, SlaStatusPayload } from "../utils/slaServiceClient";
 import {
@@ -26,9 +27,202 @@ import {
   PriorityFallbackDecision,
 } from "../utils/aiServiceClient";
 import { evaluateAiAgentEligibility } from "../utils/aiAgentEligibility";
-import { IssueScope, OperatingSystemType } from "@prisma/client";
+import { IssueScope, OperatingSystemType, Ticket, TicketPriority, TicketStatus } from "@prisma/client";
 
 const router = Router();
+router.use(requireAuthOrInternal);
+
+function resolveAuthenticatedUserId(req: any): string | null {
+  const value = req?.user?.userId;
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function isSupportOrServiceRequest(req: any): boolean {
+  return req?.isService === true || hasSupportOrAdminRole(req?.user);
+}
+
+function canAccessTicket(req: any, ticket: Pick<Ticket, "requester_id" | "assigned_to">): boolean {
+  if (isSupportOrServiceRequest(req)) return true;
+  const userId = resolveAuthenticatedUserId(req);
+  if (!userId) return false;
+  return userId === String(ticket.requester_id || "") || userId === String(ticket.assigned_to || "");
+}
+
+function assertTicketAccessOrThrow(req: any, ticket: Pick<Ticket, "requester_id" | "assigned_to">): void {
+  if (!canAccessTicket(req, ticket)) {
+    throw new AppError("Access denied for this ticket", 403);
+  }
+}
+
+const DEFAULT_TICKET_LIST_LIMIT = 50;
+const DEFAULT_ASSIGNED_TICKET_LIST_LIMIT = 500;
+const MAX_TICKET_LIST_LIMIT = 500;
+const MAX_TICKET_LIST_OFFSET = 100000;
+const TICKET_STATUSES = new Set<string>(Object.values(TicketStatus));
+const TICKET_PRIORITIES = new Set<string>(Object.values(TicketPriority));
+
+function getSingleQueryValue(value: unknown): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") return undefined;
+  const text = raw.trim();
+  return text || undefined;
+}
+
+function getQueryList(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .filter((item): item is string => typeof item === "string")
+    .flatMap((item) => item.split(","))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseIntegerQuery(
+  value: unknown,
+  name: "limit" | "offset",
+  options: { defaultValue: number; min: number; max: number }
+): number {
+  const raw = getSingleQueryValue(value);
+  if (raw === undefined) return options.defaultValue;
+
+  if (!/^\d+$/.test(raw)) {
+    throw new AppError(`${name} must be an integer greater than or equal to ${options.min}`, 400);
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < options.min) {
+    throw new AppError(`${name} must be an integer greater than or equal to ${options.min}`, 400);
+  }
+
+  if (parsed > options.max) {
+    throw new AppError(`${name} must be less than or equal to ${options.max}`, 400);
+  }
+
+  return parsed;
+}
+
+function parsePagination(query: any, defaultLimit = DEFAULT_TICKET_LIST_LIMIT) {
+  return {
+    limit: parseIntegerQuery(query.limit, "limit", {
+      defaultValue: defaultLimit,
+      min: 1,
+      max: MAX_TICKET_LIST_LIMIT,
+    }),
+    offset: parseIntegerQuery(query.offset, "offset", {
+      defaultValue: 0,
+      min: 0,
+      max: MAX_TICKET_LIST_OFFSET,
+    }),
+  };
+}
+
+function parseEnumQuery<T extends string>(
+  value: unknown,
+  name: "status" | "priority",
+  allowedValues: Set<string>
+): T | undefined {
+  const raw = getSingleQueryValue(value);
+  if (!raw) return undefined;
+
+  const normalized = raw.toUpperCase();
+  if (!allowedValues.has(normalized)) {
+    throw new AppError(`${name} must be one of: ${Array.from(allowedValues).join(", ")}`, 400);
+  }
+
+  return normalized as T;
+}
+
+function toNullableString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function serializeTicket(
+  ticket: Ticket & { assigned_to_name?: string | null },
+  requesterMap: Map<string, UserDisplayDetails> = new Map()
+) {
+  const requesterId = toNullableString(ticket.requester_id);
+  const assignedTo = toNullableString(ticket.assigned_to);
+  const assignedToName = toNullableString(ticket.assigned_to_name);
+  const affectedDeviceId = toNullableString((ticket as any).affected_device_id);
+  const affectedDeviceName = toNullableString((ticket as any).affected_device_name);
+  const requester = requesterId ? requesterMap.get(requesterId) : null;
+
+  return {
+    ...ticket,
+    assigned_to_name: assignedToName,
+    ticketId: ticket.id,
+    requesterId,
+    assignedTo,
+    assignedToName,
+    affectedDeviceId,
+    affectedDeviceName,
+    createdAt: ticket.created_at,
+    updatedAt: ticket.updated_at,
+    resolvedAt: ticket.resolved_at,
+    closedAt: ticket.closed_at,
+    requester: requesterId
+      ? requester
+        ? {
+            id: requester.id,
+            name: requester.name,
+            fullName: requester.fullName,
+            email: requester.email,
+            username: requester.username,
+            role: requester.role,
+          }
+        : {
+            id: requesterId,
+            name: null,
+            fullName: null,
+            email: null,
+            username: null,
+            role: null,
+          }
+      : null,
+    assignee: assignedTo
+      ? {
+          id: assignedTo,
+          name: assignedToName,
+          email: null,
+        }
+      : null,
+    device:
+      affectedDeviceId || affectedDeviceName
+        ? {
+            id: affectedDeviceId,
+            name: affectedDeviceName,
+          }
+        : null,
+    sla: null,
+  };
+}
+
+function sendTicketListResponse(
+  res: any,
+  tickets: Array<Ticket & { assigned_to_name?: string | null }>,
+  total: number,
+  pagination: { limit: number; offset: number },
+  requesterMap: Map<string, UserDisplayDetails> = new Map()
+) {
+  return res.json({
+    tickets: tickets.map((ticket) => serializeTicket(ticket, requesterMap)),
+    total,
+    limit: pagination.limit,
+    offset: pagination.offset,
+  });
+}
+
+async function buildRequesterMap(tickets: Array<Pick<Ticket, "requester_id">>) {
+  const requesterIds = tickets
+    .map((ticket) => toNullableString(ticket.requester_id))
+    .filter((id): id is string => Boolean(id));
+
+  return fetchUsersByIds(requesterIds);
+}
 
 /**
  * @openapi
@@ -88,6 +282,8 @@ const router = Router();
  */
 router.post("/", validate(createTicketSchema), async (req, res, next) => {
   try {
+    const parsed = createTicketSchema.parse(req.body) as CreateTicketInput;
+
     const {
       title,
       description,
@@ -106,7 +302,14 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
       remoteSupportConsent,
       latitude,
       longitude,
-    } = req.body as CreateTicketInput;
+    } = parsed;
+
+    const authenticatedUserId = resolveAuthenticatedUserId(req);
+    const supportOrServiceRequest = isSupportOrServiceRequest(req);
+    const effectiveRequesterId =
+      supportOrServiceRequest || !authenticatedUserId ? requester_id : authenticatedUserId;
+    const effectiveRequesterRole =
+      supportOrServiceRequest ? requester_role : req.user?.roles?.[0] || requester_role;
 
     const ticketId = randomUUID();
     const createdAt = new Date();
@@ -122,7 +325,7 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
     const normalizedIssueScope: IssueScope = (issueScope ?? "UNKNOWN") as IssueScope;
     const hasRemoteSupportConsent = remoteSupportConsent === true;
     const remoteSupportConsentAt = hasRemoteSupportConsent ? createdAt : null;
-    const remoteSupportConsentBy = hasRemoteSupportConsent ? requester_id : null;
+    const remoteSupportConsentBy = hasRemoteSupportConsent ? effectiveRequesterId : null;
     const aiAgentEligibility = evaluateAiAgentEligibility({
       title,
       description,
@@ -150,8 +353,8 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
     try {
       const prediction = await predictTicketPriority({
         ticketId,
-        requesterId: requester_id,
-        requesterRole: requester_role,
+        requesterId: effectiveRequesterId,
+        requesterRole: effectiveRequesterRole,
         title,
         description,
         typeOfRequest: type_of_request,
@@ -180,7 +383,7 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
     } catch (aiError: any) {
       logger.warn("AI prediction failed during ticket creation, applying fallback", {
         ticketId,
-        requester_id,
+        requester_id: effectiveRequesterId,
         type_of_request,
         error: aiError?.message || String(aiError),
         code: aiError?.code,
@@ -219,7 +422,7 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
         title,
         description,
         type_of_request,
-        requester_id,
+        requester_id: effectiveRequesterId,
         affected_device_id: normalizedAffectedDeviceId,
         affected_device_name: normalizedAffectedDeviceName,
         os_type: normalizedOsType,
@@ -378,29 +581,59 @@ router.post("/", validate(createTicketSchema), async (req, res, next) => {
  */
 router.get("/", async (req, res, next) => {
   try {
-    const { status, priority, requester_id, assigned_to, limit, offset } = req.query;
-    const assignedToFilter = typeof assigned_to === "string"
-      ? assigned_to.split(",").map((value) => value.trim()).filter(Boolean)
-      : [];
+    const status = parseEnumQuery<TicketStatus>(req.query.status, "status", TICKET_STATUSES);
+    const priority = parseEnumQuery<TicketPriority>(req.query.priority, "priority", TICKET_PRIORITIES);
+    const requesterIdFilter = getSingleQueryValue(req.query.requester_id);
+    const assignedToFilter = getQueryList(req.query.assigned_to);
+    const pagination = parsePagination(req.query);
+    const supportOrServiceRequest = isSupportOrServiceRequest(req);
+    const authenticatedUserId = resolveAuthenticatedUserId(req);
 
-    const tickets = await prisma.ticket.findMany({
-      where: {
-        is_deleted: false,
-        ...(typeof status === "string" && { status: status as any }),
-        ...(typeof priority === "string" && { priority: priority as any }),
-        ...(typeof requester_id === "string" && { requester_id }),
-        ...(assignedToFilter.length > 0 && {
-          assigned_to: {
-            in: assignedToFilter,
-          },
-        }),
-      },
-      orderBy: { created_at: "desc" },
-      take: typeof limit === "string" ? parseInt(limit, 10) : 50,
-      skip: typeof offset === "string" ? parseInt(offset, 10) : 0,
-    });
+    if (!supportOrServiceRequest && !authenticatedUserId) {
+      throw new AppError("Authentication required", 401);
+    }
+
+    if (
+      !supportOrServiceRequest &&
+      requesterIdFilter &&
+      requesterIdFilter !== authenticatedUserId
+    ) {
+      throw new AppError("Access denied for requested requester scope", 403);
+    }
+
+    if (!supportOrServiceRequest && assignedToFilter.length > 0) {
+      throw new AppError("Assigned technician filtering requires support role", 403);
+    }
+
+    const effectiveRequesterId =
+      supportOrServiceRequest
+        ? requesterIdFilter
+        : authenticatedUserId || undefined;
+
+    const where = {
+      is_deleted: false,
+      ...(status && { status }),
+      ...(priority && { priority }),
+      ...(effectiveRequesterId && { requester_id: effectiveRequesterId }),
+      ...(assignedToFilter.length > 0 && {
+        assigned_to: {
+          in: assignedToFilter,
+        },
+      }),
+    };
+
+    const [total, tickets] = await prisma.$transaction([
+      prisma.ticket.count({ where }),
+      prisma.ticket.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        take: pagination.limit,
+        skip: pagination.offset,
+      }),
+    ]);
     const enrichedTickets = await enrichTicketsWithTechnicianNames(tickets);
-    return res.json(enrichedTickets);
+    const requesterMap = await buildRequesterMap(tickets);
+    return sendTicketListResponse(res, enrichedTickets, total, pagination, requesterMap);
   } catch (err) {
     next(err);
   }
@@ -446,20 +679,34 @@ router.get("/", async (req, res, next) => {
 router.get("/requester/:requester_id", async (req, res, next) => {
   try {
     const { requester_id } = req.params;
-    const { status, priority, limit, offset } = req.query;
-    const tickets = await prisma.ticket.findMany({
-      where: {
-        is_deleted: false,
-        requester_id,
-        ...(typeof status === "string" && { status: status as any }),
-        ...(typeof priority === "string" && { priority: priority as any }),
-      },
-      orderBy: { created_at: "desc" },
-      take: typeof limit === "string" ? parseInt(limit, 10) : 50,
-      skip: typeof offset === "string" ? parseInt(offset, 10) : 0,
-    });
+    const supportOrServiceRequest = isSupportOrServiceRequest(req);
+    const authenticatedUserId = resolveAuthenticatedUserId(req);
+    if (!supportOrServiceRequest && requester_id !== authenticatedUserId) {
+      throw new AppError("Access denied for this requester", 403);
+    }
+
+    const status = parseEnumQuery<TicketStatus>(req.query.status, "status", TICKET_STATUSES);
+    const priority = parseEnumQuery<TicketPriority>(req.query.priority, "priority", TICKET_PRIORITIES);
+    const pagination = parsePagination(req.query);
+    const where = {
+      is_deleted: false,
+      requester_id,
+      ...(status && { status }),
+      ...(priority && { priority }),
+    };
+
+    const [total, tickets] = await prisma.$transaction([
+      prisma.ticket.count({ where }),
+      prisma.ticket.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        take: pagination.limit,
+        skip: pagination.offset,
+      }),
+    ]);
     const enrichedTickets = await enrichTicketsWithTechnicianNames(tickets);
-    return res.json(enrichedTickets);
+    const requesterMap = await buildRequesterMap(tickets);
+    return sendTicketListResponse(res, enrichedTickets, total, pagination, requesterMap);
   } catch (err) {
     next(err);
   }
@@ -500,19 +747,32 @@ router.get("/requester/:requester_id", async (req, res, next) => {
 router.get("/assigned/:technicianId", async (req, res, next) => {
   try {
     const { technicianId } = req.params;
-    const { status, limit, offset } = req.query;
-    const tickets = await prisma.ticket.findMany({
-      where: {
-        is_deleted: false,
-        assigned_to: technicianId,
-        ...(typeof status === "string" && { status: status as any }),
-      },
-      orderBy: { created_at: "desc" },
-      take: typeof limit === "string" ? parseInt(limit, 10) : 500,
-      skip: typeof offset === "string" ? parseInt(offset, 10) : 0,
-    });
+    const supportOrServiceRequest = isSupportOrServiceRequest(req);
+    const authenticatedUserId = resolveAuthenticatedUserId(req);
+    if (!supportOrServiceRequest && technicianId !== authenticatedUserId) {
+      throw new AppError("Access denied for this technician scope", 403);
+    }
+
+    const status = parseEnumQuery<TicketStatus>(req.query.status, "status", TICKET_STATUSES);
+    const pagination = parsePagination(req.query, DEFAULT_ASSIGNED_TICKET_LIST_LIMIT);
+    const where = {
+      is_deleted: false,
+      assigned_to: technicianId,
+      ...(status && { status }),
+    };
+
+    const [total, tickets] = await prisma.$transaction([
+      prisma.ticket.count({ where }),
+      prisma.ticket.findMany({
+        where,
+        orderBy: { created_at: "desc" },
+        take: pagination.limit,
+        skip: pagination.offset,
+      }),
+    ]);
     const enrichedTickets = await enrichTicketsWithTechnicianNames(tickets);
-    return res.json(enrichedTickets);
+    const requesterMap = await buildRequesterMap(tickets);
+    return sendTicketListResponse(res, enrichedTickets, total, pagination, requesterMap);
   } catch (err) {
     next(err);
   }
@@ -544,6 +804,7 @@ router.get("/:id", async (req, res, next) => {
     if (!ticket) {
       throw new AppError("Ticket not found", 404);
     }
+    assertTicketAccessOrThrow(req, ticket);
     const enrichedTicket = await enrichTicketWithTechnicianName(ticket);
     return res.json(enrichedTicket);
   } catch (err) {
@@ -557,6 +818,12 @@ router.get("/:id", async (req, res, next) => {
 router.get("/:id/assignment-history", async (req, res, next) => {
   try {
     const { id } = req.params;
+    const ticket = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
+    if (!ticket) {
+      throw new AppError("Ticket not found", 404);
+    }
+    assertTicketAccessOrThrow(req, ticket);
+
     const history = await prisma.ticketAssignmentHistory.findMany({
       where: { ticket_id: id },
       orderBy: { created_at: "desc" },
@@ -573,6 +840,12 @@ router.get("/:id/assignment-history", async (req, res, next) => {
 router.get("/:id/status-history", async (req, res, next) => {
   try {
     const { id } = req.params;
+    const ticket = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
+    if (!ticket) {
+      throw new AppError("Ticket not found", 404);
+    }
+    assertTicketAccessOrThrow(req, ticket);
+
     const history = await prisma.ticketStatusHistory.findMany({
       where: { ticket_id: id },
       orderBy: { created_at: "desc" },
@@ -589,6 +862,12 @@ router.get("/:id/status-history", async (req, res, next) => {
 router.get("/:id/escalations", async (req, res, next) => {
   try {
     const { id } = req.params;
+    const ticket = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
+    if (!ticket) {
+      throw new AppError("Ticket not found", 404);
+    }
+    assertTicketAccessOrThrow(req, ticket);
+
     const escalations = await prisma.ticketEscalation.findMany({
       where: { ticket_id: id },
       orderBy: { created_at: "desc" },
@@ -648,6 +927,10 @@ router.get("/:id/escalations", async (req, res, next) => {
  */
 router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
   try {
+    if (!isSupportOrServiceRequest(req)) {
+      throw new AppError("Only support staff can update tickets", 403);
+    }
+
     const id = req.params.id as string;
     const updateData = req.body as UpdateTicketInput;
     const existing = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
@@ -710,6 +993,13 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
       (ticketUpdates.assigned_to !== undefined && ticketUpdates.assigned_to !== existing.assigned_to) ||
       (ticketUpdates.assigned_to_level !== undefined && ticketUpdates.assigned_to_level !== existing.assigned_to_level);
 
+    const performedBy = req.isService
+      ? (performed_by != null ? String(performed_by) : null)
+      : resolveAuthenticatedUserId(req);
+    const performedByRole = req.isService
+      ? (performed_by_role || null)
+      : req.user?.roles?.[0] || null;
+
     const ticket = await prisma.ticket.update({
       where: { id },
       data: ticketUpdates,
@@ -721,8 +1011,8 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
           ticket_id: id,
           old_status: existing.status,
           new_status: ticketUpdates.status as any,
-          performed_by: performed_by != null ? String(performed_by) : null,
-          performed_by_role: performed_by_role || null,
+          performed_by: performedBy,
+          performed_by_role: performedByRole,
           reason: status_reason || null,
         },
       });
@@ -738,8 +1028,8 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
           new_level: ticket.assigned_to_level,
           method: (assignment_method as any) || "WORKFLOW",
           reason: assignment_reason || null,
-          performed_by: performed_by != null ? String(performed_by) : null,
-          performed_by_role: performed_by_role || null,
+          performed_by: performedBy,
+          performed_by_role: performedByRole,
         },
       });
     }
@@ -814,6 +1104,10 @@ router.patch("/:id", validate(updateTicketSchema), async (req, res, next) => {
  */
 router.post("/:id/escalate", validate(escalateTicketSchema), async (req, res, next) => {
   try {
+    if (!isSupportOrServiceRequest(req)) {
+      throw new AppError("Only support staff can escalate tickets", 403);
+    }
+
     const id = req.params.id as string;
     const { from_level, to_level, reason } = req.body as EscalateTicketInput;
     const ticket = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
@@ -878,6 +1172,10 @@ router.post("/:id/escalate", validate(escalateTicketSchema), async (req, res, ne
  */
 router.delete("/:id", async (req, res, next) => {
   try {
+    if (!isSupportOrServiceRequest(req)) {
+      throw new AppError("Only support staff can delete tickets", 403);
+    }
+
     const id = req.params.id as string;
     const existing = await prisma.ticket.findFirst({ where: { id, is_deleted: false } });
     if (!existing) {

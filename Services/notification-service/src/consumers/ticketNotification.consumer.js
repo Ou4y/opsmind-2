@@ -10,6 +10,11 @@ async function consumeTicketNotifications(channel, exchange) {
 
   // 2) Bind queue to exchange
   await channel.bindQueue(q.queue, exchange, "ticket.notification.*");
+  const inventoryExchange = process.env.INVENTORY_EVENTS_EXCHANGE || "opsmind.events";
+  if (inventoryExchange !== exchange) {
+    await channel.assertExchange(inventoryExchange, "topic", { durable: true });
+    await channel.bindQueue(q.queue, inventoryExchange, "ticket.notification.*");
+  }
 
   console.log(" Waiting for ticket notification events...");
 
@@ -256,25 +261,29 @@ async function consumeTicketNotifications(channel, exchange) {
       // 5 Low stock
 
       if (routingKey === "ticket.notification.lowStock") {
-        const { item, admin } = event;
+        const { item } = event;
+        const supervisor = event.admin || event.supervisor;
+        if (!supervisor || !supervisor.id) {
+          throw new Error("Low stock event missing admin/supervisor payload");
+        }
 
         await sendInAppNotification(
-          admin.id,
+          supervisor.id,
           `Low stock for Item ID: ${item.id}, Name: ${item.name}.`
         );
 
-        if (admin.email) {
+        if (supervisor.email) {
           await sendEmail(
-            admin.email,
+            supervisor.email,
             "Low Stock Alert",
-            `Hello ${admin.name},\n\n` +
+            `Hello ${supervisor.name || "admin"},\n\n` +
               `Low stock has been detected.\n\n` +
               `Item ID: ${item.id}\nName: ${item.name}`
           );
         }
 
         await logSystemMessage(
-          `Low stock detected for Item ${item.id} Name: ${item.name}( Admin: ${admin.name} [ID: ${admin.id}])`
+          `Low stock detected for Item ${item.id} Name: ${item.name}( Admin: ${supervisor.name || "unknown"} [ID: ${supervisor.id}])`
         );
       }
 

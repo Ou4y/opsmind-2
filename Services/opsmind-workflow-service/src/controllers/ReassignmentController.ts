@@ -13,10 +13,10 @@ export class ReassignmentController {
     try {
       const ticketId = req.params.ticketId;
       // Frontend sends: { to_technician_id, reason, reassigned_by }
-      // Support legacy: { userId, toMemberId, userRole, userBuilding }
+      // Support legacy: { toMemberId, userBuilding }
       const toMemberId = req.body.to_technician_id || req.body.toMemberId;
-      const userId = req.body.reassigned_by || req.body.userId;
-      const userRole = req.body.userRole || req.user?.role || 'SENIOR';
+      const userId = req.user?.userId;
+      const userRole = req.user?.technicianLevel || req.user?.role || 'SENIOR';
       const userBuilding = req.body.userBuilding;
 
       if (!toMemberId) {
@@ -24,9 +24,20 @@ export class ReassignmentController {
         return;
       }
 
+      if (!userId) {
+        res.status(401).json({ success: false, message: 'Authentication required' });
+        return;
+      }
+
+      const actorWorkflowUserId = Number.parseInt(String(userId), 10);
+      if (!Number.isFinite(actorWorkflowUserId)) {
+        res.status(400).json({ success: false, message: 'Authenticated workflow user id must be numeric' });
+        return;
+      }
+
       const result = await this.reassignmentService.reassignTicket(
         ticketId,
-        userId || 0,
+        actorWorkflowUserId,
         toMemberId,
         userRole as UserRole,
         userBuilding,
@@ -49,10 +60,16 @@ export class ReassignmentController {
   getReassignmentTargets = async (req: Request, res: Response): Promise<void> => {
     try {
       const ticketId = req.params.ticketId;
-      const { groupId, userRole, userBuilding } = req.query;
+      const { groupId, userBuilding } = req.query;
+      const userRole = req.user?.technicianLevel || req.user?.role;
 
-      if (!groupId || !userRole) {
-        res.status(400).json({ success: false, message: 'Missing required query params: groupId, userRole' });
+      if (!groupId) {
+        res.status(400).json({ success: false, message: 'Missing required query param: groupId' });
+        return;
+      }
+
+      if (!userRole) {
+        res.status(401).json({ success: false, message: 'Authentication required' });
         return;
       }
 

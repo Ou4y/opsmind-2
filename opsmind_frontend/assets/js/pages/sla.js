@@ -8,6 +8,7 @@ const state = {
     isLoading: false,
     isAdmin: false,
     policies: [],
+    pauseAnalytics: null,
     filters: {
         q: '',
         status: '',
@@ -15,12 +16,31 @@ const state = {
     }
 };
 
+const PAUSE_REASON_LABELS = {
+    WAITING_FOR_USER: 'Waiting For User',
+    WAITING_FOR_ASSET: 'Waiting For Asset',
+    PENDING_VENDOR: 'Pending Vendor',
+    APPROVAL_REQUIRED: 'Approval Required',
+    OUT_OF_STOCK: 'Out Of Stock',
+    OTHER: 'Other',
+};
+
+const PAUSE_SOURCE_LABELS = {
+    USER_RELATED: 'User Related',
+    INVENTORY_RELATED: 'Inventory Related',
+    VENDOR_RELATED: 'Vendor Related',
+    APPROVAL: 'Approval',
+    SYSTEM: 'System',
+    MANUAL: 'Manual',
+    OTHER: 'Other',
+};
+
 export async function initSLAPage() {
     await waitForApp();
     state.isAdmin = AuthService.isAdmin();
     toggleAdminControls();
     setupEventListeners();
-    await loadTickets();
+    await loadPageData();
 }
 
 function waitForApp() {
@@ -34,10 +54,11 @@ function waitForApp() {
 }
 
 function setupEventListeners() {
-    document.getElementById('refreshSlaBtn')?.addEventListener('click', () => loadTickets());
+    document.getElementById('refreshSlaBtn')?.addEventListener('click', () => loadPageData());
     document.getElementById('editSlaPoliciesBtn')?.addEventListener('click', () => openPoliciesModal());
     document.getElementById('slaPoliciesForm')?.addEventListener('submit', handlePoliciesSave);
     document.getElementById('slaTicketDeadlineForm')?.addEventListener('submit', handleTicketDeadlineSave);
+    document.getElementById('slaPauseForm')?.addEventListener('submit', handlePauseSave);
 
     document.getElementById('slaSearchInput')?.addEventListener('input', UI.debounce((event) => {
         state.filters.q = event.target.value.trim();
@@ -56,9 +77,12 @@ function setupEventListeners() {
 
     document.getElementById('clearSlaFilters')?.addEventListener('click', () => {
         state.filters = { q: '', status: '', priority: '' };
-        document.getElementById('slaSearchInput').value = '';
-        document.getElementById('slaStatusFilter').value = '';
-        document.getElementById('slaPriorityFilter').value = '';
+        const searchEl = document.getElementById('slaSearchInput');
+        const statusEl = document.getElementById('slaStatusFilter');
+        const priorityEl = document.getElementById('slaPriorityFilter');
+        if (searchEl) searchEl.value = '';
+        if (statusEl) statusEl.value = '';
+        if (priorityEl) priorityEl.value = '';
         loadTickets();
     });
 
@@ -80,25 +104,7 @@ function setupEventListeners() {
         }
 
         if (action === 'pause') {
-            const confirmed = await UI.confirm({
-                title: 'Pause SLA',
-                message: `Pause SLA tracking for ticket ${ticketId}?`,
-                confirmText: 'Pause',
-                confirmClass: 'btn-warning'
-            });
-
-            if (!confirmed) return;
-
-            const loader = UI.showLoading('Pausing SLA...');
-            try {
-                await SLAService.pauseTicket(ticketId, 'Paused from SLA tracking page');
-                UI.success(`SLA paused for ticket ${ticketId}`);
-                await loadTickets();
-            } catch (error) {
-                UI.error(error.message || 'Failed to pause SLA');
-            } finally {
-                loader.hide();
-            }
+            openPauseModal(ticketId);
             return;
         }
 
@@ -107,7 +113,7 @@ function setupEventListeners() {
             try {
                 await SLAService.resumeTicket(ticketId);
                 UI.success(`SLA resumed for ticket ${ticketId}`);
-                await loadTickets();
+                await loadPageData();
             } catch (error) {
                 UI.error(error.message || 'Failed to resume SLA');
             } finally {
@@ -119,6 +125,13 @@ function setupEventListeners() {
 
 function toggleAdminControls() {
     UI.toggle('#editSlaPoliciesBtn', state.isAdmin);
+}
+
+async function loadPageData() {
+    await Promise.all([
+        loadTickets(),
+        loadPauseAnalytics(),
+    ]);
 }
 
 async function loadTickets() {
@@ -147,6 +160,19 @@ async function loadTickets() {
     }
 }
 
+async function loadPauseAnalytics() {
+    showAnalyticsLoading();
+
+    try {
+        const response = await SLAService.getPauseAnalytics();
+        state.pauseAnalytics = response.data || null;
+        renderPauseAnalytics();
+    } catch (error) {
+        console.error('[SLA Page] Failed to load pause analytics:', error);
+        showAnalyticsError(error.message || 'Failed to load pause analytics');
+    }
+}
+
 function updateSummary() {
     const countEl = document.getElementById('slaTicketCount');
     const statusEl = document.getElementById('slaConnectionStatus');
@@ -154,7 +180,12 @@ function updateSummary() {
         countEl.textContent = `${state.total} ticket${state.total === 1 ? '' : 's'} connected to SLA`;
     }
     if (statusEl) {
-        statusEl.textContent = state.total > 0 ? 'SLA tracking data loaded' : 'No SLA-linked tickets found yet';
+        const pausedCount = Array.isArray(state.pauseAnalytics?.current_paused_tickets)
+            ? state.pauseAnalytics.current_paused_tickets.length
+            : 0;
+        statusEl.textContent = pausedCount > 0
+            ? `${pausedCount} ticket${pausedCount === 1 ? '' : 's'} currently paused`
+            : (state.total > 0 ? 'SLA tracking data loaded' : 'No SLA-linked tickets found yet');
     }
 }
 
@@ -181,6 +212,20 @@ function showError(message) {
     if (errorEl) errorEl.textContent = message;
 }
 
+function showAnalyticsLoading() {
+    UI.toggle('#slaAnalyticsLoading', true);
+    UI.toggle('#slaAnalyticsContent', false);
+    UI.toggle('#slaAnalyticsError', false);
+}
+
+function showAnalyticsError(message) {
+    UI.toggle('#slaAnalyticsLoading', false);
+    UI.toggle('#slaAnalyticsContent', false);
+    UI.toggle('#slaAnalyticsError', true);
+    const errorEl = document.getElementById('slaAnalyticsError');
+    if (errorEl) errorEl.textContent = message;
+}
+
 function renderTickets() {
     const tableBody = document.getElementById('slaTableBody');
     if (!tableBody) return;
@@ -191,12 +236,16 @@ function renderTickets() {
         const responseDue = formatDateTime(ticket.responseDueAt);
         const resolutionDue = formatDateTime(ticket.resolutionDueAt);
         const remaining = getRemainingTime(ticket);
+        const pauseMeta = ticket.status === 'PAUSED'
+            ? `<div class="small text-warning mt-1">Paused: ${UI.escapeHTML(formatPauseReason(ticket.pauseReason || 'OTHER'))}</div>`
+            : '';
 
         return `
             <tr>
                 <td>
                     <div class="fw-semibold">${UI.escapeHTML(ticket.ticketId)}</div>
                     <div class="text-muted small">${UI.escapeHTML(title)}</div>
+                    ${pauseMeta}
                 </td>
                 <td>${renderStatusBadge(ticket.ticketStatus, 'ticket')}</td>
                 <td>${renderStatusBadge(ticket.status, 'sla')}</td>
@@ -231,6 +280,144 @@ function renderActionButtons(ticket) {
         : `<button class="btn btn-outline-warning" data-action="pause" data-ticket-id="${ticketId}"><i class="bi bi-pause-fill"></i></button>`;
 
     return `<div class="btn-group btn-group-sm">${base}${editButton}${actionButton}</div>`;
+}
+
+function renderPauseAnalytics() {
+    const data = state.pauseAnalytics || {};
+    const totalPauseCount = Number(data.total_pause_count || 0);
+    const currentPausedTickets = Array.isArray(data.current_paused_tickets) ? data.current_paused_tickets : [];
+    const reasonStats = Array.isArray(data.pause_reason_statistics) ? data.pause_reason_statistics : [];
+    const rankedReasons = reasonStats
+        .slice()
+        .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+    const visibleReasonStats = rankedReasons.filter((entry) => Number(entry.count || 0) > 0);
+    const topReason = totalPauseCount > 0 ? (visibleReasonStats[0] || null) : null;
+
+    const totalCountEl = document.getElementById('slaTotalPauseCount');
+    const currentPausedEl = document.getElementById('slaCurrentlyPausedCount');
+    const topReasonEl = document.getElementById('slaTopPauseReason');
+    const topReasonMetaEl = document.getElementById('slaTopPauseReasonMeta');
+    const reasonsOverviewChipEl = document.getElementById('slaReasonsOverviewChip');
+    const currentPausedChipEl = document.getElementById('slaCurrentPausedChip');
+    const topReasonHighlightTitleEl = document.getElementById('slaTopReasonHighlightTitle');
+    const topReasonHighlightMetaEl = document.getElementById('slaTopReasonHighlightMeta');
+    const reasonsBody = document.getElementById('slaPauseReasonsBody');
+    const currentPausedBody = document.getElementById('slaCurrentPausedBody');
+
+    if (totalCountEl) totalCountEl.textContent = String(totalPauseCount);
+    if (currentPausedEl) currentPausedEl.textContent = String(currentPausedTickets.length);
+    if (topReasonEl) topReasonEl.textContent = topReason?.value ? formatPauseReason(topReason.value) : 'N/A';
+    if (topReasonMetaEl) {
+        topReasonMetaEl.textContent = topReason?.value
+            ? `${topReason.count} event${topReason.count === 1 ? '' : 's'} • ${formatPercentage(topReason.percentage || 0)} share`
+            : 'No pause events yet';
+    }
+    if (reasonsOverviewChipEl) reasonsOverviewChipEl.textContent = `${visibleReasonStats.length} active reason${visibleReasonStats.length === 1 ? '' : 's'}`;
+    if (currentPausedChipEl) currentPausedChipEl.textContent = `${currentPausedTickets.length} active`;
+    if (topReasonHighlightTitleEl) {
+        topReasonHighlightTitleEl.textContent = topReason?.value ? formatPauseReason(topReason.value) : 'N/A';
+    }
+    if (topReasonHighlightMetaEl) {
+        topReasonHighlightMetaEl.textContent = topReason?.value
+            ? `${topReason.count} pause event${topReason.count === 1 ? '' : 's'} recorded, representing ${formatPercentage(topReason.percentage || 0)} of all pauses.`
+            : 'No pause events available yet.';
+    }
+
+    if (reasonsBody) {
+        const maxCount = visibleReasonStats[0]?.count || 0;
+        reasonsBody.innerHTML = visibleReasonStats.length > 0
+            ? visibleReasonStats
+                .map((entry) => `
+                    <div class="sla-reason-row ${entry === topReason ? 'is-top' : ''}">
+                        <div class="sla-reason-row-head">
+                            <div>
+                                <strong>${UI.escapeHTML(formatPauseReason(entry.value))}</strong>
+                                <span>${UI.escapeHTML(String(entry.count || 0))} event${Number(entry.count || 0) === 1 ? '' : 's'}</span>
+                            </div>
+                            <em>${UI.escapeHTML(formatPercentage(entry.percentage || 0))}</em>
+                        </div>
+                        <div class="sla-reason-bar-track">
+                            <i style="width: ${maxCount > 0 ? Math.max(8, Math.round((Number(entry.count || 0) / maxCount) * 100)) : 0}%"></i>
+                        </div>
+                    </div>
+                `).join('')
+            : `
+                <div class="sla-empty-analytics">
+                    <i class="bi bi-bar-chart"></i>
+                    <span>No pause data available yet.</span>
+                </div>
+            `;
+    }
+
+    if (currentPausedBody) {
+        currentPausedBody.innerHTML = currentPausedTickets.length > 0
+            ? currentPausedTickets.map((ticket) => `
+                <div class="sla-paused-ticket-item">
+                    <div class="sla-paused-ticket-top">
+                        <strong>${UI.escapeHTML(ticket.ticketId || '-')}</strong>
+                        <span class="badge bg-light text-dark">${UI.escapeHTML(ticket.priority || '-')}</span>
+                    </div>
+                    <div class="sla-paused-ticket-meta">
+                        <span>${UI.escapeHTML(formatPauseReason(ticket.pauseReason || 'OTHER'))}</span>
+                        <span>${UI.escapeHTML(formatDateTime(ticket.pausedAt))}</span>
+                    </div>
+                </div>
+            `).join('')
+            : `
+                <div class="sla-empty-analytics">
+                    <i class="bi bi-check2-circle"></i>
+                    <span>No tickets are currently paused.</span>
+                </div>
+            `;
+    }
+
+    UI.toggle('#slaAnalyticsLoading', false);
+    UI.toggle('#slaAnalyticsError', false);
+    UI.toggle('#slaAnalyticsContent', true);
+    updateSummary();
+}
+
+function openPauseModal(ticketId) {
+    document.getElementById('slaPauseTicketId').value = ticketId;
+    document.getElementById('slaPauseReason').value = 'WAITING_FOR_USER';
+    document.getElementById('slaPauseSource').value = 'USER_RELATED';
+    document.getElementById('slaPauseNotes').value = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('slaPauseModal')).show();
+}
+
+async function handlePauseSave(event) {
+    event.preventDefault();
+
+    const ticketId = document.getElementById('slaPauseTicketId').value;
+    const reason = document.getElementById('slaPauseReason').value;
+    const source = document.getElementById('slaPauseSource').value;
+    const notes = document.getElementById('slaPauseNotes').value.trim();
+
+    if (!ticketId || !reason || !source) {
+        UI.error('Pause reason and source are required.');
+        return;
+    }
+
+    const loader = UI.showLoading('Pausing SLA...');
+    const saveButton = document.getElementById('saveSlaPauseBtn');
+    if (saveButton) saveButton.disabled = true;
+
+    try {
+        await SLAService.pauseTicket(ticketId, {
+            reason,
+            source,
+            notes,
+        });
+        UI.success(`SLA paused for ticket ${ticketId}`);
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('slaPauseModal')).hide();
+        document.getElementById('slaPauseForm')?.reset();
+        await loadPageData();
+    } catch (error) {
+        UI.error(error.message || 'Failed to pause SLA');
+    } finally {
+        if (saveButton) saveButton.disabled = false;
+        loader.hide();
+    }
 }
 
 async function openPoliciesModal() {
@@ -504,6 +691,9 @@ async function openDetails(ticketId) {
 }
 
 function fillDetailsModal(ticket) {
+    const isPaused = String(ticket.status || '').toUpperCase() === 'PAUSED';
+    const totalPausedMinutes = getAggregatePausedMinutes(ticket);
+
     document.getElementById('slaDetailsTitle').textContent = ticket.ticketTitle || `Ticket ${ticket.ticketId}`;
     document.getElementById('slaDetailsBody').innerHTML = `
         <div class="row g-3">
@@ -513,41 +703,52 @@ function fillDetailsModal(ticket) {
                     ${detailRow('Ticket ID', ticket.ticketId)}
                     ${detailRow('Ticket Status', renderStatusBadge(ticket.ticketStatus, 'ticket'))}
                     ${detailRow('SLA Status', renderStatusBadge(ticket.status, 'sla'))}
-                    ${detailRow('Priority', ticket.priority)}
-                    ${detailRow('Assigned To', ticket.technicianName || ticket.assignedTo || 'Unassigned')}
-                    ${detailRow('Support Group', ticket.supportGroupId || 'N/A')}
+                    ${detailRow('Priority', UI.escapeHTML(ticket.priority || 'N/A'))}
+                    ${detailRow('Assigned To', UI.escapeHTML(ticket.technicianName || ticket.assignedTo || 'Unassigned'))}
+                    ${detailRow('Support Group', UI.escapeHTML(ticket.supportGroupId || 'N/A'))}
                 </div>
             </div>
             <div class="col-md-6">
                 <div class="border rounded p-3 h-100">
                     <h6 class="text-muted text-uppercase small mb-3">Deadlines</h6>
-                    ${detailRow('Created At', formatDateTime(ticket.createdAt))}
-                    ${detailRow('Response Due', formatDateTime(ticket.responseDueAt))}
-                    ${detailRow('Resolution Due', formatDateTime(ticket.resolutionDueAt))}
-                    ${detailRow('First Response', formatDateTime(ticket.firstResponseAt))}
-                    ${detailRow('Resolved At', formatDateTime(ticket.resolvedAt))}
-                    ${detailRow('Closed At', formatDateTime(ticket.closedAt))}
+                    ${detailRow('Created At', UI.escapeHTML(formatDateTime(ticket.createdAt)))}
+                    ${detailRow('Response Due', UI.escapeHTML(formatDateTime(ticket.responseDueAt)))}
+                    ${detailRow('Resolution Due', UI.escapeHTML(formatDateTime(ticket.resolutionDueAt)))}
+                    ${detailRow('First Response', UI.escapeHTML(formatDateTime(ticket.firstResponseAt)))}
+                    ${detailRow('Resolved At', UI.escapeHTML(formatDateTime(ticket.resolvedAt)))}
+                    ${detailRow('Closed At', UI.escapeHTML(formatDateTime(ticket.closedAt)))}
                 </div>
             </div>
             <div class="col-md-6">
                 <div class="border rounded p-3 h-100">
                     <h6 class="text-muted text-uppercase small mb-3">Contacts</h6>
-                    ${detailRow('Technician', ticket.technicianName || 'N/A')}
-                    ${detailRow('Technician Email', ticket.technicianEmail || 'N/A')}
-                    ${detailRow('Supervisor', ticket.supervisorName || 'N/A')}
-                    ${detailRow('Supervisor Email', ticket.supervisorEmail || 'N/A')}
+                    ${detailRow('Technician', UI.escapeHTML(ticket.technicianName || 'N/A'))}
+                    ${detailRow('Technician Email', UI.escapeHTML(ticket.technicianEmail || 'N/A'))}
+                    ${detailRow('Supervisor', UI.escapeHTML(ticket.supervisorName || 'N/A'))}
+                    ${detailRow('Supervisor Email', UI.escapeHTML(ticket.supervisorEmail || 'N/A'))}
                 </div>
             </div>
             <div class="col-md-6">
                 <div class="border rounded p-3 h-100">
                     <h6 class="text-muted text-uppercase small mb-3">Policy & Flags</h6>
-                    ${detailRow('Policy', ticket.policy?.name || 'N/A')}
-                    ${detailRow('Response Warning 1', ticket.responseWarning1Sent ? 'Sent' : 'Not sent')}
-                    ${detailRow('Response Warning 2', ticket.responseWarning2Sent ? 'Sent' : 'Not sent')}
-                    ${detailRow('Response Breach', ticket.responseBreachSent ? 'Yes' : 'No')}
-                    ${detailRow('Resolution Warning 1', ticket.resolutionWarning1Sent ? 'Sent' : 'Not sent')}
-                    ${detailRow('Resolution Warning 2', ticket.resolutionWarning2Sent ? 'Sent' : 'Not sent')}
-                    ${detailRow('Resolution Breach', ticket.resolutionBreachSent ? 'Yes' : 'No')}
+                    ${detailRow('Policy', UI.escapeHTML(ticket.policy?.name || 'N/A'))}
+                    ${detailRow('Response Warning 1', UI.escapeHTML(ticket.responseWarning1Sent ? 'Sent' : 'Not sent'))}
+                    ${detailRow('Response Warning 2', UI.escapeHTML(ticket.responseWarning2Sent ? 'Sent' : 'Not sent'))}
+                    ${detailRow('Response Breach', UI.escapeHTML(ticket.responseBreachSent ? 'Yes' : 'No'))}
+                    ${detailRow('Resolution Warning 1', UI.escapeHTML(ticket.resolutionWarning1Sent ? 'Sent' : 'Not sent'))}
+                    ${detailRow('Resolution Warning 2', UI.escapeHTML(ticket.resolutionWarning2Sent ? 'Sent' : 'Not sent'))}
+                    ${detailRow('Resolution Breach', UI.escapeHTML(ticket.resolutionBreachSent ? 'Yes' : 'No'))}
+                </div>
+            </div>
+            <div class="col-12">
+                <div class="border rounded p-3">
+                    <h6 class="text-muted text-uppercase small mb-3">Pause Tracking</h6>
+                    ${detailRow('SLA Status', renderStatusBadge(ticket.status, 'sla'))}
+                    ${detailRow('Pause Reason', UI.escapeHTML(isPaused ? formatPauseReason(ticket.pauseReason || 'OTHER') : 'N/A'))}
+                    ${detailRow('Pause Source', UI.escapeHTML(isPaused ? formatPauseSource(ticket.pauseSource || 'MANUAL') : 'N/A'))}
+                    ${detailRow('Pause Notes', UI.escapeHTML(isPaused ? (ticket.pauseNotes || 'N/A') : 'N/A'))}
+                    ${detailRow('Paused Since', UI.escapeHTML(isPaused ? formatDateTime(ticket.pausedAt) : 'N/A'))}
+                    ${detailRow('Total Paused Time', UI.escapeHTML(formatDurationMinutes(totalPausedMinutes)))}
                 </div>
             </div>
         </div>
@@ -583,7 +784,10 @@ function renderStatusBadge(value, type) {
 }
 
 function getRemainingTime(ticket) {
-    if (ticket.status === 'PAUSED') return '<span class="text-warning fw-semibold">Paused</span>';
+    if (ticket.status === 'PAUSED') {
+        const reason = ticket.pauseReason ? ` (${formatPauseReason(ticket.pauseReason)})` : '';
+        return `<span class="text-warning fw-semibold">Paused${UI.escapeHTML(reason)}</span>`;
+    }
     if (ticket.status === 'RESOLVED' || ticket.status === 'CLOSED') return '<span class="text-success">Completed</span>';
 
     const dueDate = ticket.firstResponseAt ? ticket.resolutionDueAt : ticket.responseDueAt;
@@ -604,11 +808,50 @@ function getRemainingTime(ticket) {
     return `${hours}h ${remainder}m`;
 }
 
+function getAggregatePausedMinutes(ticket) {
+    const persisted = Number(ticket.totalPausedMinutes || 0);
+    if (String(ticket.status || '').toUpperCase() !== 'PAUSED' || !ticket.pausedAt) {
+        return persisted;
+    }
+
+    const pausedAt = new Date(ticket.pausedAt);
+    if (Number.isNaN(pausedAt.getTime())) return persisted;
+    return persisted + Math.max(0, Math.ceil((Date.now() - pausedAt.getTime()) / 60000));
+}
+
+function formatDurationMinutes(totalMinutes) {
+    const safeMinutes = Math.max(0, Number(totalMinutes || 0));
+    if (safeMinutes < 60) return `${safeMinutes}m`;
+
+    const hours = Math.floor(safeMinutes / 60);
+    const minutes = safeMinutes % 60;
+    if (hours < 24) return `${hours}h ${minutes}m`;
+
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return `${days}d ${remainingHours}h ${minutes}m`;
+}
+
 function formatDateTime(value) {
     if (!value) return 'N/A';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return 'N/A';
     return date.toLocaleString();
+}
+
+function formatPercentage(value) {
+    const safeNumber = Number(value || 0);
+    return `${safeNumber.toFixed(safeNumber % 1 === 0 ? 0 : 2)}%`;
+}
+
+function formatPauseReason(value) {
+    const key = String(value || '').toUpperCase();
+    return PAUSE_REASON_LABELS[key] || key.replace(/_/g, ' ') || 'Other';
+}
+
+function formatPauseSource(value) {
+    const key = String(value || '').toUpperCase();
+    return PAUSE_SOURCE_LABELS[key] || key.replace(/_/g, ' ') || 'Manual';
 }
 
 function toDateTimeLocalValue(value) {

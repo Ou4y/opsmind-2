@@ -6,8 +6,9 @@
  */
 
 import AuthService from '/services/authService.js';
+import { TICKET_API_BASE_URL } from './apiConfig.js';
 
-const API_BASE_URL = window.OPSMIND_TICKET_URL || 'http://localhost:3001';
+const API_BASE_URL = TICKET_API_BASE_URL;
 
 function buildAiUrl(path) {
     const base = String(API_BASE_URL).replace(/\/+$/, '');
@@ -23,6 +24,13 @@ function buildHeaders(extra = {}) {
     };
 }
 
+function createHttpError(message, response) {
+    const error = new Error(message);
+    error.status = response?.status;
+    error.statusText = response?.statusText;
+    return error;
+}
+
 async function handleJsonResponse(response) {
     if (response.status === 401) {
         AuthService.clearAuth();
@@ -34,10 +42,30 @@ async function handleJsonResponse(response) {
 
     if (!response.ok || payload?.success === false) {
         const message = payload.error || payload.message || payload.details || `Request failed: ${response.status}`;
-        throw new Error(message);
+        throw createHttpError(message, response);
     }
 
     return payload;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 65000) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        return await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw new Error('AI request timed out.');
+        }
+
+        throw error;
+    } finally {
+        window.clearTimeout(timeout);
+    }
 }
 
 function parseSseEventBlock(block) {
@@ -87,7 +115,7 @@ async function streamPlainTextResponse(response, handlers = {}) {
             // Keep fallback message.
         }
 
-        throw new Error(message);
+        throw createHttpError(message, response);
     }
 
     if (!response.body) {
@@ -119,6 +147,105 @@ async function streamPlainTextResponse(response, handlers = {}) {
     return fullText;
 }
 
+async function readErrorMessage(response, fallbackPrefix = 'Request failed') {
+    let message = `${fallbackPrefix}: ${response.status}`;
+    try {
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            const payload = await response.json();
+            message = payload?.error || payload?.message || payload?.details || message;
+        } else {
+            const text = await response.text();
+            message = text || message;
+        }
+    } catch (_error) {
+        // Keep fallback message.
+    }
+
+    return message;
+}
+
+async function streamSseTextResponse(response, handlers = {}) {
+    if (response.status === 401) {
+        AuthService.clearAuth();
+        window.location.href = '/index.html';
+        throw createHttpError('Session expired', response);
+    }
+
+    if (!response.ok) {
+        const message = await readErrorMessage(response);
+        throw createHttpError(message, response);
+    }
+
+    if (!response.body) {
+        throw new Error('AI stream unavailable from backend');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+    let streamError = null;
+
+    const handleBlock = (block) => {
+        if (!block.trim()) return;
+
+        const { event, data } = parseSseEventBlock(block);
+        if (event === 'chunk' || event === 'message') {
+            const text = typeof data === 'string'
+                ? data
+                : String(data?.text || data?.chunk || '');
+            if (text) {
+                fullText += text;
+                handlers.onChunk?.(text);
+            }
+        }
+
+        if (event === 'error') {
+            streamError = data?.message || data?.error || 'AI stream failed';
+        }
+
+        handlers.onEvent?.(event, data);
+    };
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+
+        blocks.forEach((block) => {
+            try {
+                handleBlock(block);
+            } catch (error) {
+                console.warn('[OllamaService] Failed to parse AI Help SSE block', error);
+            }
+        });
+    }
+
+    const trailing = decoder.decode();
+    if (trailing) {
+        buffer += trailing;
+    }
+
+    if (buffer.trim()) {
+        try {
+            handleBlock(buffer);
+        } catch (error) {
+            console.warn('[OllamaService] Failed to parse trailing AI Help SSE block', error);
+        }
+    }
+
+    if (streamError && !fullText.trim()) {
+        throw new Error(streamError);
+    }
+
+    handlers.onComplete?.(fullText);
+    return fullText;
+}
+
 const OllamaService = {
     async getUserAiHelp(ticketPayload = {}) {
         const response = await fetch(buildAiUrl('/ai/help'), {
@@ -132,13 +259,13 @@ const OllamaService = {
     },
 
     async streamUserAiHelp(ticketPayload = {}, handlers = {}) {
-        const response = await fetch(buildAiUrl('/ai/help/stream'), {
+        const response = await fetchWithTimeout(buildAiUrl('/ai/help/stream'), {
             method: 'POST',
-            headers: buildHeaders({ Accept: 'text/plain' }),
+            headers: buildHeaders({ Accept: 'text/event-stream' }),
             body: JSON.stringify(ticketPayload)
         });
 
-        return streamPlainTextResponse(response, handlers);
+        return streamSseTextResponse(response, handlers);
     },
 
     async getTechnicianAnalysis(ticketPayload = {}) {

@@ -1,0 +1,291 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventory Command Center - OpsMind</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
+    <script src="/assets/js/config.js?v=2"></script>
+</head>
+<body class="app-body inventory-command-center-page">
+    <nav class="navbar-main" id="navbar-container"></nav>
+    <div class="app-wrapper">
+        <div id="sidebar-container"></div>
+
+        <main class="main-content">
+            <section class="icc-hero" aria-labelledby="iccTitle">
+                <div class="icc-hero-copy">
+                    <div class="icc-eyebrow"><i class="bi bi-command me-1"></i>University IT Operations</div>
+                    <h1 id="iccTitle">Inventory Command Center</h1>
+                    <p>Inventory health, procurement priorities, stock risk, and AI-driven decisions.</p>
+                </div>
+                <div class="icc-hero-actions" aria-label="Command Center quick actions">
+                    <button type="button" class="btn btn-primary" data-icc-action="import"><i class="bi bi-upload me-1"></i>Import Assets</button>
+                    <button type="button" class="btn btn-primary" data-icc-action="create"><i class="bi bi-plus-lg me-1"></i>Create Asset</button>
+                    <button type="button" class="btn btn-outline-light" data-icc-action="assets"><i class="bi bi-hdd-stack me-1"></i>Open Assets</button>
+                    <button type="button" class="btn btn-outline-light" data-icc-action="procurement"><i class="bi bi-bag-check me-1"></i>Open Procurement</button>
+                    <button type="button" class="btn btn-outline-light" data-icc-action="audit"><i class="bi bi-clipboard-check me-1"></i>Run Audit</button>
+                    <button type="button" class="btn btn-outline-light" data-icc-action="ai"><i class="bi bi-stars me-1"></i>Ask Inventory AI</button>
+                </div>
+            </section>
+
+            <section class="icc-status-bar" aria-live="polite">
+                <div>
+                    <span class="proc-status-dot loading" id="iccLoadDot"></span>
+                    <span id="iccLoadStatus">Loading Inventory Command Center...</span>
+                </div>
+                <div class="icc-status-actions">
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="iccExplainDashboardBtn">
+                        <i class="bi bi-lightbulb me-1"></i>Explain this dashboard
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="iccFocusModeBtn" aria-pressed="false">
+                        <i class="bi bi-bullseye me-1"></i>Focus Mode
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="iccGuidedTourBtn">
+                        <i class="bi bi-question-circle me-1"></i>Guided Tour
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="iccGemmaDiagnosticsBtn">
+                        <i class="bi bi-cpu me-1"></i>AI Diagnostics
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="iccRefreshBtn"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                </div>
+            </section>
+
+            <section class="icc-section icc-focus-critical" aria-labelledby="iccMissionTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccMissionTitle">Today's Mission</h2>
+                        <p>The top actions OpsMind recommends from real inventory, procurement, audit, and data-quality evidence.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">Top 3</span>
+                </div>
+                <div id="iccTodaysMission" class="icc-mission-grid"></div>
+            </section>
+
+            <section class="icc-section icc-briefing-section icc-focus-critical" aria-labelledby="iccDailyBriefingTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccDailyBriefingTitle">AI Daily Briefing</h2>
+                        <p>OpsMind gathers real evidence first, then adds AI insight when available.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info" id="iccDailyBriefingSource">Preparing</span>
+                </div>
+                <div id="iccDailyBriefing" class="icc-daily-briefing-card" aria-live="polite"></div>
+            </section>
+
+            <section class="icc-section icc-focus-critical" aria-labelledby="iccPrioritiesTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccPrioritiesTitle">Today's Priorities</h2>
+                        <p>Actionable inventory and procurement work for the operations team.</p>
+                    </div>
+                </div>
+                <div class="icc-priority-grid" id="iccPrioritiesGrid"></div>
+            </section>
+
+            <section class="icc-section icc-two-column icc-focus-actionable">
+                <div class="icc-panel" aria-labelledby="iccInventoryHealthTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccInventoryHealthTitle">Inventory Health</h2>
+                            <p>Assets, risk, EOL, telemetry, audit readiness.</p>
+                        </div>
+                    </div>
+                    <div class="icc-kpi-grid" id="iccInventoryHealthGrid"></div>
+                </div>
+
+                <div class="icc-panel" aria-labelledby="iccProcurementPrioritiesTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccProcurementPrioritiesTitle">Procurement Priorities</h2>
+                            <p>Approvals, orders, receiving, finance pressure.</p>
+                        </div>
+                    </div>
+                    <div class="icc-kpi-grid" id="iccProcurementGrid"></div>
+                </div>
+            </section>
+
+            <section class="icc-section icc-two-column icc-focus-critical">
+                <div class="icc-panel" aria-labelledby="iccStockTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccStockTitle">Stock & Reorder Intelligence</h2>
+                            <p>Low stock, FIFO, EOQ/MOQ, safety stock and overstock signals.</p>
+                        </div>
+                    </div>
+                    <div id="iccStockIntelligence"></div>
+                </div>
+
+                <div class="icc-panel" aria-labelledby="iccAiTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccAiTitle">AI Recommendations</h2>
+                            <p>Evidence-based recommendations only. No invented vendors, prices, or facts.</p>
+                        </div>
+                    </div>
+                    <div id="iccAiRecommendations"></div>
+                </div>
+            </section>
+
+            <section class="icc-section icc-focus-critical" aria-labelledby="iccAttentionTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccAttentionTitle">Inventory / Procurement Attention Center</h2>
+                        <p>Alerts are scoped only to Inventory, Procurement, stock, telemetry, finance, and supplier readiness.</p>
+                    </div>
+                </div>
+                <div id="iccAttentionCenter" class="icc-attention-list"></div>
+            </section>
+
+            <section class="icc-section icc-two-column icc-focus-critical">
+                <div class="icc-panel" aria-labelledby="iccRiskTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccRiskTitle">Risk Radar by Building / Department</h2>
+                            <p>Card heatmap for EOL, low stock, missing data, audit issues, and stale telemetry.</p>
+                        </div>
+                        <div class="icc-radar-orb" aria-hidden="true"></div>
+                    </div>
+                    <div id="iccRiskHeatmap" class="icc-risk-grid"></div>
+                </div>
+
+                <div class="icc-panel" aria-labelledby="iccDataQualityTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccDataQualityTitle">Data Quality Score</h2>
+                            <p>Completeness signals that improve CMDB, AI confidence, and procurement decisions.</p>
+                        </div>
+                    </div>
+                    <div id="iccDataQuality"></div>
+                </div>
+            </section>
+
+            <section class="icc-section icc-focus-secondary" aria-labelledby="iccVisualAnalyticsTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccVisualAnalyticsTitle">Command Center Analytics</h2>
+                        <p>Lightweight real-data visualizations for health, risk, missing data, EOL cost, and stock pressure.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="iccVisualAnalytics" class="icc-analytics-grid"></div>
+            </section>
+
+            <section class="icc-section icc-focus-secondary" aria-labelledby="iccDepartmentGridTitle">
+                <div class="icc-section-header">
+                    <div>
+                        <h2 id="iccDepartmentGridTitle">Department Grid</h2>
+                        <p>Department-level inventory health, EOL, missing-data, and audit pressure from loaded records.</p>
+                    </div>
+                    <span class="ops-attention-pill is-info">System data</span>
+                </div>
+                <div id="iccDepartmentGrid" class="icc-department-grid"></div>
+            </section>
+
+            <section class="icc-section icc-two-column icc-focus-secondary">
+                <div class="icc-panel" aria-labelledby="iccActivityTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccActivityTitle">Recent Activity</h2>
+                            <p>Recent inventory and procurement activity when available.</p>
+                        </div>
+                    </div>
+                    <div id="iccRecentActivity" class="icc-feed"></div>
+                </div>
+
+                <div class="icc-panel" aria-labelledby="iccBudgetTitle">
+                    <div class="icc-section-header compact">
+                        <div>
+                            <h2 id="iccBudgetTitle">Predictive Budget Planning Preview</h2>
+                            <p>Uses EOL, risk, procurement, and finance data when present.</p>
+                        </div>
+                    </div>
+                    <div id="iccBudgetPlanning"></div>
+                </div>
+            </section>
+
+            <section class="icc-section icc-three-column icc-focus-secondary">
+                <div class="icc-panel" aria-labelledby="iccAsset360Title">
+                    <h2 id="iccAsset360Title">Asset 360 Readiness</h2>
+                    <p class="icc-panel-copy">CMDB already provides identity, components, relationships, lifecycle, telemetry, custody, and AI insight. This page highlights where missing data weakens Asset 360 confidence.</p>
+                    <button type="button" class="btn btn-sm btn-outline-primary" data-icc-action="assets">Open Assets</button>
+                </div>
+                <div class="icc-panel" aria-labelledby="iccWarrantyTitle">
+                    <h2 id="iccWarrantyTitle">Warranty & Contracts</h2>
+                    <p class="icc-panel-copy" id="iccWarrantySummary">Warranty coverage appears when asset fields are present. Contract renewal workflow is Phase 2 unless backed by stored contract data.</p>
+                    <button type="button" class="btn btn-sm btn-outline-primary" data-icc-ai-prompt="Which assets have warranty or contract risk?">Ask AI</button>
+                </div>
+                <div class="icc-panel" aria-labelledby="iccRetirementTitle">
+                    <h2 id="iccRetirementTitle">Retirement / Disposal</h2>
+                    <p class="icc-panel-copy">Visible foundation only: mark for retirement, approval, data wipe, removal from service, disposal/donation/storage, and evidence capture remain Phase 2 where persistence is missing.</p>
+                    <button type="button" class="btn btn-sm btn-outline-primary" data-icc-ai-prompt="Which assets are near EOL and should be planned for retirement?">Review EOL</button>
+                </div>
+            </section>
+
+            <section class="icc-section icc-three-column icc-focus-secondary">
+                <div class="icc-panel" aria-labelledby="iccAuditFlowTitle">
+                    <h2 id="iccAuditFlowTitle">QR / Audit Workflow</h2>
+                    <p class="icc-panel-copy">Use existing labels, Asset Map, and Audit Board. Camera scanning remains Phase 2 unless a scanner integration is configured.</p>
+                    <div class="icc-chip-row">
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-icc-action="audit">Open Audit Board</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-icc-action="asset-map">Open Asset Map</button>
+                    </div>
+                </div>
+                <div class="icc-panel" aria-labelledby="iccApprovalTitle">
+                    <h2 id="iccApprovalTitle">Approval Policy Hints</h2>
+                    <p class="icc-panel-copy">Display-only guidance: low-cost requests can route to supervisor review, high-cost or budget-exceeded requests need finance/manager review, and critical A items can be fast-tracked.</p>
+                    <div class="icc-chip-row">
+                        <span class="ops-attention-pill is-info">Supervisor review</span>
+                        <span class="ops-attention-pill is-review">Finance review</span>
+                        <span class="ops-attention-pill is-urgent">Critical A item</span>
+                    </div>
+                </div>
+                <div class="icc-panel icc-guided-tour-panel" id="iccDemoPanel" aria-labelledby="iccDemoTitle">
+                    <h2 id="iccDemoTitle">Guided Tour</h2>
+                    <p class="icc-panel-copy">A guided path through real Inventory, Procurement, AI, and reporting workflows. It never creates or changes records by itself.</p>
+                    <div class="icc-walkthrough-status" id="iccWalkthroughStatus">Ready to start.</div>
+                    <ol class="icc-demo-list" id="iccDemoWalkthroughList">
+                        <li data-icc-demo-step="0">Open Inventory Command Center</li>
+                        <li data-icc-demo-step="1">Import assets</li>
+                        <li data-icc-demo-step="2">View Asset Digital Passport / Asset 360</li>
+                        <li data-icc-demo-step="3">Ask AI what needs attention</li>
+                        <li data-icc-demo-step="4">Show AI procurement recommendation</li>
+                        <li data-icc-demo-step="5">Create procurement request</li>
+                        <li data-icc-demo-step="6">Compare vendor quote</li>
+                        <li data-icc-demo-step="7">Create PO</li>
+                        <li data-icc-demo-step="8">Receive stock</li>
+                        <li data-icc-demo-step="9">Show ABC / EOQ / FIFO</li>
+                        <li data-icc-demo-step="10">Show Finance/Supplier foundation</li>
+                        <li data-icc-demo-step="11">Show reports and Command Center summary</li>
+                    </ol>
+                    <div class="icc-chip-row mt-3">
+                        <button type="button" class="btn btn-sm btn-primary" id="iccDemoStartBtn">Start walkthrough</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="iccDemoNextBtn">Next step</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module">
+        import AuthService from '/services/authService.js';
+        const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
+        const technicianLevel = String(context.technicianLevel || '').toUpperCase();
+        const canAccess =
+            context.roleCategory === 'ADMIN' ||
+            ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
+        if (!AuthService.isAuthenticated() || !canAccess) {
+            sessionStorage.setItem('opsmind_error', 'Access denied: Inventory Command Center is available to Admin and Technician levels (Junior/Senior/Supervisor).');
+            window.location.href = context.dashboardPath || '/pages/dashboard.html';
+        }
+    </script>
+    <script type="module" src="/assets/js/pages/inventory-command-center.js?v=1"></script>
+</body>
+</html>

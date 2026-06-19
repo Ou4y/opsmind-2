@@ -1,0 +1,31 @@
+-- CreateTable
+CREATE TABLE `AgenticRemediationPlan` (
+    `id` VARCHAR(191) NOT NULL,
+    `ticket_id` VARCHAR(191) NOT NULL,
+    `ticket_title` VARCHAR(191) NULL,
+    `ticket_category` VARCHAR(191) NULL,
+    `ticket_priority` VARCHAR(191) NULL,
+    `generated_by_user_id` VARCHAR(191) NULL,
+    `generated_by_role` VARCHAR(191) NULL,
+    `raw_plan` JSON NOT NULL,
+    `safe_plan` JSON NOT NULL,
+    `risk_level` ENUM('LOW', 'MEDIUM', 'HIGH') NOT NULL,
+    `requires_approval` BOOLEAN NOT NULL DEFAULT true,
+    `execution_available` BOOLEAN NOT NULL DEFAULT false,
+    `execution_blocked_reason` TEXT NULL,
+    `status` ENUM('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXECUTION_QUEUED', 'EXECUTING', 'COMPLETED', 'FAILED', 'CANCELLED') NOT NULL DEFAULT 'PENDING_APPROVAL',
+    `approved_by_user_id` VARCHAR(191) NULL,
+    `approved_by_role` VARCHAR(191) NULL,
+    `approved_at` DATETIME(3) NULL,
+    `rejected_by_user_id` VARCHAR(191) NULL,
+    `rejected_by_role` VARCHAR(191) NULL,
+    `rejected_at` DATETIME(3) NULL,
+    `rejection_reason` TEXT NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL,
+
+    INDEX `AgenticRemediationPlan_ticket_id_idx`(`ticket_id`),
+    INDEX `AgenticRemediationPlan_status_idx`(`status`),
+    INDEX `AgenticRemediationPlan_created_at_idx`(`created_at`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

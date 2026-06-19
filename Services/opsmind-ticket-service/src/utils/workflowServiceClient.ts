@@ -26,11 +26,17 @@ export async function fetchSupervisor(): Promise<SupervisorDetails | null> {
     
     logger.debug("Fetching supervisor from Workflow Service", { url });
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    const internalToken = config.workflowService.internalApiToken?.trim();
+    if (internalToken) {
+      headers["x-internal-token"] = internalToken;
+    }
+
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers,
       signal: AbortSignal.timeout(3000), // 3 second timeout
     });
 

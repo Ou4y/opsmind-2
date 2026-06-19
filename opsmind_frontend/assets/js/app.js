@@ -13,6 +13,7 @@ import Router from './router.js';
 import UI from './ui.js';
 import AuthService from '/services/authService.js';
 import NotificationService from '/services/notificationService.js';
+import { initFloatingAiHelp, openFloatingAiHelp } from '/assets/js/components/floatingAiHelp.js';
 
 
 /**
@@ -21,6 +22,9 @@ import NotificationService from '/services/notificationService.js';
 const App = {
     // Initialization flag
     initialized: false,
+    _notificationLoadInFlight: false,
+    _notificationLastErrorAt: 0,
+    _notificationPollMs: 15000,
 
     /**
      * Initialize the application
@@ -48,6 +52,7 @@ const App = {
         this.initNavbar();
         this.initSidebar();
         this.initGlobalListeners();
+        initFloatingAiHelp();
         
         this.initialized = true;
         
@@ -58,11 +63,12 @@ const App = {
     },
 
 
-    async loadNotifications() {
+    async loadNotifications(options = {}) {
+    const { force = false } = options;
+    if (this._notificationLoadInFlight) return;
+    this._notificationLoadInFlight = true;
     try {
-        const notifications = await NotificationService.getUserNotifications();
-
-        console.log("Loaded notifications:", notifications);
+        const notifications = await NotificationService.getUserNotifications({ force });
 
         const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -131,7 +137,13 @@ const App = {
         }
 
     } catch (error) {
-        console.error('Failed to load notifications:', error);
+        const now = Date.now();
+        if (!this._notificationLastErrorAt || (now - this._notificationLastErrorAt) > 30000) {
+            console.warn('Failed to load notifications:', error?.message || error);
+            this._notificationLastErrorAt = now;
+        }
+    } finally {
+        this._notificationLoadInFlight = false;
     }
    },
 
@@ -322,25 +334,28 @@ const App = {
         }
 
         // Notifications button 
-        this.loadNotifications();
+        this.loadNotifications({ force: true });
 
           if (!this._notificationInterval) {
               this._notificationInterval = setInterval(() => {
               this.loadNotifications();
-            }, 5000);
+            }, this._notificationPollMs);
           }
 
           const notificationsBtn = document.getElementById('notificationsBtn');
 
-          notificationsBtn?.addEventListener('click', async () => {
-             const dropdown = document.getElementById('notificationDropdown');
-             dropdown?.classList.toggle('show');
+          if (!this._notificationButtonBound) {
+              notificationsBtn?.addEventListener('click', async () => {
+                 const dropdown = document.getElementById('notificationDropdown');
+                 dropdown?.classList.toggle('show');
 
-           if (dropdown?.classList.contains('show')) {
-               await NotificationService.markAllAsRead();
-               await this.loadNotifications();
-            }
-           });
+               if (dropdown?.classList.contains('show')) {
+                   await NotificationService.markAllAsRead();
+                   await this.loadNotifications({ force: true });
+                }
+               });
+              this._notificationButtonBound = true;
+          }
 
           if (!this._notificationOutsideClickBound) {
               document.addEventListener('click', (event) => {
@@ -396,7 +411,7 @@ const App = {
         // Help button (placeholder)
         const helpBtn = document.getElementById('helpBtn');
         helpBtn?.addEventListener('click', () => {
-            UI.info('Help documentation coming soon!');
+            openFloatingAiHelp();
         });
     },
 

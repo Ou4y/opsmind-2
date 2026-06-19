@@ -3,9 +3,9 @@ services:
     image: postgres:17-alpine
     container_name: opsmind-postgres-inv
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: IS1234567
-      POSTGRES_DB: opsmind_assets
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-opsmind_assets}
     ports:
       - "5432:5432"
     volumes:
@@ -14,7 +14,7 @@ services:
       - opsmind-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,9 +23,9 @@ services:
     image: mongo:8.0
     container_name: opsmind-mongodb-inv
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password123
-      MONGO_INITDB_DATABASE: opsmind_assets
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-opsmind_assets}
     volumes:
       - mongodb_data:/data/db
     networks:
@@ -35,31 +35,79 @@ services:
   opsmind-rabbitmq:
     image: rabbitmq:3-management
     container_name: opsmind-rabbitmq-inv
-    restart: always
+    restart: unless-stopped
     ports:
       - "5673:5672"
       - "15673:15672"
     environment:
-      - RABBITMQ_DEFAULT_USER=opsmind
-      - RABBITMQ_DEFAULT_PASS=opsmind
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     networks:
       - opsmind-net
 
   inventory-backend:
     build: .
     container_name: opsmind-inventory-backend
-    restart: always
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
-      - PORT=5000
-      - NODE_ENV=production
-      - JWT_SECRET=opsmind-local-jwt
-      - DATABASE_URL=postgresql://postgres:IS1234567@postgres:5432/opsmind_assets
-      - RABBITMQ_URI=amqp://opsmind:opsmind@opsmind-rabbitmq:5672
+      PORT: 5000
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-opsmind_assets}
+      RABBITMQ_URI: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@opsmind-rabbitmq:5672
+      INVENTORY_BACKEND_INTERNAL_URL: http://inventory-backend:5000
+      SPEC_LOOKUP_ENABLED: ${SPEC_LOOKUP_ENABLED:-false}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      SERPAPI_ENDPOINT: ${SERPAPI_ENDPOINT:-https://serpapi.com/search.json}
+      SPEC_LOOKUP_TIMEOUT_MS: ${SPEC_LOOKUP_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_SEARCH_TIMEOUT_MS: ${SPEC_LOOKUP_SEARCH_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_FETCH_TIMEOUT_MS: ${SPEC_LOOKUP_FETCH_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_EXTRACTION_TIMEOUT_MS: ${SPEC_LOOKUP_EXTRACTION_TIMEOUT_MS:-35000}
+      SPEC_LOOKUP_TOTAL_TIMEOUT_MS: ${SPEC_LOOKUP_TOTAL_TIMEOUT_MS:-90000}
+      SPEC_LOOKUP_MAX_RESULTS: ${SPEC_LOOKUP_MAX_RESULTS:-5}
+      SPEC_LOOKUP_ALLOWED_DOMAINS_ONLY: ${SPEC_LOOKUP_ALLOWED_DOMAINS_ONLY:-true}
+      SPEC_LOOKUP_CACHE_ENABLED: ${SPEC_LOOKUP_CACHE_ENABLED:-true}
+      SPEC_LOOKUP_CACHE_TTL_DAYS: ${SPEC_LOOKUP_CACHE_TTL_DAYS:-90}
+      SPEC_LOOKUP_MAX_FETCH_BYTES: ${SPEC_LOOKUP_MAX_FETCH_BYTES:-500000}
     depends_on:
       - postgres
       - opsmind-rabbitmq
+    volumes:
+      - ./datasets/cache:/usr/src/app/datasets/cache
+    networks:
+      - opsmind-net
+
+  inventory-backend-worker:
+    build: .
+    container_name: opsmind-inventory-backend-worker
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-opsmind_assets}
+      RABBITMQ_URI: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@opsmind-rabbitmq:5672
+      SPEC_LOOKUP_ENABLED: ${SPEC_LOOKUP_ENABLED:-false}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      SERPAPI_ENDPOINT: ${SERPAPI_ENDPOINT:-https://serpapi.com/search.json}
+      SPEC_LOOKUP_TIMEOUT_MS: ${SPEC_LOOKUP_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_SEARCH_TIMEOUT_MS: ${SPEC_LOOKUP_SEARCH_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_FETCH_TIMEOUT_MS: ${SPEC_LOOKUP_FETCH_TIMEOUT_MS:-12000}
+      SPEC_LOOKUP_EXTRACTION_TIMEOUT_MS: ${SPEC_LOOKUP_EXTRACTION_TIMEOUT_MS:-35000}
+      SPEC_LOOKUP_TOTAL_TIMEOUT_MS: ${SPEC_LOOKUP_TOTAL_TIMEOUT_MS:-90000}
+      SPEC_LOOKUP_MAX_RESULTS: ${SPEC_LOOKUP_MAX_RESULTS:-5}
+      SPEC_LOOKUP_ALLOWED_DOMAINS_ONLY: ${SPEC_LOOKUP_ALLOWED_DOMAINS_ONLY:-true}
+      SPEC_LOOKUP_CACHE_ENABLED: ${SPEC_LOOKUP_CACHE_ENABLED:-true}
+      SPEC_LOOKUP_CACHE_TTL_DAYS: ${SPEC_LOOKUP_CACHE_TTL_DAYS:-90}
+      SPEC_LOOKUP_MAX_FETCH_BYTES: ${SPEC_LOOKUP_MAX_FETCH_BYTES:-500000}
+    depends_on:
+      - postgres
+      - opsmind-rabbitmq
+    volumes:
+      - ./datasets/cache:/usr/src/app/datasets/cache
     networks:
       - opsmind-net
 

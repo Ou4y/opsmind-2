@@ -485,6 +485,20 @@ function renderMyTicketActions(ticket) {
                 </button>
             `;
         }
+
+        if (ticket.status !== 'RESOLVED') {
+            actions += `
+                <button
+                        class="btn btn-sm btn-info"
+                        onclick="window.searchSimilarIssue('${ticket.id}')">
+
+                        <i class="bi bi-search me-1"></i>
+                        Search Similar
+
+                </button>
+            `;
+        }
+
     }
     
     // Escalate button - visible for TECHNICIAN, SENIOR, and SUPERVISOR
@@ -703,6 +717,98 @@ window.escalateTicket = async function(ticketId) {
     }
 };
 
+
+window.searchSimilarIssue = async function(ticketId) {
+
+    try {
+
+        const ticket = state.myTickets.find(
+            t => String(t.id) === String(ticketId)
+        );
+
+        if (!ticket) {
+            UI.showToast('Ticket not found', 'error');
+            return;
+        }
+
+        document.getElementById("similarityModalBody").innerHTML = `
+            <div class="text-center">
+                <div class="spinner-border text-primary"></div>
+                <p class="mt-3">Searching Similar Issues...</p>
+            </div>
+        `;
+
+        const modal = new bootstrap.Modal(
+            document.getElementById("similarityModal")
+        );
+
+        modal.show();
+
+        const response = await fetch(
+            'http://localhost:3006/analytics/check-similar-issue',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    title: ticket.title,
+                    description: ticket.description
+                })
+            }
+        );
+
+        const data = await response.json();
+
+        if (data.found) {
+
+            document.getElementById("similarityModalBody").innerHTML = `
+                <div class="alert alert-success">
+
+                    <h5 class="mb-3">
+                        <i class="bi bi-check-circle-fill"></i>
+                        Suggested Solution
+                    </h5>
+
+                    <hr>
+
+                    <p class="mb-0">
+                        ${data.solution}
+                    </p>
+
+                </div>
+            `;
+
+        } else {
+
+            document.getElementById("similarityModalBody").innerHTML = `
+                <div class="alert alert-warning">
+
+                    <h5>
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        No Similar Tickets Found
+                    </h5>
+
+                </div>
+            `;
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById("similarityModalBody").innerHTML = `
+            <div class="alert alert-danger">
+
+                <h5>
+                    <i class="bi bi-x-circle-fill"></i>
+                    Error Searching Similar Tickets
+                </h5>
+
+            </div>
+        `;
+    }
+};
 /**
  * View ticket details
  */
@@ -763,7 +869,7 @@ window.viewTicketDetails = async function(ticketId) {
 /**
  * Render ticket details
  */
-function renderTicketDetails() {
+async function renderTicketDetails() {
     const detailsEl = document.getElementById('ticketDetailsContent');
     const details = state.selectedTicketDetails;
 
@@ -774,10 +880,16 @@ function renderTicketDetails() {
         return;
     }
 
-    renderTicketDetailsInto(detailsEl, {
-        ...details,
-        currentUserRole: resolveCurrentDashboardRole()
-    });
+    try {
+        await renderTicketDetailsInto(detailsEl, {
+            ...details,
+            currentUserRole: resolveCurrentDashboardRole()
+        });
+    } catch (error) {
+        console.error('[JuniorDashboard] Failed to render ticket details:', error);
+        detailsEl.innerHTML = '<p class="text-danger">Failed to render ticket details.</p>';
+        return;
+    }
 
     if (state.selectedTicket) {
         const actionsWrapper = document.createElement('div');
@@ -932,9 +1044,14 @@ function requestAndSendCurrentLocation() {
  */
 async function sendLocationUpdate(technicianId, coords) {
     try {
-        const workflowApiBase = (window.OPSMIND_WORKFLOW_API_URL || 'http://localhost:3003').replace(/\/+$/, '');
+        const workflowApiBase = String(window.OPSMIND_WORKFLOW_API_URL || '').replace(/\/+$/, '');
         const workflowTechnicianId = Number(technicianId);
         const token = AuthService.getToken();
+
+        if (!workflowApiBase) {
+            console.warn('Skipping location update: workflow API URL is not configured.');
+            return false;
+        }
 
         if (!Number.isFinite(workflowTechnicianId)) {
             console.warn('Skipping location update: workflow technician ID is missing or invalid.', technicianId);

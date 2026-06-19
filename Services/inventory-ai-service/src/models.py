@@ -100,22 +100,33 @@ def load_models(model_dir: Optional[str] = None) -> ModelStore:
             ", ".join(missing_ticket_paths),
         )
     else:
-        logger.info("Loading priority model from %s", priority_path)
-        store.priority_model = joblib.load(priority_path)
+        try:
+            logger.info("Loading priority model from %s", priority_path)
+            store.priority_model = joblib.load(priority_path)
 
-        logger.info("Loading EST model from %s", est_path)
-        store.est_model = joblib.load(est_path)
+            logger.info("Loading EST model from %s", est_path)
+            store.est_model = joblib.load(est_path)
 
-        logger.info("Loading model metadata from %s", meta_path)
-        metadata = joblib.load(meta_path)
-        store.ohe_columns = metadata["ohe_columns"]
-        store.feature_names = metadata["feature_names"]
-        logger.info("Ticket models loaded successfully.")
+            logger.info("Loading model metadata from %s", meta_path)
+            metadata = joblib.load(meta_path)
+            store.ohe_columns = metadata["ohe_columns"]
+            store.feature_names = metadata["feature_names"]
+            logger.info("Ticket models loaded successfully.")
+        except Exception as exc:
+            logger.warning("Ticket model load failed; /predict disabled: %s", exc)
+            store.priority_model = None
+            store.est_model = None
+            store.ohe_columns = {}
+            store.feature_names = []
 
     asset_model_path = os.path.join(model_dir, ASSET_LIFESPAN_MODEL_FILE)
     if os.path.isfile(asset_model_path):
-        logger.info("Loading asset lifespan model from %s", asset_model_path)
-        store.asset_lifespan_model = joblib.load(asset_model_path)
+        try:
+            logger.info("Loading asset lifespan model from %s", asset_model_path)
+            store.asset_lifespan_model = joblib.load(asset_model_path)
+        except Exception as exc:
+            logger.warning("Asset lifespan model load failed; using fallback estimator: %s", exc)
+            store.asset_lifespan_model = None
     else:
         logger.warning("Asset lifespan model not found at %s. Using fallback estimator.", asset_model_path)
 

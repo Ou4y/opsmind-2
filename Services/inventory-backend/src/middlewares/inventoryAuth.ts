@@ -1,7 +1,17 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'opsmind-secret-key';
+const JWT_SECRET = String(process.env.JWT_SECRET || '').trim();
+
+function isWeakSecret(secret: string): boolean {
+  const normalized = String(secret || '').trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized.length < 32) return true;
+  if (normalized.includes('set_strong')) return true;
+  if (normalized.includes('replace_with')) return true;
+  if (normalized.includes('placeholder')) return true;
+  return false;
+}
 
 const INVENTORY_READ_ROLE_SET = new Set(['ADMIN', 'TECHNICIAN', 'JUNIOR', 'SENIOR', 'SUPERVISOR']);
 const ADMIN_ROLE_SET = new Set(['ADMIN']);
@@ -135,6 +145,12 @@ function attachAuthUser(req: Request, claims: JwtClaims, context: InventoryAcces
 }
 
 function verifyTokenAndResolveContext(req: Request, res: Response): InventoryAccessContext | null {
+  const nodeEnv = process.env.NODE_ENV || 'development';
+  if (!JWT_SECRET || (nodeEnv !== 'development' && isWeakSecret(JWT_SECRET))) {
+    res.status(500).json({ success: false, message: 'Server authentication misconfiguration' });
+    return null;
+  }
+
   const token = getBearerToken(req);
   if (!token) {
     unauthorized(res);
@@ -175,4 +191,3 @@ export function requireInventoryAdminAccess(req: Request, res: Response, next: N
 
   next();
 }
-

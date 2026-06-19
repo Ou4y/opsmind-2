@@ -1,3 +1,66 @@
-# Local environment files
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/.ropeproject/
+.idea/
+
+# Local environment files and secrets
 .env
+.env.*
+!.env.example
+!.env.azure.example
 opsmind_frontend/.env
+Services/**/.env
+Services/**/.env.*
+!Services/**/.env.example
+
+# Node / frontend / TypeScript artifacts
+node_modules/
+dist/
+build/
+coverage/
+.next/
+.cache/
+.parcel-cache/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python artifacts
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Logs / temp
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+
+# Docker / local runtime artifacts
+.docker-cache/
+
+# AI/runtime state files - generated locally, not source
+Services/inventory-ai-service/data/scheduler_state.json
+Services/inventory-ai-service/data/spec_metrics_latest.json
+Services/inventory-ai-service/data/lifespan_recalibration_metadata.json
+Services/inventory-ai-service/data/*.tmp
+Services/inventory-ai-service/data/*.log
+
+# Keep source docs and safe examples trackable
+!docs/
+!docs/**

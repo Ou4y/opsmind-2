@@ -1,4 +1,8 @@
-import { SlaActionType, TicketPriority, TicketSLAStatus } from "@prisma/client";
+import {
+  SlaActionType,
+  TicketPriority,
+  TicketSLAStatus,
+} from "@prisma/client";
 import { config } from "../../config";
 import { logger } from "../../config/logger";
 import { AppError } from "../../errors/AppError";
@@ -47,6 +51,57 @@ type DeadlinePayload = {
   resolutionDueAt?: string;
 };
 
+type PausePayload = {
+  reason?: PauseReason | string;
+  source?: PauseSource | string;
+  notes?: string | null;
+};
+
+type PauseAnalyticsEvent = {
+  id: string;
+  ticketId: string;
+  eventType: SlaActionType;
+  message: string;
+  payloadJson: string | null;
+  createdAt: Date;
+};
+
+type PauseReason =
+  | "WAITING_FOR_USER"
+  | "WAITING_FOR_ASSET"
+  | "PENDING_VENDOR"
+  | "APPROVAL_REQUIRED"
+  | "OUT_OF_STOCK"
+  | "OTHER";
+
+type PauseSource =
+  | "USER_RELATED"
+  | "INVENTORY_RELATED"
+  | "VENDOR_RELATED"
+  | "APPROVAL"
+  | "SYSTEM"
+  | "MANUAL"
+  | "OTHER";
+
+const PAUSE_REASONS: PauseReason[] = [
+  "WAITING_FOR_USER",
+  "WAITING_FOR_ASSET",
+  "PENDING_VENDOR",
+  "APPROVAL_REQUIRED",
+  "OUT_OF_STOCK",
+  "OTHER",
+];
+
+const PAUSE_SOURCES: PauseSource[] = [
+  "USER_RELATED",
+  "INVENTORY_RELATED",
+  "VENDOR_RELATED",
+  "APPROVAL",
+  "SYSTEM",
+  "MANUAL",
+  "OTHER",
+];
+
 function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60 * 1000);
 }
@@ -85,6 +140,21 @@ function workflowDeadline(record: {
 
 function normalizeStatus(status: string): string {
   return status.trim().toUpperCase();
+}
+
+function normalizePauseReason(reason?: string | PauseReason | null): PauseReason {
+  const normalized = String(reason || "").trim().toUpperCase();
+  return PAUSE_REASONS.find((entry) => entry === normalized) ?? "OTHER";
+}
+
+function normalizePauseSource(source?: string | PauseSource | null): PauseSource {
+  const normalized = String(source || "").trim().toUpperCase();
+  return PAUSE_SOURCES.find((entry) => entry === normalized) ?? "MANUAL";
+}
+
+function normalizePauseNotes(notes?: string | null): string | null {
+  const trimmed = notes?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function normalizeContact(contact?: ContactPayload | null) {
@@ -176,6 +246,34 @@ function workflowPayload(record: {
     ticketStatus: record.ticketStatus,
     requestedAt: new Date().toISOString(),
   };
+}
+
+function safeParsePayload(payloadJson: string | null): Record<string, unknown> {
+  if (!payloadJson) return {};
+
+  try {
+    const parsed = JSON.parse(payloadJson);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function elapsedMinutes(startedAt: Date, endedAt = new Date()): number {
+  return Math.max(0, Math.ceil((endedAt.getTime() - startedAt.getTime()) / 60000));
+}
+
+function roundPercentage(count: number, total: number): number {
+  if (total <= 0) return 0;
+  return Number(((count / total) * 100).toFixed(2));
+}
+
+function buildPercentageStats<T extends string>(entries: T[], counts: Record<T, number>, total: number) {
+  return entries.map((value) => ({
+    value,
+    count: counts[value] || 0,
+    percentage: roundPercentage(counts[value] || 0, total),
+  }));
 }
 
 async function createLogAndPublishStatusUpdate(
@@ -410,6 +508,112 @@ export const slaService = {
     };
   },
 
+  async getPauseAnalytics() {
+    const [events, currentPausedTickets] = await Promise.all([
+      slaRepository.getPauseEvents(),
+      slaRepository.getCurrentlyPausedTickets(),
+    ]);
+    const currentPausedRows = currentPausedTickets as any[];
+
+    const pauseReasonCounts = Object.fromEntries(
+      PAUSE_REASONS.map((reason) => [reason, 0])
+    ) as Record<PauseReason, number>;
+    const pauseSourceCounts = Object.fromEntries(
+      PAUSE_SOURCES.map((source) => [source, 0])
+    ) as Record<PauseSource, number>;
+    const openPauseStacks = new Map<string, Array<{ createdAt: Date }>>();
+    const pauseDurationsMinutes: number[] = [];
+
+    for (const event of events as PauseAnalyticsEvent[]) {
+      const payload = safeParsePayload(event.payloadJson);
+
+      if (event.eventType === SlaActionType.PAUSED) {
+        const reason = normalizePauseReason(
+          String(payload.reason || payload.pauseReason || "")
+        );
+        const source = normalizePauseSource(
+          String(payload.source || payload.pauseSource || "")
+        );
+
+        pauseReasonCounts[reason] += 1;
+        pauseSourceCounts[source] += 1;
+
+        const stack = openPauseStacks.get(event.ticketId) ?? [];
+        stack.push({ createdAt: event.createdAt });
+        openPauseStacks.set(event.ticketId, stack);
+        continue;
+      }
+
+      if (event.eventType === SlaActionType.RESUMED) {
+        const stack = openPauseStacks.get(event.ticketId) ?? [];
+        const started = stack.pop();
+
+        if (started) {
+          const pausedMinutesValue = Number(payload.pausedMinutes);
+          pauseDurationsMinutes.push(
+            Number.isFinite(pausedMinutesValue) && pausedMinutesValue >= 0
+              ? pausedMinutesValue
+              : elapsedMinutes(started.createdAt, event.createdAt)
+          );
+        }
+
+        if (stack.length > 0) {
+          openPauseStacks.set(event.ticketId, stack);
+        } else {
+          openPauseStacks.delete(event.ticketId);
+        }
+      }
+    }
+
+    const currentPausedByTicket = new Map<string, any>(
+      currentPausedRows.map((ticket) => [ticket.ticketId, ticket])
+    );
+
+    for (const [ticketId, stack] of openPauseStacks.entries()) {
+      const currentTicket = currentPausedByTicket.get(ticketId);
+      for (const pauseInstance of stack) {
+        pauseDurationsMinutes.push(
+          currentTicket?.pausedAt
+            ? elapsedMinutes(currentTicket.pausedAt)
+            : elapsedMinutes(pauseInstance.createdAt)
+        );
+      }
+    }
+
+    const totalPauseCount = Object.values(pauseReasonCounts).reduce((sum, value) => sum + value, 0);
+    const pauseReasonStatistics = buildPercentageStats(PAUSE_REASONS, pauseReasonCounts, totalPauseCount);
+    const pauseSourceStatistics = buildPercentageStats(PAUSE_SOURCES, pauseSourceCounts, totalPauseCount);
+    const averagePauseDurationMinutes =
+      pauseDurationsMinutes.length > 0
+        ? Math.round(
+            pauseDurationsMinutes.reduce((sum, value) => sum + value, 0) / pauseDurationsMinutes.length
+          )
+        : 0;
+
+    const mostFrequentPauseSource = pauseSourceStatistics
+      .filter((entry) => entry.count > 0)
+      .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))[0] ?? null;
+
+    return {
+      total_pause_count: totalPauseCount,
+      average_pause_duration_minutes: averagePauseDurationMinutes,
+      most_frequent_pause_source: mostFrequentPauseSource,
+      pause_reason_statistics: pauseReasonStatistics,
+      top_pause_reasons: pauseReasonStatistics,
+      pause_source_statistics: pauseSourceStatistics,
+      current_paused_tickets: currentPausedRows.map((ticket) => ({
+        ticketId: ticket.ticketId,
+        ticketTitle: ticket.ticketTitle,
+        priority: ticket.priority,
+        pauseReason: ticket.pauseReason,
+        pauseSource: ticket.pauseSource,
+        pauseNotes: ticket.pauseNotes,
+        pausedAt: ticket.pausedAt?.toISOString() ?? null,
+        totalPausedMinutes: ticket.totalPausedMinutes,
+      })),
+    };
+  },
+
   async updateStatus(ticketId: string, body: StatusPayload) {
     const entity = await slaRepository.findByTicketId(ticketId);
     if (!entity) throw new AppError(`SLA not found for ticket ${ticketId}`, 404);
@@ -545,31 +749,50 @@ export const slaService = {
     return updated;
   },
 
-  async pause(ticketId: string, reason = "Waiting for user") {
+  async pause(ticketId: string, body?: PausePayload) {
     const entity = await slaRepository.findByTicketId(ticketId);
     if (!entity) throw new AppError(`SLA not found for ticket ${ticketId}`, 404);
     if (entity.status === TicketSLAStatus.PAUSED) return entity;
 
+    const reason = normalizePauseReason(body?.reason);
+    const source = normalizePauseSource(body?.source);
+    const notes = normalizePauseNotes(body?.notes);
+    const pausedAt = new Date();
+
     const updated = await slaRepository.updateTicketSla(ticketId, {
       status: TicketSLAStatus.PAUSED,
-      pausedAt: new Date(),
-      lastUpdatedAt: new Date(),
-    });
+      pausedAt,
+      pauseReason: reason,
+      pauseSource: source,
+      pauseNotes: notes,
+      lastUpdatedAt: pausedAt,
+    } as any);
 
-      const payload = {
-        ...toNotificationEnvelope(updated),
-        ticketId: updated.ticketId,
-        title: updated.ticketTitle,
-        reason,
-        pausedAt: updated.pausedAt?.toISOString(),
-        assignedTo: updated.assignedTo,
+    const payload = {
+      ...toNotificationEnvelope(updated),
+      ticketId: updated.ticketId,
+      title: updated.ticketTitle,
+      reason,
+      source,
+      notes,
+      pauseReason: reason,
+      pauseSource: source,
+      pauseNotes: notes,
+      pausedAt: updated.pausedAt?.toISOString(),
+      assignedTo: updated.assignedTo,
       building: updated.building,
       floor: updated.floor,
       room: updated.room,
       supportGroupId: updated.supportGroupId,
     };
 
-    await slaRepository.createEventLog(updated.id, updated.ticketId, SlaActionType.PAUSED, reason, payload);
+    await slaRepository.createEventLog(
+      updated.id,
+      updated.ticketId,
+      SlaActionType.PAUSED,
+      `SLA paused due to ${reason}`,
+      payload
+    );
     await slaPublisher.publishPaused(payload);
 
     return updated;
@@ -581,23 +804,32 @@ export const slaService = {
     if (!entity.pausedAt) return entity;
 
     const pausedMinutes = Math.ceil((Date.now() - entity.pausedAt.getTime()) / 60000);
+    const previousPauseReason = (entity as any).pauseReason ?? null;
+    const previousPauseSource = (entity as any).pauseSource ?? null;
+    const previousPauseNotes = (entity as any).pauseNotes ?? null;
 
     const updated = await slaRepository.updateTicketSla(ticketId, {
       status: entity.responseBreachSent || entity.resolutionBreachSent
         ? TicketSLAStatus.BREACHED
         : TicketSLAStatus.ACTIVE,
       pausedAt: null,
+      pauseReason: null,
+      pauseSource: null,
+      pauseNotes: null,
       totalPausedMinutes: entity.totalPausedMinutes + pausedMinutes,
       lastUpdatedAt: new Date(),
-    });
+    } as any);
 
-      const payload = {
-        ...toNotificationEnvelope(updated),
-        ticketId: updated.ticketId,
-        title: updated.ticketTitle,
-        pausedMinutes,
-        resumedAt: updated.lastUpdatedAt.toISOString(),
-        assignedTo: updated.assignedTo,
+    const payload = {
+      ...toNotificationEnvelope(updated),
+      ticketId: updated.ticketId,
+      title: updated.ticketTitle,
+      pausedMinutes,
+      resumedAt: updated.lastUpdatedAt.toISOString(),
+      previousPauseReason,
+      previousPauseSource,
+      previousPauseNotes,
+      assignedTo: updated.assignedTo,
       building: updated.building,
       floor: updated.floor,
       room: updated.room,

@@ -11,7 +11,7 @@ import { LoggingService } from '../services/LoggingService';
 import { TicketRoutingStateRepository } from '../repositories/TicketRoutingStateRepository';
 import { MetricsService } from '../services/MetricsService';
 import { TechnicianRepository } from '../repositories/TechnicianRepository';
-import { optionalAuth, requireAuth, requireAuthOrInternal, requireInternalToken } from '../middlewares/auth';
+import { requireAuth, requireAuthOrInternal, requireInternalToken, requireRole } from '../middlewares/auth';
 import { routeTicketSchema, validateBody, updateTechnicianLocationSchema, patchTechnicianLocationSchema, escalateTicketSchema, syncTicketSchema } from '../middlewares/validation';
 import { getSlaStatusForTickets, getUserDetails } from '../config/externalServices';
 
@@ -32,9 +32,12 @@ const loggingService = new LoggingService();
 const routingRepo = new TicketRoutingStateRepository();
 const metricsService = new MetricsService();
 const technicianRepo = new TechnicianRepository();
+const SUPPORT_ROLES = ['ADMIN', 'TECHNICIAN', 'SUPERVISOR', 'SENIOR', 'JUNIOR'] as const;
+const requireSupportRole = requireRole(...SUPPORT_ROLES);
+const requireAdminRole = requireRole('ADMIN');
 
-// Apply optional auth to all routes (extracts user if token present)
-router.use(optionalAuth);
+const enableDebugRoutes =
+  process.env.ENABLE_DEBUG_ROUTES === 'true' && (process.env.NODE_ENV || 'development') === 'development';
 
 // ══════════════════════════════════════
 //  Health Check
@@ -65,7 +68,12 @@ router.get('/health', async (_req: Request, res: Response): Promise<void> => {
 //  Debug — Connectivity Check
 //  Calls downstream services and reports reachability
 // ══════════════════════════════════════
-router.get('/debug/connectivity', async (_req: Request, res: Response): Promise<void> => {
+router.get('/debug/connectivity', requireAuth, requireSupportRole, async (_req: Request, res: Response): Promise<void> => {
+  if (!enableDebugRoutes) {
+    res.status(404).json({ success: false, message: 'Not found' });
+    return;
+  }
+
   const services: Record<string, any> = {};
 
   // 1. Check ticket-service
@@ -141,70 +149,70 @@ router.get('/debug/connectivity', async (_req: Request, res: Response): Promise<
 // ══════════════════════════════════════
 //  Routing
 // ══════════════════════════════════════
-router.post('/route-ticket', validateBody(routeTicketSchema), routingCtrl.routeTicket);
-router.get('/ticket/:ticketId/routing', routingCtrl.getTicketRouting);
-router.get('/group/:groupId/queue', routingCtrl.getGroupQueue);
-router.get('/group/:groupId/info', routingCtrl.getGroupInfo);
+router.post('/route-ticket', requireAuthOrInternal, requireSupportRole, validateBody(routeTicketSchema), routingCtrl.routeTicket);
+router.get('/ticket/:ticketId/routing', requireAuth, requireSupportRole, routingCtrl.getTicketRouting);
+router.get('/group/:groupId/queue', requireAuth, requireSupportRole, routingCtrl.getGroupQueue);
+router.get('/group/:groupId/info', requireAuth, requireSupportRole, routingCtrl.getGroupInfo);
 
 // ══════════════════════════════════════
 //  Claim-on-Open
 // ══════════════════════════════════════
-router.post('/claim/:ticketId', requireAuth, claimCtrl.claimTicket);
-router.get('/claim/:ticketId/status', claimCtrl.getClaimStatus);
-router.get('/group/:groupId/unclaimed', claimCtrl.getUnclaimedTickets);
+router.post('/claim/:ticketId', requireAuth, requireSupportRole, claimCtrl.claimTicket);
+router.get('/claim/:ticketId/status', requireAuth, requireSupportRole, claimCtrl.getClaimStatus);
+router.get('/group/:groupId/unclaimed', requireAuth, requireSupportRole, claimCtrl.getUnclaimedTickets);
 
 // ══════════════════════════════════════
 //  Reassignment
 // ══════════════════════════════════════
-router.post('/reassign/:ticketId', reassignCtrl.reassignTicket);
-router.get('/reassign/:ticketId/targets', reassignCtrl.getReassignmentTargets);
+router.post('/reassign/:ticketId', requireAuth, requireSupportRole, reassignCtrl.reassignTicket);
+router.get('/reassign/:ticketId/targets', requireAuth, requireSupportRole, reassignCtrl.getReassignmentTargets);
 
 // ══════════════════════════════════════
 //  Escalation
 // ══════════════════════════════════════
-router.post('/escalate/:ticketId', requireAuthOrInternal, validateBody(escalateTicketSchema), escalationCtrl.escalateTicket);
-router.get('/escalate/:ticketId/history', escalationCtrl.getEscalationHistory);
-router.get('/group/:groupId/escalation-path', escalationCtrl.getEscalationPath);
+router.post('/escalate/:ticketId', requireAuthOrInternal, requireSupportRole, validateBody(escalateTicketSchema), escalationCtrl.escalateTicket);
+router.get('/escalate/:ticketId/history', requireAuth, requireSupportRole, escalationCtrl.getEscalationHistory);
+router.get('/group/:groupId/escalation-path', requireAuth, requireSupportRole, escalationCtrl.getEscalationPath);
 
 // ══════════════════════════════════════
 //  Dashboards & Monitoring (existing)
 // ══════════════════════════════════════
-router.get('/dashboard/audit/:ticketId', monitorCtrl.getAuditTrail);
-router.get('/dashboard/building/:buildingId', monitorCtrl.getBuildingDashboard);
-router.get('/dashboard/member/:memberId', monitorCtrl.getMemberDashboard);
-router.get('/dashboard/group/:groupId/metrics', monitorCtrl.getGroupMetrics);
-router.get('/dashboard/activity/recent', monitorCtrl.getRecentActivity);
+router.get('/dashboard/audit/:ticketId', requireAuth, requireSupportRole, monitorCtrl.getAuditTrail);
+router.get('/dashboard/building/:buildingId', requireAuth, requireSupportRole, monitorCtrl.getBuildingDashboard);
+router.get('/dashboard/member/:memberId', requireAuth, requireSupportRole, monitorCtrl.getMemberDashboard);
+router.get('/dashboard/group/:groupId/metrics', requireAuth, requireSupportRole, monitorCtrl.getGroupMetrics);
+router.get('/dashboard/activity/recent', requireAuth, requireSupportRole, monitorCtrl.getRecentActivity);
 
 // ══════════════════════════════════════
 //  Role-based Dashboards
 // ══════════════════════════════════════
-router.get('/dashboard/admin/overview', requireAuth, roleDashboardCtrl.getAdminOverview);
-router.get('/dashboard/admin/tickets', requireAuth, roleDashboardCtrl.getAdminTickets);
-router.get('/dashboard/admin/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getAdminTicketDetails);
+router.get('/dashboard/admin/overview', requireAuth, requireAdminRole, roleDashboardCtrl.getAdminOverview);
+router.get('/dashboard/admin/tickets', requireAuth, requireAdminRole, roleDashboardCtrl.getAdminTickets);
+router.get('/dashboard/admin/tickets/:ticketId/details', requireAuth, requireAdminRole, roleDashboardCtrl.getAdminTicketDetails);
 
-router.get('/dashboard/supervisor/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getSupervisorOverview);
-router.get('/dashboard/supervisor/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getSupervisorTickets);
-router.get('/dashboard/supervisor/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getSupervisorTicketDetails);
+router.get('/dashboard/supervisor/:workflowUserId/overview', requireAuth, requireSupportRole, roleDashboardCtrl.getSupervisorOverview);
+router.get('/dashboard/supervisor/:workflowUserId/tickets', requireAuth, requireSupportRole, roleDashboardCtrl.getSupervisorTickets);
+router.get('/dashboard/supervisor/:workflowUserId/tickets/:ticketId/details', requireAuth, requireSupportRole, roleDashboardCtrl.getSupervisorTicketDetails);
 
-router.get('/dashboard/senior/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getSeniorOverview);
-router.get('/dashboard/senior/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getSeniorTickets);
-router.get('/dashboard/senior/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getSeniorTicketDetails);
+router.get('/dashboard/senior/:workflowUserId/overview', requireAuth, requireSupportRole, roleDashboardCtrl.getSeniorOverview);
+router.get('/dashboard/senior/:workflowUserId/tickets', requireAuth, requireSupportRole, roleDashboardCtrl.getSeniorTickets);
+router.get('/dashboard/senior/:workflowUserId/tickets/:ticketId/details', requireAuth, requireSupportRole, roleDashboardCtrl.getSeniorTicketDetails);
 
-router.get('/dashboard/junior/:workflowUserId/overview', requireAuth, roleDashboardCtrl.getJuniorOverview);
-router.get('/dashboard/junior/:workflowUserId/tickets', requireAuth, roleDashboardCtrl.getJuniorTickets);
-router.get('/dashboard/junior/:workflowUserId/tickets/:ticketId/details', requireAuth, roleDashboardCtrl.getJuniorTicketDetails);
+router.get('/dashboard/junior/:workflowUserId/overview', requireAuth, requireSupportRole, roleDashboardCtrl.getJuniorOverview);
+router.get('/dashboard/junior/:workflowUserId/tickets', requireAuth, requireSupportRole, roleDashboardCtrl.getJuniorTickets);
+router.get('/dashboard/junior/:workflowUserId/tickets/:ticketId/details', requireAuth, requireSupportRole, roleDashboardCtrl.getJuniorTicketDetails);
 
 // ══════════════════════════════════════
 //  Hierarchy-Based Dashboards
 // ══════════════════════════════════════
-router.get('/dashboard/senior/:userId', monitorCtrl.getSeniorDashboard);
-router.get('/dashboard/supervisor/:userId', monitorCtrl.getSupervisorDashboard);
+router.get('/dashboard/senior/:userId', requireAuth, requireSupportRole, monitorCtrl.getSeniorDashboard);
+router.get('/dashboard/supervisor/:userId', requireAuth, requireSupportRole, monitorCtrl.getSupervisorDashboard);
 
 // ══════════════════════════════════════
 //  Workflow Logs
 //  GET /workflow/logs/:ticketId
 // ══════════════════════════════════════
-router.get('/logs/:ticketId', async (req: Request, res: Response): Promise<void> => {
+router.get('/logs/:ticketId', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const ticketId = req.params.ticketId;
     const trail = await loggingService.getTicketAuditTrail(ticketId);
@@ -224,7 +232,7 @@ router.post('/internal/tickets/sync', requireInternalToken, validateBody(syncTic
 //  Group Tickets (NEW — frontend calls this)
 //  GET /workflow/group/:groupId/tickets?status=&building=&technicianLevel=
 // ══════════════════════════════════════
-router.get('/group/:groupId/tickets', async (req: Request, res: Response): Promise<void> => {
+router.get('/group/:groupId/tickets', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const groupId = parseInt(req.params.groupId, 10);
     const { status, building } = req.query;
@@ -245,7 +253,7 @@ router.get('/group/:groupId/tickets', async (req: Request, res: Response): Promi
 //  Technician Tickets (NEW — frontend calls this)
 //  GET /workflow/technician/:technicianId/tickets?status=
 // ══════════════════════════════════════
-router.get('/technician/:technicianId/tickets', async (req: Request, res: Response): Promise<void> => {
+router.get('/technician/:technicianId/tickets', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const technicianId = parseInt(req.params.technicianId, 10);
     const { status } = req.query;
@@ -268,16 +276,18 @@ router.get('/technician/:technicianId/tickets', async (req: Request, res: Respon
 //  PATCH /workflow/technicians/:technicianId/location
 //  PUT /workflow/technicians/location (legacy compatibility)
 // ------------------------------
-router.get('/technicians/me', requireAuth, technicianCtrl.getCurrentTechnician);
+router.get('/technicians/me', requireAuth, requireSupportRole, technicianCtrl.getCurrentTechnician);
 router.patch(
   '/technicians/:technicianId/location',
   requireAuth,
+  requireSupportRole,
   validateBody(patchTechnicianLocationSchema),
   technicianCtrl.updateLocationByPath,
 );
 router.put(
   '/technicians/location',
   requireAuth,
+  requireSupportRole,
   validateBody(updateTechnicianLocationSchema),
   technicianCtrl.updateLocation,
 );
@@ -285,7 +295,7 @@ router.put(
 //  SLA Status (NEW — frontend calls this)
 //  POST /workflow/sla/status  body: { ticket_ids: [...] }
 // ══════════════════════════════════════
-router.post('/sla/status', async (req: Request, res: Response): Promise<void> => {
+router.post('/sla/status', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const { ticket_ids } = req.body;
     if (!ticket_ids || !Array.isArray(ticket_ids)) {
@@ -341,7 +351,7 @@ router.post('/sla/status', async (req: Request, res: Response): Promise<void> =>
 //  Metrics (NEW — frontend calls this)
 //  GET /workflow/metrics?start_date=&end_date=
 // ══════════════════════════════════════
-router.get('/metrics', async (req: Request, res: Response): Promise<void> => {
+router.get('/metrics', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const { start_date, end_date } = req.query;
     const metrics = await metricsService.getOverviewMetrics(
@@ -359,7 +369,7 @@ router.get('/metrics', async (req: Request, res: Response): Promise<void> => {
 //  Team Metrics (NEW — frontend calls this)
 //  GET /workflow/metrics/team/:groupId?start_date=&end_date=
 // ══════════════════════════════════════
-router.get('/metrics/team/:groupId', async (req: Request, res: Response): Promise<void> => {
+router.get('/metrics/team/:groupId', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const groupId = parseInt(req.params.groupId, 10);
     const { start_date, end_date } = req.query;
@@ -379,7 +389,7 @@ router.get('/metrics/team/:groupId', async (req: Request, res: Response): Promis
 //  SLA Report (NEW — frontend calls this)
 //  GET /workflow/reports/sla?start_date=&end_date=
 // ══════════════════════════════════════
-router.get('/reports/sla', async (req: Request, res: Response): Promise<void> => {
+router.get('/reports/sla', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const { start_date, end_date } = req.query;
     const report = await metricsService.getSLAReport(
@@ -397,7 +407,7 @@ router.get('/reports/sla', async (req: Request, res: Response): Promise<void> =>
 //  Escalation Report (NEW — frontend calls this)
 //  GET /workflow/reports/escalations?start_date=&end_date=
 // ══════════════════════════════════════
-router.get('/reports/escalations', async (req: Request, res: Response): Promise<void> => {
+router.get('/reports/escalations', requireAuth, requireSupportRole, async (req: Request, res: Response): Promise<void> => {
   try {
     const { start_date, end_date } = req.query;
     const report = await metricsService.getEscalationReport(
@@ -414,7 +424,7 @@ router.get('/reports/escalations', async (req: Request, res: Response): Promise<
 //  Supervisor Info (NEW — used by Ticket Service for notifications)
 //  GET /workflow/supervisor
 // ══════════════════════════════════════
-router.get('/supervisor', async (_req: Request, res: Response): Promise<void> => {
+router.get('/supervisor', requireAuthOrInternal, requireSupportRole, async (_req: Request, res: Response): Promise<void> => {
   try {
     // Fetch supervisor from local database
     const supervisor = await technicianRepo.getSupervisor();

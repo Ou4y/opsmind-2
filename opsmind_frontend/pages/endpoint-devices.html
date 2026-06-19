@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="OpsMind Registered Endpoint Devices">
+    <title>Registered Devices - OpsMind</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/css/main.css" rel="stylesheet">
+    <script src="/assets/js/config.js"></script>
+</head>
+<body class="app-body">
+    <nav class="navbar-main" id="navbar-container"></nav>
+
+    <div class="app-wrapper">
+        <div id="sidebar-container"></div>
+
+        <main class="main-content">
+            <div class="page-header">
+                <div class="page-header-content">
+                    <h1 class="page-title">
+                        <i class="bi bi-hdd-network me-2"></i>
+                        Registered Devices
+                    </h1>
+                    <p class="page-subtitle mb-0">View and manage endpoint device registry records for support operations.</p>
+                </div>
+                <div class="page-header-actions">
+                    <button class="btn btn-outline-primary" id="refreshRegisteredDevicesBtn">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="page-content">
+                <div class="card filter-card mb-4">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-12 col-md-3">
+                                <label for="registeredDeviceStatusFilter" class="form-label">Status</label>
+                                <select class="form-select" id="registeredDeviceStatusFilter">
+                                    <option value="">All Statuses</option>
+                                    <option value="ONLINE">ONLINE</option>
+                                    <option value="OFFLINE">OFFLINE</option>
+                                    <option value="DISABLED">DISABLED</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <label for="registeredDeviceOsFilter" class="form-label">OS Type</label>
+                                <select class="form-select" id="registeredDeviceOsFilter">
+                                    <option value="">All OS Types</option>
+                                    <option value="WINDOWS">WINDOWS</option>
+                                    <option value="MACOS">MACOS</option>
+                                    <option value="LINUX">LINUX</option>
+                                    <option value="UNKNOWN">UNKNOWN</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <label for="registeredDeviceUserIdFilter" class="form-label">User ID</label>
+                                <input type="text" class="form-control" id="registeredDeviceUserIdFilter" placeholder="Filter by user id">
+                            </div>
+                            <div class="col-12 col-md-2 d-flex align-items-end">
+                                <button class="btn btn-outline-secondary w-100" id="clearRegisteredDeviceFiltersBtn">
+                                    <i class="bi bi-x-circle me-1"></i>Clear
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header bg-white">
+                        <div class="d-flex align-items-center justify-content-between">
+                            <h5 class="card-title mb-0">Endpoint Device Registry</h5>
+                            <span class="badge bg-light text-dark" id="registeredDevicesCountBadge">0 devices</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="registeredDevicesLoading" class="text-center py-5 d-none">
+                            <div class="spinner-border text-primary mb-3" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="text-muted mb-0">Loading registered endpoint devices...</p>
+                        </div>
+
+                        <div id="registeredDevicesUnauthorized" class="alert alert-warning d-none mb-0">
+                            Only support staff or administrators can access registered endpoint devices.
+                        </div>
+
+                        <div id="registeredDevicesError" class="error-state d-none">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <h3>Could not load registered devices.</h3>
+                            <p id="registeredDevicesErrorMessage">Try refreshing the page.</p>
+                        </div>
+
+                        <div id="registeredDevicesEmpty" class="empty-state d-none">
+                            <i class="bi bi-inbox"></i>
+                            <h3>No registered endpoint devices found.</h3>
+                        </div>
+
+                        <div class="table-responsive d-none" id="registeredDevicesTableWrap">
+                            <table class="table table-hover align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Device Name</th>
+                                        <th>Device ID</th>
+                                        <th>User ID</th>
+                                        <th>OS Type</th>
+                                        <th>Agent Status</th>
+                                        <th>Agent Version</th>
+                                        <th>Last Seen</th>
+                                        <th>Registered At</th>
+                                        <th>Enabled</th>
+                                        <th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="registeredDevicesTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script type="module" src="/assets/js/app.js"></script>
+    <script type="module" src="/assets/js/pages/endpoint-devices.js"></script>
+</body>
+</html>
