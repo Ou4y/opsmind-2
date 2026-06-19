@@ -1,10 +1,11 @@
 import { domainRepository } from '@modules/admin/domain.repository';
 import bcrypt from 'bcrypt';
 import { userRepository } from '@modules/users/user.repository';
+import { technicianRepository } from '@modules/admin/admin.repository';
 import { otpService } from '@modules/otp/otp.service';
 import { generateToken } from '@utils/jwt.util';
 import { validateAllowedEmailDomain, validatePassword, sanitizeUser } from '@utils/validation.util';
-import { SignupDTO, LoginDTO, VerifyOTPDTO, AuthResponse, RoleName } from '@/types';
+import { SignupDTO, LoginDTO, VerifyOTPDTO, AuthResponse, RoleName, UserWithRoles } from '@/types';
 import { logger } from '@config/logger';
 
 type WorkflowFallbackUser = {
@@ -80,6 +81,30 @@ function getWorkflowFallbackUser(userId: string): WorkflowFallbackUser | null {
 }
 
 export class AuthService {
+  private async buildLoginUserResponse(user: UserWithRoles) {
+    const roles = user.roles.map(r => r.name);
+    const technician = await technicianRepository.findByUserId(user.id);
+    const buildings = technician
+      ? await technicianRepository.getTechnicianBuildings(technician.id)
+      : [];
+    const primaryBuilding = buildings[0] || null;
+
+    return sanitizeUser({
+      ...user,
+      role: roles[0],
+      roles,
+      technicianLevel: technician?.technicianLevel,
+      building: primaryBuilding?.code,
+      buildingCode: primaryBuilding?.code,
+      buildings: buildings.map((building) => ({
+        id: building.id,
+        name: building.name,
+        code: building.code,
+        isPrimary: building.code === primaryBuilding?.code,
+      })),
+    });
+  }
+
   async getAllowedDomains(): Promise<string[]> {
     const allowedDomains = await domainRepository.getActiveDomains();
     return allowedDomains.map((domain) => domain.toLowerCase());
@@ -249,7 +274,7 @@ export class AuthService {
       
       return {
         message: 'Account verified successfully. Please check your email for login OTP.',
-        user: sanitizeUser({ ...user, roles: user.roles.map(r => r.name) }),
+        user: await this.buildLoginUserResponse(user),
         requiresOTP: true,
       };
     }
@@ -266,7 +291,7 @@ export class AuthService {
 
     return {
       message: 'Login successful',
-      user: sanitizeUser({ ...user, roles }),
+      user: await this.buildLoginUserResponse(user),
       token,
     };
   }

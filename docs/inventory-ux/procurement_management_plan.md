@@ -87,6 +87,34 @@ It does not implement ERP accounting, payments, or external vendor-system integr
 
 Each status change is traceable through `ProcurementApproval` records.
 
+## Procurement Approval Governance (Implemented Foundation)
+Procurement approval is now aligned with the Inventory RBAC approval foundation. Procurement requests are evaluated by actor role, building/scope, estimated cost, asset criticality, vendor exception signals, emergency context, and inventory impact.
+
+### Approval Thresholds
+- EGP `0-1,000`: auto-approved or Senior approval depending actor/request type; audit is always required.
+- EGP `1,001-5,000`: Building Supervisor approval.
+- EGP `5,001-25,000`: Supervisor Chief approval.
+- EGP `25,001+`: Admin approval.
+- Critical/security/server/network assets escalate to Supervisor Chief or Admin depending amount and criticality.
+- New vendor exceptions and emergency high-value purchases require Supervisor Chief/Admin review depending impact.
+
+### Approval Records
+- Inventory-specific approval control is stored through:
+  - `InventoryApprovalPolicy`
+  - `InventoryApprovalRequest`
+  - `InventoryApprovalDecision`
+  - `InventoryAuditLog`
+- Procurement status history remains traceable through `ProcurementApproval`.
+- Approved controlled actions require explicit retry/execution with a matching `approvalRequestId`; they are not silently replayed.
+
+### Notification Bridge
+- Approval requests publish `inventory.notification.*` events through notification-service.
+- Current stable recipients are role-scoped, for example:
+  - `role:BUILDING_SUPERVISOR:MAIN`
+  - `role:SUPERVISOR_CHIEF:GLOBAL`
+  - `role:ADMIN:GLOBAL`
+- Concrete auth-service approver lookup by role/building remains future work.
+
 ## Inventory + CMDB Linking
 ### Linked Scope
 - Procurement requests can link assets/tags and department/building context.
@@ -142,12 +170,15 @@ All actions use in-app modal flows (no browser-native alert/confirm/prompt popup
 - IT Asset Management: demand from stock/lifecycle/risk/maintenance evidence.
 - Service Configuration Management: request-to-asset linkage retained.
 - Change Enablement: explicit status transitions and decision history.
+- Governance: controlled procurement and inventory-impact actions create approval requests, approval decisions, and audit logs.
 - Incident/Problem alignment: audit/maintenance findings can drive procurement demand.
 - Traceability: receiving and procurement decision events are auditable end-to-end.
 
 ## Phase 2 (Recommended Next)
 - Add structured receiving impact preview cards for consumables/licenses/asset-intake draft flows.
 - Add richer approval timeline UI with role-based approver metadata.
+- Add concrete auth-service approver lookup by role/building once auth-service exposes a stable internal resolver.
+- Add workflow-service generic approval-task integration once workflow-service supports Inventory approval tasks.
 - Add vendor comparison scoring/rationale UI.
 - Add procurement analytics trends (aging buckets, recurring shortages, demand heatmaps).
 

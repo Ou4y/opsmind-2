@@ -1,4 +1,4 @@
-﻿import UI from '/assets/js/ui.js';
+import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
 
 // Config is set as globals in config.js (loaded in HTML head)
@@ -63,6 +63,8 @@ let bulkSpecReviewContext = null;
 let bulkSpecActionInFlight = false;
 let spareStockItemsCache = [];
 let spareStockLowOnly = false;
+let spareStockPage = 1;
+const SPARE_STOCK_PAGE_SIZE = 12;
 let currentInventoryView = 'parents';
 const INVENTORY_VIEWS = ['parents', 'components', 'accessories', 'consumables', 'spare_stock', 'licenses'];
 const INVENTORY_VIEW_BUTTON_IDS = {
@@ -319,7 +321,7 @@ function ensureInventoryAccess() {
 
 function getAuthHeaders(extraHeaders = {}) {
   return {
-    ...AuthService.getAuthHeaders(),
+    ...AuthService.getInventoryAuthHeaders(),
     ...extraHeaders,
   };
 }
@@ -899,7 +901,7 @@ const OPERATIONAL_STATE_LABELS = {
   online_idle: 'Online but idle',
   offline: 'Offline',
   not_monitored: 'Not monitored',
-  insufficient_data: 'Monitoring enabled Â· Waiting for signal',
+  insufficient_data: 'Monitoring enabled  |  Waiting for signal',
   unknown: 'Unknown'
 };
 
@@ -1928,12 +1930,16 @@ document.addEventListener('DOMContentLoaded', () => {
   if (spareStockRefreshBtn) spareStockRefreshBtn.addEventListener('click', () => window.loadSpareStock());
   if (spareStockLowOnlyBtn) spareStockLowOnlyBtn.addEventListener('click', () => {
     spareStockLowOnly = !spareStockLowOnly;
+    spareStockPage = 1;
     spareStockLowOnlyBtn.classList.toggle('btn-warning', spareStockLowOnly);
     spareStockLowOnlyBtn.classList.toggle('btn-outline-warning', !spareStockLowOnly);
     window.renderSpareStockTable();
   });
   if (spareStockAddBtn) spareStockAddBtn.addEventListener('click', () => window.addSpareStockItem());
-  if (spareStockSearchInput) spareStockSearchInput.addEventListener('input', () => window.renderSpareStockTable());
+  if (spareStockSearchInput) spareStockSearchInput.addEventListener('input', () => {
+    spareStockPage = 1;
+    window.renderSpareStockTable();
+  });
   const openImportAssetsBtn = document.getElementById('openImportAssetsBtn');
   const previewImportBtn = document.getElementById('previewImportBtn');
   const commitImportBtn = document.getElementById('commitImportBtn');
@@ -3567,8 +3573,8 @@ async function refreshSpecVerificationSnapshot() {
   const badgeEl = document.getElementById('specVerificationPendingBadge');
   try {
     const [pendingRes, metricsRes] = await Promise.all([
-      fetch(`${API_URL}/assets/spec-verification/pending`),
-      fetch(`${API_URL}/assets/spec-verification/metrics`)
+      inventoryRequest('/assets/spec-verification/pending'),
+      inventoryRequest('/assets/spec-verification/metrics')
     ]);
 
     const pendingPayload = pendingRes.ok ? await pendingRes.json() : { count: 0, assets: [] };
@@ -3710,9 +3716,8 @@ async function submitBulkSpecVerificationAction(action) {
   setBulkSpecActionButtonsDisabled(true);
 
   try {
-    const response = await fetch(`${API_URL}/assets/spec-verification/bulk`, {
+    const response = await inventoryRequest('/assets/spec-verification/bulk', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         assetIds: bulkSpecReviewContext.pendingAssets.map((asset) => asset.customId),
         action,
@@ -3779,9 +3784,8 @@ async function submitSpecVerificationAction(action) {
   }
 
   try {
-    const response = await fetch(`${API_URL}/assets/${encodeURIComponent(assetId)}/spec-verification`, {
+    const response = await inventoryRequest(`/assets/${encodeURIComponent(assetId)}/spec-verification`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action,
         correctedSpecifications: action === 'correct' ? correctedSpecifications : {},
@@ -4873,7 +4877,7 @@ function renderInventoryGroupPager() {
   pagerEl.classList.remove('d-none');
   pagerEl.innerHTML = `
     <div class="d-flex justify-content-between align-items-center">
-      <small class="text-muted">Page ${page} of ${totalPages} â€¢ Total groups/items: ${total}</small>
+      <small class="text-muted">Page ${page} of ${totalPages}  |  Total groups/items: ${total}</small>
       <div class="d-flex gap-2">
         <button class="btn btn-sm btn-outline-secondary" ${hasPrev ? '' : 'disabled'} onclick="window.changeInventoryPage(-1)">
           <i class="bi bi-arrow-left me-1"></i>Previous
@@ -5718,7 +5722,7 @@ window.viewAssetDetails = (assetName) => {
       || profile.specs?.installedInAssetId
       || ''
     ).trim();
-    const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join(' Â· ');
+    const parentDescriptor = [parentInfo.parentName, parentInfo.parentId, parentInfo.parentTag].filter(Boolean).join('  |  ');
     const eolApplicable = isEolRelevantAsset(asset);
     const telemetryVisible = shouldShowTelemetryControl(asset, profile);
     const telemetryConfigured = Boolean(
@@ -5729,7 +5733,7 @@ window.viewAssetDetails = (assetName) => {
       || toBoolean(profile.specs?.trackWorkingHours)
     );
     const trackingLabel = profile.trackWorkingHours
-      ? `${getOperationalStateLabel(profile.telemetryStatus)} Â· ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? ` Â· ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
+      ? `${getOperationalStateLabel(profile.telemetryStatus)}  |  ${capitalize(String(profile.telemetryConfidence || 'low'))} confidence${profile.hasTelemetry ? `  |  ${Math.round(profile.workingHours).toLocaleString()}h observed` : ''}`
       : (telemetryVisible
           ? 'Telemetry-capable (awaiting signal/configuration)'
           : (telemetryConfigured && isCentralWarehouseLocation(asset?.location)
@@ -6056,7 +6060,7 @@ window.deleteAllAssets = async () => {
 
   try {
     for (const asset of assetsToDelete) {
-      const response = await fetch(`${API_URL}/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
+      const response = await inventoryRequest(`/assets/${encodeURIComponent(asset.customId)}`, { method: 'DELETE' });
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.message || `Failed to delete ${asset.customId}`);
@@ -6121,7 +6125,7 @@ function renderHistoryTimeline(entries = [], includeRelated = true) {
     const sourceMeta = [entry.sourceItemCustomId, entry.sourceItemAssetTag, entry.sourceItemSerialNumber]
       .map((value) => String(value || '').trim())
       .filter(Boolean)
-      .join(' â€¢ ');
+      .join('  |  ');
     const linkedParent = String(entry.linkedParentAssetId || entry.linkedParentAssetName || '').trim()
       ? `Parent: ${entry.linkedParentAssetName || entry.linkedParentAssetId}${entry.linkedParentAssetTag ? ` (${entry.linkedParentAssetTag})` : ''}`
       : '';
@@ -6232,11 +6236,34 @@ async function postInventoryJson(path, payload = {}, method = 'POST') {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+  const responsePayload = await response.json().catch(() => ({}));
+  if (responsePayload?.approvalRequired) {
+    const err = new Error(
+      responsePayload.message
+        || `Approval required. Request sent to ${String(responsePayload.approverRole || 'approver').replace(/_/g, ' ')}.`
+    );
+    err.approvalRequired = true;
+    err.approvalRequestId = responsePayload.approvalRequestId;
+    err.requestCode = responsePayload.requestCode;
+    err.approverRole = responsePayload.approverRole;
+    err.payload = responsePayload;
+    throw err;
+  }
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
+    const err = responsePayload || {};
     throw new Error(err.message || `Request failed: ${path}`);
   }
-  return response.json().catch(() => ({}));
+  return responsePayload;
+}
+
+function showInventoryApprovalRequired(error) {
+  if (!error?.approvalRequired) return false;
+  const approver = String(error.approverRole || 'approver').replace(/_/g, ' ');
+  const requestInfo = error.requestCode || error.approvalRequestId
+    ? ` Request: ${error.requestCode || error.approvalRequestId}.`
+    : '';
+  showMessage(`Approval required. Request sent to ${approver}.${requestInfo}`, 'warning');
+  return true;
 }
 
 function parseBulkCheckoutCodes(raw) {
@@ -9068,13 +9095,21 @@ window.groupCmdbBulkAddMaintenance = async () => {
   });
   if (!form?.confirmed) return;
   for (const assetId of selectedIds) {
-    await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
-      maintenanceType: form.values.maintenanceType,
-      status: form.values.status || 'completed',
-      performedBy: form.values.performedBy || '',
-      reason: form.values.reason || '',
-      performedAt: new Date().toISOString(),
-    });
+    try {
+      await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
+        maintenanceType: form.values.maintenanceType,
+        status: form.values.status || 'completed',
+        performedBy: form.values.performedBy || '',
+        reason: form.values.reason || '',
+        performedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      if (showInventoryApprovalRequired(error)) {
+        await refreshGroupCmdbModal();
+        return;
+      }
+      throw error;
+    }
   }
   showMessage(`Maintenance record added to ${selectedIds.length} unit(s).`, 'success');
   await refreshGroupCmdbModal();
@@ -9297,7 +9332,7 @@ window.cmdbDigitalTwin = async (assetId) => {
         <div><strong>Location:</strong> ${UI.escapeHTML(String(result?.currentLocation || '-'))}</div>
         <div><strong>Last Transfer:</strong> ${UI.escapeHTML(String(result?.lastTransfer?.timestamp ? UI.formatDateTime(result.lastTransfer.timestamp) : '-'))}</div>
         <div><strong>Last Maintenance:</strong> ${UI.escapeHTML(String(result?.lastMaintenance?.createdAt ? UI.formatDateTime(result.lastMaintenance.createdAt) : '-'))}</div>
-        <div><strong>Related Counts:</strong> Components ${UI.escapeHTML(String(related.components ?? 0))} â€¢ Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} â€¢ Licenses ${UI.escapeHTML(String(related.licenses ?? 0))} â€¢ Consumables ${UI.escapeHTML(String(related.consumables ?? 0))}</div>
+        <div><strong>Related Counts:</strong> Components ${UI.escapeHTML(String(related.components ?? 0))}  |  Accessories ${UI.escapeHTML(String(related.accessories ?? 0))}  |  Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}  |  Consumables ${UI.escapeHTML(String(related.consumables ?? 0))}</div>
       </div>
       ${issues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(issues.join(' | '))}</div>` : '<div class="small mt-2 text-muted">No open issues.</div>'}
       ${result?.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
@@ -9674,6 +9709,7 @@ window.cmdbAddComponent = async (assetId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to add component.', 'error');
   }
 };
@@ -9717,6 +9753,7 @@ window.cmdbEditComponent = async (assetId, componentId) => {
     showMessage('Component updated.', 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to update component.', 'error');
   }
 };
@@ -9734,6 +9771,7 @@ window.cmdbRemoveComponent = async (assetId, componentId) => {
     showMessage('Component removed.', 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to remove component.', 'error');
   }
 };
@@ -9769,6 +9807,7 @@ window.cmdbReplaceComponent = async (assetId, componentId) => {
     showMessage('Component replaced.', 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to replace component.', 'error');
   }
 };
@@ -9795,6 +9834,7 @@ window.cmdbRepairComponent = async (assetId, componentId) => {
     showMessage('Component repair recorded.', 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to repair component.', 'error');
   }
 };
@@ -9812,6 +9852,7 @@ window.cmdbMarkFailedComponent = async (assetId, componentId) => {
     showMessage('Component marked as failed.', 'warning');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to mark component failed.', 'error');
   }
 };
@@ -9836,6 +9877,7 @@ window.cmdbRetireComponent = async (assetId, componentId) => {
     showMessage(`Component ${form.values.status || 'retired'}.`, form.values.status === 'disposed' ? 'warning' : 'success');
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to retire/dispose component.', 'error');
   }
 };
@@ -9949,6 +9991,7 @@ window.cmdbInstallFromStock = async (assetId) => {
       await loadAssets();
       await refreshCmdbModal(assetId, 'components');
     } catch (error) {
+      if (showInventoryApprovalRequired(error)) return;
       showMessage(error.message || 'Failed to link existing component asset.', 'error');
     }
     return;
@@ -10039,6 +10082,7 @@ window.cmdbInstallFromStock = async (assetId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to install from stock.', 'error');
   }
 };
@@ -10094,6 +10138,7 @@ window.cmdbReplaceFromStock = async (assetId, componentId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'components');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to replace from stock.', 'error');
   }
 };
@@ -10209,6 +10254,10 @@ window.cmdbAddMaintenance = async (assetId) => {
     showMessage('Maintenance record added.', 'success');
     await refreshCmdbModal(assetId, 'maintenance');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) {
+      await refreshCmdbModal(assetId, 'maintenance');
+      return;
+    }
     showMessage(error.message || 'Failed to add maintenance record.', 'error');
   }
 };
@@ -10319,6 +10368,7 @@ window.cmdbAssignAsset = async (assetId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'custody');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to assign asset.', 'error');
   }
 };
@@ -10360,6 +10410,7 @@ window.cmdbCheckinAsset = async (assetId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'custody');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to check in asset.', 'error');
   }
 };
@@ -10441,6 +10492,7 @@ window.cmdbAddRelationship = async (assetId) => {
     showMessage('Relationship added.', 'success');
     await refreshCmdbModal(assetId, 'relationships');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to add relationship.', 'error');
   }
 };
@@ -10458,6 +10510,7 @@ window.cmdbDeleteRelationship = async (assetId, relationshipId) => {
     showMessage('Relationship removed.', 'success');
     await refreshCmdbModal(assetId, 'relationships');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) return;
     showMessage(error.message || 'Failed to remove relationship.', 'error');
   }
 };
@@ -10489,11 +10542,38 @@ window.renderSpareStockTable = () => {
       item.vendor,
     ].some((value) => String(value || '').toLowerCase().includes(search));
   });
+  const totalPages = Math.max(1, Math.ceil(rows.length / SPARE_STOCK_PAGE_SIZE));
+  spareStockPage = Math.min(Math.max(1, spareStockPage), totalPages);
+  const pageRows = rows.slice((spareStockPage - 1) * SPARE_STOCK_PAGE_SIZE, spareStockPage * SPARE_STOCK_PAGE_SIZE);
+  let pager = document.getElementById('spareStockPagination');
+  if (!pager) {
+    const tableWrap = tableBody.closest('.table-responsive');
+    tableWrap?.insertAdjacentHTML('afterend', '<div id="spareStockPagination" class="inventory-pagination-bar mt-3"></div>');
+    pager = document.getElementById('spareStockPagination');
+  }
   if (!rows.length) {
     tableBody.innerHTML = '<tr><td colspan="9" class="text-muted text-center py-4">No spare stock items found.</td></tr>';
+    if (pager) pager.innerHTML = '';
     return;
   }
-  tableBody.innerHTML = rows.map((item) => {
+  if (pager) {
+    pager.innerHTML = `
+      <div class="pagination-info">Page ${spareStockPage} of ${totalPages} | ${rows.length} item(s)</div>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Spare stock pagination">
+        <button type="button" class="btn btn-outline-secondary" ${spareStockPage <= 1 ? 'disabled' : ''} data-spare-stock-page="prev">Previous</button>
+        <button type="button" class="btn btn-outline-secondary" ${spareStockPage >= totalPages ? 'disabled' : ''} data-spare-stock-page="next">Next</button>
+      </div>
+    `;
+    pager.querySelector('[data-spare-stock-page="prev"]')?.addEventListener('click', () => {
+      spareStockPage = Math.max(1, spareStockPage - 1);
+      window.renderSpareStockTable();
+    });
+    pager.querySelector('[data-spare-stock-page="next"]')?.addEventListener('click', () => {
+      spareStockPage = Math.min(totalPages, spareStockPage + 1);
+      window.renderSpareStockTable();
+    });
+  }
+  tableBody.innerHTML = pageRows.map((item) => {
     const compatible = Array.isArray(item.compatibleBrandsModels) ? item.compatibleBrandsModels.join(', ') : '';
     return `
       <tr>
@@ -10774,6 +10854,10 @@ window.cmdbAssetDisposition = async (assetId) => {
     await loadAssets();
     await refreshCmdbModal(assetId, 'lifecycle');
   } catch (error) {
+    if (showInventoryApprovalRequired(error)) {
+      await refreshCmdbModal(assetId, 'lifecycle');
+      return;
+    }
     showMessage(error.message || 'Failed to record asset disposition.', 'error');
   }
 };
@@ -11897,7 +11981,7 @@ function renderInventoryMapCalibrationPanel() {
     <div class="small"><strong>Selected:</strong> ${UI.escapeHTML(selectedEntry?.name || 'None')}</div>
     <div class="small"><strong>xPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.xPercent).toFixed(2) : '-')}</div>
     <div class="small"><strong>yPercent:</strong> ${UI.escapeHTML(coords ? Number(coords.yPercent).toFixed(2) : '-')}</div>
-    <div class="small mt-1"><strong>Aliases:</strong> ${UI.escapeHTML(aliases.join(' â€¢ ') || '-')}</div>
+    <div class="small mt-1"><strong>Aliases:</strong> ${UI.escapeHTML(aliases.join('  |  ') || '-')}</div>
   `;
 }
 
@@ -11995,10 +12079,10 @@ window.renderInventoryMapLocationAssets = () => {
     const nearEol = inventoryMapState.filteredAssets.filter((asset) => asset.mapNearEol || asset.mapHighRisk).length;
     const maintenance = inventoryMapState.filteredAssets.filter((asset) => asset.mapNeedsMaintenance).length;
     const topRawHtml = locationStats.topRaw.length
-      ? locationStats.topRaw.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' â€¢ ')
+      ? locationStats.topRaw.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join('  |  ')
       : 'None';
     const topNormalizedHtml = locationStats.topNormalized.length
-      ? locationStats.topNormalized.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join(' â€¢ ')
+      ? locationStats.topNormalized.map(([name, count]) => `${UI.escapeHTML(name)} (${UI.escapeHTML(String(count))})`).join('  |  ')
       : 'None';
     listEl.innerHTML = `
       <div class="inventory-map-summary-card">
@@ -12067,9 +12151,9 @@ window.renderInventoryMapLocationAssets = () => {
       return `
         <div class="inventory-map-asset-card">
           <div class="fw-semibold small">${UI.escapeHTML(asset.name || 'Asset')}</div>
-          <div class="small text-muted">${UI.escapeHTML(asset.customId || '-')} â€¢ ${UI.escapeHTML(asset.mapViewType || asset.category || '-')}</div>
+          <div class="small text-muted">${UI.escapeHTML(asset.customId || '-')}  |  ${UI.escapeHTML(asset.mapViewType || asset.category || '-')}</div>
           <div class="small text-muted">${UI.escapeHTML(getAssetDisplayLocation(asset))} | ${UI.escapeHTML(getAssetDisplayDepartment(asset))}</div>
-          <div class="small text-muted">${UI.escapeHTML(String(asset.lifecycleStatus || asset.status || '-'))}${asset.mapTelemetryEnabled ? ' â€¢ telemetry' : ''}${asset.mapNearEol ? ' â€¢ near EOL' : ''}${asset.mapHighRisk ? ' â€¢ high risk' : ''}</div>
+          <div class="small text-muted">${UI.escapeHTML(String(asset.lifecycleStatus || asset.status || '-'))}${asset.mapTelemetryEnabled ? '  |  telemetry' : ''}${asset.mapNearEol ? '  |  near EOL' : ''}${asset.mapHighRisk ? '  |  high risk' : ''}</div>
           ${actionButtons}
         </div>
       `;
@@ -12079,10 +12163,10 @@ window.renderInventoryMapLocationAssets = () => {
         <div><strong>Normalized key:</strong> ${UI.escapeHTML(String(selectedMarker.locationKey || '-'))}</div>
         <div><strong>Normalized location:</strong> ${UI.escapeHTML(selectedMarker.locationName)}</div>
         <div><strong>Asset count:</strong> ${UI.escapeHTML(String(selectedMarker.items.length))}</div>
-        <div class="mt-1"><strong>Accepted aliases:</strong> ${UI.escapeHTML(acceptedAliases.join(' â€¢ ') || '-')}</div>
-        <div class="mt-1"><strong>Matched alias examples:</strong> ${UI.escapeHTML(matchedAliases.join(' â€¢ ') || '-')}</div>
-        <div class="mt-1"><strong>Match methods:</strong> ${UI.escapeHTML(matchMethods.join(' â€¢ ') || '-')}</div>
-        <div class="mt-1"><strong>Raw location examples:</strong> ${UI.escapeHTML(rawExamples.join(' â€¢ ') || '-')}</div>
+        <div class="mt-1"><strong>Accepted aliases:</strong> ${UI.escapeHTML(acceptedAliases.join('  |  ') || '-')}</div>
+        <div class="mt-1"><strong>Matched alias examples:</strong> ${UI.escapeHTML(matchedAliases.join('  |  ') || '-')}</div>
+        <div class="mt-1"><strong>Match methods:</strong> ${UI.escapeHTML(matchMethods.join('  |  ') || '-')}</div>
+        <div class="mt-1"><strong>Raw location examples:</strong> ${UI.escapeHTML(rawExamples.join('  |  ') || '-')}</div>
       </div>
     `);
   }
@@ -12112,7 +12196,7 @@ window.filterInventoryMapAssets = () => {
   const countsEl = document.getElementById('assetMapCountsSummary');
   if (countsEl) {
     const stats = buildInventoryMapLocationStats(filtered);
-    countsEl.textContent = `Displayed: ${filtered.length} / ${inventoryMapState.allAssets.length} asset(s) â€¢ Raw locations: ${stats.rawLocationCount} â€¢ Normalized locations: ${stats.normalizedLocationCount} â€¢ Unmapped: ${stats.unmappedCount}`;
+    countsEl.textContent = `Displayed: ${filtered.length} / ${inventoryMapState.allAssets.length} asset(s)  |  Raw locations: ${stats.rawLocationCount}  |  Normalized locations: ${stats.normalizedLocationCount}  |  Unmapped: ${stats.unmappedCount}`;
   }
   if (inventoryMapState.selectedLocationKey) {
     const stillExists = inventoryMapState.groupedMarkers.some((marker) => marker.locationKey === inventoryMapState.selectedLocationKey);
@@ -12320,9 +12404,9 @@ function renderInventoryAiActionCard(entry = {}) {
         <div class="small mt-2">
           <strong>Metrics:</strong>
           <div class="mt-1">
-            Total Assets: ${UI.escapeHTML(String(metrics.totalAssets ?? '-'))} â€¢
-            High Risk: ${UI.escapeHTML(String(metrics.highRiskAssets ?? '-'))} â€¢
-            Near EOL: ${UI.escapeHTML(String(metrics.nearEolAssets ?? '-'))} â€¢
+            Total Assets: ${UI.escapeHTML(String(metrics.totalAssets ?? '-'))}  | 
+            High Risk: ${UI.escapeHTML(String(metrics.highRiskAssets ?? '-'))}  | 
+            Near EOL: ${UI.escapeHTML(String(metrics.nearEolAssets ?? '-'))}  | 
             Expiring Licenses: ${UI.escapeHTML(String(metrics.expiringLicenses ?? '-'))}
           </div>
         </div>
@@ -12354,7 +12438,7 @@ function renderInventoryAiActionCard(entry = {}) {
           <button type="button" class="btn btn-sm btn-outline-secondary inventory-ai-copy-report-btn" data-report-encoded="${UI.escapeHTML(encodedBrief)}">Copy</button>
         </div>
         <div class="small mt-2">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
-        <div class="small text-muted mt-2">Transfers: ${UI.escapeHTML(String(metrics.transfers ?? 0))} â€¢ Maintenance: ${UI.escapeHTML(String(metrics.maintenanceEvents ?? 0))} â€¢ Audit: ${UI.escapeHTML(String(metrics.auditEvents ?? 0))}</div>
+        <div class="small text-muted mt-2">Transfers: ${UI.escapeHTML(String(metrics.transfers ?? 0))}  |  Maintenance: ${UI.escapeHTML(String(metrics.maintenanceEvents ?? 0))}  |  Audit: ${UI.escapeHTML(String(metrics.auditEvents ?? 0))}</div>
         ${highlights.length ? `<div class="small mt-2"><strong>Highlights:</strong> ${UI.escapeHTML(highlights.join(' | '))}</div>` : ''}
         ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
         ${actions.length ? `<div class="small mt-2"><strong>Actions:</strong> ${UI.escapeHTML(actions.join(' | '))}</div>` : ''}
@@ -12369,8 +12453,8 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Executive Inventory Dashboard</div>
-        <div class="small text-muted mt-1">Total Assets: ${UI.escapeHTML(String(result.totalAssets ?? 0))} â€¢ High Risk: ${UI.escapeHTML(String(result.highRisk ?? 0))} â€¢ Near EOL: ${UI.escapeHTML(String(result.nearEol ?? 0))}</div>
-        <div class="small text-muted mt-1">Low Stock: ${UI.escapeHTML(String(result.lowStock ?? 0))} â€¢ Maintenance Issues: ${UI.escapeHTML(String(result.openMaintenanceIssues ?? 0))} â€¢ Recent Transfers: ${UI.escapeHTML(String(result.recentTransfers ?? 0))}</div>
+        <div class="small text-muted mt-1">Total Assets: ${UI.escapeHTML(String(result.totalAssets ?? 0))}  |  High Risk: ${UI.escapeHTML(String(result.highRisk ?? 0))}  |  Near EOL: ${UI.escapeHTML(String(result.nearEol ?? 0))}</div>
+        <div class="small text-muted mt-1">Low Stock: ${UI.escapeHTML(String(result.lowStock ?? 0))}  |  Maintenance Issues: ${UI.escapeHTML(String(result.openMaintenanceIssues ?? 0))}  |  Recent Transfers: ${UI.escapeHTML(String(result.recentTransfers ?? 0))}</div>
         <div class="small mt-2"><strong>Categories:</strong> ${UI.escapeHTML(Object.entries(byCategory).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         <div class="small mt-2"><strong>Locations:</strong> ${UI.escapeHTML(Object.entries(byLocation).slice(0, 8).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         ${recommendations.length ? `<div class="small mt-2"><strong>Recommendations:</strong> ${UI.escapeHTML(recommendations.join(' | '))}</div>` : ''}
@@ -12387,10 +12471,10 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Digital Twin: ${UI.escapeHTML(String(asset.name || asset.customId || '-'))}</div>
-        <div class="small text-muted mt-1">${UI.escapeHTML(String(asset.customId || '-'))} â€¢ ${UI.escapeHTML(String(asset.type || '-'))} â€¢ ${UI.escapeHTML(String(result.currentLocation || '-'))}</div>
-        <div class="small mt-2">Health Score: ${UI.escapeHTML(String(result.healthScore ?? '-'))} â€¢ Risk: ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
-        <div class="small mt-1">Kit Health: ${UI.escapeHTML(String(kit.label || kit.status || '-'))} â€¢ EOL: ${UI.escapeHTML(String(result.eolStatus?.status || '-'))} â€¢ Warranty: ${UI.escapeHTML(String(result.warrantyStatus?.status || '-'))}</div>
-        <div class="small mt-1">Related: Components ${UI.escapeHTML(String(related.components ?? 0))} â€¢ Accessories ${UI.escapeHTML(String(related.accessories ?? 0))} â€¢ Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}</div>
+        <div class="small text-muted mt-1">${UI.escapeHTML(String(asset.customId || '-'))}  |  ${UI.escapeHTML(String(asset.type || '-'))}  |  ${UI.escapeHTML(String(result.currentLocation || '-'))}</div>
+        <div class="small mt-2">Health Score: ${UI.escapeHTML(String(result.healthScore ?? '-'))}  |  Risk: ${UI.escapeHTML(String(risk.riskLevel || '-'))} (${UI.escapeHTML(String(risk.riskScore ?? '-'))})</div>
+        <div class="small mt-1">Kit Health: ${UI.escapeHTML(String(kit.label || kit.status || '-'))}  |  EOL: ${UI.escapeHTML(String(result.eolStatus?.status || '-'))}  |  Warranty: ${UI.escapeHTML(String(result.warrantyStatus?.status || '-'))}</div>
+        <div class="small mt-1">Related: Components ${UI.escapeHTML(String(related.components ?? 0))}  |  Accessories ${UI.escapeHTML(String(related.accessories ?? 0))}  |  Licenses ${UI.escapeHTML(String(related.licenses ?? 0))}</div>
         ${openIssues.length ? `<div class="small mt-2"><strong>Open Issues:</strong> ${UI.escapeHTML(openIssues.join(' | '))}</div>` : ''}
         ${result.recommendedAction ? `<div class="small mt-2"><strong>Recommended Action:</strong> ${UI.escapeHTML(String(result.recommendedAction))}</div>` : ''}
       </div>
@@ -12399,7 +12483,18 @@ function renderInventoryAiActionCard(entry = {}) {
 
   if (mode === 'black_box_timeline') {
     const allEvents = Array.isArray(result.events) ? result.events : [];
-    const events = allEvents.slice(0, 12);
+    const seenTimelineEvents = new Set();
+    const events = allEvents.filter((event) => {
+      const key = [
+        event?.timestamp || '',
+        event?.eventType || '',
+        event?.label || '',
+        event?.details || '',
+      ].map((value) => String(value || '').trim().toLowerCase()).join('|');
+      if (seenTimelineEvents.has(key)) return false;
+      seenTimelineEvents.add(key);
+      return true;
+    }).slice(0, 12);
     const grouped = allEvents.reduce((acc, event) => {
       const key = String(event?.eventGroup || 'all');
       acc[key] = (acc[key] || 0) + 1;
@@ -12408,10 +12503,10 @@ function renderInventoryAiActionCard(entry = {}) {
     return `
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Black Box Timeline</div>
-        <div class="small text-muted mt-1">Total Events: ${UI.escapeHTML(String(result.totalEvents ?? events.length))} â€¢ Returned: ${UI.escapeHTML(String(result.returnedEvents ?? events.length))}</div>
+        <div class="small text-muted mt-1">Total Events: ${UI.escapeHTML(String(result.totalEvents ?? events.length))}  |  Returned: ${UI.escapeHTML(String(result.returnedEvents ?? events.length))}</div>
         <div class="small mt-2"><strong>Groups:</strong> ${UI.escapeHTML(Object.entries(grouped).map(([k, v]) => `${k}: ${v}`).join(' | ') || '-')}</div>
         <div class="small mt-2">
-          ${events.map((event) => `${event.timestamp ? UI.formatDateTime(event.timestamp) : '-'} â€¢ ${event.label || event.eventType || 'Event'}`).join('<br>') || 'No events.'}
+          ${events.map((event) => `${event.timestamp ? UI.formatDateTime(event.timestamp) : '-'}  |  ${event.label || event.eventType || 'Event'}`).join('<br>') || 'No events.'}
         </div>
       </div>
     `;
@@ -12425,7 +12520,7 @@ function renderInventoryAiActionCard(entry = {}) {
       <div class="inventory-ai-chat-match mt-2">
         <div class="fw-semibold small">Action Plan (Review Before Execute)</div>
         <div class="small text-muted mt-1">${UI.escapeHTML(String(result.summary || entry.text || '-'))}</div>
-        <div class="small mt-2">Affected Items: ${UI.escapeHTML(String(affected))} â€¢ Proposed Changes: ${UI.escapeHTML(String(proposed))}</div>
+        <div class="small mt-2">Affected Items: ${UI.escapeHTML(String(affected))}  |  Proposed Changes: ${UI.escapeHTML(String(proposed))}</div>
         ${risks.length ? `<div class="small mt-2"><strong>Risks:</strong> ${UI.escapeHTML(risks.join(' | '))}</div>` : ''}
       </div>
     `;
@@ -13285,7 +13380,7 @@ function buildChatResponseFromMode(mode, payload) {
           category: item.type || 'Procurement',
           type: item.priority || '-',
           location: '-',
-          status: `Qty ${item.recommendedQuantity ?? '-'}${item.reason ? ` â€¢ ${item.reason}` : ''}`,
+          status: `Qty ${item.recommendedQuantity ?? '-'}${item.reason ? `  |  ${item.reason}` : ''}`,
         }))
         : [],
       suggestedActions: Array.isArray(payload?.recommendedPurchases)
@@ -13494,7 +13589,7 @@ function buildChatResponseFromMode(mode, payload) {
         category: payload?.riskScore?.riskLevel || payload?.kitHealth?.label || 'Digital Twin',
         type: `Health ${payload?.healthScore ?? '-'} / Risk ${payload?.riskScore?.riskScore ?? '-'}`,
         location: payload?.currentLocation || '-',
-        status: `Components ${related.components ?? 0} â€¢ Accessories ${related.accessories ?? 0} â€¢ Licenses ${related.licenses ?? 0}`,
+        status: `Components ${related.components ?? 0}  |  Accessories ${related.accessories ?? 0}  |  Licenses ${related.licenses ?? 0}`,
       }],
       suggestedActions: Array.isArray(payload?.openIssues) && payload.openIssues.length
         ? payload.openIssues.slice(0, 6)
@@ -14483,18 +14578,39 @@ window.commitImportAssets = async () => {
       filename,
       normalizedRows: importPreviewCache.normalizedRows,
     });
-    const parentAssets = Number(result.createdParentAssets || 0);
-    const componentsLinked = Number(result.createdComponents || 0);
-    const accessoryAssets = Number(result.createdAccessoryAssets || 0);
-    const licenseAssets = Number(result.createdLicenseAssets || 0);
-    const consumablesCreated = Number(result.createdConsumableAssets || 0);
-    const accessoryLinks = Number(result.createdAccessoryLinks || 0);
-    const licenseLinks = Number(result.createdLicenseLinks || 0);
-    const spareStockUpdated = Number(result.createdSpareStockItems || 0);
+    const parentAssets = Number(result.parentAssetsCreated ?? result.createdParentAssets ?? 0);
+    const componentsLinked = Number(result.componentsLinked ?? result.createdComponents ?? 0);
+    const accessoryAssets = Number(result.accessoryAssetsCreated ?? result.createdAccessoryAssets ?? 0);
+    const licenseAssets = Number(result.licenseAssetsCreated ?? result.createdLicenseAssets ?? 0);
+    const consumablesCreated = Number(result.consumablesCreated ?? result.createdConsumableAssets ?? 0);
+    const consumablesUpdated = Number(result.consumablesUpdated ?? 0);
+    const consumablesCommitted = Number(result.consumablesCommitted ?? (consumablesCreated + consumablesUpdated));
+    const accessoryLinks = Number(result.accessoryLinks ?? result.createdAccessoryLinks ?? 0);
+    const licenseLinks = Number(result.licenseLinks ?? result.createdLicenseLinks ?? 0);
+    const spareStockCreated = Number(result.spareStockCreated ?? 0);
+    const spareStockUpdated = Number(result.spareStockUpdated ?? 0);
+    const spareStockCommitted = Number(result.spareStockCommitted ?? result.createdSpareStockItems ?? (spareStockCreated + spareStockUpdated));
     const skippedRows = Array.isArray(result.skippedRows) ? result.skippedRows : [];
     const rowErrors = formatImportMessages(Array.isArray(result.errors) ? result.errors : [], 'error');
+    const rowErrorDetails = Array.isArray(result.rowErrors) ? result.rowErrors : [];
     const warnings = formatImportMessages(Array.isArray(result.warnings) ? result.warnings : [], 'warning');
-    const failedRows = skippedRows.length + rowErrors.length;
+    const failedRows = Number(
+      result.failedRows
+      ?? (rowErrorDetails.length || (skippedRows.length + rowErrors.length)),
+    );
+    const committedRows = Number(result.committedRows ?? (
+      parentAssets
+      + componentsLinked
+      + accessoryAssets
+      + licenseAssets
+      + consumablesCommitted
+      + spareStockCommitted
+    ));
+    const hasCommittedRows = committedRows > 0;
+    const isPartialSuccess = Boolean(result.partialSuccess || (hasCommittedRows && failedRows > 0));
+    const completionLabel = result.success
+      ? 'completed'
+      : (isPartialSuccess ? 'partially completed' : 'failed');
     const importBatchId = String(result.importBatchId || '-').trim() || '-';
     const importTimestamp = result.importTimestamp
       ? new Date(result.importTimestamp).toLocaleString()
@@ -14508,22 +14624,33 @@ window.commitImportAssets = async () => {
 
     if (summary) {
       summary.innerHTML = `
-        <div class="fw-semibold ${result.success ? 'text-success' : 'text-warning'}">Import ${result.success ? 'completed' : 'finished with issues'}.</div>
+        <div class="fw-semibold ${result.success ? 'text-success' : (isPartialSuccess ? 'text-warning' : 'text-danger')}">Import ${completionLabel}.</div>
         <div class="small text-muted mt-1">Batch ID: <code>${UI.escapeHTML(importBatchId)}</code> | Imported at: ${UI.escapeHTML(importTimestamp)}</div>
         <div class="small mt-1">Parent assets created: <strong>${UI.escapeHTML(String(parentAssets))}</strong></div>
         <div class="small">Components linked: <strong>${UI.escapeHTML(String(componentsLinked))}</strong></div>
         <div class="small">Accessories created: <strong>${UI.escapeHTML(String(accessoryAssets))}</strong> (linked: ${UI.escapeHTML(String(accessoryLinks))})</div>
         <div class="small">Licenses created: <strong>${UI.escapeHTML(String(licenseAssets))}</strong> (linked: ${UI.escapeHTML(String(licenseLinks))})</div>
-        <div class="small">Consumables created: <strong>${UI.escapeHTML(String(consumablesCreated))}</strong></div>
-        <div class="small">Spare stock rows updated/created: <strong>${UI.escapeHTML(String(spareStockUpdated))}</strong></div>
+        <div class="small">Consumables committed: <strong>${UI.escapeHTML(String(consumablesCommitted))}</strong> (created: ${UI.escapeHTML(String(consumablesCreated))}, updated: ${UI.escapeHTML(String(consumablesUpdated))})</div>
+        <div class="small">Spare stock committed: <strong>${UI.escapeHTML(String(spareStockCommitted))}</strong> (created: ${UI.escapeHTML(String(spareStockCreated))}, updated: ${UI.escapeHTML(String(spareStockUpdated))})</div>
         <div class="small">Warnings: <strong>${UI.escapeHTML(String(warnings.length))}</strong> | Failed rows: <strong>${UI.escapeHTML(String(failedRows))}</strong></div>
         ${
           warnings.length
             ? `<div class="small text-muted mt-1"><strong>Warnings:</strong> ${UI.escapeHTML(warnings.slice(0, 4).join(' | '))}</div>`
             : ''
         }
+        ${
+          rowErrorDetails.length
+            ? `<div class="small text-danger mt-2"><strong>Rows needing attention:</strong><ul class="mb-0 mt-1">${rowErrorDetails.map((entry) => {
+                const rowNumber = UI.escapeHTML(String(entry?.rowNumber ?? '-'));
+                const recordType = UI.escapeHTML(String(entry?.recordType || 'unknown').replace(/_/g, ' '));
+                const identity = UI.escapeHTML(entry?.assetTag || entry?.assetName || 'Unnamed row');
+                const reason = UI.escapeHTML(entry?.reason || 'Unknown error');
+                return `<li>Row ${rowNumber} (${recordType}, ${identity}): ${reason}</li>`;
+              }).join('')}</ul></div>`
+            : ''
+        }
       `;
-      summary.className = `small mt-2 ${result.success ? 'text-success' : 'text-danger'}`;
+      summary.className = `small mt-2 ${result.success ? 'text-success' : (isPartialSuccess ? 'text-warning' : 'text-danger')}`;
     }
     if (postCommitActions) {
       postCommitActions.classList.remove('d-none');
@@ -14531,9 +14658,9 @@ window.commitImportAssets = async () => {
       postCommitActions.dataset.importedAt = importTimestamp;
     }
     keepCommitDisabled = true;
-    const summaryMessage = `Import ${result.success ? 'completed' : 'finished with issues'}. Batch: ${importBatchId}. Parent: ${parentAssets}, Components linked: ${componentsLinked}, Accessories linked: ${accessoryLinks}, Licenses linked: ${licenseLinks}, Consumables: ${consumablesCreated}, Spare stock: ${spareStockUpdated}.`;
-    showMessage(summaryMessage, result.success ? 'success' : 'warning');
-    if (result.success) {
+    const summaryMessage = `Import ${completionLabel}. Batch: ${importBatchId}. Parent: ${parentAssets}, Components linked: ${componentsLinked}, Accessories linked: ${accessoryLinks}, Licenses linked: ${licenseLinks}, Consumables: ${consumablesCommitted}, Spare stock: ${spareStockCommitted}.`;
+    showMessage(summaryMessage, result.success ? 'success' : (isPartialSuccess ? 'warning' : 'error'));
+    if (hasCommittedRows) {
       if (importPreviewCache) importPreviewCache.canImport = false;
       const refreshTasks = [
         loadAssets(),
@@ -16008,3 +16135,4 @@ window.syncFilters = syncFilters;
 window.filterGroupTable = filterGroupTable;
 window.handleSearchKeyPress = handleSearchKeyPress;
 window.filterDetailsTable = filterDetailsTable;
+

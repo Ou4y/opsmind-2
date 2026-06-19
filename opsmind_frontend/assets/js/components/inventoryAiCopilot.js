@@ -14,7 +14,7 @@ function prefersReducedMotion() {
 
 function authHeaders(extra = {}) {
   return {
-    ...AuthService.getAuthHeaders(),
+    ...AuthService.getInventoryAuthHeaders(),
     ...extra,
   };
 }

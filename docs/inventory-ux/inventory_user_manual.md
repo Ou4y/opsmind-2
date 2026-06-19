@@ -149,15 +149,41 @@ Bulk Checkout:
 - Confirm checkout destination.
 - Optional inclusion of related items with parent assets.
 
-## 15) Known Limitations
+## 15) Approval-Required Inventory and Procurement Actions
+Some actions are intentionally not executed immediately. OpsMind evaluates the actor role, building/scope, action type, cost, quantity, criticality, cross-building impact, and reversibility.
+
+Routine examples such as QR scan, note/photo, minor status note, and assigned audit completion are completed and audit-logged without disturbing higher roles.
+
+Controlled examples may require approval:
+- Junior damage, missing, repair, or audit discrepancy reports usually route to Senior approval.
+- Medium procurement or ownership/assignment changes route to Building Supervisor approval.
+- Cross-building transfers, large warehouse dispatches, and high-value procurement route to Supervisor Chief approval.
+- Permanent delete, write-off, financial override, policy changes, and very high-cost procurement route to Admin approval.
+
+When approval is required:
+1. The action returns an approval request code.
+2. The relevant role/scope is notified through notification-service, for example `role:SENIOR:MAIN`.
+3. The action does not silently modify inventory.
+4. After approval, the user must explicitly retry/execute the original action with the approved `approvalRequestId`.
+5. Approval requests, decisions, and final execution attempts are audit-logged.
+
+Central Warehouse follows the same hierarchy but has special stock authority:
+- Warehouse Junior can prepare dispatch or draft receiving quantity.
+- Warehouse Senior validates small stock/receiving work.
+- Warehouse/Building Supervisor approves receiving impact and larger stock issue.
+- Supervisor Chief approves large, critical, emergency, or cross-building warehouse movement.
+
+## 16) Known Limitations
 Current limitations in this pass:
 - XLSX import is not enabled end-to-end; use CSV.
 - PDF/invoice extraction is assistive and requires manual review before commit.
 - Smart-locker hardware integration is future work.
 - AR/camera-dependent workflows are not required by this module.
 - AI/LLM paths may fall back to deterministic mode when unavailable.
+- Auth-service concrete approver lookup by role/building is future work; current approval notifications use role-scoped recipients.
+- Workflow-service generic Inventory approval tasks are future work; Inventory currently stores local approval requests and decisions.
 
-## 16) Troubleshooting
+## 17) Troubleshooting
 ### Invalid category
 - Cause: category value not supported.
 - Fix: use supported category vocabulary from template/manual.

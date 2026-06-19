@@ -8,6 +8,7 @@ OpsMind Inventory manages university assets across lifecycle stages from intake 
 - CMDB views, Digital Twin, Black Box Timeline, Asset Map, telemetry-aware lifecycle signals.
 - Operations workflows (transfer with related items, loaners, audit board, bulk checkout).
 - Inventory AI assistant and report actions (daily brief, executive dashboard, monthly report, risk/procurement guidance).
+- Inventory/Procurement approval governance with approval policies, approval requests, approval decisions, audit logs, role-scoped notifications, and explicit approved-action retry.
 
 Primary implementation evidence:
 - Frontend page and UX flows: `opsmind_frontend/pages/inventory.html`, `opsmind_frontend/assets/js/pages/inventory.js`
@@ -20,6 +21,12 @@ Primary implementation evidence:
 - Supervisor/Senior Admin: review/approval and cross-team coordination.
 - Procurement Officer: stock and replacement planning, procurement prioritization.
 - Auditor: verification, mismatch handling, missing asset tracking.
+- Approval roles for Inventory/Procurement governance:
+  - Junior: field execution and request/report submission.
+  - Senior: building operational validation.
+  - Building Supervisor: building-level approval.
+  - Supervisor Chief: cross-building/high-impact approval.
+  - Admin: system-critical/destructive/financial override approval.
 
 ## 3) UX Goals
 - Reduce manual entry and repeated corrections.
@@ -27,6 +34,7 @@ Primary implementation evidence:
 - Improve operational visibility (CMDB, map, timeline, AI summary).
 - Support asset lifecycle decisions (EOL, risk, replacement, maintenance).
 - Make admin and technician workflows faster and safer.
+- Keep routine low-risk work audit-only while escalating risky, costly, cross-scope, or irreversible actions.
 
 ## 4) Evaluation Against 10 UX Characteristics
 
@@ -115,6 +123,8 @@ Primary implementation evidence:
   - Preview validation gates commit.
   - AI repair suggestions are reviewable and not auto-committed to DB.
   - Confirm Import remains blocked when validation errors exist.
+  - Controlled Inventory/Procurement actions create approval requests instead of silently mutating data.
+  - Approved controlled actions require explicit retry with `approvalRequestId`.
 - Gaps:
   - Full rollback is not currently available.
 - Recommendation: Keep prevention-first model, then add rollback safely.
@@ -137,6 +147,8 @@ Primary implementation evidence:
 - Wireframe notes: completed in `wireframe_notes.md`.
 - Gamification and motivation framing: documented only (light-touch), no overbuild.
 - UX testing/SUS: test plan and SUS questionnaire completed in docs.
+- Inventory/Procurement RBAC approval workflow: documented in `inventory_rbac_approval_policy.md`.
+- Auth/workflow/notification bridge review: documented in `inventory_auth_workflow_bridge_review.md`.
 
 ## 6) Import Rollback and Batch History Decision
 - Current state:

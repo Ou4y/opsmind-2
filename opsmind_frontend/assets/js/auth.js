@@ -33,7 +33,7 @@ function resolveTechnicianLevel(user) {
     }
 
     const role = String(user?.role || '').toUpperCase();
-    if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'ADMIN'].includes(role)) {
+    if (['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF', 'ADMIN'].includes(role)) {
         return role;
     }
 
@@ -43,7 +43,21 @@ function resolveTechnicianLevel(user) {
 function isTechnicianUser(user) {
     const role = String(user?.role || '').toUpperCase();
     const roles = normalizeRoles(user);
-    return role === 'TECHNICIAN' || roles.includes('TECHNICIAN');
+    const level = resolveTechnicianLevel(user);
+    return role === 'TECHNICIAN' ||
+        roles.includes('TECHNICIAN') ||
+        ['JUNIOR', 'SENIOR', 'SUPERVISOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'CHIEF'].includes(level || '');
+}
+
+function isLocalInventoryQaUser(user) {
+    const email = String(user?.email || '').trim().toLowerCase();
+    return [
+        'qa.junior@opsmind.local',
+        'qa.senior@opsmind.local',
+        'qa.supervisor@opsmind.local',
+        'qa.chief@opsmind.local',
+        'qa.admin@opsmind.local'
+    ].includes(email);
 }
 
 /**
@@ -51,6 +65,11 @@ function isTechnicianUser(user) {
  * @returns {string} Dashboard URL based on user role
  */
 function getRoleBasedDashboard() {
+    const user = AuthService.getCurrentUser();
+    if (isLocalInventoryQaUser(user)) {
+        return '/pages/inventory.html';
+    }
+
     const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
     if (context.dashboardType === 'unknown') {
         sessionStorage.setItem('opsmind_error', 'Technician profile not found. Please contact admin.');
@@ -273,6 +292,13 @@ async function initLoginPage() {
         }
 
         const existingLevel = resolveTechnicianLevel(user);
+        if (isLocalInventoryQaUser(user) && existingLevel) {
+            return {
+                ...user,
+                localInventoryQaOnly: true
+            };
+        }
+
         if (existingLevel && (user?.workflowUserId || user?.workflow_user_id || user?.user_id)) {
             return user;
         }

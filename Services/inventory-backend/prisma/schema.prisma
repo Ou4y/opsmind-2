@@ -997,6 +997,143 @@ model ProcurementRecommendationReview {
   @@map("procurement_recommendation_reviews")
 }
 
+model InventoryApprovalPolicy {
+  id                   String   @id @default(uuid())
+  policyKey            String   @unique
+  actionType           String
+  riskLevel            String
+  scopeType            String
+  actorRole            String
+  minAmount            Decimal?
+  maxAmount            Decimal?
+  minQuantity          Int?
+  maxQuantity          Int?
+  assetCriticality     String?
+  requiresApproval     Boolean  @default(false)
+  approverRole         String?
+  requiresDualApproval Boolean  @default(false)
+  autoApprove          Boolean  @default(false)
+  notifyOnly           Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([actionType])
+  @@index([riskLevel])
+  @@index([scopeType])
+  @@index([actorRole])
+  @@index([approverRole])
+  @@index([isActive])
+  @@map("inventory_approval_policies")
+}
+
+model InventoryApprovalRequest {
+  id                    String   @id @default(uuid())
+  requestCode           String   @unique
+  actionType            String
+  riskLevel             String
+  status                String   @default("PENDING")
+  entityType            String
+  entityId              String?
+  entityLabel           String?
+  buildingCode          String?
+  targetBuildingCode    String?
+  amount                Decimal?
+  quantity              Int?
+  assetCriticality      String?
+  requestedByUserId     String
+  requestedByRole       String
+  requestedByName       String?
+  approverRole          String?
+  approverUserId        String?
+  approverBuildingCode  String?
+  reason                String?
+  payloadJson           Json?
+  notificationWarnings  Json?
+  expiresAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  decisions             InventoryApprovalDecision[]
+  auditLogs             InventoryAuditLog[]
+
+  @@index([actionType])
+  @@index([status])
+  @@index([buildingCode])
+  @@index([targetBuildingCode])
+  @@index([requestedByUserId])
+  @@index([approverRole])
+  @@index([approverUserId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("inventory_approval_requests")
+}
+
+model InventoryApprovalDecision {
+  id                String   @id @default(uuid())
+  approvalRequestId String
+  decidedByUserId   String
+  decidedByRole     String
+  decision          String
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  approvalRequest   InventoryApprovalRequest @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+
+  @@index([approvalRequestId, createdAt])
+  @@index([decision, createdAt])
+  @@map("inventory_approval_decisions")
+}
+
+model InventoryAuditLog {
+  id                String   @id @default(uuid())
+  entityType        String
+  entityId          String?
+  actionType        String
+  riskLevel         String?
+  performedByUserId String
+  performedByRole   String
+  buildingCode      String?
+  targetBuildingCode String?
+  approvalRequestId String?
+  beforeJson        Json?
+  afterJson         Json?
+  metadataJson      Json?
+  createdAt         DateTime @default(now())
+
+  approvalRequest   InventoryApprovalRequest? @relation(fields: [approvalRequestId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actionType])
+  @@index([riskLevel])
+  @@index([performedByUserId])
+  @@index([performedByRole])
+  @@index([buildingCode])
+  @@index([targetBuildingCode])
+  @@index([approvalRequestId])
+  @@index([createdAt])
+  @@map("inventory_audit_logs")
+}
+
+model InventoryUserScope {
+  id              String   @id @default(uuid())
+  userId          String
+  role            String
+  buildingCode    String?
+  reportsToUserId String?
+  isActive        Boolean  @default(true)
+  source          String   @default("demo_fallback")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, role, buildingCode])
+  @@index([role])
+  @@index([buildingCode])
+  @@index([reportsToUserId])
+  @@index([isActive])
+  @@map("inventory_user_scopes")
+}
+
 model CostCenter {
   id               String   @id @default(uuid())
   code             String   @unique

@@ -27,6 +27,19 @@ import {
 } from './config/constants';
 import { notificationService } from './services/NotificationService';
 import {
+    canUserDecideInventoryApproval,
+    classifyMaintenanceApprovalAction,
+    createInventoryApprovalRequest,
+    ensureDefaultInventoryApprovalPolicies,
+    evaluateInventoryApprovalPolicy,
+    getCurrentInventoryUserContext,
+    normalizeBuildingCode,
+    normalizeKnownBuildingCode,
+    requireApprovalOrRespond,
+    sendInventoryApprovalNotification,
+    writeInventoryAuditLog,
+} from './services/inventoryApprovalService';
+import {
     getLatestPersistedLifespanPrediction,
     getLatestSpecSnapshot,
     getLatestTelemetrySample,
@@ -425,29 +438,38 @@ const PROCUREMENT_ABC_CLASS_FROM_DB: Record<InventoryAbcClass, 'A' | 'B' | 'C' |
     UNCLASSIFIED: 'Unclassified',
 };
 
-// ✅ FIXED: REMOVED HARDCODED OVERRIDE
+// âœ… FIXED: REMOVED HARDCODED OVERRIDE
 if (!process.env.RABBITMQ_URI) {
-    console.warn("⚠️ No RABBITMQ_URI found in ENV. Defaulting to localhost.");
+    console.warn("âš ï¸ No RABBITMQ_URI found in ENV. Defaulting to localhost.");
     process.env.RABBITMQ_URI = "amqp://admin:password123@localhost:5672";
 }
 
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-user-id',
+        'x-user-email',
+        'x-user-role',
+        'x-user-building',
+        'x-user-name',
+        'x-reports-to-user-id'
+    ]
 }));
 
 app.use(express.json());
 
 // --- REQUEST LOGGER ---
 app.use((req: Request, res: Response, next: NextFunction) => {
-    console.log(`📡 [${new Date().toISOString()}] ${req.method} ${req.url}`);
+    console.log(`ðŸ“¡ [${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
 });
 
 // --- DATABASE CONNECTION ---
 // Prisma handles connection automatically via DATABASE_URL env var
-console.log('✅ [API] Prisma Client initialized');
+console.log('âœ… [API] Prisma Client initialized');
 
 // --- ENUM MAPPING HELPERS ---
 function mapToAssetType(value: string): AssetType {
@@ -1468,10 +1490,11 @@ async function validateImportRows(rows: NormalizedImportRow[]): Promise<{
 
     normalizedRows.forEach((row) => {
         if (!row.recordType) row.errors.push('Invalid Record Type');
-        if (row.serialNumber && existingSerialSet.has(row.serialNumber.toLowerCase())) {
+        const supportsImportUpsert = row.recordType === 'consumable' || row.recordType === 'spare_stock';
+        if (!supportsImportUpsert && row.serialNumber && existingSerialSet.has(row.serialNumber.toLowerCase())) {
             row.errors.push(`Serial number already exists in DB (${row.serialNumber})`);
         }
-        if (row.assetTag && existingTagSet.has(row.assetTag.toLowerCase())) {
+        if (!supportsImportUpsert && row.assetTag && existingTagSet.has(row.assetTag.toLowerCase())) {
             row.errors.push(`Asset tag already exists in DB (${row.assetTag})`);
         }
         if (row.lifecycleStatus) {
@@ -3447,7 +3470,7 @@ function buildAiHealthSummaryFallback(params: {
     const assetSpecs = ((params.asset.specifications as Record<string, any>) || {});
     const latestChanges = (params.timeline || []).slice(0, 6).map((entry) => {
         const sourceName = entry.sourceItemName || entry.sourceItemCustomId || 'Related item';
-        const reason = entry.reason ? ` — Reason: ${entry.reason}` : '';
+        const reason = entry.reason ? ` â€” Reason: ${entry.reason}` : '';
         return `${sourceName}: ${entry.event}${reason}`;
     });
     const componentIssues = (params.timeline || [])
@@ -3754,7 +3777,7 @@ function tokenizeAssistantAssetLookupQuery(query: string): string[] {
 function extractAssistantAssetQuery(query: string): string | null {
     const raw = String(query || '').trim();
     if (!raw) return null;
-    const quoted = raw.match(/["'`“”]([^"'`“”]{3,160})["'`“”]/);
+    const quoted = raw.match(/["'`â€œâ€]([^"'`â€œâ€]{3,160})["'`â€œâ€]/);
     if (quoted && quoted[1]) return quoted[1].trim();
 
     const phraseMatch = raw.match(/\b(?:of|for|about)\s+(.{3,180})$/i);
@@ -4031,7 +4054,7 @@ function buildAssistantAssetFocusedDeterministicResult(
 function classifyAiQueryIntent(query: string): string {
     const q = String(query || '')
         .toLowerCase()
-        .replace(/[’‘`´]/g, "'")
+        .replace(/[â€™â€˜`Â´]/g, "'")
         .replace(/\s+/g, ' ')
         .trim();
     if (!q.trim()) return 'unknown';
@@ -4039,9 +4062,22 @@ function classifyAiQueryIntent(query: string): string {
 
     if (
         has('what needs attention', "what need's attention", 'what should i do next', 'what is urgent', 'what are todays priorities', "what are today's priorities", 'today priorities', 'todays priorities')
+        || has('next best action', 'next best actions')
         || /(?:explain|summarize|read).*(?:command center|dashboard|this page)/.test(q)
         || /(?:urgent|priority|priorities).*(?:today|command center|dashboard|inventory)/.test(q)
     ) return 'dashboard_attention';
+    if (
+        has('inventory 360', 'inventory360', 'explain inventory 360')
+        || /(?:explain|summari[sz]e).*(?:whole inventory|inventory 360|inventory360|full inventory)/.test(q)
+    ) return 'inventory_360_summary';
+    if (
+        has('stale telemetry', 'unknown telemetry', 'telemetry assets are stale', 'devices have stale telemetry')
+        || /(?:telemetry|last seen|last-seen).*(?:stale|unknown|offline|not monitored|not_monitored)/.test(q)
+    ) return 'telemetry_freshness';
+    if (
+        /\bdepartment\b/.test(q)
+        && /(?:summari[sz]e|health|risk|inventory|assets|eol|warranty|missing|audit|procurement|unassigned|computer science|engineering|pharmacy)/.test(q)
+    ) return 'department_summary';
     if (
         has('where am i', 'how do i use this', 'explain this page', 'what can i do here', 'help me use this')
         || /(?:explain|help).*(?:this page|this screen|workspace)/.test(q)
@@ -4140,6 +4176,9 @@ function buildInventoryInsightConfidence(params: {
 
 const FACTUAL_ASSISTANT_INTENTS = new Set([
     'dashboard_attention',
+    'department_summary',
+    'telemetry_freshness',
+    'inventory_360_summary',
     'procurement_status',
     'cost_budget',
     'data_quality',
@@ -4157,6 +4196,9 @@ const FACTUAL_ASSISTANT_INTENTS = new Set([
 
 const ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION = new Set([
     'dashboard_attention',
+    'department_summary',
+    'telemetry_freshness',
+    'inventory_360_summary',
     'procurement_status',
     'cost_budget',
     'data_quality',
@@ -4189,6 +4231,9 @@ const ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION = new Set([
 
 const ASSISTANT_INTENTS_DETERMINISTIC_ONLY = new Set([
     'dashboard_attention',
+    'department_summary',
+    'telemetry_freshness',
+    'inventory_360_summary',
     'procurement_status',
     'cost_budget',
     'data_quality',
@@ -4204,6 +4249,9 @@ const ASSISTANT_INTENTS_DETERMINISTIC_ONLY = new Set([
 
 const ASSISTANT_ROUTED_ACTION_BY_INTENT: Record<string, { action: string; endpoint: string }> = {
     dashboard_attention: { action: 'dashboard_attention', endpoint: '/api/inventory/procurement/board + /api/assets' },
+    department_summary: { action: 'department_summary', endpoint: '/api/assets?department=:department' },
+    telemetry_freshness: { action: 'telemetry_freshness', endpoint: '/api/assets + telemetry evidence' },
+    inventory_360_summary: { action: 'inventory_360_summary', endpoint: '/api/inventory/executive-dashboard' },
     procurement_status: { action: 'procurement_status', endpoint: '/api/inventory/procurement/board' },
     cost_budget: { action: 'finance_summary', endpoint: '/api/inventory/procurement/finance/summary' },
     data_quality: { action: 'missing_data', endpoint: '/api/inventory/ai/missing-data' },
@@ -4258,6 +4306,9 @@ function deriveAssistantConfidence(params: {
     const actionIntent = String(params.intent || '').toLowerCase();
     const highConfidenceActionIntents = new Set([
         'dashboard_attention',
+        'department_summary',
+        'telemetry_freshness',
+        'inventory_360_summary',
         'procurement_status',
         'cost_budget',
         'data_quality',
@@ -4429,6 +4480,53 @@ function buildAssistantLlmInput(result: InventoryAssistantDeterministicResult, q
     };
 }
 
+function assistantAssetMissingFieldCount(asset: Asset): number {
+    const specs = readAssetSpecifications(asset);
+    return [
+        normalizeSerialValue(asset.serialNumber),
+        normalizeSerialValue(asset.assetTag),
+        normalizeSerialValue(asset.department),
+        normalizeSerialValue(asset.location),
+        asset.purchaseDate ? 'purchaseDate' : '',
+        asset.warrantyEndDate ? 'warrantyEndDate' : '',
+        Number(asset.purchaseCost || 0) > 0 ? 'purchaseCost' : '',
+        parseBooleanFlag(specs.telemetryEnabled) || parseBooleanFlag(specs.telemetryApplicable) || parseBooleanFlag(specs.trackWorkingHours) ? 'telemetryConfigured' : '',
+    ].filter((value) => !value).length;
+}
+
+function assistantAssetNearEol(asset: Asset, now = new Date()): boolean {
+    const lifecycle = normalizeLifecycleKey(asset.lifecycleStatus);
+    if (lifecycle === 'eol_expired' || lifecycle === 'end_of_life' || lifecycle === 'retired') return true;
+    if (!asset.warrantyEndDate) return false;
+    const days = (asset.warrantyEndDate.getTime() - now.getTime()) / 86400000;
+    return days <= 180;
+}
+
+function assistantTelemetryInfo(asset: Asset): { configured: boolean; stale: boolean; status: string; reason: string } {
+    const specs = readAssetSpecifications(asset);
+    const configured = parseBooleanFlag(specs.telemetryApplicable)
+        || parseBooleanFlag(specs.telemetryEnabled)
+        || parseBooleanFlag(specs.trackWorkingHours)
+        || isTelemetryCapableAsset({ type: asset.type, category: asset.category, name: asset.name });
+    const status = String(specs.telemetryStatus || specs.operationalState || '').trim().toLowerCase();
+    const lastSeenRaw = specs.lastSeenAt || specs.lastSeen || specs.telemetryLastSeen || specs.lastTelemetryAt || specs.wifiLastSeen;
+    const lastSeen = parseOptionalDateInput(lastSeenRaw);
+    const ageHours = lastSeen ? (Date.now() - lastSeen.getTime()) / 3600000 : null;
+    const stale = Boolean(configured && (
+        !lastSeen
+        || (ageHours !== null && ageHours > 24)
+        || ['offline', 'unknown', 'not_monitored', 'not monitored', 'stale'].includes(status)
+    ));
+    const reason = !configured
+        ? 'not telemetry-enabled'
+        : !lastSeen
+            ? 'no last-seen telemetry timestamp'
+            : ageHours !== null && ageHours > 24
+                ? `last seen about ${Math.round(ageHours)} hour(s) ago`
+                : (status || 'recent telemetry evidence');
+    return { configured, stale, status: status || (configured ? 'unknown' : 'not_applicable'), reason };
+}
+
 function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: string, pageContext: Record<string, any> = {}): InventoryAssistantDeterministicResult {
     const intent = classifyAiQueryIntent(query);
     const now = new Date();
@@ -4528,6 +4626,131 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             excludedCategories: [],
             partialFailure,
         };
+    } else if (intent === 'department_summary') {
+        scannedCount = snapshot.assets.length;
+        const departmentLabels = Array.from(new Set(snapshot.assets.map((asset) => mapDepartmentToFriendly(asset.department)).filter(Boolean)));
+        const normalizedQuery = normalizeValue(query);
+        const matchedDepartment = departmentLabels.find((label) => normalizedQuery.includes(normalizeValue(label)))
+            || (normalizedQuery.includes('unassigned') ? 'Unassigned' : '');
+        const departmentAssets = matchedDepartment
+            ? snapshot.assets.filter((asset) => mapDepartmentToFriendly(asset.department).toLowerCase() === matchedDepartment.toLowerCase())
+            : [];
+        const scopedAssets = departmentAssets.length ? departmentAssets : snapshot.assets;
+        const scopedIds = new Set(scopedAssets.map((asset) => asset.customId));
+        const riskRows = buildAssetRiskScores({
+            ...snapshot,
+            assets: scopedAssets,
+            components: snapshot.components.filter((row) => scopedIds.has(row.parentAssetId) || (row.childAssetId ? scopedIds.has(row.childAssetId) : false)),
+            maintenance: snapshot.maintenance.filter((row) => scopedIds.has(row.assetId)),
+            lifecycleEvents: snapshot.lifecycleEvents.filter((row) => scopedIds.has(row.assetId)),
+        }).rows;
+        const highRisk = riskRows.filter((row) => ['critical', 'high'].includes(String(row.riskLevel || '').toLowerCase())).length;
+        const nearEol = scopedAssets.filter((asset) => assistantAssetNearEol(asset, now)).length;
+        const missingRows = scopedAssets.filter((asset) => assistantAssetMissingFieldCount(asset) > 0);
+        const auditIssues = snapshot.lifecycleEvents.filter((row) => scopedIds.has(row.assetId) && normalizeValue(row.eventType).includes('audit')).length;
+        const telemetryStale = scopedAssets.filter((asset) => assistantTelemetryInfo(asset).stale).length;
+        const averageHealth = riskRows.length
+            ? Math.max(0, Math.round(100 - (riskRows.reduce((sum, row) => sum + Number(row.riskScore || 0), 0) / riskRows.length)))
+            : 100;
+        scopedAssets.slice(0, 16).forEach((asset) => {
+            const reasons = [
+                assistantAssetNearEol(asset, now) ? 'EOL/warranty signal' : '',
+                assistantAssetMissingFieldCount(asset) ? 'missing data' : '',
+                assistantTelemetryInfo(asset).stale ? 'stale telemetry' : '',
+            ].filter(Boolean);
+            if (reasons.length) matchedItems.push(buildAiMatchedItem(asset, reasons.join(', ')));
+        });
+        filtersUsed.department = matchedDepartment || 'all';
+        filtersUsed.departmentSummary = { assetCount: scopedAssets.length, averageHealth, highRisk, nearEol, missingData: missingRows.length, auditIssues, staleTelemetry: telemetryStale };
+        suggestedActions.push('Open Inventory filtered to this department.', 'Fix missing asset data before procurement decisions.', 'Review high-risk, EOL, and stale telemetry evidence first.');
+        return {
+            answer: `${matchedDepartment || 'Inventory department'} summary: ${scopedAssets.length} asset(s), average health ${averageHealth}/100, ${highRisk} high-risk item(s), ${nearEol} EOL/warranty signal(s), ${missingRows.length} missing-data record(s), ${auditIssues} audit signal(s), and ${telemetryStale} stale/unknown telemetry item(s). Recommended action: inspect high-risk/EOL assets first, then clean missing data and verify telemetry registration.`,
+            matchedItems: matchedItems.slice(0, 24),
+            filtersUsed,
+            confidence: scopedAssets.length ? 'high' : 'medium',
+            missingData: missingRows.length ? ['serialNumber', 'assetTag', 'location', 'purchaseDate', 'warrantyEndDate', 'purchaseCost', 'telemetryEvidence'] : [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount: missingRows.length,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'telemetry_freshness') {
+        scannedCount = snapshot.assets.length;
+        const telemetryRows = snapshot.assets
+            .map((asset) => ({ asset, telemetry: assistantTelemetryInfo(asset) }))
+            .filter((row) => row.telemetry.configured);
+        const staleRows = telemetryRows.filter((row) => row.telemetry.stale);
+        staleRows.slice(0, 24).forEach((row) => {
+            matchedItems.push(buildAiMatchedItem(row.asset, `Telemetry review: ${row.telemetry.reason}`));
+        });
+        filtersUsed.telemetry = {
+            telemetryCapable: telemetryRows.length,
+            staleOrUnknown: staleRows.length,
+            examples: staleRows.slice(0, 5).map((row) => ({ assetId: row.asset.customId, reason: row.telemetry.reason })),
+        };
+        suggestedActions.push('Verify monitoring registration for stale/unknown devices.', 'Update last-seen telemetry only from a trusted source.', 'Treat stale telemetry as lower confidence, not automatic failure.');
+        return {
+            answer: `Telemetry freshness summary: ${staleRows.length} of ${telemetryRows.length} telemetry-capable asset(s) are stale or unknown. This matters because health, EOL, and risk confidence drops when last-seen evidence is missing or old. Recommended action: verify device registration, monitoring integration, and recent last-seen timestamps before escalating procurement or maintenance.`,
+            matchedItems,
+            filtersUsed,
+            confidence: telemetryRows.length ? 'high' : 'medium',
+            missingData: staleRows.length ? ['freshTelemetryLastSeen'] : [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount: staleRows.length,
+            excludedCategories: [],
+            partialFailure,
+        };
+    } else if (intent === 'inventory_360_summary') {
+        scannedCount = snapshot.assets.length;
+        const byCategory: Record<string, number> = {};
+        snapshot.assets.forEach((asset) => {
+            const category = String(asset.category || 'asset').toLowerCase();
+            byCategory[category] = (byCategory[category] || 0) + 1;
+        });
+        const riskRows = buildAssetRiskScores(snapshot).rows;
+        const highRisk = riskRows.filter((row) => ['critical', 'high'].includes(String(row.riskLevel || '').toLowerCase())).length;
+        const nearEol = snapshot.assets.filter((asset) => assistantAssetNearEol(asset, now)).length;
+        const missingRows = snapshot.assets.filter((asset) => assistantAssetMissingFieldCount(asset) > 0);
+        const lowStock = snapshot.spareStock.filter((item) => Number(item.quantityAvailable || 0) <= Number(item.reorderPoint ?? item.minimumStockLevel ?? 0)).length;
+        const telemetryStale = snapshot.assets.filter((asset) => assistantTelemetryInfo(asset).stale).length;
+        filtersUsed.inventory360 = {
+            totalRecords: snapshot.assets.length,
+            parentAssets: byCategory.asset || 0,
+            components: byCategory.component || snapshot.components.length,
+            accessories: byCategory.accessory || 0,
+            consumables: byCategory.consumable || 0,
+            spareStock: snapshot.spareStock.length,
+            licenses: byCategory.license || 0,
+            highRisk,
+            nearEol,
+            missingData: missingRows.length,
+            lowStock,
+            staleTelemetry: telemetryStale,
+        };
+        suggestedActions.push('Open Parent Assets for high-risk/EOL review.', 'Open Procurement for low-stock and replacement planning.', 'Run data quality fixes for missing cost, warranty, serial, and telemetry evidence.');
+        return {
+            answer: `Inventory 360 summary: ${snapshot.assets.length} asset record(s), including ${filtersUsed.inventory360.parentAssets} parent asset(s), ${filtersUsed.inventory360.components} component record(s), ${filtersUsed.inventory360.accessories} accessories, ${filtersUsed.inventory360.consumables} consumables, ${filtersUsed.inventory360.spareStock} spare-stock item(s), and ${filtersUsed.inventory360.licenses} license record(s). Operational signals: ${highRisk} high-risk, ${nearEol} EOL/warranty, ${lowStock} low-stock, ${telemetryStale} stale telemetry, and ${missingRows.length} missing-data item(s). Top recommendation: resolve high-risk/EOL and low-stock blockers first, then clean evidence gaps that weaken AI confidence.`,
+            matchedItems: riskRows.slice(0, 12).map((row) => {
+                const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
+                return asset ? buildAiMatchedItem(asset, `Risk ${row.riskLevel} (${row.riskScore})`) : null;
+            }).filter(Boolean) as InventoryAiMatchedItem[],
+            filtersUsed,
+            confidence: scannedCount ? 'high' : 'medium',
+            missingData: missingRows.length ? ['serialNumber', 'assetTag', 'purchaseDate', 'warrantyEndDate', 'purchaseCost', 'telemetryEvidence'] : [],
+            suggestedActions,
+            supported: true,
+            intent,
+            scannedCount,
+            missingCount: missingRows.length,
+            excludedCategories: [],
+            partialFailure,
+        };
     } else if (intent === 'help_page_explain') {
         scannedCount = snapshot.assets.length;
         suggestedActions.push(
@@ -4536,7 +4759,7 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             'Use Procurement to manage requests, quotes, POs, receiving, finance, suppliers, ABC, EOQ/MOQ, and FIFO.',
         );
         return {
-            answer: 'This page is the Inventory operations cockpit. It combines asset health, risk, EOL, stock, procurement, finance, alerts, audit readiness, and AI insight. Ask “what needs attention today” for an action summary, or ask for a specific asset tag when you want an Asset 360 lookup.',
+            answer: 'This page is the Inventory operations cockpit. It combines asset health, risk, EOL, stock, procurement, finance, alerts, audit readiness, and AI insight. Ask "what needs attention today" for an action summary, or ask for a specific asset tag when you want an Asset 360 lookup.',
             matchedItems: [],
             filtersUsed,
             confidence: 'high',
@@ -5219,6 +5442,9 @@ function applyAssistantQueryFilters(
     const intentKey = String(result.intent || '').toLowerCase();
     const preserveAnswerIntents = new Set([
         'dashboard_attention',
+        'department_summary',
+        'telemetry_freshness',
+        'inventory_360_summary',
         'procurement_status',
         'cost_budget',
         'data_quality',
@@ -9237,6 +9463,241 @@ app.use('/api/tickets', ticketRoutes);
 app.use('/api/config', configRoutes);
 app.use('/api/inventory-ai', inventoryAiReadinessRoutes);
 
+app.get('/api/inventory/rbac/me', inventoryReadGuard, async (req: Request, res: Response) => {
+    const user = getCurrentInventoryUserContext(req);
+    res.json({
+        user,
+        hierarchy: ['JUNIOR', 'SENIOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF', 'ADMIN'],
+        buildings: ['MAIN', 'N', 'K', 'S', 'R', 'PHARMACY', 'CENTRAL_WAREHOUSE'],
+        authEnforced: INVENTORY_ENFORCE_AUTH,
+    });
+});
+
+app.post('/api/inventory/approval/evaluate', inventoryReadGuard, async (req: Request, res: Response) => {
+    const user = getCurrentInventoryUserContext(req);
+    const evaluation = evaluateInventoryApprovalPolicy(user, {
+        actionType: normalizeSerialValue(req.body?.actionType) || 'inventory.view',
+        entityType: normalizeSerialValue(req.body?.entityType) || 'inventory',
+        entityId: normalizeSerialValue(req.body?.entityId),
+        entityLabel: normalizeSerialValue(req.body?.entityLabel),
+        buildingCode: normalizeBuildingCode(req.body?.buildingCode || req.body?.building),
+        targetBuildingCode: normalizeBuildingCode(req.body?.targetBuildingCode || req.body?.targetBuilding),
+        amount: parseOptionalNumberInput(req.body?.amount),
+        quantity: parseOptionalIntegerInput(req.body?.quantity),
+        assetCriticality: normalizeSerialValue(req.body?.assetCriticality),
+        reason: normalizeSerialValue(req.body?.reason),
+        payloadJson: req.body?.payloadJson && typeof req.body.payloadJson === 'object' ? req.body.payloadJson : null,
+    });
+    res.json({ user, evaluation });
+});
+
+app.post('/api/inventory/approvals', inventoryAdminGuard, async (req: Request, res: Response) => {
+    try {
+        const action = {
+            actionType: normalizeSerialValue(req.body?.actionType) || 'inventory.view',
+            entityType: normalizeSerialValue(req.body?.entityType) || 'inventory',
+            entityId: normalizeSerialValue(req.body?.entityId),
+            entityLabel: normalizeSerialValue(req.body?.entityLabel),
+            buildingCode: normalizeBuildingCode(req.body?.buildingCode || req.body?.building),
+            targetBuildingCode: normalizeBuildingCode(req.body?.targetBuildingCode || req.body?.targetBuilding),
+            amount: parseOptionalNumberInput(req.body?.amount),
+            quantity: parseOptionalIntegerInput(req.body?.quantity),
+            assetCriticality: normalizeSerialValue(req.body?.assetCriticality),
+            reason: normalizeSerialValue(req.body?.reason),
+            payloadJson: req.body?.payloadJson && typeof req.body.payloadJson === 'object' ? req.body.payloadJson : null,
+        };
+        const user = getCurrentInventoryUserContext(req);
+        const evaluation = evaluateInventoryApprovalPolicy(user, action);
+        if (!evaluation.actionAllowed) {
+            await writeInventoryAuditLog(prisma, user, action, evaluation, null, { denied: true, reason: evaluation.reason });
+            return res.status(403).json({ approvalRequired: false, allowed: false, message: evaluation.reason, evaluation });
+        }
+        if (!evaluation.approvalRequired) {
+            await writeInventoryAuditLog(prisma, user, action, evaluation, null, { autoApproved: true });
+            return res.json({ approvalRequired: false, autoApproved: true, user, evaluation });
+        }
+        const approvalRequest = await createInventoryApprovalRequest(prisma, user, action, evaluation);
+        const notify = await sendInventoryApprovalNotification('approval_requested', {
+            approvalRequestId: approvalRequest.id,
+            requestCode: approvalRequest.requestCode,
+            approverRole: evaluation.approverRole,
+            buildingCode: approvalRequest.buildingCode,
+            requester: { userId: user.userId, name: user.displayName, role: user.role },
+            actionType: action.actionType,
+            entityLabel: action.entityLabel,
+            amount: action.amount,
+            quantity: action.quantity,
+            message: `Approval requested for ${action.entityLabel || action.actionType}`,
+        });
+        if (!notify.ok) {
+            await prisma.inventoryApprovalRequest.update({
+                where: { id: approvalRequest.id },
+                data: { notificationWarnings: { warning: notify.warning } },
+            });
+        }
+        return res.status(201).json({
+            approvalRequired: true,
+            approvalRequest,
+            evaluation,
+            notificationWarning: notify.warning || null,
+        });
+    } catch (error: any) {
+        return res.status(500).json({ message: 'Failed to create approval request', error: error.message });
+    }
+});
+
+app.get('/api/inventory/approvals', inventoryReadGuard, async (req: Request, res: Response) => {
+    const user = getCurrentInventoryUserContext(req);
+    const status = normalizeSerialValue(req.query.status);
+    const mine = String(req.query.mine || '').toLowerCase() === 'true';
+    const assignedToMe = String(req.query.assignedToMe || req.query.assigned_to_me || '').toLowerCase() === 'true';
+    const where: Prisma.InventoryApprovalRequestWhereInput = {};
+    if (status && status.toLowerCase() !== 'all') where.status = status.toUpperCase();
+    if (mine) where.requestedByUserId = user.userId;
+    if (assignedToMe) {
+        const userBuilding = normalizeKnownBuildingCode(user.buildingCode);
+        where.OR = user.role === 'ADMIN' || user.role === 'SUPERVISOR_CHIEF'
+            ? [
+                { approverUserId: user.userId },
+                { approverRole: user.role },
+            ]
+            : [
+                { approverUserId: user.userId },
+                { approverRole: user.role, approverBuildingCode: userBuilding || undefined },
+                { approverRole: user.role, approverBuildingCode: null },
+            ];
+    }
+    if (!mine && !assignedToMe && user.role !== 'ADMIN' && user.role !== 'SUPERVISOR_CHIEF') {
+        const userBuilding = normalizeKnownBuildingCode(user.buildingCode);
+        where.OR = [
+            { requestedByUserId: user.userId },
+            { approverRole: user.role, approverBuildingCode: userBuilding || undefined },
+            { approverRole: user.role, approverBuildingCode: null },
+        ];
+    }
+    const rows = await prisma.inventoryApprovalRequest.findMany({
+        where,
+        include: { decisions: { orderBy: { createdAt: 'desc' }, take: 5 } },
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(200, Math.max(1, Number(req.query.limit || 100))),
+    });
+    res.json({ user, approvals: rows });
+});
+
+app.get('/api/inventory/approvals/:id', inventoryReadGuard, async (req: Request, res: Response) => {
+    const row = await prisma.inventoryApprovalRequest.findUnique({
+        where: { id: req.params.id },
+        include: { decisions: { orderBy: { createdAt: 'desc' } }, auditLogs: { orderBy: { createdAt: 'desc' }, take: 25 } },
+    });
+    if (!row) return res.status(404).json({ message: 'Approval request not found' });
+    res.json(row);
+});
+
+async function decideInventoryApproval(req: Request, res: Response, decision: 'APPROVED' | 'REJECTED' | 'ESCALATED' | 'CANCELLED') {
+    const user = getCurrentInventoryUserContext(req);
+    const existing = await prisma.inventoryApprovalRequest.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ message: 'Approval request not found' });
+    if (existing.status !== 'PENDING' && decision !== 'ESCALATED') {
+        return res.status(409).json({ message: `Approval is already ${existing.status}.` });
+    }
+    const authority = canUserDecideInventoryApproval(user, existing);
+    if (!authority.allowed) {
+        await writeInventoryAuditLog(prisma, user, {
+            actionType: `approval.${decision.toLowerCase()}`,
+            entityType: 'inventory_approval_request',
+            entityId: existing.id,
+            entityLabel: existing.requestCode,
+            buildingCode: existing.buildingCode,
+            targetBuildingCode: existing.targetBuildingCode,
+            reason: authority.reason,
+        }, {
+            riskLevel: existing.riskLevel as any,
+        }, existing.id, {
+            denied: true,
+            requiredApproverRole: existing.approverRole,
+            decision,
+        });
+        return res.status(403).json({ message: authority.reason || 'You do not have authority to decide this approval request.' });
+    }
+    const nextApproverRole = decision === 'ESCALATED'
+        ? (existing.approverRole === 'SENIOR' ? 'BUILDING_SUPERVISOR' : existing.approverRole === 'BUILDING_SUPERVISOR' ? 'SUPERVISOR_CHIEF' : 'ADMIN')
+        : existing.approverRole;
+    const updated = await prisma.$transaction(async (tx) => {
+        await tx.inventoryApprovalDecision.create({
+            data: {
+                approvalRequestId: existing.id,
+                decidedByUserId: user.userId,
+                decidedByRole: user.role,
+                decision,
+                reason: normalizeSerialValue(req.body?.reason),
+            },
+        });
+        return tx.inventoryApprovalRequest.update({
+            where: { id: existing.id },
+            data: {
+                status: decision === 'ESCALATED' ? 'PENDING' : decision,
+                approverRole: nextApproverRole,
+                approverUserId: decision === 'APPROVED' || decision === 'REJECTED' ? user.userId : existing.approverUserId,
+            },
+            include: { decisions: { orderBy: { createdAt: 'desc' }, take: 5 } },
+        });
+    });
+    await sendInventoryApprovalNotification(
+        decision === 'APPROVED' ? 'approval_approved' : decision === 'REJECTED' ? 'approval_rejected' : 'approval_escalated',
+        {
+            approvalRequestId: updated.id,
+            requestCode: updated.requestCode,
+            requesterUserId: updated.requestedByUserId,
+            approverRole: updated.approverRole,
+            decision,
+            actionType: updated.actionType,
+            entityLabel: updated.entityLabel,
+            message: `Inventory approval ${updated.requestCode} ${decision.toLowerCase().replace(/_/g, ' ')}.`,
+        },
+    );
+    res.json({
+        ...updated,
+        actionExecution: decision === 'APPROVED'
+            ? 'approved_for_explicit_retry'
+            : 'not_executed',
+        message: decision === 'APPROVED'
+            ? 'Approved. Re-run the original action with this approvalRequestId to execute it safely.'
+            : `Approval ${decision.toLowerCase()}.`,
+    });
+}
+
+app.post('/api/inventory/approvals/:id/approve', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'APPROVED'));
+app.post('/api/inventory/approvals/:id/reject', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'REJECTED'));
+app.post('/api/inventory/approvals/:id/escalate', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'ESCALATED'));
+
+app.get('/api/inventory/approval-policies', inventoryReadGuard, async (_req: Request, res: Response) => {
+    await ensureDefaultInventoryApprovalPolicies(prisma);
+    const policies = await prisma.inventoryApprovalPolicy.findMany({ orderBy: [{ riskLevel: 'asc' }, { actionType: 'asc' }] });
+    res.json({ policies });
+});
+
+app.get('/api/inventory/audit-log', inventoryReadGuard, async (req: Request, res: Response) => {
+    const user = getCurrentInventoryUserContext(req);
+    const where: Prisma.InventoryAuditLogWhereInput = {};
+    const actionType = normalizeSerialValue(req.query.actionType);
+    const entityType = normalizeSerialValue(req.query.entityType);
+    if (actionType) where.actionType = actionType;
+    if (entityType) where.entityType = entityType;
+    if (user.role !== 'ADMIN' && user.role !== 'SUPERVISOR_CHIEF') {
+        where.OR = [
+            { performedByUserId: user.userId },
+            { buildingCode: user.buildingCode || undefined },
+            { targetBuildingCode: user.buildingCode || undefined },
+        ];
+    }
+    const auditLogs = await prisma.inventoryAuditLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(300, Math.max(1, Number(req.query.limit || 100))),
+    });
+    res.json({ user, auditLogs });
+});
+
 app.post('/internal/inventory-ai/assets/:id/spec-refresh', internalWorkerGuard, async (req: Request, res: Response) => {
     try {
         const assetId = req.params.id;
@@ -9617,6 +10078,23 @@ app.post('/api/inventory/spare-stock/:id/adjust', inventoryAdminGuard, async (re
         if (delta === null || delta === 0) {
             return res.status(400).json({ message: 'delta must be a non-zero integer' });
         }
+        const existingForApproval = await prisma.spareStockItem.findUnique({ where: { id: req.params.id } });
+        if (!existingForApproval) return res.status(404).json({ message: 'Spare stock item not found' });
+        const stockApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'stock.quantity.adjustment.medium',
+            entityType: 'spare_stock',
+            entityId: existingForApproval.id,
+            entityLabel: existingForApproval.partName,
+            buildingCode: existingForApproval.location || 'CENTRAL_WAREHOUSE',
+            quantity: Math.abs(delta),
+            reason: normalizeSerialValue(req.body?.reason || req.body?.notes) || `Stock adjustment ${delta}`,
+            payloadJson: {
+                spareStockItemId: existingForApproval.id,
+                delta,
+                beforeQuantity: existingForApproval.quantityAvailable,
+            },
+        });
+        if (!stockApprovalGate.allowed) return;
         const updated = await prisma.$transaction(async (tx) => {
             const existing = await tx.spareStockItem.findUnique({ where: { id: req.params.id } });
             if (!existing) throw new RequestValidationError('Spare stock item not found');
@@ -9731,7 +10209,32 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
         const importTimestamp = new Date().toISOString();
         const warnings: string[] = [...revalidated.warnings];
         const errors: string[] = [];
-        const skippedRows: Array<{ rowNumber: number; reason: string }> = [];
+        const rowErrors: Array<{
+            rowNumber: number;
+            recordType: string;
+            assetName: string;
+            assetTag: string | null;
+            reason: string;
+        }> = [];
+        const skippedRows: Array<{
+            rowNumber: number;
+            recordType: string;
+            assetName: string;
+            assetTag: string | null;
+            reason: string;
+        }> = [];
+        const describeImportRowFailure = (row: NormalizedImportRow, reason: string) => ({
+            rowNumber: row.rowNumber,
+            recordType: row.recordType || 'unknown',
+            assetName: row.assetName || 'Unnamed row',
+            assetTag: normalizeSerialValue(row.assetTag),
+            reason,
+        });
+        const skipImportRow = (row: NormalizedImportRow, reason: string) => {
+            const detail = describeImportRowFailure(row, reason);
+            skippedRows.push(detail);
+            rowErrors.push(detail);
+        };
         const buildImportSpecifications = (extra: Record<string, any> = {}) => ({
             ...extra,
             importBatchId,
@@ -9754,7 +10257,11 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             let createdParentAssets = 0;
             let createdAccessoryAssets = 0;
             let createdLicenseAssets = 0;
-            let createdConsumableAssets = 0;
+            let consumablesCreated = 0;
+            let consumablesUpdated = 0;
+            let spareStockCreated = 0;
+            let spareStockUpdated = 0;
+            let committedRows = 0;
             const parentTagToCustomId = new Map<string, string>();
             const parentRows = revalidated.normalizedRows.filter((row) => row.recordType === 'parent_asset');
 
@@ -9853,6 +10360,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 if (row.assetTag) {
                     parentTagToCustomId.set(row.assetTag.toLowerCase(), firstUnit);
                 }
+                committedRows += 1;
             }
 
             const importOrderWeight: Record<ImportRecordType, number> = {
@@ -9880,7 +10388,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                         const componentTypeValue = row.componentType || resolveImportAliasToken(row.assetType, IMPORT_COMPONENT_TYPE_ALIAS_MAP) || 'component';
                         const parentId = parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase());
                         if (!parentId) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
+                            skipImportRow(row, `Parent not found for tag ${row.parentAssetTag}`);
                             continue;
                         }
                         const parentAssetRef = await tx.asset.findUnique({
@@ -9888,7 +10396,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             select: { customId: true, name: true, assetTag: true, location: true, department: true, specifications: true },
                         });
                         if (!parentAssetRef) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent asset ${parentId} was not found.` });
+                            skipImportRow(row, `Parent asset ${parentId} was not found.`);
                             continue;
                         }
 
@@ -10006,6 +10514,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 actor: 'inventory-import',
                             }
                         });
+                        committedRows += 1;
                         continue;
                     }
 
@@ -10015,7 +10524,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
                             : null;
                         if (row.parentAssetTag && !parentId) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent not found for tag ${row.parentAssetTag}` });
+                            skipImportRow(row, `Parent not found for tag ${row.parentAssetTag}`);
                             continue;
                         }
                         const parentAssetRef = parentId
@@ -10025,7 +10534,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             })
                             : null;
                         if (row.parentAssetTag && !parentAssetRef) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: `Parent asset ${row.parentAssetTag} was not found.` });
+                            skipImportRow(row, `Parent asset ${row.parentAssetTag} was not found.`);
                             continue;
                         }
                         const fallbackLocation = parentAssetRef?.location || 'Central Warehouse';
@@ -10123,6 +10632,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 }
                             });
                         }
+                        committedRows += 1;
                         continue;
                     }
 
@@ -10141,17 +10651,19 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             const updated = await tx.spareStockItem.update({
                                 where: { id: existingStock.id },
                                 data: {
-                                    quantityAvailable: existingStock.quantityAvailable + qty,
+                                    quantityAvailable: qty,
                                     minimumStockLevel: row.minimumStockLevel !== null ? row.minimumStockLevel : existingStock.minimumStockLevel,
                                     reorderPoint: row.reorderPoint !== null ? row.reorderPoint : existingStock.reorderPoint,
                                     location: normalizeSerialValue(row.location) || existingStock.location,
                                     vendor: normalizeSerialValue(row.vendor) || existingStock.vendor,
                                     brand: normalizeSerialValue(row.brand) || existingStock.brand,
                                     model: normalizeSerialValue(row.model) || existingStock.model,
+                                    unitCost: row.purchaseCost ?? existingStock.unitCost,
                                     notes: normalizeSerialValue(row.notes) || existingStock.notes,
                                 }
                             });
                             createdSpareStockItems.push(updated.id);
+                            spareStockUpdated += 1;
                         } else {
                             const created = await tx.spareStockItem.create({
                                 data: {
@@ -10172,17 +10684,137 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 }
                             });
                             createdSpareStockItems.push(created.id);
+                            spareStockCreated += 1;
                         }
+                        committedRows += 1;
                         continue;
                     }
 
-                    if (row.recordType === 'accessory' || row.recordType === 'consumable' || row.recordType === 'license') {
+                    if (row.recordType === 'consumable') {
+                        const qty = Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
+                            ? Math.trunc(Number(row.quantity))
+                            : 1;
+                        const assetTag = normalizeSerialValue(row.assetTag);
+                        const serialNumber = normalizeSerialValue(row.serialNumber);
+                        const partNumber = normalizeSerialValue(row.manufacturerPartNumber);
+                        let existingConsumable: Asset | null = null;
+                        if (assetTag) {
+                            existingConsumable = await tx.asset.findFirst({
+                                where: { assetTag },
+                                orderBy: { updatedAt: 'desc' },
+                            });
+                        }
+                        if (!existingConsumable && serialNumber) {
+                            existingConsumable = await tx.asset.findFirst({
+                                where: { serialNumber },
+                                orderBy: { updatedAt: 'desc' },
+                            });
+                        }
+                        if (!existingConsumable && partNumber) {
+                            const partMatches = await tx.asset.findMany({
+                                where: {
+                                category: 'CONSUMABLE',
+                                manufacturerPartNumber: partNumber,
+                                name: row.assetName,
+                                },
+                                orderBy: { createdAt: 'asc' },
+                                take: 100,
+                            });
+                            existingConsumable = partMatches.find((entry) => Boolean(entry.assetTag))
+                                || partMatches[0]
+                                || null;
+                        }
+
+                        const locationResolution = resolveAssetLocationForStorage(row.location || 'Central Warehouse');
+                        const existingSpecs = ((existingConsumable?.specifications as Record<string, any>) || {});
+                        const consumableData = {
+                            name: row.assetName,
+                            type: mapToAssetType(row.assetType || 'electronics'),
+                            status: mapToAssetStatus(row.status || 'active'),
+                            lifecycleStatus: mapToLifecycleStatus(row.lifecycleStatus || 'in_stock'),
+                            category: 'CONSUMABLE' as AssetCategory,
+                            value: row.purchaseCost || 0,
+                            quantity: qty,
+                            serialNumber,
+                            assetTag: existingConsumable?.assetTag || assetTag,
+                            manufacturerPartNumber: partNumber,
+                            location: locationResolution.location,
+                            department: mapToAssetDepartment(row.department || 'Unassigned'),
+                            assignedToName: normalizeSerialValue(row.assignedTo),
+                            custodyStatus: normalizeSerialValue(row.assignedTo) ? 'CHECKED_OUT' as AssetCustodyStatus : 'UNASSIGNED' as AssetCustodyStatus,
+                            purchaseDate: parseOptionalDateInput(row.purchaseDate),
+                            vendor: normalizeSerialValue(row.vendor),
+                            purchaseCost: row.purchaseCost,
+                            warrantyStartDate: parseOptionalDateInput(row.warrantyStartDate),
+                            warrantyEndDate: parseOptionalDateInput(row.warrantyEndDate),
+                            specifications: buildTelemetryDefaultsForAsset({
+                                type: row.assetType || 'electronics',
+                                category: 'CONSUMABLE',
+                                name: row.assetName,
+                                location: row.location || 'Central Warehouse',
+                                existingSpecs: buildImportSpecifications({
+                                    ...existingSpecs,
+                                    brand: row.brand || existingSpecs.brand || undefined,
+                                    version: row.model || existingSpecs.version || undefined,
+                                    minimumStockLevel: row.minimumStockLevel,
+                                    reorderPoint: row.reorderPoint,
+                                    condition: row.condition || undefined,
+                                    notes: row.notes || undefined,
+                                    mapLocationHint: locationResolution.mapLocationHint || undefined,
+                                }),
+                            }),
+                        };
+
+                        let savedConsumable: Asset;
+                        if (existingConsumable) {
+                            savedConsumable = await tx.asset.update({
+                                where: { customId: existingConsumable.customId },
+                                data: consumableData,
+                            });
+                            consumablesUpdated += 1;
+                        } else {
+                            const customId = assetTag || `IMPORTED-CONS-${Date.now()}-${row.rowNumber}`;
+                            savedConsumable = await tx.asset.create({
+                                data: {
+                                    customId,
+                                    ...consumableData,
+                                },
+                            });
+                            createdAssets.push(savedConsumable.customId);
+                            consumablesCreated += 1;
+                        }
+                        await tx.assetHistory.create({
+                            data: {
+                                assetId: savedConsumable.customId,
+                                event: existingConsumable ? 'Consumable Import Updated' : 'Imported',
+                                details: `${existingConsumable ? 'Updated' : 'Imported'} consumable stock from file: ${sourceName}`,
+                            }
+                        });
+                        await tx.assetLifecycleEvent.create({
+                            data: {
+                                assetId: savedConsumable.customId,
+                                eventType: existingConsumable ? 'consumable_import_updated' : 'asset_imported',
+                                newValue: {
+                                    importBatchId,
+                                    filename: sourceName,
+                                    rowNumber: row.rowNumber,
+                                    quantity: qty,
+                                },
+                                reason: 'bulk_import',
+                                actor: 'inventory-import',
+                            }
+                        });
+                        committedRows += 1;
+                        continue;
+                    }
+
+                    if (row.recordType === 'accessory' || row.recordType === 'license') {
                         const shouldLinkToParent = Boolean(row.parentAssetTag) && (row.recordType === 'accessory' || row.recordType === 'license');
                         const parentId = shouldLinkToParent
                             ? parentTagToCustomId.get(String(row.parentAssetTag || '').toLowerCase()) || null
                             : null;
                         if (shouldLinkToParent && !parentId) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: 'Parent asset not found for related item row.' });
+                            skipImportRow(row, 'Parent asset not found for related item row.');
                             continue;
                         }
                         const parentAssetRef = parentId
@@ -10199,7 +10831,7 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             })
                             : null;
                         if (shouldLinkToParent && !parentAssetRef) {
-                            skippedRows.push({ rowNumber: row.rowNumber, reason: 'Parent asset not found for related item row.' });
+                            skipImportRow(row, 'Parent asset not found for related item row.');
                             continue;
                         }
                         const qty = Number.isFinite(Number(row.quantity)) && Number(row.quantity) > 0
@@ -10273,7 +10905,6 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                             createdAssets.push(created.customId);
                             if (row.recordType === 'accessory') createdAccessoryAssets += 1;
                             if (row.recordType === 'license') createdLicenseAssets += 1;
-                            if (row.recordType === 'consumable') createdConsumableAssets += 1;
                             await tx.assetHistory.create({
                                 data: {
                                     assetId: created.customId,
@@ -10342,12 +10973,15 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                                 });
                             }
                         }
+                        committedRows += 1;
                         continue;
                     }
 
-                    skippedRows.push({ rowNumber: row.rowNumber, reason: `Unsupported record type (${row.recordType})` });
+                    skipImportRow(row, `Unsupported record type (${row.recordType})`);
                 } catch (rowError: any) {
-                    errors.push(`Row ${row.rowNumber}: ${rowError?.message || rowError}`);
+                    const reason = String(rowError?.message || rowError || 'Unknown import error');
+                    errors.push(`Row ${row.rowNumber}: ${reason}`);
+                    rowErrors.push(describeImportRowFailure(row, reason));
                 }
             }
 
@@ -10360,15 +10994,26 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
                 createdParentAssets,
                 createdAccessoryAssets,
                 createdLicenseAssets,
-                createdConsumableAssets,
+                consumablesCreated,
+                consumablesUpdated,
+                spareStockCreated,
+                spareStockUpdated,
+                committedRows,
             };
+        }, {
+            maxWait: 20_000,
+            timeout: 120_000,
         });
 
-        const success = errors.length === 0;
+        const failedRows = rowErrors.length;
+        const success = failedRows === 0;
+        const partialSuccess = result.committedRows > 0 && failedRows > 0;
         res.json({
             success,
+            partialSuccess,
             importBatchId,
             importTimestamp,
+            committedRows: result.committedRows,
             createdAssets: result.createdAssets.length,
             createdComponents: result.createdComponents.length,
             createdSpareStockItems: result.createdSpareStockItems.length,
@@ -10377,9 +11022,22 @@ app.post('/api/assets/import/commit', inventoryAdminGuard, async (req: Request, 
             createdParentAssets: result.createdParentAssets,
             createdAccessoryAssets: result.createdAccessoryAssets,
             createdLicenseAssets: result.createdLicenseAssets,
-            createdConsumableAssets: result.createdConsumableAssets,
+            createdConsumableAssets: result.consumablesCreated,
+            parentAssetsCreated: result.createdParentAssets,
+            componentsLinked: result.createdComponents.length,
+            accessoryAssetsCreated: result.createdAccessoryAssets,
+            accessoryLinks: result.createdAccessoryLinks.length,
+            licenseAssetsCreated: result.createdLicenseAssets,
+            licenseLinks: result.createdLicenseLinks.length,
+            consumablesCreated: result.consumablesCreated,
+            consumablesUpdated: result.consumablesUpdated,
+            consumablesCommitted: result.consumablesCreated + result.consumablesUpdated,
+            spareStockCreated: result.spareStockCreated,
+            spareStockUpdated: result.spareStockUpdated,
+            spareStockCommitted: result.spareStockCreated + result.spareStockUpdated,
             skippedRows,
-            failedRows: skippedRows.length + errors.length,
+            failedRows,
+            rowErrors,
             errors,
             warnings,
         });
@@ -12374,6 +13032,36 @@ app.post('/api/inventory/procurement/requests', inventoryAdminGuard, async (req:
                 linkedLicenseId: req.body?.linkedLicenseId,
                 notes: req.body?.notes,
             }];
+        const requestAmount = Number(parseMoneyOrNull(req.body?.estimatedBudget) || 0)
+            || requestItems.reduce((sum: number, entry: any) => {
+                const qty = Math.max(1, parseOptionalIntegerInput(entry.quantityRequested) || quantity);
+                const unit = Number(parseMoneyOrNull(entry.unitEstimatedCost) || parseMoneyOrNull(entry.unitActualCost) || 0);
+                return sum + (qty * unit);
+            }, 0);
+        const requestActionType = requestAmount > 25000
+            ? 'procurement.request.very_high_value'
+            : requestAmount > 5000
+                ? 'procurement.request.high_value'
+                : 'procurement.request.medium_value';
+        const approvalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: requestActionType,
+            entityType: 'procurement_request',
+            entityLabel: title,
+            buildingCode: req.body?.linkedLocation || req.body?.building,
+            amount: requestAmount,
+            quantity,
+            assetCriticality: normalizeSerialValue(req.body?.assetCriticality),
+            reason,
+            payloadJson: {
+                title,
+                itemType,
+                quantity,
+                source,
+                requestType,
+                priority,
+            },
+        });
+        if (!approvalGate.allowed) return;
         const createdRequest = await prisma.$transaction(async (tx) => {
             const created = await tx.procurementRequest.create({
                 data: {
@@ -12838,6 +13526,28 @@ app.post('/api/inventory/procurement/requests/:requestId/purchase-order', invent
             select: { id: true },
         });
         if (poExists) return res.status(409).json({ message: 'poNumber already exists' });
+        const poAmount = Number(selectedQuote?.totalPrice || existing.estimatedBudget || 0);
+        const poApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: poAmount > 25000
+                ? 'procurement.request.very_high_value'
+                : poAmount > 5000
+                    ? 'procurement.request.high_value'
+                    : 'procurement.request.medium_value',
+            entityType: 'purchase_order',
+            entityId: existing.id,
+            entityLabel: `${existing.requestNumber} / ${poNumber}`,
+            buildingCode: existing.building,
+            amount: poAmount,
+            quantity: existing.items.reduce((sum, item) => sum + Number(item.quantityApproved || item.quantityRequested || 0), 0),
+            reason: `Create purchase order ${poNumber}`,
+            payloadJson: {
+                requestId: existing.id,
+                requestNumber: existing.requestNumber,
+                poNumber,
+                vendorName,
+            },
+        });
+        if (!poApprovalGate.allowed) return;
 
         const updated = await prisma.$transaction(async (tx) => {
             const vendorId = await getOrCreateVendorIdByName(vendorName, tx);
@@ -13005,6 +13715,23 @@ app.post('/api/inventory/procurement/requests/:requestId/receive', inventoryAdmi
                 request: mapProcurementDbToRecord(existing),
             });
         }
+        const receivingAmount = Number(costImpact || existing.estimatedBudget || 0);
+        const receiveApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: receivingAmount > 5000 || assetImpactExpected ? 'receiving.high_value' : 'warehouse.stock.issue.medium',
+            entityType: 'procurement_receiving',
+            entityId: existing.id,
+            entityLabel: `${existing.requestNumber} receiving ${requestItem.itemName}`,
+            buildingCode: existing.building,
+            amount: receivingAmount,
+            quantity: receivedQuantity,
+            reason: notes || `Receive ${receivedQuantity} unit(s)`,
+            payloadJson: {
+                requestId: existing.id,
+                requestNumber: existing.requestNumber,
+                impactPreview,
+            },
+        });
+        if (!receiveApprovalGate.allowed) return;
 
         const updated = await prisma.$transaction(async (tx) => {
             const latestPo = existing.purchaseOrders[0] || null;
@@ -14761,7 +15488,7 @@ app.get('/api/assets', async (req: Request, res: Response) => {
 app.get('/api/assets/single/:id', async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
-        console.log(`🔍 Searching for single asset: "${id}"`);
+        console.log(`ðŸ” Searching for single asset: "${id}"`);
 
         const asset = await AssetService.getAssetByCustomId(id);
 
@@ -16247,6 +16974,79 @@ app.get('/api/assets/:id/components', async (req: Request, res: Response) => {
     }
 });
 
+function normalizeComponentUniquenessKey(value: unknown): string {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normalizeComponentSlotKey(value: unknown): string {
+    return normalizeComponentUniquenessKey(value || 'default');
+}
+
+function componentSlotKeyFromPayload(payload: Record<string, any> = {}): string {
+    return normalizeComponentSlotKey(
+        payload.slot
+        || payload.slotName
+        || payload.componentSlot
+        || payload.componentRole
+        || payload.role
+        || payload.position
+        || payload.notesSlot
+        || 'default',
+    );
+}
+
+function isRepeatableComponentType(componentType: unknown): boolean {
+    const key = normalizeComponentUniquenessKey(componentType);
+    return [
+        'ram',
+        'memory',
+        'storage',
+        'disk',
+        'drive',
+        'ssd',
+        'hdd',
+        'accessory',
+        'consumable',
+    ].some((token) => key === token || key.includes(token));
+}
+
+function isGenericComponentInput(value: unknown): boolean {
+    const key = normalizeComponentUniquenessKey(value);
+    return !key || ['component', 'new_component', 'replacement_component', 'test', 'fake', 'asdf', 'na', 'n_a', 'unknown', 'none'].includes(key);
+}
+
+async function assertComponentInstallPolicy(
+    tx: Prisma.TransactionClient,
+    parentAssetId: string,
+    componentType: string,
+    payload: Record<string, any> = {},
+): Promise<void> {
+    const typeKey = normalizeComponentUniquenessKey(componentType);
+    const slotKey = componentSlotKeyFromPayload(payload);
+    if (!typeKey) throw new RequestValidationError('componentType is required');
+    const activeRows = await tx.assetComponent.findMany({
+        where: {
+            parentAssetId,
+            removedAt: null,
+            status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
+        },
+        select: { id: true, componentName: true, componentType: true, notes: true, reason: true },
+    });
+    const duplicate = activeRows.find((row) => {
+        const existingType = normalizeComponentUniquenessKey(row.componentType);
+        if (existingType !== typeKey) return false;
+        if (!isRepeatableComponentType(typeKey)) return true;
+        const existingSlot = componentSlotKeyFromPayload(row as any);
+        return slotKey === 'default' || existingSlot === slotKey;
+    });
+    if (duplicate) {
+        const label = isRepeatableComponentType(typeKey)
+            ? 'This repeatable component type needs a different slot/role label, or use Replace instead.'
+            : 'This parent asset already has an active component of that type. Use Replace instead.';
+        throw new RequestValidationError(`${label} Existing: ${duplicate.componentName || duplicate.componentType}.`);
+    }
+}
+
 app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
@@ -16254,6 +17054,26 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
         const componentName = String(req.body?.componentName || '').trim() || String(req.body?.name || '').trim();
         const componentType = String(req.body?.componentType || '').trim() || 'component';
         if (!componentName) return res.status(400).json({ message: 'componentName is required' });
+        if (isGenericComponentInput(componentName) || isGenericComponentInput(componentType)) {
+            return res.status(400).json({ message: 'Provide a specific component name and component type before installing it.' });
+        }
+
+        const componentCreateApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_component',
+            entityId: req.params.id,
+            entityLabel: componentName,
+            buildingCode: asset.location,
+            quantity: 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'component_create_or_link',
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentName,
+                componentType,
+                childAssetId: normalizeSerialValue(req.body?.childAssetId),
+            },
+        });
+        if (!componentCreateApprovalGate.allowed) return;
 
         const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
             ? true
@@ -16263,6 +17083,7 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
         const componentTag = normalizeSerialValue(req.body?.assetTag);
 
         const component = await prisma.$transaction(async (tx) => {
+            await assertComponentInstallPolicy(tx, req.params.id, componentType, req.body || {});
             let linkedAssetId: string | null = requestedChildAssetId;
             let linkedAsset: Asset | null = null;
 
@@ -16441,11 +17262,33 @@ app.put('/api/assets/:id/components/:componentId', async (req: Request, res: Res
         if (!component || component.parentAssetId !== req.params.id) {
             return res.status(404).json({ message: 'Component not found' });
         }
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        const nextName = String(req.body?.componentName || component.componentName).trim();
+        const nextType = String(req.body?.componentType || component.componentType).trim();
+        if (isGenericComponentInput(nextName) || isGenericComponentInput(nextType)) {
+            return res.status(400).json({ message: 'Provide a specific component name and component type.' });
+        }
+        const componentEditApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset?.location || null,
+            quantity: 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'component_cmdb_edit',
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                proposedComponentName: nextName,
+                proposedComponentType: nextType,
+            },
+        });
+        if (!componentEditApprovalGate.allowed) return;
         const updated = await prisma.assetComponent.update({
             where: { id: req.params.componentId },
             data: {
-                componentName: String(req.body?.componentName || component.componentName).trim(),
-                componentType: String(req.body?.componentType || component.componentType).trim(),
+                componentName: nextName,
+                componentType: nextType,
                 brand: typeof req.body?.brand !== 'undefined' ? normalizeSerialValue(req.body?.brand) : component.brand,
                 model: typeof req.body?.model !== 'undefined' ? normalizeSerialValue(req.body?.model) : component.model,
                 serialNumber: typeof req.body?.serialNumber !== 'undefined' ? normalizeSerialValue(req.body?.serialNumber) : component.serialNumber,
@@ -16500,6 +17343,23 @@ app.post('/api/assets/:id/components/:componentId/remove', async (req: Request, 
             return res.status(404).json({ message: 'Component not found' });
         }
         const reason = normalizeSerialValue(req.body?.reason) || 'removed';
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        const componentRemoveApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.dispose.write_off',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset?.location || null,
+            amount: Number(parentAsset?.value || 0),
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                requestedStatus: normalizeComponentStatus(req.body?.status, 'removed'),
+            },
+        });
+        if (!componentRemoveApprovalGate.allowed) return;
         const updated = await prisma.assetComponent.update({
             where: { id: component.id },
             data: {
@@ -16547,6 +17407,36 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
         if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'replaced';
         const newComponentInput = req.body?.newComponent || {};
+        const nextComponentName = String(newComponentInput.componentName || '').trim();
+        const nextComponentType = String(newComponentInput.componentType || component.componentType || '').trim();
+        const hasTraceableIdentity = Boolean(
+            normalizeSerialValue(newComponentInput.childAssetId)
+            || normalizeSerialValue(newComponentInput.serialNumber)
+            || normalizeSerialValue(newComponentInput.assetTag)
+            || normalizeSerialValue(newComponentInput.partNumber)
+            || (normalizeSerialValue(newComponentInput.brand) && normalizeSerialValue(newComponentInput.model))
+        );
+        if (isGenericComponentInput(nextComponentName) || isGenericComponentInput(nextComponentType) || !hasTraceableIdentity) {
+            return res.status(400).json({
+                message: 'Replacement requires a specific component name/type plus serial, asset tag, part number, existing child asset, or brand/model evidence.',
+            });
+        }
+        const componentReplaceApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset.location,
+            amount: Number(parentAsset.value || 0),
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                newComponent: newComponentInput,
+            },
+        });
+        if (!componentReplaceApprovalGate.allowed) return;
         const [oldComponent, newComponent] = await prisma.$transaction([
             prisma.assetComponent.update({
                 where: { id: component.id },
@@ -16627,11 +17517,27 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
         const spareStockItemId = String(req.body?.spareStockItemId || '').trim();
         if (!spareStockItemId) return res.status(400).json({ message: 'spareStockItemId is required' });
         const reason = normalizeSerialValue(req.body?.reason) || 'installed_from_stock';
+        const installApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_component',
+            entityId: req.params.id,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                spareStockItemId,
+                componentType: normalizeSerialValue(req.body?.componentType),
+            },
+        });
+        if (!installApprovalGate.allowed) return;
 
         const result = await prisma.$transaction(async (tx) => {
             const stock = await tx.spareStockItem.findUnique({ where: { id: spareStockItemId } });
             if (!stock) throw new RequestValidationError('Spare stock item not found');
             if (stock.quantityAvailable <= 0) throw new RequestValidationError('Spare stock quantity is 0');
+            await assertComponentInstallPolicy(tx, req.params.id, normalizeSerialValue(req.body?.componentType) || stock.componentType, req.body || {});
 
             const fifoIssue = await consumeSpareStockByFifo({
                 tx,
@@ -16777,6 +17683,21 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
 
         const spareStockItemId = String(req.body?.spareStockItemId || '').trim();
         if (!spareStockItemId) return res.status(400).json({ message: 'spareStockItemId is required' });
+        const replaceFromStockApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_component',
+            entityId: req.params.componentId,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            quantity: 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'replaced_from_stock',
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: req.params.componentId,
+                spareStockItemId,
+            },
+        });
+        if (!replaceFromStockApprovalGate.allowed) return;
 
         const result = await prisma.$transaction(async (tx) => {
             const existing = await tx.assetComponent.findUnique({ where: { id: req.params.componentId } });
@@ -16823,6 +17744,7 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
 
             const componentName = normalizeSerialValue(req.body?.componentName) || stock.partName || oldComponent.componentName;
             const componentType = normalizeSerialValue(req.body?.componentType) || stock.componentType || oldComponent.componentType;
+            await assertComponentInstallPolicy(tx, req.params.id, componentType, req.body || {});
             const serialNumber = normalizeSerialValue(req.body?.serialNumber);
             const partNumber = normalizeSerialValue(req.body?.partNumber) || stock.partNumber || oldComponent.partNumber;
             const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
@@ -16986,6 +17908,22 @@ app.post('/api/assets/:id/components/:componentId/repair', async (req: Request, 
         if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'repair';
         const repairedStatus = String(req.body?.status || 'under_repair').trim();
+        const componentRepairApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.repair.request',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset.location,
+            amount: parseOptionalNumberInput(req.body?.cost),
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                status: repairedStatus,
+            },
+        });
+        if (!componentRepairApprovalGate.allowed) return;
         const updated = await prisma.assetComponent.update({
             where: { id: component.id },
             data: {
@@ -17051,6 +17989,22 @@ app.post('/api/assets/:id/components/:componentId/mark-failed', async (req: Requ
         const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
         if (!parentAsset) return res.status(404).json({ message: 'Asset not found' });
         const reason = normalizeSerialValue(req.body?.reason) || 'failed';
+        const componentFailedApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.condition.report_damaged',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset.location,
+            amount: Number(parentAsset.value || 0),
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                status: 'failed',
+            },
+        });
+        if (!componentFailedApprovalGate.allowed) return;
         const updated = await prisma.assetComponent.update({
             where: { id: component.id },
             data: {
@@ -17097,6 +18051,23 @@ app.post('/api/assets/:id/components/:componentId/retire', async (req: Request, 
         }
         const nextStatus = normalizeComponentStatus(req.body?.status, 'retired');
         const reason = normalizeSerialValue(req.body?.reason) || 'retired';
+        const parentAsset = await AssetService.getAssetByCustomId(req.params.id);
+        const componentApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.dispose.write_off',
+            entityType: 'asset_component',
+            entityId: component.id,
+            entityLabel: component.componentName,
+            buildingCode: parentAsset?.location || null,
+            amount: Number(parentAsset?.value || 0),
+            quantity: 1,
+            reason,
+            payloadJson: {
+                parentAssetId: req.params.id,
+                componentId: component.id,
+                nextStatus,
+            },
+        });
+        if (!componentApprovalGate.allowed) return;
         const updated = await prisma.assetComponent.update({
             where: { id: component.id },
             data: {
@@ -17150,18 +18121,51 @@ app.post('/api/assets/:id/maintenance', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const maintenanceType = String(req.body?.maintenanceType || req.body?.maintenance_type || req.body?.type || req.body?.category || '').trim() || 'general';
+        const maintenanceStatus = String(req.body?.status || req.body?.maintenanceStatus || req.body?.maintenance_status || 'completed').trim();
+        const maintenanceReason = normalizeSerialValue(req.body?.reason);
+        const maintenanceNotes = normalizeSerialValue(req.body?.notes || req.body?.description || req.body?.comments || req.body?.details);
+        const currentUser = getCurrentInventoryUserContext(req);
+        const classification = classifyMaintenanceApprovalAction({
+            ...req.body,
+            maintenanceType,
+            status: maintenanceStatus,
+            reason: maintenanceReason,
+            notes: maintenanceNotes,
+        }, currentUser.role);
+        const maintenanceApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: classification.actionType,
+            entityType: 'asset_maintenance',
+            entityId: req.params.id,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            amount: parseOptionalNumberInput(req.body?.cost),
+            quantity: 1,
+            reason: maintenanceReason || maintenanceType,
+            payloadJson: {
+                assetId: req.params.id,
+                componentId: normalizeSerialValue(req.body?.componentId),
+                maintenanceType,
+                status: maintenanceStatus,
+                reason: maintenanceReason,
+                notes: maintenanceNotes,
+                approvalClassification: classification.approvalReason,
+                normalizedSignal: classification.normalizedSignal,
+            },
+        });
+        if (!maintenanceApprovalGate.allowed) return;
         const row = await prisma.assetMaintenanceRecord.create({
             data: {
                 assetId: req.params.id,
                 componentId: normalizeSerialValue(req.body?.componentId),
-                maintenanceType: String(req.body?.maintenanceType || '').trim() || 'general',
-                status: String(req.body?.status || 'completed').trim(),
+                maintenanceType,
+                status: maintenanceStatus,
                 performedBy: normalizeSerialValue(req.body?.performedBy),
                 performedAt: parseOptionalDateInput(req.body?.performedAt) || new Date(),
                 nextMaintenanceDate: parseOptionalDateInput(req.body?.nextMaintenanceDate),
                 cost: parseOptionalNumberInput(req.body?.cost),
-                reason: normalizeSerialValue(req.body?.reason),
-                notes: normalizeSerialValue(req.body?.notes),
+                reason: maintenanceReason,
+                notes: maintenanceNotes,
                 linkedTicketId: normalizeSerialValue(req.body?.linkedTicketId),
             },
         });
@@ -17206,6 +18210,24 @@ app.post('/api/assets/:id/assign', async (req: Request, res: Response) => {
         const assignedDept = normalizeSerialValue(req.body?.assignedDepartment);
         const checkoutAt = parseOptionalDateInput(req.body?.checkoutDate) || new Date();
         const expectedAt = parseOptionalDateInput(req.body?.expectedReturnDate);
+        const assignmentApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset',
+            entityId: req.params.id,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            targetBuildingCode: normalizeSerialValue(req.body?.targetBuilding || req.body?.building),
+            quantity: 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'asset_assignment_or_checkout',
+            payloadJson: {
+                assetId: req.params.id,
+                assignedTo,
+                assignedUserId,
+                assignedDept,
+                expectedAt,
+            },
+        });
+        if (!assignmentApprovalGate.allowed) return;
         const updated = await AssetService.updateAsset(req.params.id, {
             assignedToName: assignedTo,
             assignedToUserId: assignedUserId,
@@ -17262,6 +18284,25 @@ app.post('/api/assets/:id/check-in', async (req: Request, res: Response) => {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
         const returnedAt = parseOptionalDateInput(req.body?.returnedDate) || new Date();
+        const conditionIn = normalizeSerialValue(req.body?.conditionIn);
+        const conditionKey = normalizeValue(conditionIn);
+        if (['damaged', 'missing_accessories', 'missing', 'needs_review', 'broken'].includes(conditionKey)) {
+            const checkinApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+                actionType: conditionKey.includes('missing') ? 'asset.condition.report_missing' : 'asset.condition.report_damaged',
+                entityType: 'asset',
+                entityId: req.params.id,
+                entityLabel: asset.name,
+                buildingCode: asset.location,
+                quantity: 1,
+                reason: normalizeSerialValue(req.body?.reason) || conditionIn || 'check_in_condition_review',
+                payloadJson: {
+                    assetId: req.params.id,
+                    conditionIn,
+                    returnedAt,
+                },
+            });
+            if (!checkinApprovalGate.allowed) return;
+        }
         const updated = await AssetService.updateAsset(req.params.id, {
             returnedDate: returnedAt,
             custodyStatus: 'RETURNED',
@@ -17276,7 +18317,7 @@ app.post('/api/assets/:id/check-in', async (req: Request, res: Response) => {
                 assetId: req.params.id,
                 action: 'check_in',
                 returnedDate: returnedAt,
-                conditionIn: normalizeSerialValue(req.body?.conditionIn),
+                conditionIn,
                 reason: normalizeSerialValue(req.body?.reason),
                 notes: normalizeSerialValue(req.body?.notes),
                 actor: normalizeSerialValue(req.body?.actor),
@@ -18455,6 +19496,22 @@ app.post('/api/assets/:id/relationships', async (req: Request, res: Response) =>
             AssetService.getAssetByCustomId(relatedAssetId),
         ]);
         if (!source || !target) return res.status(404).json({ message: 'One or both assets not found' });
+        const relationshipApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_relationship',
+            entityId: assetId,
+            entityLabel: `${source.name} ${relationshipType} ${target.name}`,
+            buildingCode: source.location,
+            targetBuildingCode: target.location,
+            quantity: 1,
+            reason: normalizeSerialValue(req.body?.notes) || 'relationship_added',
+            payloadJson: {
+                assetId,
+                relatedAssetId,
+                relationshipType,
+            },
+        });
+        if (!relationshipApprovalGate.allowed) return;
 
         const row = await prisma.assetRelationship.create({
             data: {
@@ -18488,6 +19545,24 @@ app.delete('/api/assets/:id/relationships/:relationshipId', async (req: Request,
         if (!row || row.assetId !== req.params.id) {
             return res.status(404).json({ message: 'Relationship not found' });
         }
+        const source = await AssetService.getAssetByCustomId(row.assetId);
+        const target = await AssetService.getAssetByCustomId(row.relatedAssetId);
+        const relationshipRemoveApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.assignment.request',
+            entityType: 'asset_relationship',
+            entityId: row.id,
+            entityLabel: `${row.assetId} ${row.relationshipType} ${row.relatedAssetId}`,
+            buildingCode: source?.location || null,
+            targetBuildingCode: target?.location || null,
+            quantity: 1,
+            reason: 'relationship_removed',
+            payloadJson: {
+                assetId: row.assetId,
+                relatedAssetId: row.relatedAssetId,
+                relationshipType: row.relationshipType,
+            },
+        });
+        if (!relationshipRemoveApprovalGate.allowed) return;
         await prisma.assetRelationship.delete({ where: { id: row.id } });
         await recordLifecycleEvent({
             assetId: req.params.id,
@@ -18783,8 +19858,8 @@ app.get('/api/assets/:id', async (req: Request, res: Response) => {
 // --- CREATE LOGIC ---
 app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
-        console.log(`📥 POST /api/assets from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
-        console.log('📦 Payload:', JSON.stringify(req.body));
+        console.log(`ðŸ“¥ POST /api/assets from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
+        console.log('ðŸ“¦ Payload:', JSON.stringify(req.body));
 
         const {
             name,
@@ -18927,6 +20002,27 @@ app.post('/api/assets', inventoryAdminGuard, async (req: Request, res: Response)
         }
 
         console.log(`[AssetCreateDebug] quantityRequested=${qty} generatedUnitIds=${unitIds.length}`);
+        const createApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.create',
+            entityType: 'asset',
+            entityId: assetGroupId,
+            entityLabel: String(name),
+            buildingCode: locationResolution.location,
+            amount: Number(value || purchaseCost || replacementCost || 0),
+            quantity: qty,
+            assetCriticality: normalizeSerialValue((inputSpecifications as any).criticality),
+            reason: normalizeSerialValue(req.body?.reason) || 'Create asset',
+            payloadJson: {
+                assetGroupId,
+                name,
+                type,
+                category: normalizedCategory,
+                quantity: qty,
+                location: locationResolution.location,
+                department,
+            },
+        });
+        if (!createApprovalGate.allowed) return;
 
         const createdAssets = await AssetService.createAssets(
             unitIds.map((unitId, index) => ({
@@ -19337,6 +20433,22 @@ app.post('/api/inventory/bulk-checkout', inventoryAdminGuard, async (req: Reques
         const expectedReturnDate = parseOptionalDateInput(req.body?.expectedReturnDate);
         const actor = normalizeSerialValue(req.body?.actor || req.body?.admin) || 'inventory-kiosk';
         const note = normalizeSerialValue(req.body?.notes || req.body?.reason) || 'bulk_checkout';
+        const bulkApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: assetIds.length > 1 ? 'asset.bulk_transfer' : 'asset.assignment.change',
+            entityType: 'asset_bulk_checkout',
+            entityLabel: `${assetIds.length} asset(s) to ${destination}`,
+            buildingCode: req.body?.sourceBuilding || req.body?.building,
+            targetBuildingCode: destinationType === 'building' || destinationType === 'location' ? destination : null,
+            quantity: assetIds.length,
+            reason: note,
+            payloadJson: {
+                assetIds,
+                destinationType,
+                destination,
+                includeRelated: options.includeRelated,
+            },
+        });
+        if (!bulkApprovalGate.allowed) return;
 
         const successful: Array<Record<string, any>> = [];
         const failed: Array<Record<string, any>> = [];
@@ -19493,7 +20605,7 @@ app.post('/api/inventory/bulk-checkout', inventoryAdminGuard, async (req: Reques
 // --- TRANSFER & SPLIT LOGIC ---
 app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
     const { destType, destination, quantityToMove, admin } = req.body;
-    console.log(`📦 Attempting transfer for ID: ${req.params.id}`);
+    console.log(`ðŸ“¦ Attempting transfer for ID: ${req.params.id}`);
     const relatedTransferOptions = parseRelatedTransferOptions(req.body);
 
     try {
@@ -19532,6 +20644,26 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
             return res.status(400).json({ message: "quantityToMove must be a positive integer." });
         }
         if (moveQty > asset.quantity) return res.status(400).json({ message: "Not enough quantity." });
+        const transferApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: destType === 'building' || destType === 'location'
+                ? 'asset.cross_building_transfer'
+                : 'asset.assignment.change',
+            entityType: 'asset',
+            entityId: asset.customId,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            targetBuildingCode: destType === 'building' || destType === 'location' ? destination : null,
+            quantity: moveQty,
+            reason: normalizeSerialValue(req.body?.reason) || `Transfer to ${destType}: ${destination}`,
+            payloadJson: {
+                assetId: asset.customId,
+                destType,
+                destination,
+                quantityToMove: moveQty,
+                includeRelated: relatedTransferOptions.includeRelated,
+            },
+        });
+        if (!transferApprovalGate.allowed) return;
 
         if (moveQty === asset.quantity) {
             const updated = await AssetService.updateAsset(req.params.id, updateData);
@@ -19684,7 +20816,7 @@ app.patch('/api/assets/:id/transfer', async (req: Request, res: Response) => {
             relatedTransferSummary: partialRelatedSummary,
         });
     } catch (error: any) {
-        console.error("❌ Transfer Route Error:", error.message);
+        console.error("âŒ Transfer Route Error:", error.message);
         res.status(500).json({ message: "Transfer failed", error: error.message });
     }
 });
@@ -19697,6 +20829,32 @@ app.patch('/api/assets/:id/status', async (req: Request, res: Response) => {
         if (!existing) return res.status(404).json({ message: "Asset not found" });
         const mappedStatus = mapToAssetStatus(status);
         const mappedLifecycle = lifecycleStatus ? mapToLifecycleStatus(lifecycleStatus) : undefined;
+        const statusSignal = `${String(mappedStatus || '')} ${String(mappedLifecycle || '')} ${String(reason || '')}`.toUpperCase();
+        const statusActionType = statusSignal.includes('RETIRED') || statusSignal.includes('DISPOSED')
+            ? 'asset.dispose.write_off'
+            : (statusSignal.includes('LOST') || statusSignal.includes('MISSING'))
+                ? 'asset.condition.report_missing'
+                : (statusSignal.includes('DAMAGED') || statusSignal.includes('UNUSABLE'))
+                    ? 'asset.condition.report_damaged'
+                    : (statusSignal.includes('REPAIR') || statusSignal.includes('MAINTENANCE'))
+                        ? 'asset.repair.request'
+                        : 'asset.minor_status.update';
+        const statusApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: statusActionType,
+            entityType: 'asset',
+            entityId: existing.customId,
+            entityLabel: existing.name,
+            buildingCode: existing.location,
+            amount: Number(existing.value || 0),
+            quantity: existing.quantity || 1,
+            reason: String(reason || 'Status update'),
+            payloadJson: {
+                assetId: existing.customId,
+                status: mappedStatus,
+                lifecycleStatus: mappedLifecycle || null,
+            },
+        });
+        if (!statusApprovalGate.allowed) return;
         const updated = await AssetService.updateAsset(req.params.id, {
             status: mappedStatus,
             ...(mappedLifecycle ? { lifecycleStatus: mappedLifecycle } : {})
@@ -19734,6 +20892,21 @@ app.post('/api/assets/:id/retire', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const retireApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.dispose.write_off',
+            entityType: 'asset',
+            entityId: asset.customId,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            amount: Number(asset.value || 0),
+            quantity: asset.quantity || 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'Retire asset',
+            payloadJson: {
+                assetId: asset.customId,
+                disposition: 'retire',
+            },
+        });
+        if (!retireApprovalGate.allowed) return;
         const currentSpecs = readAssetSpecifications(asset);
         const dispositionWorkflow = buildAssetDispositionWorkflow(asset, req.body, 'retire');
         const nextSpecs = mergeAssetSpecifications(currentSpecs, {
@@ -19774,6 +20947,21 @@ app.post('/api/assets/:id/dispose', async (req: Request, res: Response) => {
     try {
         const asset = await AssetService.getAssetByCustomId(req.params.id);
         if (!asset) return res.status(404).json({ message: 'Asset not found' });
+        const disposeApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.dispose.write_off',
+            entityType: 'asset',
+            entityId: asset.customId,
+            entityLabel: asset.name,
+            buildingCode: asset.location,
+            amount: Number(asset.value || 0),
+            quantity: asset.quantity || 1,
+            reason: normalizeSerialValue(req.body?.reason) || 'Dispose asset',
+            payloadJson: {
+                assetId: asset.customId,
+                disposition: 'dispose',
+            },
+        });
+        if (!disposeApprovalGate.allowed) return;
         const currentSpecs = readAssetSpecifications(asset);
         const dispositionWorkflow = buildAssetDispositionWorkflow(asset, req.body, 'dispose');
         const nextSpecs = mergeAssetSpecifications(currentSpecs, {
@@ -20095,6 +21283,44 @@ app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
         if (typeof warrantyEndDate !== 'undefined') updateData.warrantyEndDate = parseOptionalDateInput(warrantyEndDate);
         if (typeof replacementCost !== 'undefined') updateData.replacementCost = parseOptionalNumberInput(replacementCost);
 
+        const detailsChangedFields = Object.keys(updateData);
+        const lifecycleSignal = String(updateData.lifecycleStatus || '').toUpperCase();
+        const detailsActionType = lifecycleSignal.includes('RETIRED') || lifecycleSignal.includes('DISPOSED')
+            ? 'asset.dispose.write_off'
+            : (lifecycleSignal.includes('LOST') || lifecycleSignal.includes('MISSING'))
+                ? 'asset.condition.report_missing'
+                : (lifecycleSignal.includes('DAMAGED') || lifecycleSignal.includes('UNUSABLE'))
+                    ? 'asset.condition.report_damaged'
+                    : (lifecycleSignal.includes('REPAIR') || lifecycleSignal.includes('MAINTENANCE'))
+                        ? 'asset.repair.request'
+                        : (
+                            detailsChangedFields.some((field) => ['assignedToName', 'assignedToUserId', 'assignedDepartment', 'checkoutDate', 'expectedReturnDate', 'returnedDate', 'custodyStatus'].includes(field))
+                                ? 'asset.assignment.change'
+                                : (
+                                    detailsChangedFields.some((field) => ['purchaseCost', 'replacementCost', 'vendor', 'invoiceNumber', 'purchaseOrderNumber'].includes(field))
+                                        ? 'financial.override'
+                                        : ''
+                                )
+                        );
+        if (detailsActionType) {
+            const detailsApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+                actionType: detailsActionType,
+                entityType: 'asset',
+                entityId: existing.customId,
+                entityLabel: existing.name,
+                buildingCode: existing.location,
+                amount: Number(updateData.purchaseCost || updateData.replacementCost || existing.value || 0),
+                quantity: Number(existing.quantity || 1),
+                reason: normalizeSerialValue(req.body?.reason) || `Update asset details: ${detailsChangedFields.join(', ')}`,
+                payloadJson: {
+                    assetId: existing.customId,
+                    changedFields: detailsChangedFields,
+                    lifecycleStatus: updateData.lifecycleStatus || null,
+                },
+            });
+            if (!detailsApprovalGate.allowed) return;
+        }
+
         const updatedAsset = await AssetService.updateAsset(req.params.id, updateData);
         if (!updatedAsset) return res.status(404).json({ message: "Asset not found" });
 
@@ -20210,8 +21436,28 @@ app.patch('/api/assets/:id/details', async (req: Request, res: Response) => {
 // --- DELETE LOGIC ---
 app.delete('/api/assets/:id', inventoryAdminGuard, async (req: Request, res: Response) => {
     try {
-        console.log(`📤 DELETE /api/assets/${req.params.id} from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
+        console.log(`ðŸ“¤ DELETE /api/assets/${req.params.id} from ${req.ip} - headers: ${JSON.stringify(req.headers)}`);
         const id = req.params.id;
+        const existing = await AssetService.getAssetByCustomId(id);
+        if (!existing) return res.status(404).json({ message: 'Asset not found' });
+        const deleteApprovalGate = await requireApprovalOrRespond(prisma, req, res, {
+            actionType: 'asset.delete.permanent',
+            entityType: 'asset',
+            entityId: existing.customId,
+            entityLabel: existing.name,
+            buildingCode: existing.location,
+            amount: Number(existing.value || 0),
+            quantity: existing.quantity || 1,
+            assetCriticality: normalizeSerialValue((existing as any).criticality || ((existing.specifications as any) || {}).criticality),
+            reason: normalizeSerialValue(req.body?.reason) || 'Permanent asset delete',
+            payloadJson: {
+                assetId: existing.customId,
+                assetName: existing.name,
+                location: existing.location,
+                department: existing.department,
+            },
+        });
+        if (!deleteApprovalGate.allowed) return;
 
         const deleted = await AssetService.deleteAsset(id);
 
@@ -20227,18 +21473,19 @@ app.delete('/api/assets/:id', inventoryAdminGuard, async (req: Request, res: Res
 
 const startServer = async () => {
     try {
-        console.log("🔌 Connecting to RabbitMQ...");
+        console.log("ðŸ”Œ Connecting to RabbitMQ...");
         await EventBus.connect();
         await InventoryAiJobQueue.connect();
-        console.log("✅ [EventBus] RabbitMQ Connected Successfully!");
+        await ensureDefaultInventoryApprovalPolicies(prisma);
+        console.log("âœ… [EventBus] RabbitMQ Connected Successfully!");
     } catch (err: any) {
-        console.error("❌ [EventBus] Connection FAILED.");
+        console.error("âŒ [EventBus] Connection FAILED.");
         console.error(`   Error: ${err.message}`);
     }
 
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`\n---------------------------------------------------`);
-        console.log(`🚀 API Service is RUNNING on port ${PORT}`);
+        console.log(`ðŸš€ API Service is RUNNING on port ${PORT}`);
         console.log(`---------------------------------------------------\n`);
     });
 };

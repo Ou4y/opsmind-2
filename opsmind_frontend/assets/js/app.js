@@ -271,6 +271,10 @@ const App = {
         if (context.technicianLevel) {
             roleSet.add(String(context.technicianLevel).toUpperCase());
         }
+        const inventoryRole = AuthService.resolveInventoryRole(user);
+        if (inventoryRole) {
+            roleSet.add(inventoryRole);
+        }
         if (context.roleCategory === 'ADMIN') {
             roleSet.add('ADMIN');
         }
