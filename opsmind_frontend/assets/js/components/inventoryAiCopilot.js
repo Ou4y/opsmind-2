@@ -113,6 +113,15 @@ function normalizeSuggestions(value) {
   return value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6);
 }
 
+function publicFallbackReason(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'AI insight unavailable; showing system-data summary.';
+  if (/timeout|abort|gemma|ollama|stream_start|fetch|network/i.test(raw)) {
+    return 'AI insight unavailable; showing system-data summary.';
+  }
+  return raw.replace(/_/g, ' ');
+}
+
 function renderPromptButtons(prompts = []) {
   return prompts.map((prompt) => `
     <button type="button" class="inventory-ai-prompt-card" data-inventory-copilot-prompt="${escapeHtml(prompt.prompt || prompt.label)}">
@@ -284,7 +293,7 @@ export function initInventoryAiCopilot(options = {}) {
         ? `<div class="mt-2"><strong>Suggested actions</strong><div class="mt-1">${message.suggestedActions.map((item) => `<span class="inventory-ai-chat-pill">${escapeHtml(item)}</span>`).join('')}</div></div>`
         : '';
       const fallback = isAssistant && message.fallbackUsed
-        ? `<div class="inventory-ai-chat-fallback mt-2"><strong>System data used</strong><div class="small">Reason: ${escapeHtml(message.fallbackReason || 'AI insight was unavailable for this request.')}</div></div>`
+        ? `<div class="inventory-ai-chat-fallback mt-2"><strong>System data summary</strong><div class="small">${escapeHtml(publicFallbackReason(message.fallbackReason))}</div></div>`
         : '';
       return `
         <div class="inventory-ai-chat-msg ${role} ${message.justAdded ? 'ops-ai-response-fade' : ''}">

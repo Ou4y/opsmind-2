@@ -61,6 +61,35 @@ describe('Inventory approval policy evaluator', () => {
     }
   });
 
+  it('routes junior CMDB component edits, replacements, relationships, and custody assignment to senior', () => {
+    for (const entityType of ['asset_component', 'asset_relationship', 'asset']) {
+      const result = evaluateInventoryApprovalPolicy(user('JUNIOR'), action({
+        actionType: 'asset.assignment.request',
+        entityType,
+      }));
+      expect(result.approvalRequired).toBe(true);
+      expect(result.approverRole).toBe('SENIOR');
+      expect(result.riskLevel).toBe('L1_OPERATIONAL');
+    }
+  });
+
+  it('routes junior component failure to senior and destructive component actions to admin', () => {
+    const failed = evaluateInventoryApprovalPolicy(user('JUNIOR'), action({
+      actionType: 'asset.condition.report_damaged',
+      entityType: 'asset_component',
+    }));
+    expect(failed.approverRole).toBe('SENIOR');
+
+    for (const role of ['JUNIOR', 'SENIOR', 'BUILDING_SUPERVISOR', 'SUPERVISOR_CHIEF'] as const) {
+      const destructive = evaluateInventoryApprovalPolicy(user(role), action({
+        actionType: 'asset.dispose.write_off',
+        entityType: 'asset_component',
+      }));
+      expect(destructive.approvalRequired).toBe(true);
+      expect(destructive.approverRole).toBe('ADMIN');
+    }
+  });
+
   it('routes exact browser corrective maintenance payload from junior to senior before save', () => {
     const browserPayload = {
       scope: 'Whole Asset',
@@ -217,6 +246,26 @@ describe('Inventory approval policy evaluator', () => {
     expect(result.riskLevel).toBe('L4_SYSTEM_CRITICAL');
   });
 
+  it.each([
+    [1000, 'SENIOR', false, null],
+    [1001, 'SENIOR', true, 'BUILDING_SUPERVISOR'],
+    [5000, 'SENIOR', true, 'BUILDING_SUPERVISOR'],
+    [5001, 'BUILDING_SUPERVISOR', true, 'SUPERVISOR_CHIEF'],
+    [25000, 'BUILDING_SUPERVISOR', true, 'SUPERVISOR_CHIEF'],
+    [25001, 'SUPERVISOR_CHIEF', true, 'ADMIN'],
+  ] as const)('enforces procurement boundary EGP %s', (amount, role, approvalRequired, approverRole) => {
+    const result = evaluateInventoryApprovalPolicy(user(role), action({
+      actionType: amount > 25000
+        ? 'procurement.request.very_high_value'
+        : amount > 5000
+          ? 'procurement.request.high_value'
+          : 'procurement.request.medium_value',
+      amount,
+    }));
+    expect(result.approvalRequired).toBe(approvalRequired);
+    expect(result.approverRole || null).toBe(approverRole);
+  });
+
   it('routes warehouse small dispatch from junior to Central Warehouse senior', () => {
     const result = evaluateInventoryApprovalPolicy(user('JUNIOR', 'CENTRAL_WAREHOUSE'), action({
       actionType: 'warehouse.dispatch.small',
@@ -265,13 +314,14 @@ describe('Inventory approval policy evaluator', () => {
     expect(result.riskLevel).toBe('L2_CONTROLLED');
   });
 
-  it('denies junior or senior direct cross-building execution', () => {
+  it('routes junior or senior cross-building execution to supervisor chief without mutating first', () => {
     const result = evaluateInventoryApprovalPolicy(user('SENIOR', 'MAIN'), action({
       actionType: 'asset.cross_building_transfer',
       buildingCode: 'MAIN',
       targetBuildingCode: 'N',
     }));
-    expect(result.actionAllowed).toBe(false);
+    expect(result.actionAllowed).toBe(true);
+    expect(result.approvalRequired).toBe(true);
     expect(result.approverRole).toBe('SUPERVISOR_CHIEF');
   });
 

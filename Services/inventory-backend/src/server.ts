@@ -77,6 +77,7 @@ import {
     Prisma,
 } from '@prisma/client';
 import { requireInventoryAdminAccess, requireInventoryReadAccess } from './middlewares/inventoryAuth';
+import { buildPublicAssetVerification } from './services/publicAssetVerificationService';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -3468,19 +3469,18 @@ function buildAiHealthSummaryFallback(params: {
     assessment: EolAssessmentResponse;
 }): AiHealthSummaryHelperResponse {
     const assetSpecs = ((params.asset.specifications as Record<string, any>) || {});
-    const latestChanges = (params.timeline || []).slice(0, 6).map((entry) => {
+    const latestChanges = Array.from(new Set((params.timeline || []).map((entry) => {
         const sourceName = entry.sourceItemName || entry.sourceItemCustomId || 'Related item';
-        const reason = entry.reason ? ` â€” Reason: ${entry.reason}` : '';
+        const reason = entry.reason ? ` — Reason: ${entry.reason}` : '';
         return `${sourceName}: ${entry.event}${reason}`;
-    });
-    const componentIssues = (params.timeline || [])
+    }))).slice(0, 6);
+    const componentIssues = Array.from(new Set((params.timeline || [])
         .filter((entry) => {
             const key = normalizeValue(entry.eventType || entry.event);
             return entry.sourceItemType === 'component'
                 && (key.includes('failed') || key.includes('repair') || key.includes('replace') || key.includes('retire') || key.includes('dispose'));
         })
-        .slice(0, 6)
-        .map((entry) => `${entry.sourceItemName || 'Component'} ${entry.event.toLowerCase()}`);
+        .map((entry) => `${entry.sourceItemName || 'Component'} ${entry.event.toLowerCase()}`))).slice(0, 6);
 
     const missingData: string[] = [];
     if (!params.asset.purchaseDate) missingData.push('purchaseDate');
@@ -3982,6 +3982,25 @@ function resolveAssistantAssetMatch(assets: Asset[], query: string): AssistantAs
         scannedCount,
         explicitAssetSignal,
         searchedBy,
+    };
+}
+
+function resolveAssistantAssetMatchForIntent(
+    assets: Asset[],
+    query: string,
+    intent: string,
+): AssistantAssetResolution {
+    if (!ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION.has(intent)) {
+        return resolveAssistantAssetMatch(assets, query);
+    }
+    return {
+        extractedAssetQuery: null,
+        matchedAsset: null,
+        matchMethod: null,
+        ambiguousAssets: [],
+        scannedCount: assets.length,
+        explicitAssetSignal: false,
+        searchedBy: [],
     };
 }
 
@@ -4606,8 +4625,9 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         return {
             answer: [
                 `Command Center attention summary: ${filtersUsed.dashboard.highRiskCount} high-risk asset(s), ${filtersUsed.dashboard.lowStockCount} low-stock item(s), ${filtersUsed.dashboard.eolSoonCount} EOL/warranty planning item(s), and ${filtersUsed.dashboard.missingDataCount} data-quality issue(s).`,
+                `Operational signals: ${filtersUsed.dashboard.staleTelemetryCount} stale/unknown telemetry item(s) and ${filtersUsed.dashboard.auditIssueCount} audit issue(s).`,
                 `Procurement signals: ${filtersUsed.dashboard.pendingApprovals} pending approval(s) and ${filtersUsed.dashboard.openPurchaseOrders} open PO(s).`,
-                'Next best move: clear urgent Today\'s Priorities, then review low-stock/EOL procurement and data-quality evidence.',
+                'Next best move: handle low stock and high-risk/EOL exposure first, verify stale telemetry and audit issues, then clear missing data and pending procurement work.',
             ].join(' '),
             matchedItems: matchedItems.slice(0, 24),
             filtersUsed,
@@ -4719,6 +4739,8 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
         const missingRows = snapshot.assets.filter((asset) => assistantAssetMissingFieldCount(asset) > 0);
         const lowStock = snapshot.spareStock.filter((item) => Number(item.quantityAvailable || 0) <= Number(item.reorderPoint ?? item.minimumStockLevel ?? 0)).length;
         const telemetryStale = snapshot.assets.filter((asset) => assistantTelemetryInfo(asset).stale).length;
+        const knownCostAssets = snapshot.assets.filter((asset) => Number(asset.purchaseCost || asset.value || 0) > 0);
+        const recordedCost = knownCostAssets.reduce((sum, asset) => sum + Number(asset.purchaseCost || asset.value || 0), 0);
         filtersUsed.inventory360 = {
             totalRecords: snapshot.assets.length,
             parentAssets: byCategory.asset || 0,
@@ -4732,10 +4754,14 @@ function deterministicAssistantAnswer(snapshot: InventoryAiSnapshot, query: stri
             missingData: missingRows.length,
             lowStock,
             staleTelemetry: telemetryStale,
+            recordedCost,
+            costKnownAssets: knownCostAssets.length,
+            pendingApprovals: Number(dashboardContext.pendingApprovals ?? procurementContext.pendingApprovals ?? 0),
+            openPurchaseOrders: Number(dashboardContext.openPurchaseOrders ?? procurementContext.openPurchaseOrders ?? 0),
         };
         suggestedActions.push('Open Parent Assets for high-risk/EOL review.', 'Open Procurement for low-stock and replacement planning.', 'Run data quality fixes for missing cost, warranty, serial, and telemetry evidence.');
         return {
-            answer: `Inventory 360 summary: ${snapshot.assets.length} asset record(s), including ${filtersUsed.inventory360.parentAssets} parent asset(s), ${filtersUsed.inventory360.components} component record(s), ${filtersUsed.inventory360.accessories} accessories, ${filtersUsed.inventory360.consumables} consumables, ${filtersUsed.inventory360.spareStock} spare-stock item(s), and ${filtersUsed.inventory360.licenses} license record(s). Operational signals: ${highRisk} high-risk, ${nearEol} EOL/warranty, ${lowStock} low-stock, ${telemetryStale} stale telemetry, and ${missingRows.length} missing-data item(s). Top recommendation: resolve high-risk/EOL and low-stock blockers first, then clean evidence gaps that weaken AI confidence.`,
+            answer: `Inventory 360 summary: ${snapshot.assets.length} asset record(s), including ${filtersUsed.inventory360.parentAssets} parent asset(s), ${filtersUsed.inventory360.components} component record(s), ${filtersUsed.inventory360.accessories} accessories, ${filtersUsed.inventory360.consumables} consumables, ${filtersUsed.inventory360.spareStock} spare-stock item(s), and ${filtersUsed.inventory360.licenses} license record(s). Operational signals: ${highRisk} high-risk, ${nearEol} EOL/warranty, ${lowStock} low-stock, ${telemetryStale} stale telemetry, and ${missingRows.length} missing-data item(s). Cost overview: ${knownCostAssets.length} record(s) have recorded cost evidence totaling EGP ${recordedCost.toFixed(2)}. Procurement impact: ${filtersUsed.inventory360.pendingApprovals} pending approval(s) and ${filtersUsed.inventory360.openPurchaseOrders} open PO(s). Top recommendation: resolve high-risk/EOL and low-stock blockers first, then clean evidence gaps that weaken AI confidence.`,
             matchedItems: riskRows.slice(0, 12).map((row) => {
                 const asset = snapshot.assets.find((entry) => entry.customId === row.assetId);
                 return asset ? buildAiMatchedItem(asset, `Risk ${row.riskLevel} (${row.riskScore})`) : null;
@@ -9454,6 +9480,43 @@ async function enrichAssetSpecificationsWithAI(params: {
     }
 }
 
+// Public QR verification is deliberately registered before the protected
+// /api/inventory mount. It returns a strict safe-field projection only.
+app.get('/api/inventory/public/asset-verify', async (req: Request, res: Response) => {
+    const assetTag = String(req.query.assetTag || '').trim();
+    const assetId = String(req.query.assetId || '').trim();
+    const lookupValue = assetTag || assetId;
+    res.setHeader('Cache-Control', 'no-store');
+    if (!lookupValue) {
+        return res.status(400).json({ message: 'assetTag or assetId is required' });
+    }
+    if (lookupValue.length > 160 || /[\u0000-\u001f\u007f]/.test(lookupValue)) {
+        return res.status(400).json({ message: 'Invalid asset verification value' });
+    }
+    try {
+        const assets = await prisma.asset.findMany({
+            where: assetTag
+                ? { assetTag: { equals: assetTag, mode: 'insensitive' } }
+                : { customId: assetId },
+            select: {
+                assetTag: true,
+                type: true,
+                category: true,
+                location: true,
+                department: true,
+                status: true,
+            },
+            take: 2,
+        });
+        if (assets.length > 1) {
+            return res.status(409).json({ message: 'Asset verification is unavailable for this identifier' });
+        }
+        return res.json(buildPublicAssetVerification(assets[0] || null, assetTag || null));
+    } catch {
+        return res.status(503).json({ message: 'Asset verification is temporarily unavailable' });
+    }
+});
+
 // --- MOUNT ROUTERS ---
 app.use('/api/config', inventoryReadGuard);
 app.use('/api/assets', inventoryReadGuard);
@@ -9522,6 +9585,9 @@ app.post('/api/inventory/approvals', inventoryAdminGuard, async (req: Request, r
             requestCode: approvalRequest.requestCode,
             approverRole: evaluation.approverRole,
             buildingCode: approvalRequest.buildingCode,
+            recipientType: 'ROLE_SCOPE',
+            recipientRole: evaluation.approverRole,
+            recipientBuildingCode: approvalRequest.approverBuildingCode || approvalRequest.buildingCode,
             requester: { userId: user.userId, name: user.displayName, role: user.role },
             actionType: action.actionType,
             entityLabel: action.entityLabel,
@@ -9666,9 +9732,12 @@ async function decideInventoryApproval(req: Request, res: Response, decision: 'A
     });
 }
 
-app.post('/api/inventory/approvals/:id/approve', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'APPROVED'));
-app.post('/api/inventory/approvals/:id/reject', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'REJECTED'));
-app.post('/api/inventory/approvals/:id/escalate', inventoryAdminGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'ESCALATED'));
+// Authentication is required here, while role/building authority is enforced by
+// canUserDecideInventoryApproval. An Admin-only middleware would incorrectly
+// block Senior, Building Supervisor, and Supervisor Chief approvers.
+app.post('/api/inventory/approvals/:id/approve', inventoryReadGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'APPROVED'));
+app.post('/api/inventory/approvals/:id/reject', inventoryReadGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'REJECTED'));
+app.post('/api/inventory/approvals/:id/escalate', inventoryReadGuard, async (req: Request, res: Response) => decideInventoryApproval(req, res, 'ESCALATED'));
 
 app.get('/api/inventory/approval-policies', inventoryReadGuard, async (_req: Request, res: Response) => {
     await ensureDefaultInventoryApprovalPolicies(prisma);
@@ -11303,7 +11372,7 @@ app.post('/api/inventory/ai/assistant', inventoryReadGuard, async (req: Request,
         const fullSnapshot = await buildInventoryAiSnapshot();
         const requestedIntent = classifyAiQueryIntent(query);
         const skipAssetDisambiguation = ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION.has(requestedIntent);
-        const assetResolution = resolveAssistantAssetMatch(fullSnapshot.assets, query);
+        const assetResolution = resolveAssistantAssetMatchForIntent(fullSnapshot.assets, query, requestedIntent);
         if (!skipAssetDisambiguation && !assetResolution.matchedAsset && assetResolution.ambiguousAssets.length) {
             const deterministicMeta = createInventoryAiSourceMeta(null, true);
             const candidates = assetResolution.ambiguousAssets.slice(0, 8);
@@ -11549,7 +11618,7 @@ async function buildInventoryAssistantStreamContext(body: any): Promise<{
     const fullSnapshot = await buildInventoryAiSnapshot();
     const requestedIntent = classifyAiQueryIntent(query);
     const skipAssetDisambiguation = ASSISTANT_INTENTS_SKIP_ASSET_DISAMBIGUATION.has(requestedIntent);
-    const assetResolution = resolveAssistantAssetMatch(fullSnapshot.assets, query);
+    const assetResolution = resolveAssistantAssetMatchForIntent(fullSnapshot.assets, query, requestedIntent);
     if (!skipAssetDisambiguation && !assetResolution.matchedAsset && assetResolution.ambiguousAssets.length) {
         const candidates = assetResolution.ambiguousAssets.slice(0, 8);
         const deterministic: InventoryAssistantDeterministicResult = {
@@ -12623,7 +12692,7 @@ app.post('/api/inventory/procurement/invoices', inventoryAdminGuard, async (req:
                     totalAmount: parseMoneyOrNull(req.body?.totalAmount),
                     currency: String(req.body?.currency || 'USD').trim() || 'USD',
                     paymentStatus: normalizeSerialValue(req.body?.paymentStatus) || 'not_submitted',
-                    notes: normalizeSerialValue(req.body?.notes),
+                    notes: componentNotesWithSlot(req.body || {}),
                     metadata: req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null,
                 },
             });
@@ -14476,8 +14545,14 @@ app.post('/api/inventory/ai/ticket-draft', inventoryReadGuard, async (req: Reque
             feature: 'ticket_draft',
         });
         const sourceMeta = createInventoryAiSourceMeta(ai);
+        const aiDraft = ai?.ticket_draft && typeof ai.ticket_draft === 'object' ? ai.ticket_draft : {};
         return res.json({
-            ticketDraft: ai?.ticket_draft || draft.ticketDraft,
+            ticketDraft: {
+                ...draft.ticketDraft,
+                ...aiDraft,
+                // Priority is evidence-derived and must remain consistent with the risk level.
+                priority: draft.ticketDraft.priority,
+            },
             confidence: String(ai?.confidence || draft.confidence),
             missingData: draft.missingData,
             dataScope: assetId ? 'selected_asset' : 'full_inventory',
@@ -16983,6 +17058,8 @@ function normalizeComponentSlotKey(value: unknown): string {
 }
 
 function componentSlotKeyFromPayload(payload: Record<string, any> = {}): string {
+    const notes = String(payload.notes || '').trim();
+    const notesSlot = notes.match(/\[slot\s*[:=]\s*([^\]]+)\]/i)?.[1] || '';
     return normalizeComponentSlotKey(
         payload.slot
         || payload.slotName
@@ -16991,8 +17068,16 @@ function componentSlotKeyFromPayload(payload: Record<string, any> = {}): string 
         || payload.role
         || payload.position
         || payload.notesSlot
+        || notesSlot
         || 'default',
     );
+}
+
+function componentNotesWithSlot(payload: Record<string, any> = {}): string | null {
+    const notes = normalizeSerialValue(payload.notes) || '';
+    const slot = normalizeSerialValue(payload.slot || payload.slotName || payload.componentSlot || payload.componentRole || payload.role);
+    if (!slot || /\[slot\s*[:=]/i.test(notes)) return notes || null;
+    return `${notes ? `${notes}\n` : ''}[slot: ${slot}]`;
 }
 
 function isRepeatableComponentType(componentType: unknown): boolean {
@@ -17020,6 +17105,7 @@ async function assertComponentInstallPolicy(
     parentAssetId: string,
     componentType: string,
     payload: Record<string, any> = {},
+    excludeComponentId?: string,
 ): Promise<void> {
     const typeKey = normalizeComponentUniquenessKey(componentType);
     const slotKey = componentSlotKeyFromPayload(payload);
@@ -17027,6 +17113,7 @@ async function assertComponentInstallPolicy(
     const activeRows = await tx.assetComponent.findMany({
         where: {
             parentAssetId,
+            ...(excludeComponentId ? { id: { not: excludeComponentId } } : {}),
             removedAt: null,
             status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
         },
@@ -17075,9 +17162,9 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
         });
         if (!componentCreateApprovalGate.allowed) return;
 
-        const createAsAsset = typeof req.body?.createAsAsset === 'undefined'
-            ? true
-            : parseBooleanFlag(req.body?.createAsAsset);
+        // Every newly created CMDB component is a first-class inventory asset.
+        // Existing assets may still be linked explicitly through childAssetId.
+        const createAsAsset = true;
         const requestedChildAssetId = normalizeSerialValue(req.body?.childAssetId);
         const componentSerial = normalizeSerialValue(req.body?.serialNumber);
         const componentTag = normalizeSerialValue(req.body?.assetTag);
@@ -17091,6 +17178,17 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                 linkedAsset = await tx.asset.findUnique({ where: { customId: requestedChildAssetId } });
                 if (!linkedAsset) {
                     throw new RequestValidationError('childAssetId does not exist');
+                }
+                const activeLink = await tx.assetComponent.findFirst({
+                    where: {
+                        childAssetId: requestedChildAssetId,
+                        removedAt: null,
+                        status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
+                    },
+                    select: { parentAssetId: true },
+                });
+                if (activeLink) {
+                    throw new RequestValidationError(`Component asset is already installed in ${activeLink.parentAssetId}. Use Replace/Remove first.`);
                 }
                 linkedAsset = await tx.asset.update({
                     where: { customId: linkedAsset.customId },
@@ -17116,6 +17214,19 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                         where: { serialNumber: componentSerial },
                         orderBy: { createdAt: 'desc' },
                     });
+                }
+                if (linkedAsset) {
+                    const activeLink = await tx.assetComponent.findFirst({
+                        where: {
+                            childAssetId: linkedAsset.customId,
+                            removedAt: null,
+                            status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
+                        },
+                        select: { parentAssetId: true },
+                    });
+                    if (activeLink) {
+                        throw new RequestValidationError(`A component with this serial is already installed in ${activeLink.parentAssetId}.`);
+                    }
                 }
                 if (!linkedAsset) {
                     const requestedAssetType = normalizeSerialValue(req.body?.assetType);
@@ -17191,7 +17302,7 @@ app.post('/api/assets/:id/components', async (req: Request, res: Response) => {
                     condition: normalizeSerialValue(req.body?.condition),
                     installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
                     reason: normalizeSerialValue(req.body?.reason),
-                    notes: normalizeSerialValue(req.body?.notes),
+                    notes: componentNotesWithSlot(req.body || {}),
                 },
                 include: {
                     childAsset: {
@@ -17284,6 +17395,11 @@ app.put('/api/assets/:id/components/:componentId', async (req: Request, res: Res
             },
         });
         if (!componentEditApprovalGate.allowed) return;
+        if (normalizeComponentUniquenessKey(nextType) !== normalizeComponentUniquenessKey(component.componentType)) {
+            await prisma.$transaction(async (tx) => {
+                await assertComponentInstallPolicy(tx, req.params.id, nextType, req.body || {}, component.id);
+            });
+        }
         const updated = await prisma.assetComponent.update({
             where: { id: req.params.componentId },
             data: {
@@ -17317,6 +17433,9 @@ app.put('/api/assets/:id/components/:componentId', async (req: Request, res: Res
         });
         res.json(updated);
     } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
         res.status(500).json({ message: 'Failed to update component', error: error.message });
     }
 });
@@ -17437,21 +17556,84 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
             },
         });
         if (!componentReplaceApprovalGate.allowed) return;
-        const [oldComponent, newComponent] = await prisma.$transaction([
-            prisma.assetComponent.update({
+        const { oldComponent, newComponent } = await prisma.$transaction(async (tx) => {
+            await assertComponentInstallPolicy(tx, req.params.id, nextComponentType, newComponentInput, component.id);
+            const oldComponent = await tx.assetComponent.update({
                 where: { id: component.id },
                 data: {
                     status: normalizeComponentStatus(req.body?.oldStatus, 'replaced'),
                     removedAt: new Date(),
                     reason,
                 },
-            }),
-            prisma.assetComponent.create({
+            });
+            let childAssetId = normalizeSerialValue(newComponentInput.childAssetId);
+            if (childAssetId) {
+                const existingChild = await tx.asset.findUnique({ where: { customId: childAssetId } });
+                if (!existingChild) throw new RequestValidationError('Replacement childAssetId does not exist.');
+                const activeLink = await tx.assetComponent.findFirst({
+                    where: {
+                        childAssetId,
+                        id: { not: component.id },
+                        removedAt: null,
+                        status: { notIn: ['removed', 'replaced', 'retired', 'disposed'] },
+                    },
+                    select: { parentAssetId: true },
+                });
+                if (activeLink) throw new RequestValidationError(`Replacement component is already installed in ${activeLink.parentAssetId}.`);
+            } else {
+                const replacementSerial = normalizeSerialValue(newComponentInput.serialNumber);
+                const replacementTag = normalizeSerialValue(newComponentInput.assetTag);
+                if (replacementSerial || replacementTag) {
+                    const duplicateAsset = await tx.asset.findFirst({
+                        where: {
+                            OR: [
+                                ...(replacementSerial ? [{ serialNumber: replacementSerial }] : []),
+                                ...(replacementTag ? [{ assetTag: replacementTag }] : []),
+                            ],
+                        },
+                        select: { customId: true },
+                    });
+                    if (duplicateAsset) {
+                        throw new RequestValidationError(`A component asset already uses this serial/tag (${duplicateAsset.customId}). Select that asset explicitly if it is free.`);
+                    }
+                }
+                const generatedCustomId = normalizeSerialValue(newComponentInput.childAssetCustomId)
+                    || await generateComponentAssetCustomId(req.params.id, nextComponentType);
+                const childAsset = await tx.asset.create({
+                    data: {
+                        customId: generatedCustomId,
+                        name: nextComponentName,
+                        type: mapComponentTypeToAssetType(nextComponentType),
+                        status: 'ACTIVE',
+                        lifecycleStatus: 'IN_USE',
+                        category: 'COMPONENT',
+                        value: parseOptionalNumberInput(newComponentInput.componentValue) || 0,
+                        quantity: 1,
+                        serialNumber: normalizeSerialValue(newComponentInput.serialNumber),
+                        assetTag: normalizeSerialValue(newComponentInput.assetTag),
+                        manufacturerPartNumber: normalizeSerialValue(newComponentInput.partNumber),
+                        location: parentAsset.location,
+                        department: parentAsset.department,
+                        custodyStatus: 'UNASSIGNED',
+                        specifications: {
+                            parentAssetId: req.params.id,
+                            installedInAssetId: req.params.id,
+                            installedInAssetName: parentAsset.name,
+                            installedInAssetTag: parentAsset.assetTag || null,
+                            componentType: nextComponentType,
+                            replacedComponentId: component.id,
+                            createdFrom: 'component_replacement',
+                        },
+                    },
+                });
+                childAssetId = childAsset.customId;
+            }
+            const newComponent = await tx.assetComponent.create({
                 data: {
                     parentAssetId: req.params.id,
-                    childAssetId: normalizeSerialValue(newComponentInput.childAssetId),
-                    componentName: String(newComponentInput.componentName || component.componentName).trim(),
-                    componentType: String(newComponentInput.componentType || component.componentType).trim(),
+                    childAssetId,
+                    componentName: nextComponentName,
+                    componentType: nextComponentType,
                     brand: normalizeSerialValue(newComponentInput.brand) || component.brand,
                     model: normalizeSerialValue(newComponentInput.model) || component.model,
                     serialNumber: normalizeSerialValue(newComponentInput.serialNumber),
@@ -17459,11 +17641,12 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
                     status: normalizeComponentStatus(newComponentInput.status, 'installed'),
                     condition: normalizeSerialValue(newComponentInput.condition),
                     installedAt: parseOptionalDateInput(newComponentInput.installedAt) || new Date(),
-                    notes: normalizeSerialValue(newComponentInput.notes),
+                    notes: componentNotesWithSlot(newComponentInput),
                     reason,
                 },
-            }),
-        ]);
+            });
+            return { oldComponent, newComponent };
+        });
         if (oldComponent.childAssetId) {
             await updateChildAssetLinkMetadata(prisma, oldComponent.childAssetId, {
                 lifecycleStatus: 'IN_STOCK',
@@ -17506,6 +17689,9 @@ app.post('/api/assets/:id/components/:componentId/replace', async (req: Request,
         });
         res.json({ replaced: oldComponent, installed: newComponent });
     } catch (error: any) {
+        if (error instanceof RequestValidationError) {
+            return res.status(400).json({ message: error.message });
+        }
         res.status(500).json({ message: 'Failed to replace component', error: error.message });
     }
 });
@@ -17608,7 +17794,7 @@ app.post('/api/assets/:id/components/install-from-stock', async (req: Request, r
                     condition: normalizeSerialValue(req.body?.condition) || 'new',
                     installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
                     reason,
-                    notes: normalizeSerialValue(req.body?.notes),
+                    notes: componentNotesWithSlot(req.body || {}),
                 },
                 include: {
                     childAsset: {
@@ -17800,7 +17986,7 @@ app.post('/api/assets/:id/components/:componentId/replace-from-stock', async (re
                     condition: normalizeSerialValue(req.body?.condition) || 'new',
                     installedAt: parseOptionalDateInput(req.body?.installedAt) || new Date(),
                     reason,
-                    notes: normalizeSerialValue(req.body?.notes),
+                    notes: componentNotesWithSlot(req.body || {}),
                 },
                 include: {
                     childAsset: {
@@ -19780,25 +19966,28 @@ app.post('/api/assets/:id/ai-health-summary', async (req: Request, res: Response
             : confidenceRaw === 'medium'
                 ? 'medium'
                 : 'low';
+        const cleanUnique = (values: unknown[], limit = 12) => Array.from(new Set(
+            values.map((item) => String(item || '').replace(/â€¢/g, '•').trim()).filter(Boolean)
+        )).slice(0, limit);
+        const aiMissingData = Array.isArray(ai.missing_data) ? ai.missing_data : [];
+        const consistentMissingData = cleanUnique([...fallback.missingData, ...aiMissingData], 24);
         return res.json({
             summary: normalizeAiHealthSummaryNarrative(String(ai.summary || fallback.summary), asset),
-            risks: Array.isArray(ai.risks) ? ai.risks.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12) : fallback.risks,
+            risks: cleanUnique(Array.isArray(ai.risks) ? ai.risks : fallback.risks),
             recentChanges: Array.isArray(ai.recent_changes)
-                ? ai.recent_changes.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                ? cleanUnique(ai.recent_changes)
                 : fallback.recentChanges,
             componentIssues: Array.isArray(ai.component_issues)
-                ? ai.component_issues.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                ? cleanUnique(ai.component_issues)
                 : fallback.componentIssues,
             warrantyEolConcerns: Array.isArray(ai.warranty_eol_concerns)
-                ? ai.warranty_eol_concerns.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                ? cleanUnique(ai.warranty_eol_concerns)
                 : fallback.warrantyEolConcerns,
             recommendations: Array.isArray(ai.recommendations)
-                ? ai.recommendations.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+                ? cleanUnique(ai.recommendations)
                 : fallback.recommendations,
             confidence,
-            missingData: Array.isArray(ai.missing_data)
-                ? ai.missing_data.map((item: unknown) => String(item || '').trim()).filter(Boolean).slice(0, 24)
-                : fallback.missingData,
+            missingData: consistentMissingData,
             ...sourceMeta,
         } as AiHealthSummaryHelperResponse);
     } catch (error: any) {

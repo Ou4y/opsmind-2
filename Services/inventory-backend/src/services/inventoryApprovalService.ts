@@ -470,20 +470,6 @@ export function evaluateInventoryApprovalPolicy(user: InventoryUserContext, acti
   const target = normalizeBuildingCode(action.targetBuildingCode);
   const crossBuilding = Boolean(source && target && source !== target);
   if (crossBuilding && riskRank(riskLevel) < 3) riskLevel = 'L3_HIGH_IMPACT';
-  if (crossBuilding && (user.role === 'JUNIOR' || user.role === 'SENIOR')) {
-    return {
-      actionAllowed: false,
-      autoApprove: false,
-      approvalRequired: false,
-      notifyOnly: false,
-      riskLevel,
-      scopeType: user.scopeType,
-      approverRole: 'SUPERVISOR_CHIEF',
-      requiresDualApproval: false,
-      reason: 'Junior/Senior users cannot directly initiate cross-building transfer execution. Submit through Building Supervisor.',
-      policyKey: 'deny:cross-building:junior-senior',
-    };
-  }
 
   const approverRole = inferWarehouseApproverRole(user, action, riskLevel)
     || inferApproverRole(user.role, riskLevel, amount, action.assetCriticality);
@@ -699,6 +685,9 @@ export async function requireApprovalOrRespond(
       approverRole: evaluation.approverRole,
       buildingCode: approvalRequest.approverBuildingCode || approvalRequest.buildingCode,
       approverBuildingCode: approvalRequest.approverBuildingCode,
+      recipientType: 'ROLE_SCOPE',
+      recipientRole: evaluation.approverRole,
+      recipientBuildingCode: approvalRequest.approverBuildingCode || approvalRequest.buildingCode,
       requester: { userId: user.userId, name: user.displayName, role: user.role },
       actionType: action.actionType,
       entityLabel: action.entityLabel,

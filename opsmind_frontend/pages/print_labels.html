@@ -1,35 +1,24 @@
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Redirecting...</title>
-  <script>
-    window.location.replace('/inventory.html');
-  </script>
-</head>
-<body>
-  <p>Redirecting to inventory page...</p>
-  <p>If you are not redirected, <a href="/inventory.html">click here</a>.</p>
-</body>
-</html>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Asset Label Printer</title>
-  <link rel="stylesheet" href="assets/css/main.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
-  <script src="assets/js/print_labels.js" defer></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asset Label Printer - OpsMind</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
+    <script src="/assets/js/config.js?v=2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
 </head>
-<body>
-  <div class="container" style="max-width:600px;margin:60px auto;text-align:center;">
-    <h1>Asset Label Printer</h1>
-    <p>Generate and print QR code labels for all assets.</p>
-    <button id="printLabelsBtn" class="btn btn-primary" style="font-size:1.2em;padding:12px 32px;">Print Labels Now</button>
-    <div id="labelStatus" style="margin-top:20px;color:red;"></div>
-  </div>
+<body class="asset-label-printer-page">
+    <main class="asset-label-printer-shell">
+        <section class="asset-label-printer-card" aria-labelledby="assetLabelPrinterTitle">
+            <h1 id="assetLabelPrinterTitle">Asset Label Printer</h1>
+            <p>Generate printable labels whose QR codes open secure asset verification and authenticated Asset 360.</p>
+            <button id="printLabelsBtn" class="btn btn-primary" type="button">Generate Secure QR Labels</button>
+            <div id="labelStatus" class="asset-label-printer-status" role="status" aria-live="polite"></div>
+        </section>
+    </main>
+    <script type="module" src="/assets/js/print_labels.js"></script>
 </body>
 </html>

@@ -1,5 +1,10 @@
 import UI from '/assets/js/ui.js';
 import AuthService from '/services/authService.js';
+import {
+  buildInventoryAssetQrUrl,
+  parseInventoryAssetDeepLink,
+  resolveInventoryAssetDeepLink,
+} from '/assets/js/components/inventoryQrDeepLink.js';
 
 // Config is set as globals in config.js (loaded in HTML head)
 const API_URL = window.OPSMIND_INVENTORY_API_URL || 'http://localhost:5000/api';
@@ -17,6 +22,7 @@ let ACCESSORY_TYPES = [];
 let CONSUMABLE_TYPES = [];
 let SPARE_STOCK_TYPES = [];
 let LICENSE_TYPES = [];
+let inventoryDeepLinkHandled = false;
 const STANDARD_MIU_DEPARTMENTS = [
   'Computer Science',
   'Business',
@@ -106,6 +112,8 @@ let importAiRepairState = {
 };
 const INVENTORY_GROUP_PAGE_SIZE = 50;
 let inventoryGroupRenderLimit = INVENTORY_GROUP_PAGE_SIZE;
+const SPARE_STOCK_GROUP_PAGE_SIZE = 12;
+let spareStockGroupPage = 1;
 let inventoryPageState = {
   page: 1,
   pageSize: 50,
@@ -281,27 +289,29 @@ function getInventoryMapDisplayRotation() {
   return normalized;
 }
 
-const INVENTORY_ALLOWED_TECHNICIAN_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
-
 function resolveInventoryAccess() {
   const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
-  const technicianLevel = String(context.technicianLevel || '').toUpperCase();
-  const isAdmin = context.roleCategory === 'ADMIN' || technicianLevel === 'ADMIN';
-  const isSenior = technicianLevel === 'SENIOR';
-  const canAccess = isAdmin || INVENTORY_ALLOWED_TECHNICIAN_LEVELS.has(technicianLevel);
+  const hierarchyRole = AuthService.getInventoryHierarchyRole(AuthService.getCurrentUser());
+  const technicianLevel = hierarchyRole || String(context.technicianLevel || '').toUpperCase();
+  const canAccess = Boolean(hierarchyRole);
 
   return {
     context,
+    hierarchyRole,
     technicianLevel,
     canAccess,
-    canCreateAsset: isAdmin,
-    canDeleteAsset: isAdmin,
-    canTransferAsset: isAdmin || isSenior,
-    canEditSpecs: isAdmin || isSenior,
+    canCreateAsset: AuthService.canInventoryAction('system_admin'),
+    canDeleteAsset: AuthService.canInventoryAction('asset_delete'),
+    canTransferAsset: AuthService.canInventoryAction('assignment_change'),
+    canEditSpecs: AuthService.canInventoryAction('spec_edit'),
   };
 }
 
 const INVENTORY_ACCESS = resolveInventoryAccess();
+
+function canShowInventoryAction(action) {
+  return AuthService.canInventoryAction(action, AuthService.getCurrentUser());
+}
 
 function getInventoryFallbackPath() {
   return INVENTORY_ACCESS.context?.dashboardPath || '/pages/dashboard.html';
@@ -335,7 +345,7 @@ async function inventoryRequest(path, options = {}) {
 
   if (response.status === 401) {
     AuthService.clearAuth();
-    window.location.href = '/index.html';
+    window.location.href = AuthService.getLoginUrlForReturn();
     throw new Error('Session expired. Please sign in again.');
   }
 
@@ -347,10 +357,19 @@ async function inventoryRequest(path, options = {}) {
 }
 
 function applyInventoryRoleUI() {
-  const createButton = document.querySelector('.inventory-create-btn');
-  if (createButton) {
-    createButton.style.display = INVENTORY_ACCESS.canCreateAsset ? '' : 'none';
-  }
+  const visibilityBySelector = {
+    '.inventory-create-btn': 'system_admin',
+    '#openImportAssetsBtn': 'system_admin',
+    '#openBulkCheckoutBtn': 'building_scope',
+    '#spareStockAddBtn': 'component_create',
+    '#auditCreateSessionBtn': 'building_scope',
+    '#assetMapCalibrateToggleBtn': 'system_admin',
+  };
+  Object.entries(visibilityBySelector).forEach(([selector, action]) => {
+    document.querySelectorAll(selector).forEach((element) => {
+      element.classList.toggle('d-none', !canShowInventoryAction(action));
+    });
+  });
 }
 
 const TYPE_ALIASES = {
@@ -2592,6 +2611,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   updateInventoryAiFloatingOffset();
   window.addEventListener('resize', () => updateInventoryAiFloatingOffset());
+  if (!window.__inventoryAiPagerOffsetBound) {
+    window.__inventoryAiPagerOffsetBound = true;
+    let offsetFrame = 0;
+    window.addEventListener('scroll', () => {
+      if (offsetFrame) return;
+      offsetFrame = window.requestAnimationFrame(() => {
+        offsetFrame = 0;
+        updateInventoryAiFloatingOffset();
+      });
+    }, { passive: true });
+  }
   window.addEventListener('resize', () => {
     const mapModalEl = document.getElementById('inventoryAssetMapModal');
     if (mapModalEl && mapModalEl.classList.contains('show')) {
@@ -2604,6 +2634,48 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initializePage() {
   await loadConfig(); // 1. Fetch config from backend first!
   await loadAssets(); // 2. Then load assets and render
+  await openInventoryDeepLinkAfterLoad();
+}
+
+async function findInventoryDeepLinkAsset(target) {
+  if (target.lookupType === 'assetId' || target.lookupType === 'openAsset') {
+    const loadedIdMatch = resolveInventoryAssetDeepLink(
+      currentAssets,
+      { lookupType: 'assetId', lookupValue: target.lookupValue },
+    );
+    if (loadedIdMatch) return loadedIdMatch;
+  }
+  const params = new URLSearchParams({
+    paginate: 'true',
+    page: '1',
+    pageSize: '25',
+    q: target.lookupValue,
+  });
+  const response = await inventoryRequest(`/assets?${params.toString()}`);
+  if (!response.ok) throw await buildInventoryHttpError(response, '/assets deep-link lookup');
+  const payload = await response.json();
+  const candidates = normalizeAssetListResponse(payload, 1, 25).assets;
+  return resolveInventoryAssetDeepLink(candidates, target);
+}
+
+async function openInventoryDeepLinkAfterLoad() {
+  if (inventoryDeepLinkHandled) return;
+  const target = parseInventoryAssetDeepLink(window.location.search);
+  if (!target) return;
+  inventoryDeepLinkHandled = true;
+  try {
+    const asset = await findInventoryDeepLinkAsset(target);
+    if (!asset?.customId) {
+      showMessage('Asset not found or unavailable. Check the QR label and try again.', 'warning');
+      return;
+    }
+    await window.openAssetCmdb(asset.customId);
+  } catch (error) {
+    const message = /permission|access denied|forbidden/i.test(String(error?.message || ''))
+      ? 'This account can verify the asset but cannot open full Asset 360.'
+      : 'Asset not found or unavailable. Check the QR label and try again.';
+    showMessage(message, 'warning');
+  }
 }
 
 // Ã°Å¸Å¡â‚¬ Fetches the single source of truth from your new backend route
@@ -4663,7 +4735,7 @@ function renderInventoryGemmaDiagnosticsBody(result = {}) {
         <div><strong>Keep alive</strong><span>${UI.escapeHTML(String(diagnostics.keep_alive ?? diagnostics.keepAlive ?? 'Unknown'))}</span></div>
         <div><strong>Backend bridge</strong><span>${UI.escapeHTML(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
       </div>
-      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${UI.escapeHTML(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${UI.escapeHTML(publicInventoryAiFallbackReason(lastError))}</div>` : ''}
       <div class="table-responsive">
         <table class="table table-sm align-middle ops-gemma-table">
           <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>What this verifies</th><th></th></tr></thead>
@@ -4749,7 +4821,7 @@ async function openInventoryGemmaDiagnostics() {
           <div class="ops-empty-state-icon"><i class="bi bi-cpu"></i></div>
           <div>
             <div class="ops-empty-state-title">Diagnostics unavailable</div>
-            <div class="ops-empty-state-copy">${UI.escapeHTML(error.message || 'Could not complete read-only AI diagnostics.')}</div>
+            <div class="ops-empty-state-copy">${UI.escapeHTML(publicInventoryAiFallbackReason(error?.message))}</div>
           </div>
         </div>
       `;
@@ -4876,13 +4948,13 @@ function renderInventoryGroupPager() {
   const hasNext = page < totalPages;
   pagerEl.classList.remove('d-none');
   pagerEl.innerHTML = `
-    <div class="d-flex justify-content-between align-items-center">
-      <small class="text-muted">Page ${page} of ${totalPages}  |  Total groups/items: ${total}</small>
-      <div class="d-flex gap-2">
-        <button class="btn btn-sm btn-outline-secondary" ${hasPrev ? '' : 'disabled'} onclick="window.changeInventoryPage(-1)">
+    <div class="inventory-pagination-layout">
+      <small class="inventory-pagination-summary">Page ${page} of ${totalPages} <span aria-hidden="true">|</span> Total groups/items: ${total}</small>
+      <div class="inventory-pagination-actions">
+        <button class="btn btn-sm btn-outline-secondary inventory-page-button" ${hasPrev ? '' : 'disabled'} onclick="window.changeInventoryPage(-1)">
           <i class="bi bi-arrow-left me-1"></i>Previous
         </button>
-        <button class="btn btn-sm btn-outline-secondary" ${hasNext ? '' : 'disabled'} onclick="window.changeInventoryPage(1)">
+        <button class="btn btn-sm btn-outline-secondary inventory-page-button" ${hasNext ? '' : 'disabled'} onclick="window.changeInventoryPage(1)">
           Next<i class="bi bi-arrow-right ms-1"></i>
         </button>
       </div>
@@ -5018,10 +5090,6 @@ function renderTable() {
 
   if (currentInventoryView === 'spare_stock') {
     const pagerEl = document.getElementById('inventoryGroupPager');
-    if (pagerEl) {
-      pagerEl.classList.add('d-none');
-      pagerEl.innerHTML = '';
-    }
     const stockRows = (spareStockItemsCache || []).filter((item) => {
       const candidateBuilding = String(item.location || '').trim() || 'Unknown';
       const candidateType = normalizeComponentTypeLabel(item.componentType || item.category || 'Spare Stock');
@@ -5045,6 +5113,10 @@ function renderTable() {
 
     if (!stockRows.length) {
       tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4">${UI.escapeHTML(viewMeta.emptyText)}</td></tr>`;
+      if (pagerEl) {
+        pagerEl.classList.add('d-none');
+        pagerEl.innerHTML = '';
+      }
       updateDeleteAllAssetsButton();
       updateInventoryAiFloatingOffset();
       renderActiveInventoryFilterChips();
@@ -5060,36 +5132,54 @@ function renderTable() {
 
     const groupedEntries = Object.entries(groupedStock)
       .sort((a, b) => String(a[0] || '').localeCompare(String(b[0] || '')));
-    tableBody.innerHTML = groupedEntries.map(([groupType, groupItems]) => {
+    const totalPages = Math.max(1, Math.ceil(groupedEntries.length / SPARE_STOCK_GROUP_PAGE_SIZE));
+    spareStockGroupPage = Math.min(Math.max(1, spareStockGroupPage), totalPages);
+    const pageEntries = groupedEntries.slice(
+      (spareStockGroupPage - 1) * SPARE_STOCK_GROUP_PAGE_SIZE,
+      spareStockGroupPage * SPARE_STOCK_GROUP_PAGE_SIZE
+    );
+    tableBody.innerHTML = pageEntries.map(([groupType, groupItems]) => {
       const totalQty = groupItems.reduce((sum, item) => sum + Number(item.quantityAvailable || 0), 0);
       const locationSet = new Set(groupItems.map((item) => String(item.location || 'Unknown')).filter(Boolean));
       const partNumbers = Array.from(new Set(groupItems.map((item) => String(item.partNumber || '')).filter(Boolean)));
       const encodedType = encodeURIComponent(groupType);
       return `
-        <tr>
-          <td>
-            <div class="d-flex align-items-center">
-              <div class="avatar-initial rounded bg-light text-primary me-3">
+        <tr class="inventory-group-row">
+          <td class="inventory-group-primary-cell">
+            <div class="inventory-group-identity">
+              <div class="avatar-initial inventory-group-icon rounded bg-light text-primary">
                 <i class="bi bi-box-seam"></i>
               </div>
-              <div>
-                <div class="fw-bold text-dark">${UI.escapeHTML(groupType)}</div>
-                <small class="text-muted">${groupItems.length} stock item(s)</small>
+              <div class="inventory-group-copy">
+                <div class="inventory-group-name">${UI.escapeHTML(groupType)}</div>
+                <small class="inventory-group-subtitle">${groupItems.length} stock item(s)</small>
                 <span class="d-none">${UI.escapeHTML(partNumbers.join(' '))}</span>
               </div>
             </div>
           </td>
-          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(groupType)}</span></td>
-          <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
-          <td><small class="text-muted">${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
-          <td class="text-end">
-            <button class="btn btn-sm btn-primary" onclick="window.openSpareStockModalForType(decodeURIComponent('${encodedType}'))" title="View Spare Stock">
-              <i class="bi bi-eye me-1"></i> View (${groupItems.length})
+          <td class="inventory-group-type-cell"><span class="inventory-group-type-badge">${UI.escapeHTML(groupType)}</span></td>
+          <td class="inventory-group-count-cell"><span class="inventory-group-count-badge">${totalQty}</span></td>
+          <td class="inventory-group-location-cell"><small>${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
+          <td class="inventory-group-actions-cell">
+            <button class="btn btn-sm btn-primary inventory-group-view-button" onclick="window.openSpareStockModalForType(decodeURIComponent('${encodedType}'))" title="View ${groupItems.length} spare stock record(s)">
+              <i class="bi bi-eye" aria-hidden="true"></i><span>View</span>
             </button>
           </td>
         </tr>
       `;
     }).join('');
+    if (pagerEl) {
+      pagerEl.classList.remove('d-none');
+      pagerEl.innerHTML = `
+        <div class="inventory-pagination-layout">
+          <small class="inventory-pagination-summary">Page ${spareStockGroupPage} of ${totalPages} <span aria-hidden="true">|</span> Total stock groups: ${groupedEntries.length}</small>
+          <div class="inventory-pagination-actions">
+            <button class="btn btn-sm btn-outline-secondary inventory-page-button" ${spareStockGroupPage <= 1 ? 'disabled' : ''} onclick="window.changeSpareStockGroupPage(-1)"><i class="bi bi-arrow-left me-1"></i>Previous</button>
+            <button class="btn btn-sm btn-outline-secondary inventory-page-button" ${spareStockGroupPage >= totalPages ? 'disabled' : ''} onclick="window.changeSpareStockGroupPage(1)">Next<i class="bi bi-arrow-right ms-1"></i></button>
+          </div>
+        </div>
+      `;
+    }
     updateDeleteAllAssetsButton();
     updateInventoryAiFloatingOffset();
     renderActiveInventoryFilterChips();
@@ -5164,25 +5254,25 @@ function renderTable() {
       const parentSummary = Array.from(parentSet).slice(0, 3).join(', ');
       const moreParents = parentSet.size > 3 ? ` +${parentSet.size - 3} more` : '';
       return `
-        <tr>
-          <td>
-            <div class="d-flex align-items-center">
-              <div class="avatar-initial rounded bg-light text-primary me-3">
+        <tr class="inventory-group-row">
+          <td class="inventory-group-primary-cell">
+            <div class="inventory-group-identity">
+              <div class="avatar-initial inventory-group-icon rounded bg-light text-primary">
                 <i class="bi bi-cpu"></i>
               </div>
-              <div>
-                <div class="fw-bold text-dark">${UI.escapeHTML(componentType)}</div>
-                <small class="text-muted">${parentSummary ? `Related to: ${UI.escapeHTML(parentSummary)}${UI.escapeHTML(moreParents)}` : (currentInventoryView === 'components' ? 'No parent relationship' : 'No linked parent')}</small>
+              <div class="inventory-group-copy">
+                <div class="inventory-group-name">${UI.escapeHTML(componentType)}</div>
+                <small class="inventory-group-subtitle">${parentSummary ? `Related to: ${UI.escapeHTML(parentSummary)}${UI.escapeHTML(moreParents)}` : (currentInventoryView === 'components' ? 'No parent relationship' : 'No linked parent')}</small>
                 <span class="d-none">${UI.escapeHTML(Array.from(serialsSet).join(' '))} ${UI.escapeHTML(Array.from(tagsSet).join(' '))}</span>
               </div>
             </div>
           </td>
-          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(componentType)}</span></td>
-          <td class="text-center"><span class="badge bg-primary qty-badge">${componentGroup.length}</span></td>
-          <td><small class="text-muted">${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
-          <td class="text-end">
-            <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetailsByFilter('${currentInventoryView}', decodeURIComponent('${encodedComponentType}'))" title="View ${UI.escapeHTML(componentType)}">
-              <i class="bi bi-eye me-1"></i> View (${componentGroup.length})
+          <td class="inventory-group-type-cell"><span class="inventory-group-type-badge">${UI.escapeHTML(componentType)}</span></td>
+          <td class="inventory-group-count-cell"><span class="inventory-group-count-badge">${componentGroup.length}</span></td>
+          <td class="inventory-group-location-cell"><small>${UI.escapeHTML(Array.from(locationSet).join(', ') || 'Unknown')}</small></td>
+          <td class="inventory-group-actions-cell">
+            <button class="btn btn-sm btn-primary inventory-group-view-button" onclick="window.viewAssetDetailsByFilter('${currentInventoryView}', decodeURIComponent('${encodedComponentType}'))" title="View ${componentGroup.length} ${UI.escapeHTML(componentType)} record(s)">
+              <i class="bi bi-eye" aria-hidden="true"></i><span>View</span>
             </button>
           </td>
         </tr>
@@ -5219,25 +5309,25 @@ function renderTable() {
       const serialsFound = Array.from(serialsSet).join(', ');
       const tagsFound = Array.from(tagsSet).join(', ');
       return `
-        <tr>
-          <td>
-            <div class="d-flex align-items-center">
-              <div class="avatar-initial rounded bg-light text-primary me-3">
+        <tr class="inventory-group-row">
+          <td class="inventory-group-primary-cell">
+            <div class="inventory-group-identity">
+              <div class="avatar-initial inventory-group-icon rounded bg-light text-primary">
                 <i class="bi ${getIconForType(firstAsset.type)}"></i>
               </div>
-              <div>
-                <div class="fw-bold text-dark">${UI.escapeHTML(assetName)}</div>
-                <small class="text-muted">${UI.escapeHTML(departmentsFound)}</small>
+              <div class="inventory-group-copy">
+                <div class="inventory-group-name">${UI.escapeHTML(assetName)}</div>
+                <small class="inventory-group-subtitle">${UI.escapeHTML(departmentsFound)}</small>
                 <span class="d-none">${UI.escapeHTML(serialsFound)} ${UI.escapeHTML(tagsFound)}</span>
               </div>
             </div>
           </td>
-          <td><span class="badge bg-light text-dark border">${UI.escapeHTML(typeLabel)}</span></td>
-          <td class="text-center"><span class="badge bg-primary qty-badge">${totalQty}</span></td>
-          <td><small class="text-muted">${UI.escapeHTML(locationsFound)}</small></td>
-          <td class="text-end">
-            <button class="btn btn-sm btn-primary" onclick="window.viewAssetDetailsByFilter('parents', decodeURIComponent('${encodedAssetName}'), decodeURIComponent('${encodedAssetType}'))" title="View & Manage Items">
-              <i class="bi bi-eye me-1"></i> View (${totalQty})
+          <td class="inventory-group-type-cell"><span class="inventory-group-type-badge">${UI.escapeHTML(typeLabel)}</span></td>
+          <td class="inventory-group-count-cell"><span class="inventory-group-count-badge">${totalQty}</span></td>
+          <td class="inventory-group-location-cell"><small>${UI.escapeHTML(locationsFound)}</small></td>
+          <td class="inventory-group-actions-cell">
+            <button class="btn btn-sm btn-primary inventory-group-view-button" onclick="window.viewAssetDetailsByFilter('parents', decodeURIComponent('${encodedAssetName}'), decodeURIComponent('${encodedAssetType}'))" title="View ${totalQty} grouped asset unit(s)">
+              <i class="bi bi-eye" aria-hidden="true"></i><span>View</span>
             </button>
           </td>
         </tr>
@@ -5553,6 +5643,11 @@ window.viewAssetDetailsByFilter = (mode, value, type = '') => {
     ? { mode: 'parents', assetName: String(value || '').trim(), assetType: String(type || '').trim() }
     : { mode: normalizedMode, groupType: String(value || '').trim(), componentType: String(value || '').trim() };
   window.viewAssetDetailsByContext(context);
+};
+
+window.changeSpareStockGroupPage = (delta = 0) => {
+  spareStockGroupPage = Math.max(1, spareStockGroupPage + Number(delta || 0));
+  renderTable();
 };
 
 window.viewAssetDetailsByContext = (context) => {
@@ -8000,6 +8095,27 @@ function getCmdbLifecycleRelatedSummary(row) {
   return [candidateName, candidateTag].filter(Boolean).join(' | ');
 }
 
+function cleanLifecycleText(value) {
+  return String(value ?? '').replace(/â€¢/g, '•').replace(/â€”/g, '—').trim();
+}
+
+function deduplicateLifecycleRows(rows = []) {
+  const seen = new Set();
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const timestamp = row?.timestamp || row?.date || row?.createdAt || '';
+    const minute = timestamp ? String(timestamp).slice(0, 16) : '';
+    const signature = [
+      minute,
+      cleanLifecycleText(row?.eventType || row?.label || row?.event),
+      cleanLifecycleText(row?.sourceItemCustomId || row?.sourceItemName || row?.assetId),
+      cleanLifecycleText(row?.reason || row?.notes),
+    ].join('|').toLowerCase();
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+}
+
 function ensureCmdbModal() {
   let modalEl = document.getElementById(CMDB_MODAL_ID);
   if (!modalEl) {
@@ -8161,14 +8277,14 @@ function renderCmdbBody(customId, data, asset) {
         <div class="dropdown">
           <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" type="button">Actions</button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><button class="dropdown-item" onclick="window.cmdbEditComponent('${customId}','${component.id}')">Edit</button></li>
             <li><button class="dropdown-item" onclick="window.cmdbViewComponentHistory('${customId}','${component.id}')">History</button></li>
-            <li><button class="dropdown-item text-warning" onclick="window.cmdbRepairComponent('${customId}','${component.id}')">Repair</button></li>
-            <li><button class="dropdown-item text-primary" onclick="window.cmdbReplaceComponent('${customId}','${component.id}')">Replace</button></li>
-            <li><button class="dropdown-item text-primary" onclick="window.cmdbReplaceFromStock('${customId}','${component.id}')">Stock Replace</button></li>
-            <li><button class="dropdown-item text-danger" onclick="window.cmdbRemoveComponent('${customId}','${component.id}')">Remove</button></li>
-            <li><button class="dropdown-item text-danger" onclick="window.cmdbMarkFailedComponent('${customId}','${component.id}')">Mark Failed</button></li>
-            <li><button class="dropdown-item text-danger" onclick="window.cmdbRetireComponent('${customId}','${component.id}')">Retire/Dispose</button></li>
+            ${canShowInventoryAction('component_edit') ? `<li><button class="dropdown-item" onclick="window.cmdbEditComponent('${customId}','${component.id}')">Edit CMDB Details</button></li>` : ''}
+            ${canShowInventoryAction('component_repair') ? `<li><button class="dropdown-item text-warning" onclick="window.cmdbRepairComponent('${customId}','${component.id}')">Repair / Corrective Action</button></li>` : ''}
+            ${canShowInventoryAction('component_replace') ? `<li><button class="dropdown-item text-primary" onclick="window.cmdbReplaceComponent('${customId}','${component.id}')">Replace</button></li>` : ''}
+            ${canShowInventoryAction('component_stock_replace') ? `<li><button class="dropdown-item text-primary" onclick="window.cmdbReplaceFromStock('${customId}','${component.id}')">Stock Replace</button></li>` : ''}
+            ${canShowInventoryAction('component_repair') ? `<li><button class="dropdown-item text-warning" onclick="window.cmdbMarkFailedComponent('${customId}','${component.id}')">Mark Failed</button></li>` : ''}
+            ${canShowInventoryAction('component_remove') ? `<li><button class="dropdown-item text-danger" onclick="window.cmdbRemoveComponent('${customId}','${component.id}')">Remove</button></li>` : ''}
+            ${canShowInventoryAction('component_retire') ? `<li><button class="dropdown-item text-danger" onclick="window.cmdbRetireComponent('${customId}','${component.id}')">Retire/Dispose</button></li>` : ''}
           </ul>
         </div>
       </td>
@@ -8230,7 +8346,7 @@ function renderCmdbBody(customId, data, asset) {
         <td>${UI.escapeHTML(relatedStatus)}</td>
         <td class="text-end">
           ${relatedAssetId ? `<button class="btn btn-sm btn-outline-primary me-1" onclick="window.openAssetCmdb('${relatedAssetId}')">Open Asset</button>` : ''}
-          ${row.direction === 'outgoing' ? `<button class="btn btn-sm btn-outline-danger" onclick="window.cmdbDeleteRelationship('${customId}','${row.id}')">Delete</button>` : ''}
+          ${row.direction === 'outgoing' && canShowInventoryAction('relationship_change') ? `<button class="btn btn-sm btn-outline-danger" onclick="window.cmdbDeleteRelationship('${customId}','${row.id}')">Remove Relationship</button>` : ''}
         </td>
       </tr>
     `;
@@ -8350,7 +8466,7 @@ function renderCmdbBody(customId, data, asset) {
         <p>${UI.escapeHTML(dispositionCopy)}</p>
         ${isAssetClosedForDisposition
     ? `<button type="button" class="btn btn-sm btn-outline-secondary" disabled title="This asset already has a closed lifecycle status.">Already Closed</button>`
-    : `<button type="button" class="btn btn-sm btn-outline-danger" onclick="window.cmdbAssetDisposition('${customId}')">Retire / Write-off</button>`}
+    : (canShowInventoryAction('asset_disposition') ? `<button type="button" class="btn btn-sm btn-outline-danger" onclick="window.cmdbAssetDisposition('${customId}')">Retire / Write-off</button>` : '')}
       </article>
     </div>
     ${isParentContext ? `
@@ -8393,7 +8509,7 @@ function renderCmdbBody(customId, data, asset) {
             ${wifiInfo.mismatch ? `<div class="small text-warning-emphasis mt-1"><strong>Warning:</strong> Network location mismatch with assigned location.</div>` : ''}
           </div>
           <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbMockWifiUpdate('${customId}')">Update Last Seen Network</button>
+            ${canShowInventoryAction('telemetry_update') ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbMockWifiUpdate('${customId}')">Update Last Seen Network</button>` : ''}
           </div>
         </div>
       </div>
@@ -8409,8 +8525,8 @@ function renderCmdbBody(customId, data, asset) {
       ${showComponentsTab ? `
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-components">
         <div class="d-flex justify-content-end gap-2 mb-2">
-          <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${customId}')">Install From Stock</button>
-          <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${customId}')">Create & Add New Component</button>
+          ${canShowInventoryAction('component_create') ? `<button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${customId}')">Install From Stock</button>` : ''}
+          ${canShowInventoryAction('component_create') ? `<button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${customId}')">Create & Add New Component</button>` : ''}
         </div>
         <div class="table-responsive"><table class="table table-sm">
           <thead><tr><th>Name</th><th>Type</th><th>Brand/Model</th><th>Serial</th><th>Part No.</th><th>Status</th><th>Condition</th><th>Installed At</th><th class="text-end">Actions</th></tr></thead>
@@ -8418,15 +8534,15 @@ function renderCmdbBody(customId, data, asset) {
         </table></div>
       </div>` : ''}
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-maintenance">
-        <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddMaintenance('${customId}')">${maintenanceActionLabel}</button></div>
+        <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddMaintenance('${customId}')">${INVENTORY_ACCESS.hierarchyRole === 'JUNIOR' ? 'Add Routine Preventive Maintenance' : maintenanceActionLabel}</button></div>
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Scope</th><th>Type</th><th>Status</th><th>By</th><th>At</th><th>Cost</th></tr></thead><tbody>${maintenanceRows || `<tr><td colspan="6" class="text-muted">${maintenanceEmptyLabel}</td></tr>`}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-custody">
         <div class="d-flex justify-content-end gap-2 mb-2">
-          <button class="btn btn-sm btn-primary" onclick="window.cmdbAssignAsset('${customId}')">Assign/Checkout</button>
-          <button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbCheckinAsset('${customId}')" ${hasActiveAssignment ? '' : 'disabled'} title="${UI.escapeHTML(hasActiveAssignment ? 'Record check-in details.' : 'No active assignment to check in.')}">${hasActiveAssignment ? 'Check-in' : 'Check-in (N/A)'}</button>
-          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-info" onclick="window.cmdbLoanerCheckout('${customId}')" ${(loanerEligible && !isLoanedOut) ? '' : 'disabled'} title="${UI.escapeHTML(loanerEligible ? (isLoanedOut ? 'Asset is already loaned out.' : 'Record loaner checkout.') : 'This asset is not marked as a loaner. Mark it as a loaner before checkout.')}">Loaner Checkout</button>` : ''}
-          ${showLoanerActions ? `<button class="btn btn-sm btn-outline-dark" onclick="window.cmdbLoanerReturn('${customId}')" ${isLoanedOut ? '' : 'disabled'} title="${UI.escapeHTML(isLoanedOut ? 'Record loaner return.' : 'Loaner return is available only when asset is currently loaned out.')}">Loaner Return</button>` : ''}
+          ${canShowInventoryAction('custody_change') ? `<button class="btn btn-sm btn-primary" onclick="window.cmdbAssignAsset('${customId}')">Assign/Checkout</button>` : ''}
+          ${canShowInventoryAction('custody_change') ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.cmdbCheckinAsset('${customId}')" ${hasActiveAssignment ? '' : 'disabled'} title="${UI.escapeHTML(hasActiveAssignment ? 'Record check-in details.' : 'No active assignment to check in.')}">${hasActiveAssignment ? 'Check-in' : 'Check-in (N/A)'}</button>` : ''}
+          ${showLoanerActions && canShowInventoryAction('custody_change') ? `<button class="btn btn-sm btn-outline-info" onclick="window.cmdbLoanerCheckout('${customId}')" ${(loanerEligible && !isLoanedOut) ? '' : 'disabled'} title="${UI.escapeHTML(loanerEligible ? (isLoanedOut ? 'Asset is already loaned out.' : 'Record loaner checkout.') : 'This asset is not marked as a loaner. Mark it as a loaner before checkout.')}">Loaner Checkout</button>` : ''}
+          ${showLoanerActions && canShowInventoryAction('custody_change') ? `<button class="btn btn-sm btn-outline-dark" onclick="window.cmdbLoanerReturn('${customId}')" ${isLoanedOut ? '' : 'disabled'} title="${UI.escapeHTML(isLoanedOut ? 'Record loaner return.' : 'Loaner return is available only when asset is currently loaned out.')}">Loaner Return</button>` : ''}
         </div>
         ${showLoanerActions ? `
           <div class="small text-muted mb-2">
@@ -8439,7 +8555,7 @@ function renderCmdbBody(customId, data, asset) {
         <div class="table-responsive"><table class="table table-sm"><thead><tr><th>Action</th><th>User</th><th>Checkout</th><th>Return</th><th>Reason</th></tr></thead><tbody>${custodyRows || '<tr><td colspan="5" class="text-muted">No custody history.</td></tr>'}</tbody></table></div>
       </div>
       <div class="tab-pane fade" id="${CMDB_MODAL_ID}-relationships">
-        <div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddRelationship('${customId}')">Add Relationship</button></div>
+        ${canShowInventoryAction('relationship_change') ? `<div class="d-flex justify-content-end mb-2"><button class="btn btn-sm btn-primary" onclick="window.cmdbAddRelationship('${customId}')">Add Relationship</button></div>` : ''}
         <div class="table-responsive"><table class="table table-sm">
           <thead><tr><th>Related Item</th><th>Category</th><th>Relationship</th><th>Asset Tag</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
           <tbody>
@@ -8916,7 +9032,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
           <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-components">
             <div class="d-flex justify-content-between align-items-center mb-2">
               <div class="small text-muted">Use unit selector to compare per-unit components.</div>
-              ${selectedCount === 1 ? `
+              ${selectedCount === 1 && canShowInventoryAction('component_create') ? `
                 <div class="d-flex gap-2">
                   <button class="btn btn-sm btn-outline-primary" onclick="window.cmdbInstallFromStock('${selectedAssets[0].customId}')">Install From Stock</button>
                   <button class="btn btn-sm btn-primary" onclick="window.cmdbAddComponent('${selectedAssets[0].customId}')">Create & Add New Component</button>
@@ -8934,7 +9050,7 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
           </div>
           <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-maintenance">
             <div class="d-flex justify-content-end mb-2">
-              <button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-maintenance">Bulk Add Maintenance</button>
+              ${canShowInventoryAction('component_repair') ? `<button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-maintenance">Bulk Add Maintenance</button>` : ''}
             </div>
             <div class="table-responsive"><table class="table table-sm">
               <thead><tr><th>Unit</th><th>Type</th><th>Status</th><th>At</th><th>By</th></tr></thead>
@@ -8943,8 +9059,8 @@ function renderGroupCmdbBody(groupAssets, selectedAssetIds, dataMap) {
           </div>
           <div class="tab-pane fade" id="${GROUP_CMDB_MODAL_ID}-custody">
             <div class="d-flex gap-2 justify-content-end mb-2">
-              <button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-assign">Bulk Assign/Checkout</button>
-              <button class="btn btn-sm btn-outline-secondary" id="${GROUP_CMDB_MODAL_ID}-bulk-checkin">Bulk Check-in</button>
+              ${canShowInventoryAction('building_scope') ? `<button class="btn btn-sm btn-primary" id="${GROUP_CMDB_MODAL_ID}-bulk-assign">Bulk Assign/Checkout</button>` : ''}
+              ${canShowInventoryAction('building_scope') ? `<button class="btn btn-sm btn-outline-secondary" id="${GROUP_CMDB_MODAL_ID}-bulk-checkin">Bulk Check-in</button>` : ''}
             </div>
             <div class="table-responsive"><table class="table table-sm">
               <thead><tr><th>Unit</th><th>Action</th><th>User</th><th>Checkout</th><th>Return</th></tr></thead>
@@ -9238,7 +9354,7 @@ window.cmdbAiHealthSummary = async (assetId) => {
         <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
       </div>
     `;
-    showMessage(error.message || 'Failed to generate AI health summary.', 'warning');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'warning');
   } finally {
     endCmdbAiAction(actionKey);
   }
@@ -9289,7 +9405,7 @@ window.cmdbAiRiskScore = async (assetId) => {
         <div class="small mt-1">${UI.escapeHTML(error.message || 'Try again later.')}</div>
       </div>
     `;
-    showMessage(error.message || 'Failed to generate AI risk score.', 'warning');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'warning');
   } finally {
     endCmdbAiAction(actionKey);
   }
@@ -9364,7 +9480,7 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
     try {
       const payload = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/black-box-timeline?includeRelated=true`);
       cmdbState.blackBoxTimelineAssetId = assetId;
-      cmdbState.blackBoxTimelineRows = Array.isArray(payload?.events) ? payload.events : [];
+      cmdbState.blackBoxTimelineRows = deduplicateLifecycleRows(payload?.events);
       stopLoadingHint();
     } catch (error) {
       stopLoadingHint();
@@ -9401,13 +9517,13 @@ window.cmdbBlackBoxTimeline = async (assetId, group = 'all') => {
     </button>
   `).join('');
 
-  const timelineRows = filtered.slice(0, 120).map((row) => `
+  const timelineRows = filtered.slice(0, 15).map((row) => `
     <tr>
       <td>${row.timestamp ? UI.formatDateTime(row.timestamp) : '-'}</td>
-      <td>${UI.escapeHTML(row.label || row.eventType || '-')}</td>
+      <td>${UI.escapeHTML(cleanLifecycleText(row.label || row.eventType || '-'))}</td>
       <td>${UI.escapeHTML(row.sourceItemType || '-')}</td>
       <td>${UI.escapeHTML(row.sourceItemName || row.sourceItemCustomId || '-')}</td>
-      <td>${UI.escapeHTML(row.reason || row.notes || '-')}</td>
+      <td>${UI.escapeHTML(cleanLifecycleText(row.reason || row.notes || '-'))}</td>
       <td><span class="badge bg-${row.severity === 'critical' ? 'danger' : (row.severity === 'warning' ? 'warning text-dark' : 'secondary')}">${UI.escapeHTML(String(row.severity || 'info'))}</span></td>
     </tr>
   `).join('');
@@ -9635,6 +9751,14 @@ window.cmdbAddComponent = async (assetId) => {
         colClass: 'col-md-6',
       },
       {
+        name: 'slotName',
+        label: 'Slot / Role',
+        type: 'text',
+        placeholder: 'e.g. RAM-A1, M.2-1, primary',
+        required: false,
+        colClass: 'col-md-6',
+      },
+      {
         name: 'condition',
         label: 'Condition',
         type: 'select',
@@ -9650,14 +9774,6 @@ window.cmdbAddComponent = async (assetId) => {
         options: ['installed', 'under_repair', 'in_stock'],
         value: 'installed',
         required: true,
-        colClass: 'col-md-6',
-      },
-      {
-        name: 'createAsAsset',
-        label: 'Create as standalone inventory component asset',
-        type: 'checkbox',
-        value: true,
-        required: false,
         colClass: 'col-md-6',
       },
       {
@@ -9699,10 +9815,11 @@ window.cmdbAddComponent = async (assetId) => {
       serialNumber: serialNumber || null,
       assetTag: assetTag || null,
       partNumber: form.values.partNumber || null,
+      slotName: form.values.slotName || null,
       condition: form.values.condition || 'new',
       reason: form.values.notes || 'component_created_and_added',
       notes: form.values.notes || null,
-      createAsAsset: Boolean(form.values.createAsAsset),
+      createAsAsset: true,
       status: form.values.status || 'installed',
     });
     showMessage('Component added.', 'success');
@@ -9789,10 +9906,21 @@ window.cmdbReplaceComponent = async (assetId, componentId) => {
       { name: 'componentName', label: 'New Component Name', type: 'text', required: true, colClass: 'col-md-6' },
       { name: 'componentType', label: 'New Component Type', type: 'select', options: componentOptions, value: componentOptions[0] || 'component', required: true, colClass: 'col-md-6' },
       { name: 'serialNumber', label: 'New Component Serial', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'partNumber', label: 'Part Number', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'brand', label: 'Brand', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'model', label: 'Model', type: 'text', required: false, colClass: 'col-md-6' },
+      { name: 'condition', label: 'Condition', type: 'select', options: ['new', 'good', 'refurbished'], value: 'new', required: true, colClass: 'col-md-6' },
       { name: 'reason', label: 'Replacement Reason', type: 'text', value: 'replaced', required: true, colClass: 'col-md-6' },
     ],
   });
   if (!form?.confirmed) return;
+  const traceableIdentity = String(form.values.serialNumber || '').trim()
+    || String(form.values.partNumber || '').trim()
+    || (String(form.values.brand || '').trim() && String(form.values.model || '').trim());
+  if (!traceableIdentity) {
+    showMessage('Enter a serial number, part number, or both brand and model for the replacement component.', 'warning');
+    return;
+  }
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/${encodeURIComponent(componentId)}/replace`, {
       reason: form.values.reason,
@@ -9800,6 +9928,10 @@ window.cmdbReplaceComponent = async (assetId, componentId) => {
         componentName: form.values.componentName,
         componentType: form.values.componentType || 'component',
         serialNumber: form.values.serialNumber || '',
+        partNumber: form.values.partNumber || '',
+        brand: form.values.brand || '',
+        model: form.values.model || '',
+        condition: form.values.condition || 'new',
         status: 'installed',
       },
       oldStatus: 'replaced',
@@ -10036,6 +10168,13 @@ window.cmdbInstallFromStock = async (assetId) => {
         },
       },
       {
+        name: 'slotName',
+        label: 'Slot / Role',
+        type: 'text',
+        placeholder: 'Required to distinguish repeated RAM/storage slots',
+        required: false,
+      },
+      {
         name: 'reason',
         label: 'Reason / Notes',
         type: 'textarea',
@@ -10066,6 +10205,9 @@ window.cmdbInstallFromStock = async (assetId) => {
       const result = await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/components/install-from-stock`, {
         spareStockItemId,
         reason: stockForm.values.reason || 'installed_from_stock',
+        slotName: quantity > 1
+          ? `${String(stockForm.values.slotName || selectedStock.componentType || 'slot').trim()}-${index + 1}`
+          : (stockForm.values.slotName || null),
         createAsAsset: true,
         status: 'installed',
       });
@@ -10144,6 +10286,7 @@ window.cmdbReplaceFromStock = async (assetId, componentId) => {
 };
 
 window.cmdbAddMaintenance = async (assetId) => {
+  const juniorRoutineOnly = INVENTORY_ACCESS.hierarchyRole === 'JUNIOR';
   const components = await readInventoryJson(`/assets/${encodeURIComponent(assetId)}/components`).catch(() => []);
   const activeComponents = (Array.isArray(components) ? components : [])
     .filter((row) => !row?.removedAt && !['removed', 'replaced', 'retired', 'disposed'].includes(normalizeLifecycleStatus(row?.status)))
@@ -10152,8 +10295,10 @@ window.cmdbAddMaintenance = async (assetId) => {
       label: `${row.componentName || row.id} | ${row.componentType || '-'}`,
     }));
   const form = await showInventoryFormModal({
-    title: 'Add Maintenance',
-    message: 'Maintenance supports whole-asset and component-specific records.',
+    title: juniorRoutineOnly ? 'Add Routine Preventive Maintenance' : 'Add Maintenance',
+    message: juniorRoutineOnly
+      ? 'Junior access is limited to completed routine preventive maintenance. Controlled or corrective work must be requested through an authorized Senior.'
+      : 'Maintenance supports whole-asset and component-specific records.',
     confirmText: 'Save Maintenance',
     confirmClass: 'btn-primary',
     dialogClass: 'modal-lg',
@@ -10188,7 +10333,8 @@ window.cmdbAddMaintenance = async (assetId) => {
       {
         name: 'maintenanceType',
         label: 'Maintenance Type',
-        type: 'text',
+        type: juniorRoutineOnly ? 'select' : 'text',
+        options: juniorRoutineOnly ? ['preventive_maintenance'] : undefined,
         value: 'preventive_maintenance',
         required: true,
         colClass: 'col-md-4',
@@ -10197,7 +10343,7 @@ window.cmdbAddMaintenance = async (assetId) => {
         name: 'status',
         label: 'Status',
         type: 'select',
-        options: ['completed', 'in_progress', 'scheduled'],
+        options: juniorRoutineOnly ? ['completed'] : ['completed', 'in_progress', 'scheduled'],
         value: 'completed',
         required: true,
         colClass: 'col-md-4',
@@ -10238,6 +10384,10 @@ window.cmdbAddMaintenance = async (assetId) => {
     ],
   });
   if (!form?.confirmed) return;
+  if (juniorRoutineOnly && (normalizeValue(form.values.maintenanceType) !== 'preventivemaintenance' || normalizeValue(form.values.status) !== 'completed')) {
+    showMessage('Junior access is limited to completed routine preventive maintenance.', 'warning');
+    return;
+  }
   try {
     await postInventoryJson(`/assets/${encodeURIComponent(assetId)}/maintenance`, {
       componentId: form.values.scope === 'specific_component' ? (form.values.componentId || null) : null,
@@ -10588,8 +10738,8 @@ window.renderSpareStockTable = () => {
         <td>${UI.escapeHTML(item.location || '-')}</td>
         <td>${UI.escapeHTML(compatible || '-')}</td>
         <td class="text-end">
-          <button class="btn btn-sm btn-outline-secondary" onclick="window.editSpareStockItem('${item.id}')">Edit</button>
-          <button class="btn btn-sm btn-outline-primary" onclick="window.adjustSpareStockItem('${item.id}')">Adjust</button>
+          ${canShowInventoryAction('component_stock_replace') ? `<button class="btn btn-sm btn-outline-secondary" onclick="window.editSpareStockItem('${item.id}')">Edit</button>` : ''}
+          ${canShowInventoryAction('component_stock_replace') ? `<button class="btn btn-sm btn-outline-primary" onclick="window.adjustSpareStockItem('${item.id}')">Adjust</button>` : ''}
         </td>
       </tr>
     `;
@@ -11401,6 +11551,14 @@ function renderAiSearchState({ state = '', title = '', detail = '', source = '',
   `;
 }
 
+function publicInventoryAiFallbackReason(value) {
+  const raw = String(value || '').trim();
+  if (!raw || /timeout|abort|gemma|ollama|stream_start|fetch|network/i.test(raw)) {
+    return 'AI insight unavailable; showing system-data summary.';
+  }
+  return raw.replace(/_/g, ' ');
+}
+
 function applyValidatedAiSearchFilters(filters = {}, query = '', result = {}) {
   const applied = [];
   const unsupported = [];
@@ -11478,7 +11636,7 @@ async function runInventoryAiSearch() {
       state: stateKind,
       title: stateKind === 'success' ? 'AI search applied' : (stateKind === 'partial' ? 'AI search partially applied' : 'AI search not applied'),
       detail: `${sourceText}: found ${resultCount} candidate(s). ${applied.length ? `Applied ${applied.join(', ')}.` : 'No safe filter control matched this request.'}${unsupportedText}`,
-      source: result?.fallbackUsed ? `Fallback reason: ${result?.fallbackReason || 'AI unavailable'}` : sourceText,
+      source: result?.fallbackUsed ? publicInventoryAiFallbackReason(result?.fallbackReason) : sourceText,
       actions: stateKind === 'failure' ? ['Try an asset tag, building, department, type, EOL, or missing-data phrase.'] : [],
     });
     showMessage(`${sourceText}: found ${resultCount} candidate(s). ${applied.length ? `Applied ${applied.join(', ')}.` : 'No safe filter change was available.'}${unsupportedText}`, stateKind === 'failure' ? 'warning' : 'info');
@@ -11493,10 +11651,10 @@ async function runInventoryAiSearch() {
       state: 'failure',
       title: 'AI search failed safely',
       detail: 'No filters were changed. Your current table view was preserved.',
-      source: error.message || 'Inventory AI search request failed.',
+      source: publicInventoryAiFallbackReason(error?.message),
       actions: ['Try a simpler query or use regular filters.'],
     });
-    showMessage(error.message || 'AI inventory search failed.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   } finally {
     if (aiSearchBtn) {
       aiSearchBtn.disabled = false;
@@ -11548,7 +11706,7 @@ function aiSourceMetaHtml(result = {}) {
     return `<div class="small text-muted mt-1"><span class="badge bg-info-subtle text-info-emphasis border">System data</span>${inventorySourceInfoIcon({ source: 'Deterministic' })} This result is system-calculated.</div>`;
   }
   if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
-    const reasonText = fallbackReason ? ` Reason: ${UI.escapeHTML(fallbackReason)}.` : '';
+    const reasonText = fallbackReason ? ` ${UI.escapeHTML(publicInventoryAiFallbackReason(fallbackReason))}` : '';
     return `<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">System data</span>${inventorySourceInfoIcon({ source: 'Fallback' })} AI insight unavailable. Showing system CMDB summary.${reasonText}</div>`;
   }
   return '<div class="small text-muted mt-1"><span class="badge bg-secondary-subtle text-secondary-emphasis border">Inventory AI service</span></div>';
@@ -11562,16 +11720,27 @@ function aiSourceMetaText(result = {}) {
   if (llmUsed) return 'Source: AI insight.';
   if (llmStatus === 'deterministic_only') return 'Source: System data.';
   if (fallbackUsed || llmStatus === 'fallback' || llmStatus === 'offline' || llmStatus === 'disabled') {
-    return `Source: System data${fallbackReason ? ` (${fallbackReason})` : ''}.`;
+    return `Source: System data. ${publicInventoryAiFallbackReason(fallbackReason)}`;
   }
   return 'Source: Inventory AI service.';
 }
 
 function updateInventoryAiFloatingOffset() {
-  const desktopBottom = 22;
-  const mobileBottom = 16;
-  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom', `${desktopBottom}px`);
-  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom-mobile', `${mobileBottom}px`);
+  const mobile = window.innerWidth <= 767;
+  const baseBottom = mobile ? 16 : 22;
+  const pager = document.getElementById('inventoryGroupPager');
+  let safeBottom = baseBottom;
+  if (pager && !pager.classList.contains('d-none')) {
+    const rect = pager.getBoundingClientRect();
+    const visible = rect.bottom > 0 && rect.top < window.innerHeight;
+    if (visible) {
+      const desiredBottom = Math.ceil(window.innerHeight - rect.top + 14);
+      const viewportCap = Math.max(baseBottom, Math.floor(window.innerHeight * 0.25));
+      safeBottom = Math.min(Math.max(baseBottom, desiredBottom), viewportCap);
+    }
+  }
+  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom', `${safeBottom}px`);
+  document.documentElement.style.setProperty('--inventory-ai-launcher-bottom-mobile', `${safeBottom}px`);
 }
 
 function formatInventoryAiChatTime(timeValue) {
@@ -12662,7 +12831,7 @@ function renderInventoryAiChatMessages() {
         <div class="inventory-ai-chat-fallback mt-2">
           <div class="fw-semibold small">System data summary</div>
           <div class="small mt-1">AI insight unavailable for this response. Showing system-calculated output.</div>
-          ${entry.fallbackReason ? `<div class="small mt-1 text-muted">Reason: ${UI.escapeHTML(String(entry.fallbackReason).replace(/_/g, ' '))}</div>` : ''}
+          ${entry.fallbackReason ? `<div class="small mt-1 text-muted">${UI.escapeHTML(publicInventoryAiFallbackReason(entry.fallbackReason))}</div>` : ''}
         </div>
       `
       : '';
@@ -12943,7 +13112,7 @@ window.runInventoryAiQuickAction = async (mode, queryOverride = '') => {
       createdAt: Date.now(),
     });
     setInventoryAiChatStatus('error');
-    showMessage(error.message || 'Inventory AI action failed.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   } finally {
     inventoryAiChatState.loading = false;
     inventoryAiChatState.loadingSince = null;
@@ -13072,7 +13241,7 @@ window.sendInventoryAiChatMessage = async () => {
       createdAt: Date.now(),
     });
     setInventoryAiChatStatus('error');
-    showMessage(error.message || 'Inventory AI assistant request failed.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   } finally {
     inventoryAiChatState.loading = false;
     inventoryAiChatState.loadingSince = null;
@@ -13750,7 +13919,7 @@ window.runInventoryAiAction = async () => {
     if (statusEl) statusEl.textContent = `Completed (${result?.fallbackUsed ? 'System data used' : 'AI insight used'}).`;
   } catch (error) {
     if (statusEl) statusEl.textContent = 'Failed.';
-    showMessage(error.message || 'Inventory AI request failed.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   } finally {
     if (runBtn) {
       runBtn.disabled = false;
@@ -14360,7 +14529,7 @@ window.runImportAiColumnMapping = async () => {
       summaryEl.textContent = 'AI mapping failed. You can still run normal preview.';
       summaryEl.className = 'small mb-2 text-danger';
     }
-    showMessage(error.message || 'Failed to run AI import mapping.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   }
 };
 
@@ -14399,7 +14568,7 @@ window.runImportAiRepairErrors = async () => {
       summaryEl.textContent = 'AI import error repair failed.';
       summaryEl.className = 'small mb-2 text-danger';
     }
-    showMessage(error.message || 'Failed to run AI import error repair.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   }
 };
 
@@ -14519,7 +14688,7 @@ window.runImportAiInvoiceMatch = async () => {
       summaryEl.textContent = 'AI invoice matching failed.';
       summaryEl.className = 'small mb-2 text-danger';
     }
-    showMessage(error.message || 'Failed to run AI invoice matching.', 'error');
+    showMessage(publicInventoryAiFallbackReason(error?.message), 'error');
   }
 };
 
@@ -15429,10 +15598,56 @@ window.saveUpdatedSpecs = async () => {
   }
 };
 
+function createInventoryQrDataUrl(text, size = 160) {
+  const renderBuffer = document.createElement('div');
+  renderBuffer.className = 'inventory-qr-render-buffer';
+  document.body.appendChild(renderBuffer);
+  try {
+    new QRCode(renderBuffer, {
+      text,
+      width: size,
+      height: size,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+    });
+    const canvas = renderBuffer.querySelector('canvas');
+    const image = renderBuffer.querySelector('img');
+    if (canvas?.toDataURL) return canvas.toDataURL('image/png');
+    if (image?.src) return image.src;
+    throw new Error('QR image could not be rendered.');
+  } finally {
+    renderBuffer.remove();
+  }
+}
+
+async function copyInventoryQrLink(deepLink, button) {
+  try {
+    await navigator.clipboard.writeText(deepLink);
+    if (button) button.textContent = 'Copied';
+    showMessage('Secure asset link copied.', 'success');
+  } catch {
+    const input = document.getElementById('inventoryQrDeepLink');
+    input?.focus();
+    input?.select();
+    showMessage('Select and copy the secure asset link shown below.', 'info');
+  }
+}
+
 window.viewQRCode = (customId) => {
   const asset = currentAssets.find(a => a.customId === customId);
+  if (!asset) {
+    showMessage('Asset not found or unavailable.', 'warning');
+    return;
+  }
   const serial = asset ? getDisplaySerial(asset) : '';
   const assetTag = asset ? getDisplayAssetTag(asset) : '';
+  let deepLink;
+  try {
+    deepLink = buildInventoryAssetQrUrl(asset);
+  } catch (error) {
+    showMessage(error.message || 'This asset does not have a QR-safe identifier.', 'warning');
+    return;
+  }
   const specContent = document.getElementById('specContent');
   specContent.innerHTML = '';
 
@@ -15443,7 +15658,7 @@ window.viewQRCode = (customId) => {
   specContent.appendChild(qrContainer);
 
   new QRCode(qrContainer, {
-    text: customId,
+    text: deepLink,
     width: 250,
     height: 250,
     colorDark: '#000000',
@@ -15453,17 +15668,40 @@ window.viewQRCode = (customId) => {
   const infoDiv = document.createElement('div');
   infoDiv.className = 'mt-3 text-center';
   infoDiv.innerHTML = `
-    <strong>${customId}</strong>
+    <strong>${UI.escapeHTML(assetTag || customId)}</strong>
     ${serial ? `<div class="small text-muted mt-1">Serial: ${UI.escapeHTML(serial)}</div>` : ''}
     ${assetTag ? `<div class="small text-muted">Tag: ${UI.escapeHTML(assetTag)}</div>` : ''}
+    <div class="inventory-qr-link-row mt-3">
+      <label class="form-label small fw-semibold" for="inventoryQrDeepLink">Secure scan link</label>
+      <div class="input-group input-group-sm">
+        <input id="inventoryQrDeepLink" class="form-control" value="${UI.escapeHTML(deepLink)}" readonly aria-label="Secure asset QR deep link">
+        <button id="inventoryQrCopyBtn" class="btn btn-outline-primary" type="button">Copy link</button>
+      </div>
+      <div class="form-text">Unauthenticated scans show verification data only. Login is required for full Asset 360.</div>
+    </div>
   `;
   specContent.appendChild(infoDiv);
+  document.getElementById('inventoryQrCopyBtn')?.addEventListener('click', (event) => {
+    copyInventoryQrLink(deepLink, event.currentTarget);
+  });
 
   document.getElementById('specTargetHeader').innerHTML = `
     <strong>QR Code for Asset</strong>
   `;
 
-  const specModal = bootstrap.Modal.getOrCreateInstance(document.getElementById('specModal'));
+  const specModalEl = document.getElementById('specModal');
+  specModalEl.classList.add('inventory-modal-stack-high');
+  if (!specModalEl.dataset.cmdbStackBound) {
+    specModalEl.dataset.cmdbStackBound = 'true';
+    specModalEl.addEventListener('hidden.bs.modal', () => {
+      const underlyingModal = document.querySelector(`#${CMDB_MODAL_ID}.show, #${GROUP_CMDB_MODAL_ID}.show, #detailsModal.show`);
+      if (underlyingModal) {
+        document.body.classList.add('modal-open');
+        underlyingModal.setAttribute('aria-hidden', 'false');
+      }
+    });
+  }
+  const specModal = bootstrap.Modal.getOrCreateInstance(specModalEl);
   specModal.show();
 };
 
@@ -15484,6 +15722,17 @@ window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
     return;
   }
 
+  let printableAssets;
+  try {
+    printableAssets = assetsToPrint.map((asset) => {
+      const deepLink = buildInventoryAssetQrUrl(asset);
+      return { asset, deepLink, qrDataUrl: createInventoryQrDataUrl(deepLink, 180) };
+    });
+  } catch (error) {
+    showMessage(error.message || 'Could not generate secure QR labels.', 'error');
+    return;
+  }
+
   const printWindow = window.open('', '', 'width=900,height=700');
   if (!printWindow) {
     showMessage('Please allow popups to print labels.', 'warning');
@@ -15500,13 +15749,15 @@ window.printQRLabels = (assetNameOrIdList, isGroup = false) => {
       </head>
       <body>
         <div class="labels-grid">
-          ${assetsToPrint.map(asset => `
+          ${printableAssets.map(({ asset, deepLink, qrDataUrl }) => `
             <div class="label">
-              <div class="label-title">${asset.name}</div>
-              <img class="qr-container" src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(asset.customId || '')}" alt="QR Code" />
-              <div class="label-info">${asset.customId}</div>
+              <div class="label-title">${UI.escapeHTML(asset.name || 'OpsMind Asset')}</div>
+              <img class="qr-container" src="${qrDataUrl}" alt="QR code for ${UI.escapeHTML(getDisplayAssetTag(asset) || asset.customId || 'asset')}" />
+              <div class="label-info">${UI.escapeHTML(asset.customId || '')}</div>
               <div class="label-info">SN: ${UI.escapeHTML(getDisplaySerial(asset) || 'N/A')}</div>
               ${getDisplayAssetTag(asset) ? `<div class="label-info">Tag: ${UI.escapeHTML(getDisplayAssetTag(asset))}</div>` : ''}
+              <div class="label-info label-scan-note">Scan for secure verification / Asset 360</div>
+              <div class="label-deep-link">${UI.escapeHTML(deepLink)}</div>
             </div>
           `).join('')}
         </div>
@@ -15635,8 +15886,22 @@ window.exportAssetsToDetailedPDF = function() {
     doc.text('QR Code:', margin + 2, yPosition);
     yPosition += 5;
     doc.setFont(undefined, 'normal');
-    doc.text(asset.customId || 'N/A', margin + 4, yPosition);
-    yPosition += 8;
+    try {
+      const deepLink = buildInventoryAssetQrUrl(asset);
+      const qrDataUrl = createInventoryQrDataUrl(deepLink, 180);
+      if (yPosition > pageHeight - 38) {
+        doc.addPage();
+        yPosition = 15;
+      }
+      doc.addImage(qrDataUrl, 'PNG', margin + 4, yPosition, 28, 28);
+      doc.setFontSize(7);
+      const linkLines = doc.splitTextToSize(deepLink, contentWidth - 38);
+      doc.text(linkLines, margin + 36, yPosition + 5);
+      yPosition += 33;
+    } catch {
+      doc.text('QR unavailable: asset tag or stable ID is missing.', margin + 4, yPosition);
+      yPosition += 8;
+    }
 
     doc.setDrawColor(200);
     doc.line(margin, yPosition, pageWidth - margin, yPosition);
@@ -16135,4 +16400,3 @@ window.syncFilters = syncFilters;
 window.filterGroupTable = filterGroupTable;
 window.handleSearchKeyPress = handleSearchKeyPress;
 window.filterDetailsTable = filterDetailsTable;
-

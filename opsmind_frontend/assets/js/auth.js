@@ -283,7 +283,7 @@ async function initLoginPage() {
             return;
         }
 
-        window.location.href = getRoleBasedDashboard();
+        window.location.href = AuthService.getSafeReturnUrl() || getRoleBasedDashboard();
     }
 
     async function maybeEnrichTechnicianProfile(user) {
@@ -630,8 +630,8 @@ async function initLoginPage() {
                     return;
                 }
 
-                const dashboardUrl = getRoleBasedDashboard();
-                console.log('🚀 Redirecting to:', dashboardUrl);
+                const dashboardUrl = AuthService.getSafeReturnUrl() || getRoleBasedDashboard();
+                console.log('🚀 Redirecting after authentication.');
                 
                 showOTPSuccess('✓ Login successful! Redirecting...');
                 
@@ -650,7 +650,6 @@ async function initLoginPage() {
                 
                 // Force redirect after brief delay
                 setTimeout(() => {
-                    console.log('🔄 Executing redirect to:', dashboardUrl);
                     window.location.href = dashboardUrl;
                 }, 800);
             }

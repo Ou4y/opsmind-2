@@ -28,6 +28,9 @@ describe('Inventory approval notification client', () => {
       requestCode: 'INV-APR-1',
       approverRole: 'SENIOR',
       buildingCode: 'MAIN',
+      recipientType: 'ROLE_SCOPE',
+      recipientRole: 'SENIOR',
+      recipientBuildingCode: 'MAIN',
       requester: { userId: 'junior-1' },
     });
 
@@ -40,6 +43,9 @@ describe('Inventory approval notification client', () => {
           requestCode: 'INV-APR-1',
           approverRole: 'SENIOR',
           buildingCode: 'MAIN',
+          recipientType: 'ROLE_SCOPE',
+          recipientRole: 'SENIOR',
+          recipientBuildingCode: 'MAIN',
           requester: expect.objectContaining({ userId: 'junior-1' }),
         }),
       }),

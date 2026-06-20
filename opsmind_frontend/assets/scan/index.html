@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asset Verification - OpsMind</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/assets/css/main.css?v=6" rel="stylesheet">
+    <script src="/assets/js/config.js?v=2"></script>
+</head>
+<body class="asset-scan-page">
+    <main class="asset-scan-shell">
+        <section class="asset-scan-card" aria-labelledby="assetScanTitle">
+            <div class="asset-scan-brand"><i class="bi bi-qr-code-scan" aria-hidden="true"></i><span>OpsMind Asset Verification</span></div>
+            <div id="assetScanStatus" class="asset-scan-status is-info" role="status" aria-live="polite">
+                <h1 id="assetScanTitle">Verifying asset</h1>
+                <p id="assetScanMessage">Checking the safe public asset registry…</p>
+            </div>
+            <dl id="assetScanDetails" class="asset-scan-details d-none">
+                <div><dt>Asset registered</dt><dd id="assetScanRegistered">-</dd></div>
+                <div><dt>Asset tag</dt><dd id="assetScanAssetTag">-</dd></div>
+                <div><dt>Type</dt><dd id="assetScanAssetType">-</dd></div>
+                <div><dt>Category</dt><dd id="assetScanCategory">-</dd></div>
+                <div><dt>Building / location</dt><dd id="assetScanLocation">-</dd></div>
+                <div><dt>Department</dt><dd id="assetScanDepartment">-</dd></div>
+                <div><dt>General status</dt><dd id="assetScanGeneralStatus">-</dd></div>
+            </dl>
+            <div class="asset-scan-privacy-note"><i class="bi bi-shield-lock" aria-hidden="true"></i><span>Costs, serial numbers, custody details, notes, telemetry, approvals, and administrative actions are never shown publicly.</span></div>
+            <div class="asset-scan-actions">
+                <a id="assetScanLoginAction" class="btn btn-primary" href="/"><i class="bi bi-box-arrow-in-right me-1"></i>Login to view full Asset 360</a>
+                <a id="assetScanDashboardAction" class="btn btn-outline-secondary d-none" href="/pages/dashboard.html">Return to dashboard</a>
+            </div>
+        </section>
+    </main>
+    <script type="module" src="/assets/js/pages/asset-scan.js"></script>
+</body>
+</html>
+

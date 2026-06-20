@@ -275,8 +275,8 @@
                             <tbody id="inventoryTableBody"></tbody>
                         </table>
                     </div>
-                    <div id="inventoryGroupPager" class="border-top p-3 d-none"></div>
                 </div>
+                <div id="inventoryGroupPager" class="card-footer inventory-table-footer d-none"></div>
             </div>
         </main>
     </div>
@@ -1699,12 +1699,15 @@
     <script type="module">
         import AuthService from '/services/authService.js';
         const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
-        const technicianLevel = String(context.technicianLevel || '').toUpperCase();
-        const canAccessInventory =
-            context.roleCategory === 'ADMIN' ||
-            ['JUNIOR', 'SENIOR', 'SUPERVISOR'].includes(technicianLevel);
+        const canAccessInventory = Boolean(AuthService.getInventoryHierarchyRole(AuthService.getCurrentUser()));
 
-        if (!AuthService.isAuthenticated() || !canAccessInventory) {
+        const deepLinkParams = new URLSearchParams(window.location.search);
+        const hasAssetDeepLink = ['assetTag', 'assetId', 'openAsset', 'serialNumber']
+            .some((key) => String(deepLinkParams.get(key) || '').trim());
+
+        if (!AuthService.isAuthenticated() && hasAssetDeepLink) {
+            window.location.href = AuthService.getLoginUrlForReturn();
+        } else if (!AuthService.isAuthenticated() || !canAccessInventory) {
             sessionStorage.setItem('opsmind_error', 'Access denied: Inventory is only available to Admin and Technician levels (Junior/Senior/Supervisor).');
             window.location.href = context.dashboardPath || '/pages/dashboard.html';
         }

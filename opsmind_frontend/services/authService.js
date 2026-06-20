@@ -28,6 +28,37 @@ function debugLog(...args) { if (DEBUG_LOGS) console.log(...args); }
  * AuthService - Singleton service for authentication operations
  */
 const AuthService = {
+    /**
+     * Resolve a same-origin post-login return URL. External or malformed values
+     * are rejected to prevent QR/login open redirects.
+     */
+    getSafeReturnUrl(search = null) {
+        if (typeof window === 'undefined' || !window.location) return null;
+        const rawSearch = search === null ? window.location.search : String(search || '');
+        const raw = String(new URLSearchParams(rawSearch).get('returnUrl') || '').trim();
+        if (!raw || raw.length > 2048 || /[\u0000-\u001f\u007f]/.test(raw)) return null;
+        try {
+            const parsed = new URL(raw, window.location.origin);
+            if (parsed.origin !== window.location.origin || !parsed.pathname.startsWith('/') || parsed.pathname.startsWith('//')) return null;
+            return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+        } catch {
+            return null;
+        }
+    },
+
+    getLoginUrlForReturn(returnUrl = null) {
+        if (typeof window === 'undefined' || !window.location) return '/';
+        const candidate = String(returnUrl || `${window.location.pathname}${window.location.search}${window.location.hash}`).trim();
+        try {
+            const parsed = new URL(candidate, window.location.origin);
+            if (parsed.origin !== window.location.origin || !parsed.pathname.startsWith('/') || parsed.pathname.startsWith('//')) return '/';
+            const safeRelative = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+            return `/?returnUrl=${encodeURIComponent(safeRelative)}`;
+        } catch {
+            return '/';
+        }
+    },
+
      /**
       * Register a new user
       * @param {Object} userData - User registration data
@@ -721,6 +752,68 @@ const AuthService = {
             dashboardType,
             dashboardPath
         };
+    },
+
+    /**
+     * Resolve the canonical Inventory hierarchy role used by frontend UX gates.
+     * Backend RBAC/approval checks remain authoritative for every request.
+     */
+    getInventoryHierarchyRole(currentUser = null) {
+        return this.resolveInventoryRole(currentUser || this.getCurrentUser());
+    },
+
+    canInventoryAction(action, currentUser = null) {
+        const role = this.getInventoryHierarchyRole(currentUser);
+        if (!role) return false;
+        const rank = {
+            JUNIOR: 10,
+            SENIOR: 20,
+            BUILDING_SUPERVISOR: 30,
+            SUPERVISOR_CHIEF: 40,
+            ADMIN: 50,
+        };
+        const minimumRank = {
+            view: 10,
+            open_asset: 10,
+            view_qr: 10,
+            print_label: 10,
+            view_history: 10,
+            ai_readonly: 10,
+            routine_maintenance: 10,
+            component_edit: 20,
+            component_repair: 20,
+            component_replace: 20,
+            component_stock_replace: 20,
+            component_create: 20,
+            relationship_change: 20,
+            custody_change: 20,
+            assignment_change: 20,
+            telemetry_update: 20,
+            spec_edit: 20,
+            building_scope: 30,
+            cross_building: 40,
+            component_remove: 50,
+            component_retire: 50,
+            asset_disposition: 50,
+            asset_delete: 50,
+            system_admin: 50,
+        };
+        const required = minimumRank[String(action || '').trim()] ?? Number.POSITIVE_INFINITY;
+        return rank[role] >= required;
+    },
+
+    canDecideInventoryApproval(approval, currentUser = null) {
+        const user = currentUser || this.getCurrentUser() || {};
+        const role = this.getInventoryHierarchyRole(user);
+        if (!role || !approval || String(approval.status || '').toUpperCase() !== 'PENDING') return false;
+        const approverRole = String(approval.approverRole || '').trim().toUpperCase()
+            .replace(/^SUPERVISOR$/, 'BUILDING_SUPERVISOR')
+            .replace(/^CHIEF$/, 'SUPERVISOR_CHIEF');
+        if (role !== approverRole) return false;
+        const userId = String(user.userId || user.id || user._id || user.sub || user.workflowUserId || user.workflow_user_id || user.email || '').trim();
+        const requesterId = String(approval.requestedByUserId || '').trim();
+        if (!userId) return false;
+        return !requesterId || userId !== requesterId;
     },
 
     /**

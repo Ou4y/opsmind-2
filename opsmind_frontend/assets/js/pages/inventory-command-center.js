@@ -110,6 +110,14 @@ function escapeHtml(value) {
   return UI.escapeHTML(String(value ?? ''));
 }
 
+function publicAiFallbackMessage(value) {
+  const raw = String(value || '').trim();
+  if (!raw || /timeout|abort|gemma|ollama|stream_start|fetch|network/i.test(raw)) {
+    return 'AI insight unavailable; showing system-data summary.';
+  }
+  return raw.replace(/_/g, ' ');
+}
+
 function normalize(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -982,7 +990,7 @@ async function renderDailyBriefing(summary) {
       text: text || deterministicBriefingText(packet),
       packet,
       source: result?.fallbackUsed ? 'Fallback' : (llmUsed ? 'Gemma' : 'Deterministic'),
-      fallbackReason: result?.fallbackUsed ? `System data used: ${String(result?.fallbackReason || 'AI insight was unavailable for this request.').replace(/_/g, ' ')}` : '',
+      fallbackReason: result?.fallbackUsed ? publicAiFallbackMessage(result?.fallbackReason) : '',
       llmUsed,
     });
   } catch (error) {
@@ -991,7 +999,7 @@ async function renderDailyBriefing(summary) {
       text: deterministicBriefingText(packet),
       packet,
       source: 'Fallback',
-      fallbackReason: `System data used: ${error.message || 'Inventory AI briefing endpoint was unavailable.'}`,
+      fallbackReason: publicAiFallbackMessage(error?.message),
       llmUsed: false,
     });
   }
@@ -1702,7 +1710,9 @@ function renderEolFilterSelect(id, label, field, rows) {
       <span>${escapeHtml(label)}</span>
       <select class="form-select form-select-sm" data-icc-eol-filter="${escapeHtml(field)}" id="${escapeHtml(id)}">
         <option value="all">All ${escapeHtml(label)}</option>
-        ${options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+        ${options.length
+          ? options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')
+          : '<option value="" disabled>No values in loaded inventory</option>'}
       </select>
     </label>
   `;
@@ -1773,6 +1783,9 @@ function renderEolBudgetTimeline() {
           <p>${escapeHtml(report.summary || 'No EOL forecast data loaded yet.')}</p>
         </div>
         <div class="icc-eol-horizon-toggle" role="group" aria-label="EOL forecast horizon">
+          <button type="button" class="btn btn-sm btn-outline-success" data-icc-eol-export="csv">
+            <i class="bi bi-filetype-csv me-1"></i>Export CSV
+          </button>
           ${[12, 24, 36].map((months) => `
             <button type="button" class="btn btn-sm ${horizon === months ? 'btn-primary' : 'btn-outline-primary'}" data-icc-eol-horizon="${months}">
               ${months}m
@@ -1813,6 +1826,41 @@ function renderEolBudgetTimeline() {
       })}
     </section>
   `;
+}
+
+function csvCell(value) {
+  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+}
+
+function exportEolBudgetCsv() {
+  const rows = asArray(state.eolBudgetTimeline?.rows).filter(rowMatchesEolFilters);
+  if (!rows.length) {
+    showIccToast('No EOL budget rows match the current filters.', 'warning');
+    return;
+  }
+  const header = ['Asset ID', 'Asset Name', 'Department', 'Building', 'Category', 'EOL Date', 'Quarter', 'Risk Level', 'Estimated Replacement Cost EGP', 'Cost Evidence'];
+  const body = rows.map((row) => [
+    row.assetId || row.customId || '',
+    row.assetName || '',
+    eolRowField(row, 'department'),
+    eolRowField(row, 'building'),
+    eolRowField(row, 'category'),
+    row.eolDate || '',
+    eolQuarterLabel(row.eolDate),
+    row.riskLevel || '',
+    Number(row.estimatedReplacementCost || 0) || '',
+    Number(row.estimatedReplacementCost || 0) > 0 ? 'recorded' : 'missing',
+  ]);
+  const csv = [header, ...body].map((record) => record.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `opsmind-eol-budget-${state.eolBudgetHorizon || 12}m-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+  showIccToast(`Exported ${rows.length} EOL budget row(s) as CSV.`, 'success');
 }
 
 async function setEolBudgetHorizon(months) {
@@ -2357,7 +2405,7 @@ function renderGemmaDiagnosticsBody(result) {
         <div><strong>Selected model</strong><span>${escapeHtml(String(diagnostics.selected_model_present ?? diagnostics.modelPresent ?? 'Unknown'))}</span></div>
         <div><strong>Backend bridge</strong><span>${escapeHtml(backend.error ? 'Unavailable' : 'Reachable')}</span></div>
       </div>
-      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(String(lastError).replace(/_/g, ' '))}</div>` : ''}
+      ${lastError ? `<div class="ops-gemma-warning">Latest diagnostic note: ${escapeHtml(publicAiFallbackMessage(lastError))}</div>` : ''}
       <div class="table-responsive">
         <table class="table table-sm align-middle ops-gemma-table">
           <thead><tr><th>AI feature</th><th>Uses AI insight?</th><th>Readiness/source</th><th>Safe test note</th><th></th></tr></thead>
@@ -2437,7 +2485,7 @@ async function openGemmaDiagnostics() {
     const result = await fetchGemmaDiagnostics();
     if (body) body.innerHTML = renderGemmaDiagnosticsBody(result);
   } catch (error) {
-    if (body) body.innerHTML = emptyState('Diagnostics unavailable', error.message || 'Could not complete read-only AI diagnostics.');
+    if (body) body.innerHTML = emptyState('Diagnostics unavailable', publicAiFallbackMessage(error?.message));
   }
 }
 
@@ -2502,6 +2550,11 @@ function bindActions() {
     const horizonBtn = event.target?.closest('[data-icc-eol-horizon]');
     if (horizonBtn) {
       setEolBudgetHorizon(horizonBtn.getAttribute('data-icc-eol-horizon'));
+      return;
+    }
+    const exportBtn = event.target?.closest('[data-icc-eol-export]');
+    if (exportBtn) {
+      exportEolBudgetCsv();
       return;
     }
     const quarterBtn = event.target?.closest('[data-icc-eol-quarter]');

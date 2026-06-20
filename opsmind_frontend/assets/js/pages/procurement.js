@@ -51,8 +51,6 @@ const KNOWN_LOCATIONS = [
   'Mosque',
   'Workshop',
 ];
-const ALLOWED_LEVELS = new Set(['JUNIOR', 'SENIOR', 'SUPERVISOR']);
-
 const state = {
   board: null,
   loading: false,
@@ -73,13 +71,18 @@ const state = {
 
 function ensureAccess() {
   const context = AuthService.resolveUserDashboardContext(AuthService.getCurrentUser());
-  const level = String(context.technicianLevel || '').toUpperCase();
-  if (!AuthService.isAuthenticated() || (context.roleCategory !== 'ADMIN' && !ALLOWED_LEVELS.has(level))) {
+  const hierarchyRole = AuthService.getInventoryHierarchyRole(AuthService.getCurrentUser());
+  if (!AuthService.isAuthenticated() || !hierarchyRole) {
     sessionStorage.setItem('opsmind_error', 'Access denied: Procurement is available only to Admin and Technician levels (Junior/Senior/Supervisor).');
     window.location.href = context.dashboardPath || '/pages/dashboard.html';
     return false;
   }
   return true;
+}
+
+function canDecideApprovalRow(row) {
+  return state.approvalsMode === 'assigned'
+    && AuthService.canDecideInventoryApproval(row, AuthService.getCurrentUser());
 }
 
 function authHeaders(extra = {}) {
@@ -325,6 +328,7 @@ function renderApprovalCenter() {
           <div class="proc-approval-kicker">
             <span class="ops-attention-pill ${approvalStatusClass(status)}">${escapeHtml(status.replace(/_/g, ' '))}</span>
             <span class="ops-attention-pill is-info">${escapeHtml(row.riskLevel || 'Risk not set')}</span>
+            <span class="ops-attention-pill ${state.approvalsMode === 'mine' ? 'is-neutral' : 'is-healthy'}">${state.approvalsMode === 'mine' ? 'Submitted by me' : 'Assigned to my role'}</span>
             ${row.approverRole ? `<span class="ops-attention-pill is-review">Approver: ${escapeHtml(String(row.approverRole).replace(/_/g, ' '))}</span>` : ''}
           </div>
           <div class="proc-approval-title">${escapeHtml(row.requestCode || row.id)} - ${escapeHtml(row.entityLabel || row.actionType || 'Inventory action')}</div>
@@ -338,7 +342,7 @@ function renderApprovalCenter() {
         </div>
         <div class="proc-approval-actions">
           <button type="button" class="btn btn-sm btn-outline-primary" data-proc-approval-details="${escapeHtml(row.id)}">Details</button>
-          ${status === 'PENDING' ? `
+          ${canDecideApprovalRow(row) ? `
             <button type="button" class="btn btn-sm btn-success" data-proc-approval-approve="${escapeHtml(row.id)}">Approve</button>
             <button type="button" class="btn btn-sm btn-outline-danger" data-proc-approval-reject="${escapeHtml(row.id)}">Reject</button>
           ` : ''}
@@ -362,6 +366,12 @@ async function loadApprovals(mode = state.approvalsMode) {
 }
 
 async function decideApproval(approvalId, decision) {
+  const approvals = Array.isArray(state.approvals?.approvals) ? state.approvals.approvals : [];
+  const approval = approvals.find((row) => String(row.id || '') === String(approvalId || ''));
+  if (!approval || !canDecideApprovalRow(approval)) {
+    notify('This request is not assigned to your current role, or you are the requester.', 'warning');
+    return;
+  }
   const isApprove = decision === 'approve';
   const confirmed = await UI.confirm({
     title: isApprove ? 'Approve Inventory Action?' : 'Reject Inventory Action?',
