@@ -1,5 +1,5 @@
 const DEFAULT_SCAN_PATH = '/assets/scan';
-const DEFAULT_INVENTORY_PATH = '/pages/inventory.html';
+const DEFAULT_INVENTORY_PATH = '/pages/inventory';
 
 function cleanValue(value) {
   return String(value || '').trim();

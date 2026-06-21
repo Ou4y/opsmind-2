@@ -27,8 +27,27 @@ test('assetTag query resolves the exact asset after inventory data loads', () =>
   assert.equal(resolveInventoryAssetDeepLink(assets, target)?.customId, 'A-2');
   assert.equal(
     buildAuthenticatedInventoryUrl(target, { baseUrl: 'https://opsmind.example' }),
-    'https://opsmind.example/pages/inventory.html?assetTag=ABC-123',
+    'https://opsmind.example/pages/inventory?assetTag=ABC-123',
   );
+});
+
+test('authenticated links use the extensionless route and safely encode the asset tag', () => {
+  const target = parseInventoryAssetDeepLink('?assetTag=ABC%2F123%20Lab');
+  assert.equal(
+    buildAuthenticatedInventoryUrl(target, { baseUrl: 'http://localhost:8085' }),
+    'http://localhost:8085/pages/inventory?assetTag=ABC%2F123+Lab',
+  );
+});
+
+test('static routing serves legacy HTML and canonical Inventory URLs without a lossy clean-URL redirect', async () => {
+  const config = JSON.parse(await readFile(new URL('../../serve.json', import.meta.url), 'utf8'));
+  assert.equal(config.cleanUrls, false);
+  assert.deepEqual(config.rewrites, [
+    { source: '/', destination: '/index.html' },
+    { source: '/assets/scan', destination: '/assets/scan/index.html' },
+    { source: '/pages/:page', destination: '/pages/:page.html' },
+    { source: '/pages/:section/:page', destination: '/pages/:section/:page.html' },
+  ]);
 });
 
 test('assetId and openAsset never fall back to an unrelated partial match', () => {

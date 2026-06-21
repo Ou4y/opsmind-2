@@ -1,0 +1,21 @@
+{
+  "cleanUrls": false,
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/assets/scan",
+      "destination": "/assets/scan/index.html"
+    },
+    {
+      "source": "/pages/:page",
+      "destination": "/pages/:page.html"
+    },
+    {
+      "source": "/pages/:section/:page",
+      "destination": "/pages/:section/:page.html"
+    }
+  ]
+}
