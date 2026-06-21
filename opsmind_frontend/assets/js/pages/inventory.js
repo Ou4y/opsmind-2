@@ -15598,6 +15598,39 @@ window.saveUpdatedSpecs = async () => {
   }
 };
 
+const INVENTORY_QR_MODAL_ID = 'inventoryQrModal';
+const INVENTORY_QR_BACKDROP_ID = 'inventoryQrBackdrop';
+let inventoryQrKeydownHandler = null;
+let inventoryQrPreviousFocus = null;
+
+function getOpenUnderlyingInventoryModal() {
+  return document.querySelector(`#${CMDB_MODAL_ID}.show, #${GROUP_CMDB_MODAL_ID}.show, #detailsModal.show`);
+}
+
+function cleanupInventoryQrModal({ restoreFocus = true } = {}) {
+  if (inventoryQrKeydownHandler) {
+    document.removeEventListener('keydown', inventoryQrKeydownHandler, true);
+    inventoryQrKeydownHandler = null;
+  }
+  document.getElementById(INVENTORY_QR_MODAL_ID)?.remove();
+  document.getElementById(INVENTORY_QR_BACKDROP_ID)?.remove();
+  document.body.classList.remove('inventory-qr-open');
+
+  const underlyingModal = getOpenUnderlyingInventoryModal();
+  if (underlyingModal) {
+    document.body.classList.add('modal-open');
+    underlyingModal.removeAttribute('aria-hidden');
+  }
+
+  const focusTarget = inventoryQrPreviousFocus;
+  inventoryQrPreviousFocus = null;
+  if (restoreFocus && focusTarget?.isConnected) {
+    requestAnimationFrame(() => focusTarget.focus({ preventScroll: true }));
+  }
+}
+
+window.cleanupInventoryQrModal = cleanupInventoryQrModal;
+
 function createInventoryQrDataUrl(text, size = 160) {
   const renderBuffer = document.createElement('div');
   renderBuffer.className = 'inventory-qr-render-buffer';
@@ -15626,7 +15659,7 @@ async function copyInventoryQrLink(deepLink, button) {
     if (button) button.textContent = 'Copied';
     showMessage('Secure asset link copied.', 'success');
   } catch {
-    const input = document.getElementById('inventoryQrDeepLink');
+    const input = document.querySelector(`#${INVENTORY_QR_MODAL_ID} #inventoryQrDeepLink`);
     input?.focus();
     input?.select();
     showMessage('Select and copy the secure asset link shown below.', 'info');
@@ -15648,16 +15681,56 @@ window.viewQRCode = (customId) => {
     showMessage(error.message || 'This asset does not have a QR-safe identifier.', 'warning');
     return;
   }
-  const specContent = document.getElementById('specContent');
-  specContent.innerHTML = '';
+  cleanupInventoryQrModal({ restoreFocus: false });
+  inventoryQrPreviousFocus = document.activeElement;
 
-  const qrContainer = document.createElement('div');
-  qrContainer.id = 'qrcode-temp';
-  qrContainer.className = 'inventory-qr-preview';
-  
-  specContent.appendChild(qrContainer);
+  const backdrop = document.createElement('div');
+  backdrop.id = INVENTORY_QR_BACKDROP_ID;
+  backdrop.className = 'inventory-qr-backdrop';
+  backdrop.dataset.inventoryQrBackdrop = 'true';
+  backdrop.setAttribute('aria-hidden', 'true');
 
-  new QRCode(qrContainer, {
+  const modal = document.createElement('div');
+  modal.id = INVENTORY_QR_MODAL_ID;
+  modal.className = 'inventory-qr-modal';
+  modal.dataset.inventoryQrModal = 'true';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'inventoryQrModalTitle');
+  modal.innerHTML = `
+    <div class="inventory-qr-dialog" role="document">
+      <div class="modal-content border-0 shadow-lg">
+        <div class="modal-header bg-dark text-white">
+          <h5 class="modal-title fw-bold" id="inventoryQrModalTitle"><i class="bi bi-qr-code me-2"></i>QR Code for Asset</h5>
+          <button type="button" class="btn-close btn-close-white" data-inventory-qr-close aria-label="Close QR code"></button>
+        </div>
+        <div class="modal-body inventory-qr-modal-body">
+          <div class="inventory-qr-summary">
+            <strong>${UI.escapeHTML(assetTag || customId)}</strong>
+            ${serial ? `<div class="small text-muted mt-1">Serial: ${UI.escapeHTML(serial)}</div>` : ''}
+            ${assetTag ? `<div class="small text-muted">Tag: ${UI.escapeHTML(assetTag)}</div>` : ''}
+          </div>
+          <div id="inventoryQrCanvas" class="inventory-qr-preview" aria-label="Secure asset QR code"></div>
+          <div class="inventory-qr-link-row">
+            <label class="form-label small fw-semibold" for="inventoryQrDeepLink">Secure scan link</label>
+            <div class="input-group input-group-sm">
+              <input id="inventoryQrDeepLink" class="form-control" value="${UI.escapeHTML(deepLink)}" readonly aria-label="Secure asset QR deep link">
+              <button id="inventoryQrCopyBtn" class="btn btn-outline-primary" type="button">Copy link</button>
+            </div>
+            <div class="form-text">Unauthenticated scans show verification data only. Login is required for full Asset 360.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-inventory-qr-close>Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.append(backdrop, modal);
+  document.body.classList.add('inventory-qr-open');
+
+  new QRCode(modal.querySelector('#inventoryQrCanvas'), {
     text: deepLink,
     width: 250,
     height: 250,
@@ -15665,44 +15738,22 @@ window.viewQRCode = (customId) => {
     colorLight: '#ffffff',
   });
 
-  const infoDiv = document.createElement('div');
-  infoDiv.className = 'mt-3 text-center';
-  infoDiv.innerHTML = `
-    <strong>${UI.escapeHTML(assetTag || customId)}</strong>
-    ${serial ? `<div class="small text-muted mt-1">Serial: ${UI.escapeHTML(serial)}</div>` : ''}
-    ${assetTag ? `<div class="small text-muted">Tag: ${UI.escapeHTML(assetTag)}</div>` : ''}
-    <div class="inventory-qr-link-row mt-3">
-      <label class="form-label small fw-semibold" for="inventoryQrDeepLink">Secure scan link</label>
-      <div class="input-group input-group-sm">
-        <input id="inventoryQrDeepLink" class="form-control" value="${UI.escapeHTML(deepLink)}" readonly aria-label="Secure asset QR deep link">
-        <button id="inventoryQrCopyBtn" class="btn btn-outline-primary" type="button">Copy link</button>
-      </div>
-      <div class="form-text">Unauthenticated scans show verification data only. Login is required for full Asset 360.</div>
-    </div>
-  `;
-  specContent.appendChild(infoDiv);
-  document.getElementById('inventoryQrCopyBtn')?.addEventListener('click', (event) => {
+  modal.querySelectorAll('[data-inventory-qr-close]').forEach((button) => {
+    button.addEventListener('click', () => cleanupInventoryQrModal(), { once: true });
+  });
+  modal.querySelector('#inventoryQrCopyBtn')?.addEventListener('click', (event) => {
     copyInventoryQrLink(deepLink, event.currentTarget);
   });
+  backdrop.addEventListener('click', () => cleanupInventoryQrModal(), { once: true });
 
-  document.getElementById('specTargetHeader').innerHTML = `
-    <strong>QR Code for Asset</strong>
-  `;
-
-  const specModalEl = document.getElementById('specModal');
-  specModalEl.classList.add('inventory-modal-stack-high');
-  if (!specModalEl.dataset.cmdbStackBound) {
-    specModalEl.dataset.cmdbStackBound = 'true';
-    specModalEl.addEventListener('hidden.bs.modal', () => {
-      const underlyingModal = document.querySelector(`#${CMDB_MODAL_ID}.show, #${GROUP_CMDB_MODAL_ID}.show, #detailsModal.show`);
-      if (underlyingModal) {
-        document.body.classList.add('modal-open');
-        underlyingModal.setAttribute('aria-hidden', 'false');
-      }
-    });
-  }
-  const specModal = bootstrap.Modal.getOrCreateInstance(specModalEl);
-  specModal.show();
+  inventoryQrKeydownHandler = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cleanupInventoryQrModal();
+  };
+  document.addEventListener('keydown', inventoryQrKeydownHandler, true);
+  requestAnimationFrame(() => modal.querySelector('[data-inventory-qr-close]')?.focus({ preventScroll: true }));
 };
 
 window.printQRLabels = (assetNameOrIdList, isGroup = false) => {

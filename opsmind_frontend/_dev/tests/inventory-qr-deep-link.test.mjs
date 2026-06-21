@@ -73,3 +73,18 @@ test('authenticated Inventory startup resolves the deep link then opens Asset 36
   assert.match(standaloneLabels, /new QRious\(\{ value: deepLink/);
   assert.doesNotMatch(standaloneLabels, /new QRious\(\{ value: asset\.(?:customId|assetTag)/);
 });
+
+test('QR modal owns a body-mounted backdrop and cleans only QR artifacts', async () => {
+  const source = await readFile(new URL('../../assets/js/pages/inventory.js', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../../assets/css/main.css', import.meta.url), 'utf8');
+  const qrBlock = source.slice(source.indexOf('window.viewQRCode ='), source.indexOf('window.printQRLabels ='));
+  assert.match(qrBlock, /document\.body\.append\(backdrop, modal\)/);
+  assert.match(qrBlock, /data-inventory-qr-close/);
+  assert.match(qrBlock, /event\.stopImmediatePropagation\(\)/);
+  assert.doesNotMatch(qrBlock, /bootstrap\.Modal|specModal/);
+  assert.match(source, /getElementById\(INVENTORY_QR_MODAL_ID\)\?\.remove\(\)/);
+  assert.match(source, /getElementById\(INVENTORY_QR_BACKDROP_ID\)\?\.remove\(\)/);
+  assert.match(css, /\.inventory-qr-backdrop[\s\S]*?z-index:\s*3600/);
+  assert.match(css, /\.inventory-qr-modal[\s\S]*?pointer-events:\s*none[\s\S]*?z-index:\s*3610/);
+  assert.match(css, /\.inventory-qr-dialog[\s\S]*?pointer-events:\s*auto/);
+});

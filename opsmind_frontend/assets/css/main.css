@@ -13249,6 +13249,59 @@ body.app-body::after {
 }
 
 /* Secure asset QR scan and label surfaces */
+.inventory-page.inventory-qr-open {
+    overflow: hidden;
+}
+
+.inventory-qr-backdrop {
+    background: rgba(15, 23, 42, 0.62);
+    inset: 0;
+    pointer-events: auto;
+    position: fixed;
+    z-index: 3600;
+}
+
+.inventory-qr-modal {
+    align-items: center;
+    display: grid;
+    inset: 0;
+    justify-items: center;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 1rem;
+    pointer-events: none;
+    position: fixed;
+    z-index: 3610;
+}
+
+.inventory-qr-dialog {
+    margin: auto;
+    max-width: min(34rem, calc(100vw - 2rem));
+    pointer-events: auto;
+    position: relative;
+    width: 100%;
+}
+
+.inventory-qr-dialog .modal-content,
+.inventory-qr-dialog button,
+.inventory-qr-dialog input {
+    pointer-events: auto;
+}
+
+.inventory-qr-modal-body {
+    max-height: min(72vh, 680px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.inventory-qr-summary {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    padding: 0.85rem;
+    text-align: center;
+}
+
 .inventory-qr-render-buffer {
     height: 1px;
     left: -10000px;
@@ -13267,6 +13320,17 @@ body.app-body::after {
 .inventory-qr-link-row .form-control {
     font-family: var(--bs-font-monospace);
     min-width: 0;
+}
+
+@media (max-width: 575.98px) {
+    .inventory-qr-modal {
+        align-items: end;
+        padding: 0.6rem;
+    }
+
+    .inventory-qr-dialog {
+        max-width: 100%;
+    }
 }
 
 .label-scan-note {
