@@ -1,0 +1,87 @@
+:8090 {
+  encode gzip
+
+  handle_path /auth-api/* {
+    reverse_proxy 127.0.0.1:3012 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3012"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /ticket-api/* {
+    reverse_proxy 127.0.0.1:3001 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3001"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /workflow-api/* {
+    reverse_proxy 127.0.0.1:3003 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3003"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /sla-api/* {
+    reverse_proxy 127.0.0.1:3004 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3004"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /notification-api/* {
+    reverse_proxy 127.0.0.1:3005 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3005"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /report-api/* {
+    reverse_proxy 127.0.0.1:3006 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:3006"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /inventory-api/* {
+    reverse_proxy 127.0.0.1:5000 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:5000"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /inventory-ai-api/* {
+    reverse_proxy 127.0.0.1:8002 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:8002"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /ai-api/* {
+    reverse_proxy 127.0.0.1:8001 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:8001"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle_path /agentic-ai-api/* {
+    reverse_proxy 127.0.0.1:4010 {
+      header_up Origin "http://localhost:8085"
+      header_up Host "localhost:4010"
+      header_up X-Forwarded-Proto "https"
+    }
+  }
+
+  handle {
+    reverse_proxy 127.0.0.1:8085
+  }
+}
